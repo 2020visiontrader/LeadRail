@@ -2,8 +2,13 @@ import type { ApolloQuery } from '@/lib/types';
 
 const APOLLO_BASE = 'https://api.apollo.io/api/v1';
 
+/** Resolve the Apollo key across accepted secret-name casings. */
+export function apolloKey(): string | undefined {
+  return process.env.APOLLO_API_KEY || process.env.Apollo_Api_Key || process.env.APOLLO_KEY;
+}
+
 export function apolloConfigured(): boolean {
-  return Boolean(process.env.APOLLO_API_KEY);
+  return Boolean(apolloKey());
 }
 
 export interface ApolloCandidate {
@@ -38,16 +43,32 @@ function sizeToRange(size?: string): string[] {
   return m ? [`${m[1]},${m[2]}`] : [];
 }
 
+/**
+ * Normalize a person from Apollo's `api_search` preview shape. That endpoint
+ * returns obfuscated data — `last_name_obfuscated`, boolean `has_email`/
+ * `has_city`/`has_state`/`has_country` flags (not values), no seniority. Full
+ * name, email, and location are revealed only by the enrich (People Match)
+ * call, which unlocks the record and spends Apollo credits. This also handles
+ * a fuller shape (paid search tiers / match results) when those fields exist.
+ */
 function normalize(p: any): ApolloCandidate {
   const rawEmail: string | undefined = p.email;
-  const locked = !rawEmail || /email_not_unlocked|not_unlocked/i.test(rawEmail);
+  const hasEmail = p.has_email === true;
+  // Preview tier: no real email string, only a has_email flag → treat as locked-but-revealable.
+  const emailPresent = typeof rawEmail === 'string' && !/email_not_unlocked|not_unlocked/i.test(rawEmail);
+  const email_status: ApolloCandidate['email_status'] = emailPresent
+    ? 'verified'
+    : hasEmail
+      ? 'locked'
+      : 'unavailable';
   const org = p.organization || p.account || {};
+  const lastName = p.last_name || p.last_name_obfuscated || '';
   const location = [p.city, p.state, p.country].filter(Boolean).join(', ') || null;
   return {
     external_id: p.id || p.person_id || '',
-    name: [p.first_name, p.last_name].filter(Boolean).join(' ') || p.name || 'Unknown',
-    email: locked ? null : rawEmail!,
-    email_status: locked ? 'locked' : 'verified',
+    name: [p.first_name, lastName].filter(Boolean).join(' ') || p.name || 'Unknown',
+    email: emailPresent ? rawEmail! : null,
+    email_status,
     title: p.title || '',
     company: org.name || p.organization_name || '',
     linkedin_url: p.linkedin_url || null,
@@ -65,7 +86,7 @@ function normalize(p: any): ApolloCandidate {
 export async function searchPeople(
   query: ApolloQuery
 ): Promise<{ candidates: ApolloCandidate[]; total: number }> {
-  const key = process.env.APOLLO_API_KEY;
+  const key = apolloKey();
   if (!key) {
     const err: any = new Error('Apollo is not connected');
     err.code = 'not_configured';
@@ -87,7 +108,7 @@ export async function searchPeople(
     if (v === undefined || (Array.isArray(v) && v.length === 0)) delete body[k];
   });
 
-  const res = await fetch(`${APOLLO_BASE}/mixed_people/search`, {
+  const res = await fetch(`${APOLLO_BASE}/mixed_people/api_search`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -107,7 +128,7 @@ export async function searchPeople(
 
   const json = await res.json();
   const people: any[] = json.people || json.contacts || [];
-  const total = json.pagination?.total_entries ?? people.length;
+  const total = json.total_entries ?? json.pagination?.total_entries ?? people.length;
   return { candidates: people.map(normalize), total };
 }
 
@@ -156,7 +177,7 @@ export async function matchPerson(keys: {
   name?: string | null;
   company?: string | null;
 }): Promise<ApolloEnrichment> {
-  const key = process.env.APOLLO_API_KEY;
+  const key = apolloKey();
   if (!key) {
     const err: any = new Error('Apollo is not connected');
     err.code = 'not_configured';
