@@ -1,105 +1,98 @@
+import { useState, useEffect } from 'react';
+import Link from 'next/link';
 import { Contact } from '@/lib/types';
-import { useState } from 'react';
+import Badge from '@/components/Badge';
+import Button from '@/components/Button';
 
-interface ContactDrawerProps {
+interface Props {
   contact: Contact | null;
   isOpen: boolean;
   onClose: () => void;
   onUpdate?: (contact: Contact) => void;
+  onDelete?: (contact: Contact) => void;
 }
 
-export default function ContactDrawer({ contact, isOpen, onClose, onUpdate }: ContactDrawerProps) {
-  const [editingField, setEditingField] = useState<string | null>(null);
-  const [editValue, setEditValue] = useState('');
+export default function ContactDrawer({ contact, isOpen, onClose, onUpdate, onDelete }: Props) {
+  const [draft, setDraft] = useState<Contact | null>(contact);
+  const [editing, setEditing] = useState(false);
+  useEffect(() => { setDraft(contact); setEditing(false); }, [contact]);
 
-  if (!isOpen || !contact) return null;
+  if (!isOpen || !contact || !draft) return null;
 
-  const handleEdit = (field: string, value: string) => {
-    setEditingField(field);
-    setEditValue(value);
-  };
-
-  const handleSave = () => {
-    if (onUpdate && editingField) {
-      onUpdate({ ...contact, [editingField]: editValue });
-    }
-    setEditingField(null);
-  };
+  const save = () => { onUpdate?.(draft); setEditing(false); };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex justify-end z-50">
-      <div className="w-full md:w-96 bg-white shadow-lg overflow-y-auto">
-        <div className="p-6 border-b flex justify-between items-center sticky top-0 bg-white">
-          <h2 className="text-lg font-bold">{contact.name}</h2>
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-700 text-xl">✕</button>
+    <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/50" onClick={onClose}>
+      <div className="h-full w-full max-w-md overflow-y-auto bg-white shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="sticky top-0 flex items-center justify-between border-b border-slate-200 bg-white px-6 py-4">
+          <h2 className="text-lg font-semibold">{contact.name}</h2>
+          <button onClick={onClose} className="text-xl text-slate-400 hover:text-slate-600">✕</button>
         </div>
 
-        <div className="p-6 space-y-4">
-          <div>
-            <label className="block text-sm font-semibold text-gray-700">Name</label>
-            {editingField === 'name' ? (
-              <div className="flex gap-2 mt-1">
-                <input
-                  type="text"
-                  value={editValue}
-                  onChange={(e) => setEditValue(e.target.value)}
-                  className="flex-1 px-3 py-2 border rounded"
-                />
-                <button onClick={handleSave} className="px-3 py-2 bg-blue-600 text-white rounded">Save</button>
+        <div className="space-y-5 px-6 py-5">
+          <div className="flex items-center gap-2">
+            <Badge tone="indigo">{contact.segment}</Badge>
+            <Badge tone={contact.status === 'engaged' ? 'green' : contact.status === 'contacted' ? 'amber' : 'gray'}>{contact.status}</Badge>
+            <span className="ml-auto text-lg font-bold text-green-600">{contact.score}</span>
+          </div>
+
+          {editing ? (
+            <div className="space-y-3">
+              {(['name', 'email', 'company', 'title'] as const).map((f) => (
+                <label key={f} className="block">
+                  <span className="mb-1 block text-xs font-medium uppercase text-slate-500">{f}</span>
+                  <input
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+                    value={(draft[f] as string) || ''}
+                    onChange={(e) => setDraft({ ...draft, [f]: e.target.value })}
+                  />
+                </label>
+              ))}
+              <label className="block">
+                <span className="mb-1 block text-xs font-medium uppercase text-slate-500">status</span>
+                <select className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" value={draft.status}
+                  onChange={(e) => setDraft({ ...draft, status: e.target.value as Contact['status'] })}>
+                  {['new', 'contacted', 'engaged'].map((s) => <option key={s} value={s}>{s}</option>)}
+                </select>
+              </label>
+              <div className="flex gap-2 pt-1">
+                <Button onClick={save}>Save</Button>
+                <Button variant="secondary" onClick={() => { setDraft(contact); setEditing(false); }}>Cancel</Button>
               </div>
-            ) : (
-              <div className="flex justify-between items-center mt-1">
-                <p>{contact.name}</p>
-                <button
-                  onClick={() => handleEdit('name', contact.name)}
-                  className="text-blue-600 hover:underline text-sm"
-                >
-                  Edit
-                </button>
+            </div>
+          ) : (
+            <dl className="space-y-3 text-sm">
+              <Row label="Email" value={contact.email} />
+              <Row label="Company" value={contact.company || '—'} />
+              <Row label="Title" value={contact.title || '—'} />
+              <div className="flex gap-2 pt-1">
+                <Button onClick={() => setEditing(true)}>Edit</Button>
+                <Link href={`/leads/${contact.id}`}><Button variant="secondary">Open full page</Button></Link>
               </div>
-            )}
-          </div>
+            </dl>
+          )}
 
-          <div>
-            <label className="block text-sm font-semibold text-gray-700">Email</label>
-            <p className="text-blue-600 mt-1">{contact.email}</p>
-          </div>
-
-          <div>
-            <label className="block text-sm font-semibold text-gray-700">Company</label>
-            <p className="mt-1">{contact.company || '—'}</p>
-          </div>
-
-          <div>
-            <label className="block text-sm font-semibold text-gray-700">Segment</label>
-            <span className="inline-block mt-1 px-3 py-1 bg-blue-100 text-blue-800 rounded text-sm">{contact.segment}</span>
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-semibold text-gray-700">Score</label>
-              <p className="text-lg font-bold text-green-600 mt-1">{contact.score}</p>
-            </div>
-            <div>
-              <label className="block text-sm font-semibold text-gray-700">Status</label>
-              <p className="mt-1">{contact.status}</p>
-            </div>
-          </div>
-
-          <div className="border-t pt-4 mt-4">
-            <h3 className="font-semibold text-sm mb-2">Engagement Timeline</h3>
-            <div className="space-y-2 text-sm text-gray-600">
+          <div className="border-t border-slate-200 pt-4">
+            <h3 className="mb-2 text-sm font-semibold">Engagement Timeline</h3>
+            <div className="space-y-1.5 text-sm text-slate-500">
               <p>📧 Email opened — 2 days ago</p>
               <p>🔗 Link clicked — 3 days ago</p>
               <p>📧 Email sent — 4 days ago</p>
             </div>
           </div>
 
-          <button className="w-full mt-6 px-4 py-2 bg-red-600 text-white rounded hover:bg-red-700">
-            Delete Contact
-          </button>
+          <Button variant="danger" className="w-full" onClick={() => onDelete?.(contact)}>Delete Contact</Button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function Row({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt className="text-xs font-medium uppercase text-slate-400">{label}</dt>
+      <dd className="text-slate-800">{value}</dd>
     </div>
   );
 }

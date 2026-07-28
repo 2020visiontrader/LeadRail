@@ -1,3 +1,4 @@
+import Button from '@/components/Button';
 interface ModalProps {
   isOpen: boolean;
   title: string;
@@ -5,30 +6,22 @@ interface ModalProps {
   onClose: () => void;
   onSubmit?: () => void;
   submitLabel?: string;
+  loading?: boolean;
+  maxWidth?: string;
 }
-
-export default function Modal({ isOpen, title, children, onClose, onSubmit, submitLabel = 'Submit' }: ModalProps) {
+export default function Modal({ isOpen, title, children, onClose, onSubmit, submitLabel = 'Submit', loading, maxWidth = 'max-w-lg' }: ModalProps) {
   if (!isOpen) return null;
-
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-md">
-        <div className="p-6 border-b flex justify-between items-center">
-          <h2 className="text-xl font-bold">{title}</h2>
-          <button onClick={onClose} className="text-gray-500 hover:text-gray-700 text-2xl">✕</button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4" onClick={onClose}>
+      <div className={`w-full ${maxWidth} rounded-xl bg-white shadow-xl`} onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+          <h2 className="text-lg font-semibold text-slate-900">{title}</h2>
+          <button onClick={onClose} className="text-xl text-slate-400 hover:text-slate-600">✕</button>
         </div>
-        <div className="p-6">
-          {children}
-        </div>
-        <div className="p-6 border-t flex justify-end gap-3">
-          <button onClick={onClose} className="px-4 py-2 text-gray-700 border border-gray-300 rounded hover:bg-gray-50">
-            Cancel
-          </button>
-          {onSubmit && (
-            <button onClick={onSubmit} className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
-              {submitLabel}
-            </button>
-          )}
+        <div className="px-6 py-5">{children}</div>
+        <div className="flex justify-end gap-3 border-t border-slate-200 px-6 py-4">
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          {onSubmit && <Button onClick={onSubmit} loading={loading}>{submitLabel}</Button>}
         </div>
       </div>
     </div>
