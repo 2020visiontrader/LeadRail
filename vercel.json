@@ -1,0 +1,28 @@
+{
+  "buildCommand": "npm run build",
+  "devCommand": "npm run dev",
+  "installCommand": "npm install",
+  "framework": "nextjs",
+  "env": [
+    {
+      "key": "NEXT_PUBLIC_SUPABASE_URL",
+      "value": "@supabase_url"
+    },
+    {
+      "key": "NEXT_PUBLIC_SUPABASE_ANON_KEY",
+      "value": "@supabase_anon_key"
+    },
+    {
+      "key": "SUPABASE_SERVICE_ROLE_KEY",
+      "value": "@supabase_service_key"
+    },
+    {
+      "key": "BREVO_API_KEY",
+      "value": "@brevo_api_key"
+    },
+    {
+      "key": "POSTIZ_API_KEY",
+      "value": "@postiz_api_key"
+    }
+  ]
+}
