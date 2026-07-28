@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Contact } from '@/lib/types';
-import Badge from '@/components/Badge';
+import Badge, { statusTone } from '@/components/Badge';
 
 interface DataTableProps {
   contacts: Contact[];
@@ -51,7 +51,7 @@ export default function DataTable({ contacts, isLoading, onRowClick, onDelete }:
               <td className="p-3 text-slate-600">{c.company || '—'}</td>
               <td className="p-3"><Badge tone="indigo">{c.segment}</Badge></td>
               <td className="p-3 text-center font-semibold text-green-600">{c.score}</td>
-              <td className="p-3"><Badge tone={c.status === 'engaged' ? 'green' : c.status === 'contacted' ? 'amber' : 'gray'}>{c.status}</Badge></td>
+              <td className="p-3"><Badge tone={statusTone(c.status)}>{c.status}</Badge></td>
               <td className="p-3 text-right">
                 <button className="mr-3 text-indigo-600 hover:underline" onClick={(e) => { e.stopPropagation(); onRowClick?.(c); }}>Edit</button>
                 <button className="text-red-600 hover:underline" onClick={(e) => { e.stopPropagation(); onDelete?.(c); }}>Delete</button>

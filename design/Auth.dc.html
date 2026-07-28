@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0A0F1F;font-family:'Inter',sans-serif;color:#FFFFFF;}
+a{color:#00D4B4;text-decoration:none;}
+a:hover{color:#3EE8CC;}
+input::placeholder{color:#6B7B93;}
+@keyframes drift{0%,100%{transform:translate(0,0) scale(1);}50%{transform:translate(40px,-30px) scale(1.08);}}
+@keyframes drift2{0%,100%{transform:translate(0,0) scale(1);}50%{transform:translate(-50px,20px) scale(1.1);}}
+</style>
+</helmet>
+
+<div style="min-height:100vh;display:flex;background:#0A0F1F;">
+
+  <div style="width:42%;position:relative;background:#0C1226;border-right:1px solid rgba(255,255,255,0.06);display:flex;flex-direction:column;justify-content:space-between;padding:40px;overflow:hidden;">
+    <div style="position:absolute;top:-120px;left:-100px;width:420px;height:420px;border-radius:9999px;background:radial-gradient(circle, rgba(0,212,180,0.16), transparent 70%);animation:drift 14s ease-in-out infinite;"></div>
+    <div style="position:absolute;bottom:-140px;right:-80px;width:460px;height:460px;border-radius:9999px;background:radial-gradient(circle, rgba(255,107,43,0.13), transparent 70%);animation:drift2 17s ease-in-out infinite;"></div>
+    <a href="Landing.dc.html" style="display:flex;align-items:center;gap:10px;position:relative;">
+      <div style="width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,#00D4B4,#FF6B2B);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:15px;color:#0A0F1F;">L</div>
+      <span style="font-size:16px;font-weight:700;color:#FFFFFF;">LeadRail</span>
+    </a>
+    <div style="position:relative;">
+      <div style="font-size:30px;font-weight:800;letter-spacing:-1px;line-height:1.25;margin-bottom:18px;">{{ panelHeadline }}</div>
+      <div style="font-size:14px;color:#A0AEC0;line-height:1.65;max-width:380px;">{{ panelBody }}</div>
+      <div style="display:flex;flex-direction:column;gap:12px;margin-top:32px;">
+        <sc-for list="{{ panelPoints }}" as="pp" hint-placeholder-count="3">
+          <div style="display:flex;gap:10px;align-items:center;">
+            <div style="width:18px;height:18px;border-radius:9999px;background:rgba(0,212,180,0.15);display:flex;align-items:center;justify-content:center;font-size:10px;color:#00D4B4;font-weight:700;flex-shrink:0;">✓</div>
+            <span style="font-size:13px;color:#A0AEC0;">{{ pp.text }}</span>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+    <div style="font-size:12px;color:#6B7B93;position:relative;">© 2026 LeadRail</div>
+  </div>
+
+  <div style="flex:1;display:flex;align-items:center;justify-content:center;padding:40px;overflow-y:auto;">
+    <div style="width:100%;max-width:440px;">
+
+      <sc-if value="{{ isLogin }}" hint-placeholder-val="{{ true }}">
+        <div style="font-size:26px;font-weight:800;letter-spacing:-0.5px;margin-bottom:6px;">Welcome back</div>
+        <div style="font-size:13px;color:#A0AEC0;margin-bottom:28px;">Log in to your workspace.</div>
+        <div style="display:flex;flex-direction:column;gap:14px;">
+          <div>
+            <label style="font-size:12px;font-weight:600;color:#A0AEC0;display:block;margin-bottom:6px;">Email</label>
+            <input placeholder="you@company.com" style="width:100%;box-sizing:border-box;background:#0F1A2E;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:12px 14px;color:#FFFFFF;font-size:13px;font-family:inherit;" style-focus="border-color:#00D4B4;box-shadow:0 0 0 3px rgba(0,212,180,0.13);outline:none;"></input>
+          </div>
+          <div>
+            <div style="display:flex;justify-content:space-between;margin-bottom:6px;">
+              <label style="font-size:12px;font-weight:600;color:#A0AEC0;">Password</label>
+              <a href="#" style="font-size:12px;">Forgot?</a>
+            </div>
+            <input type="password" placeholder="••••••••" style="width:100%;box-sizing:border-box;background:#0F1A2E;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:12px 14px;color:#FFFFFF;font-size:13px;font-family:inherit;" style-focus="border-color:#00D4B4;box-shadow:0 0 0 3px rgba(0,212,180,0.13);outline:none;"></input>
+          </div>
+          <a href="CRM App.dc.html" style="display:block;text-align:center;background:#FF6B2B;color:#0A0F1F;font-size:14px;font-weight:600;padding:13px;border-radius:6px;margin-top:6px;">Log in</a>
+          <div style="display:flex;align-items:center;gap:12px;margin:8px 0;">
+            <div style="flex:1;height:1px;background:rgba(255,255,255,0.08);"></div>
+            <span style="font-size:11px;color:#6B7B93;">OR</span>
+            <div style="flex:1;height:1px;background:rgba(255,255,255,0.08);"></div>
+          </div>
+          <button style="display:flex;align-items:center;justify-content:center;gap:10px;background:#0F1A2E;border:1px solid rgba(255,255,255,0.12);color:#FFFFFF;font-size:13px;font-weight:600;padding:12px;border-radius:6px;cursor:pointer;font-family:inherit;">
+            <svg width="16" height="16" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 01-2.2 3.32v2.77h3.57c2.08-1.92 3.27-4.74 3.27-8.1z"></path><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84A11 11 0 0012 23z"></path><path fill="#FBBC05" d="M5.84 14.1a6.6 6.6 0 010-4.2V7.06H2.18a11 11 0 000 9.88l3.66-2.84z"></path><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15A11 11 0 002.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z"></path></svg>
+            Continue with Google
+          </button>
+          <div style="text-align:center;font-size:13px;color:#A0AEC0;margin-top:12px;">New to LeadRail? <button onClick="{{ goSignup }}" style="border:none;background:transparent;color:#00D4B4;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;padding:0;">Create an account</button></div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isSignup }}" hint-placeholder-val="{{ false }}">
+        <div style="font-size:26px;font-weight:800;letter-spacing:-0.5px;margin-bottom:6px;">Create your account</div>
+        <div style="font-size:13px;color:#A0AEC0;margin-bottom:28px;">Free to start — 500 enrichment credits included.</div>
+        <div style="display:flex;flex-direction:column;gap:14px;">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+            <div>
+              <label style="font-size:12px;font-weight:600;color:#A0AEC0;display:block;margin-bottom:6px;">First name</label>
+              <input placeholder="Alex" style="width:100%;box-sizing:border-box;background:#0F1A2E;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:12px 14px;color:#FFFFFF;font-size:13px;font-family:inherit;" style-focus="border-color:#00D4B4;box-shadow:0 0 0 3px rgba(0,212,180,0.13);outline:none;"></input>
+            </div>
+            <div>
+              <label style="font-size:12px;font-weight:600;color:#A0AEC0;display:block;margin-bottom:6px;">Last name</label>
+              <input placeholder="Rivera" style="width:100%;box-sizing:border-box;background:#0F1A2E;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:12px 14px;color:#FFFFFF;font-size:13px;font-family:inherit;" style-focus="border-color:#00D4B4;box-shadow:0 0 0 3px rgba(0,212,180,0.13);outline:none;"></input>
+            </div>
+          </div>
+          <div>
+            <label style="font-size:12px;font-weight:600;color:#A0AEC0;display:block;margin-bottom:6px;">Work email</label>
+            <input placeholder="you@company.com" style="width:100%;box-sizing:border-box;background:#0F1A2E;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:12px 14px;color:#FFFFFF;font-size:13px;font-family:inherit;" style-focus="border-color:#00D4B4;box-shadow:0 0 0 3px rgba(0,212,180,0.13);outline:none;"></input>
+          </div>
+          <div>
+            <label style="font-size:12px;font-weight:600;color:#A0AEC0;display:block;margin-bottom:6px;">Password</label>
+            <input type="password" placeholder="8+ characters" style="width:100%;box-sizing:border-box;background:#0F1A2E;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:12px 14px;color:#FFFFFF;font-size:13px;font-family:inherit;" style-focus="border-color:#00D4B4;box-shadow:0 0 0 3px rgba(0,212,180,0.13);outline:none;"></input>
+          </div>
+          <button onClick="{{ startOnboarding }}" style="border:none;background:#FF6B2B;color:#0A0F1F;font-size:14px;font-weight:600;padding:13px;border-radius:6px;cursor:pointer;font-family:inherit;margin-top:6px;">Create account</button>
+          <div style="font-size:11px;color:#6B7B93;text-align:center;">By continuing you agree to the Terms of Service and Privacy Policy.</div>
+          <div style="text-align:center;font-size:13px;color:#A0AEC0;margin-top:8px;">Already have an account? <button onClick="{{ goLogin }}" style="border:none;background:transparent;color:#00D4B4;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;padding:0;">Log in</button></div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isOnboarding }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;gap:6px;margin-bottom:28px;">
+          <sc-for list="{{ progress }}" as="pg" hint-placeholder-count="3">
+            <div style="flex:1;height:4px;border-radius:4px;background:{{ pg.color }};transition:background 0.3s;"></div>
+          </sc-for>
+        </div>
+
+        <sc-if value="{{ isStep1 }}" hint-placeholder-val="{{ false }}">
+          <div style="font-size:12px;font-weight:600;color:#00D4B4;letter-spacing:1px;margin-bottom:10px;">STEP 1 OF 3</div>
+          <div style="font-size:24px;font-weight:800;letter-spacing:-0.5px;margin-bottom:6px;">Name your workspace</div>
+          <div style="font-size:13px;color:#A0AEC0;margin-bottom:24px;">This is your company or team — your ventures live inside it.</div>
+          <label style="font-size:12px;font-weight:600;color:#A0AEC0;display:block;margin-bottom:6px;">Workspace name</label>
+          <input value="{{ workspaceName }}" onChange="{{ setWorkspaceName }}" placeholder="e.g. Acme Ventures" style="width:100%;box-sizing:border-box;background:#0F1A2E;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:12px 14px;color:#FFFFFF;font-size:13px;font-family:inherit;margin-bottom:20px;" style-focus="border-color:#00D4B4;box-shadow:0 0 0 3px rgba(0,212,180,0.13);outline:none;"></input>
+          <label style="font-size:12px;font-weight:600;color:#A0AEC0;display:block;margin-bottom:10px;">What best describes you?</label>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:24px;">
+            <sc-for list="{{ personas }}" as="ps" hint-placeholder-count="4">
+              <button onClick="{{ ps.pick }}" style="border:1px solid {{ ps.border }};background:{{ ps.bg }};color:#FFFFFF;border-radius:8px;padding:14px;text-align:left;cursor:pointer;font-family:inherit;">
+                <div style="font-size:13px;font-weight:600;margin-bottom:2px;">{{ ps.label }}</div>
+                <div style="font-size:11px;color:#6B7B93;">{{ ps.sub }}</div>
+              </button>
+            </sc-for>
+          </div>
+          <button onClick="{{ toStep2 }}" style="width:100%;border:none;background:#FF6B2B;color:#0A0F1F;font-size:14px;font-weight:600;padding:13px;border-radius:6px;cursor:pointer;font-family:inherit;">Continue</button>
+        </sc-if>
+
+        <sc-if value="{{ isStep2 }}" hint-placeholder-val="{{ false }}">
+          <div style="font-size:12px;font-weight:600;color:#00D4B4;letter-spacing:1px;margin-bottom:10px;">STEP 2 OF 3</div>
+          <div style="font-size:24px;font-weight:800;letter-spacing:-0.5px;margin-bottom:6px;">Create your first venture</div>
+          <div style="font-size:13px;color:#A0AEC0;margin-bottom:24px;">A venture is one brand or product you run outreach for. Each gets its own pipeline, sequences and theme — add more anytime.</div>
+          <label style="font-size:12px;font-weight:600;color:#A0AEC0;display:block;margin-bottom:6px;">Venture name</label>
+          <input value="{{ ventureName }}" onChange="{{ setVentureName }}" placeholder="e.g. Northwind Studio" style="width:100%;box-sizing:border-box;background:#0F1A2E;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:12px 14px;color:#FFFFFF;font-size:13px;font-family:inherit;margin-bottom:20px;" style-focus="border-color:#00D4B4;box-shadow:0 0 0 3px rgba(0,212,180,0.13);outline:none;"></input>
+          <label style="font-size:12px;font-weight:600;color:#A0AEC0;display:block;margin-bottom:10px;">Brand theme</label>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:20px;">
+            <sc-for list="{{ themes }}" as="th" hint-placeholder-count="4">
+              <button onClick="{{ th.pick }}" style="border:1px solid {{ th.border }};background:#0F1A2E;border-radius:8px;padding:12px 10px;cursor:pointer;font-family:inherit;">
+                <div style="display:flex;gap:5px;justify-content:center;margin-bottom:8px;">
+                  <div style="width:16px;height:16px;border-radius:5px;background:{{ th.secondary }};"></div>
+                  <div style="width:16px;height:16px;border-radius:5px;background:{{ th.accent }};"></div>
+                </div>
+                <div style="font-size:11px;font-weight:600;color:{{ th.labelColor }};">{{ th.label }}</div>
+              </button>
+            </sc-for>
+          </div>
+          <div style="background:#0C1226;border:1px solid rgba(255,255,255,0.1);border-radius:10px;padding:16px;margin-bottom:24px;">
+            <div style="font-size:10px;color:#6B7B93;letter-spacing:1px;margin-bottom:10px;">PREVIEW</div>
+            <div style="display:flex;align-items:center;gap:10px;">
+              <div style="width:30px;height:30px;border-radius:8px;background:{{ previewSecondary }};display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;color:#0A0F1F;">{{ ventureInitial }}</div>
+              <div style="flex:1;"><div style="font-size:13px;font-weight:600;">{{ ventureDisplay }}</div><div style="font-size:11px;color:#6B7B93;">0 leads · ready for import</div></div>
+              <div style="background:{{ previewAccent }};color:#0A0F1F;font-size:11px;font-weight:600;padding:5px 12px;border-radius:5px;">Enroll</div>
+            </div>
+          </div>
+          <div style="display:flex;gap:10px;">
+            <button onClick="{{ toStep1 }}" style="border:1px solid rgba(255,255,255,0.15);background:transparent;color:#FFFFFF;font-size:14px;font-weight:600;padding:13px 20px;border-radius:6px;cursor:pointer;font-family:inherit;">Back</button>
+            <button onClick="{{ toStep3 }}" style="flex:1;border:none;background:#FF6B2B;color:#0A0F1F;font-size:14px;font-weight:600;padding:13px;border-radius:6px;cursor:pointer;font-family:inherit;">Continue</button>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ isStep3 }}" hint-placeholder-val="{{ false }}">
+          <div style="font-size:12px;font-weight:600;color:#00D4B4;letter-spacing:1px;margin-bottom:10px;">STEP 3 OF 3</div>
+          <div style="font-size:24px;font-weight:800;letter-spacing:-0.5px;margin-bottom:6px;">Bring in your leads</div>
+          <div style="font-size:13px;color:#A0AEC0;margin-bottom:24px;">Import contacts into {{ ventureDisplay }} — or skip and add them later.</div>
+          <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:24px;">
+            <sc-for list="{{ importOptions }}" as="io" hint-placeholder-count="3">
+              <button onClick="{{ io.pick }}" style="display:flex;gap:14px;align-items:center;border:1px solid {{ io.border }};background:{{ io.bg }};border-radius:10px;padding:16px;cursor:pointer;text-align:left;font-family:inherit;">
+                <div style="width:38px;height:38px;border-radius:9px;background:rgba(0,212,180,0.1);display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:800;color:#00D4B4;flex-shrink:0;">{{ io.icon }}</div>
+                <div style="flex:1;">
+                  <div style="font-size:13px;font-weight:600;color:#FFFFFF;">{{ io.label }}</div>
+                  <div style="font-size:11px;color:#6B7B93;margin-top:2px;">{{ io.sub }}</div>
+                </div>
+              </button>
+            </sc-for>
+          </div>
+          <div style="display:flex;gap:10px;">
+            <button onClick="{{ toStep2 }}" style="border:1px solid rgba(255,255,255,0.15);background:transparent;color:#FFFFFF;font-size:14px;font-weight:600;padding:13px 20px;border-radius:6px;cursor:pointer;font-family:inherit;">Back</button>
+            <a href="CRM App.dc.html" style="flex:1;display:block;text-align:center;background:#FF6B2B;color:#0A0F1F;font-size:14px;font-weight:600;padding:13px;border-radius:6px;">Enter {{ workspaceDisplay }} →</a>
+          </div>
+          <button style="width:100%;border:none;background:transparent;color:#6B7B93;font-size:12px;padding:12px;cursor:pointer;font-family:inherit;margin-top:8px;">Skip for now</button>
+        </sc-if>
+      </sc-if>
+
+    </div>
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { view: 'login', step: 1, workspaceName: '', ventureName: '', persona: 'Agency', themeIdx: 0, importChoice: 'csv' };
+
+  componentDidMount() {
+    if (location.hash === '#signup') this.setState({ view: 'signup' });
+  }
+
+  themeDefs = [
+    { label: 'Teal / Ember', secondary: '#00D4B4', accent: '#FF6B2B' },
+    { label: 'Amber / Gold', secondary: '#FF9500', accent: '#FFBF47' },
+    { label: 'Mint / Coral', secondary: '#00C2A8', accent: '#FF6B4A' },
+    { label: 'Sky / Violet', secondary: '#3B82F6', accent: '#A78BFA' }
+  ];
+
+  renderVals() {
+    const { view, step } = this.state;
+    const panels = {
+      login: {
+        panelHeadline: 'Your pipeline is exactly where you left it.',
+        panelBody: 'Every venture, sequence and reply — synced across your team, themed per brand.',
+        panelPoints: [{ text: 'Waterfall enrichment with per-field sources' }, { text: 'Intent-classified reply inbox' }, { text: 'Per-venture theming and pipelines' }]
+      },
+      signup: {
+        panelHeadline: 'From a list of names to a calendar of meetings.',
+        panelBody: 'Create a workspace, spin up your first venture, and send your first sequence today.',
+        panelPoints: [{ text: '500 free enrichment credits' }, { text: 'No credit card required' }, { text: 'Unlimited ventures on every plan' }]
+      },
+      onboarding: {
+        panelHeadline: 'Set up takes about 90 seconds.',
+        panelBody: 'Workspace → first venture → leads. You can change everything later in Settings.',
+        panelPoints: [{ text: 'Each venture gets its own brand theme' }, { text: 'Find leads, upload a CSV, or add manually' }, { text: 'Invite teammates once you are in' }]
+      }
+    };
+    const p = panels[view];
+
+    const progress = [1, 2, 3].map(n => ({ color: n <= step ? '#00D4B4' : 'rgba(255,255,255,0.1)' }));
+
+    const personas = ['Agency', 'Startup / SaaS', 'Creator business', 'Freelancer'].map((label, i) => {
+      const subs = ['Outreach for multiple clients', 'Selling your own product', 'MCN, studio or talent brand', 'Solo pipeline'];
+      const active = this.state.persona === label;
+      return {
+        label, sub: subs[i],
+        pick: () => this.setState({ persona: label }),
+        border: active ? '#00D4B4' : 'rgba(255,255,255,0.12)',
+        bg: active ? 'rgba(0,212,180,0.08)' : '#0F1A2E'
+      };
+    });
+
+    const themes = this.themeDefs.map((t, i) => ({
+      ...t,
+      pick: () => this.setState({ themeIdx: i }),
+      border: this.state.themeIdx === i ? t.secondary : 'rgba(255,255,255,0.12)',
+      labelColor: this.state.themeIdx === i ? '#FFFFFF' : '#6B7B93'
+    }));
+    const th = this.themeDefs[this.state.themeIdx];
+
+    const importOptions = [
+      { id: 'csv', icon: '⇪', label: 'Upload a CSV', sub: 'Map columns to fields on the next screen' },
+      { id: 'find', icon: '✦', label: 'Find leads for me', sub: 'Describe your ideal customer — LeadRail pulls a matched list' },
+      { id: 'manual', icon: '+', label: 'Add manually', sub: 'Start with a handful of named accounts' }
+    ].map(o => ({
+      ...o,
+      pick: () => this.setState({ importChoice: o.id }),
+      border: this.state.importChoice === o.id ? '#00D4B4' : 'rgba(255,255,255,0.12)',
+      bg: this.state.importChoice === o.id ? 'rgba(0,212,180,0.06)' : '#0F1A2E'
+    }));
+
+    const vName = this.state.ventureName.trim();
+    return {
+      ...p,
+      isLogin: view === 'login', isSignup: view === 'signup', isOnboarding: view === 'onboarding',
+      isStep1: step === 1, isStep2: step === 2, isStep3: step === 3,
+      goSignup: () => this.setState({ view: 'signup' }),
+      goLogin: () => this.setState({ view: 'login' }),
+      startOnboarding: () => this.setState({ view: 'onboarding', step: 1 }),
+      toStep1: () => this.setState({ step: 1 }),
+      toStep2: () => this.setState({ step: 2 }),
+      toStep3: () => this.setState({ step: 3 }),
+      progress, personas, themes, importOptions,
+      workspaceName: this.state.workspaceName,
+      setWorkspaceName: (e) => this.setState({ workspaceName: e.target.value }),
+      ventureName: this.state.ventureName,
+      setVentureName: (e) => this.setState({ ventureName: e.target.value }),
+      ventureDisplay: vName || 'Your venture',
+      ventureInitial: (vName || 'V')[0].toUpperCase(),
+      workspaceDisplay: this.state.workspaceName.trim() || 'your workspace',
+      previewSecondary: th.secondary, previewAccent: th.accent
+    };
+  }
+}
+</script>
+</body>
+</html>

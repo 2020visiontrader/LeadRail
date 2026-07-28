@@ -1,4 +1,4 @@
-import { SEGMENTS, Segment } from '@/lib/types';
+import { SEGMENTS, Segment, CONTACT_STATUSES } from '@/lib/types';
 
 export interface ValidationResult<T> {
   ok: boolean;
@@ -34,7 +34,7 @@ export function validateContactInput(body: any): ValidationResult<Record<string,
     else value.segment = body.segment;
   }
   if (body.status != null) {
-    if (!['new', 'contacted', 'engaged'].includes(body.status)) errors.push('invalid status');
+    if (!CONTACT_STATUSES.includes(body.status)) errors.push('invalid status');
     else value.status = body.status;
   }
   if (body.score != null) {
@@ -59,7 +59,7 @@ export function validateContactPatch(body: any): ValidationResult<Record<string,
     else value.segment = body.segment;
   }
   if (body.status != null) {
-    if (!['new', 'contacted', 'engaged'].includes(body.status)) errors.push('invalid status');
+    if (!CONTACT_STATUSES.includes(body.status)) errors.push('invalid status');
     else value.status = body.status;
   }
   if (body.score != null) {

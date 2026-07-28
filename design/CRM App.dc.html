@@ -1,0 +1,1245 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0A0F1F;font-family:'Inter',sans-serif;color:#FFFFFF;}
+a{color:#00D4B4;text-decoration:none;}
+a:hover{color:#3EE8CC;}
+::-webkit-scrollbar{width:10px;height:10px;}
+::-webkit-scrollbar-thumb{background:#1E2C46;border-radius:8px;}
+@keyframes spin{to{transform:rotate(360deg);}}
+@keyframes screenIn{from{opacity:0;transform:translateY(14px);}to{opacity:1;transform:translateY(0);}}
+@keyframes glowPulse{0%,100%{opacity:.35;}50%{opacity:.7;}}
+</style>
+</helmet>
+
+<div style="height:100vh;display:flex;flex-direction:column;background:#0A0F1F;color:#FFFFFF;overflow:hidden;">
+
+  <!-- TOP BAR -->
+  <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;height:64px;padding:0 24px;background:rgba(10,15,31,0.92);border-bottom:1px solid rgba(255,255,255,0.08);flex-shrink:0;">
+    <div style="display:flex;align-items:center;gap:12px;">
+      <div style="width:28px;height:28px;border-radius:6px;background:{{ theme.accent }};display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px;color:#0A0F1F;">L</div>
+      <div style="font-size:15px;font-weight:700;white-space:nowrap;">LeadRail</div>
+    </div>
+    <div style="display:flex;gap:4px;background:#0F1A2E;padding:4px;border-radius:9999px;border:1px solid rgba(255,255,255,0.08);flex-shrink:0;">
+      <sc-for list="{{ ventureList }}" as="v" hint-placeholder-count="3">
+        <button onClick="{{ v.select }}" style="border:none;padding:5px 13px;border-radius:9999px;font-size:12px;font-weight:600;cursor:pointer;background:{{ v.bg }};color:{{ v.color }};white-space:nowrap;">{{ v.name }}</button>
+      </sc-for>
+    </div>
+    <div style="display:flex;align-items:center;gap:16px;">
+      <div style="display:flex;align-items:center;gap:8px;background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:9999px;padding:5px 12px;">
+        <div style="width:6px;height:6px;border-radius:9999px;background:{{ theme.secondary }};"></div>
+        <span style="font-size:11px;color:#A0AEC0;">{{ creditsLabel }}</span>
+      </div>
+      <div style="position:relative;">
+        <button onClick="{{ toggleProfile }}" style="width:30px;height:30px;border-radius:9999px;background:{{ theme.secondary }};display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:#0A0F1F;border:none;cursor:pointer;font-family:inherit;">CF</button>
+        <sc-if value="{{ profileOpen }}" hint-placeholder-val="{{ false }}">
+          <div style="position:absolute;top:40px;right:0;width:220px;background:#0F1A2E;border:1px solid rgba(255,255,255,0.12);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,0.18);padding:8px;z-index:100;">
+            <div style="display:flex;gap:10px;align-items:center;padding:10px 12px;border-bottom:1px solid rgba(255,255,255,0.08);margin-bottom:6px;">
+              <div style="width:34px;height:34px;border-radius:9999px;background:{{ theme.secondary }};display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:#0A0F1F;">CF</div>
+              <div><div style="font-size:13px;font-weight:600;">Chris Founder</div><div style="font-size:11px;color:#6B7B93;">chris@leadrail.io</div></div>
+            </div>
+            <sc-for list="{{ profileItems }}" as="pi" hint-placeholder-count="4">
+              <button onClick="{{ pi.click }}" style="display:flex;align-items:center;gap:10px;width:100%;border:none;background:transparent;color:{{ pi.color }};font-size:12px;padding:8px 12px;border-radius:6px;cursor:pointer;text-align:left;font-family:inherit;" style-hover="background:#16233D;">{{ pi.label }}</button>
+            </sc-for>
+          </div>
+        </sc-if>
+      </div>
+    </div>
+  </div>
+
+  <div style="display:flex;flex:1;min-height:0;">
+
+    <!-- SIDEBAR -->
+    <div style="width:200px;background:{{ theme.primary }};border-right:1px solid rgba(255,255,255,0.08);padding:16px 10px;flex-shrink:0;display:flex;flex-direction:column;gap:2px;">
+      <sc-for list="{{ navItems }}" as="n" hint-placeholder-count="5">
+        <button onClick="{{ n.go }}" style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:6px;font-size:13px;border:none;cursor:pointer;text-align:left;background:{{ n.bg }};color:{{ n.color }};font-weight:{{ n.weight }};font-family:inherit;">
+          <span style="width:6px;height:6px;border-radius:9999px;background:{{ n.color }};opacity:0.7;flex-shrink:0;"></span>{{ n.label }}
+          <sc-if value="{{ n.count }}" hint-placeholder-val="{{ false }}">
+            <span style="margin-left:auto;background:rgba(255,255,255,0.08);border-radius:9999px;font-size:10px;padding:2px 7px;color:#A0AEC0;">{{ n.count }}</span>
+          </sc-if>
+        </button>
+      </sc-for>
+      <div style="margin-top:auto;background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:12px;">
+        <div style="font-size:10px;color:#A0AEC0;margin-bottom:6px;">ENRICHMENT CREDITS</div>
+        <div style="height:5px;border-radius:4px;background:rgba(255,255,255,0.08);overflow:hidden;margin-bottom:6px;"><div style="height:100%;width:{{ creditsPct }};background:{{ theme.secondary }};border-radius:4px;"></div></div>
+        <div style="font-size:11px;color:#6B7B93;">{{ creditsDetail }}</div>
+      </div>
+    </div>
+
+    <!-- MAIN -->
+    <div style="flex:1;min-width:0;overflow-y:auto;padding:24px;">
+
+      <!-- DASHBOARD -->
+      <sc-if value="{{ isDashboard }}" hint-placeholder-val="{{ true }}">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;gap:16px;flex-wrap:wrap;">
+          <div>
+            <div style="font-size:22px;font-weight:700;">{{ theme.label }} Overview</div>
+            <div style="font-size:13px;color:#A0AEC0;">Pipeline health across sourcing, enrichment and outreach</div>
+          </div>
+          <button onClick="{{ goLeads }}" style="border:none;background:{{ theme.accent }};color:#0A0F1F;padding:10px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Import Leads</button>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:16px;">
+          <sc-for list="{{ kpis }}" as="k" hint-placeholder-count="5">
+            <div onMouseMove="{{ tilt }}" onMouseLeave="{{ untilt }}" style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:16px;transition:transform 0.15s ease, box-shadow 0.15s ease;will-change:transform;">
+              <div style="font-size:11px;color:#A0AEC0;margin-bottom:8px;">{{ k.label }}</div>
+              <div style="font-size:24px;font-weight:700;margin-bottom:4px;">{{ k.value }}</div>
+              <div style="font-size:11px;color:{{ k.trendColor }};">{{ k.trend }}</div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:16px;margin-bottom:16px;">
+          <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:20px;">
+            <div style="font-size:14px;font-weight:600;margin-bottom:16px;">Pipeline Funnel</div>
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <sc-for list="{{ funnel }}" as="f" hint-placeholder-count="5">
+                <div style="display:flex;align-items:center;gap:12px;">
+                  <div style="width:90px;font-size:12px;color:#A0AEC0;">{{ f.label }}</div>
+                  <div style="flex:1;height:22px;border-radius:4px;background:rgba(255,255,255,0.05);overflow:hidden;"><div style="height:100%;width:{{ f.pct }};background:{{ f.color }};border-radius:4px;display:flex;align-items:center;"><span style="font-size:11px;font-weight:600;color:#0A0F1F;padding-left:8px;">{{ f.value }}</span></div></div>
+                  <div style="width:44px;font-size:11px;color:#6B7B93;text-align:right;">{{ f.rate }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+          <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:20px;">
+            <div style="font-size:14px;font-weight:600;margin-bottom:16px;">Needs Attention</div>
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <sc-for list="{{ attention }}" as="at" hint-placeholder-count="4">
+                <div style="display:flex;gap:10px;align-items:flex-start;background:#16233D;border-radius:10px;padding:12px;">
+                  <div style="width:8px;height:8px;border-radius:9999px;background:{{ at.color }};margin-top:4px;flex-shrink:0;"></div>
+                  <div style="flex:1;">
+                    <div style="font-size:12px;">{{ at.text }}</div>
+                    <div style="font-size:11px;color:#6B7B93;margin-top:2px;">{{ at.meta }}</div>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:20px;">
+          <div style="font-size:14px;font-weight:600;margin-bottom:14px;">Recent Activity</div>
+          <div style="display:flex;flex-direction:column;">
+            <sc-for list="{{ activity }}" as="ev" hint-placeholder-count="5">
+              <div style="display:flex;gap:12px;align-items:center;padding:10px 0;border-top:1px solid rgba(255,255,255,0.06);">
+                <div style="width:8px;height:8px;border-radius:9999px;background:{{ ev.color }};flex-shrink:0;"></div>
+                <div style="font-size:12px;flex:1;">{{ ev.text }}</div>
+                <div style="font-size:11px;color:#6B7B93;">{{ ev.time }}</div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- LEADS -->
+      <sc-if value="{{ isLeads }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:16px;flex-wrap:wrap;">
+          <div>
+            <div style="font-size:22px;font-weight:700;">Leads</div>
+            <div style="font-size:13px;color:#A0AEC0;">{{ leadCountLabel }}</div>
+          </div>
+          <div style="display:flex;gap:10px;">
+            <button style="border:1px solid {{ theme.secondary }};background:transparent;color:{{ theme.secondary }};padding:9px 14px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Run Enrichment</button>
+            <button style="border:none;background:{{ theme.accent }};color:#0A0F1F;padding:9px 14px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Add to Sequence</button>
+          </div>
+        </div>
+        <div style="position:relative;background:#0F1A2E;border:1px solid {{ theme.secondary }}44;border-radius:12px;padding:20px;margin-bottom:16px;overflow:hidden;animation:screenIn 0.4s ease;">
+          <div style="position:absolute;top:-60px;right:-60px;width:220px;height:220px;border-radius:9999px;background:radial-gradient(circle, {{ theme.secondary }}22, transparent 70%);animation:glowPulse 4s ease-in-out infinite;pointer-events:none;"></div>
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+            <div style="width:26px;height:26px;border-radius:7px;background:{{ theme.secondary }}22;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:{{ theme.secondary }};">✦</div>
+            <div style="font-size:14px;font-weight:600;">Find new leads</div>
+            <div style="margin-left:auto;font-size:11px;color:#6B7B93;">Powered by <span style="color:#10B981;font-weight:600;">LeadRail</span></div>
+          </div>
+          <textarea rows="2" placeholder="Describe who you're looking for — e.g. Heads of talent at mid-size MCNs in North America, 50–200 employees, active on YouTube" style="width:100%;box-sizing:border-box;background:#0A0F1F;border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:12px 14px;color:#FFFFFF;font-size:13px;font-family:inherit;resize:none;line-height:1.5;"></textarea>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap;">
+            <sc-for list="{{ finderChips }}" as="fc" hint-placeholder-count="4">
+              <span style="background:#0A0F1F;border:1px solid rgba(255,255,255,0.12);border-radius:9999px;padding:6px 12px;font-size:11px;color:#A0AEC0;">{{ fc.label }}</span>
+            </sc-for>
+            <button onClick="{{ pullLeads }}" style="margin-left:auto;border:none;background:{{ theme.secondary }};color:#0A0F1F;padding:9px 18px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;">{{ pullLabel }}</button>
+          </div>
+          <sc-if value="{{ pullWorking }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;align-items:center;gap:10px;margin-top:12px;font-size:12px;color:{{ theme.secondary }};">
+              <div style="width:13px;height:13px;border-radius:9999px;border:2px solid rgba(255,255,255,0.1);border-top-color:{{ theme.secondary }};animation:spin 0.8s linear infinite;"></div>
+              Searching for matching leads…
+            </div>
+          </sc-if>
+          <sc-if value="{{ pullDone }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;align-items:center;gap:10px;margin-top:12px;font-size:12px;color:#10B981;">✓ 24 leads matched — added to the list below and queued for enrichment</div>
+          </sc-if>
+        </div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:14px;">
+          <input placeholder="Search name, company, email…" style="flex:1;min-width:200px;background:#0F1A2E;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:9px 12px;color:#FFFFFF;font-size:13px;font-family:inherit;"></input>
+          <sc-for list="{{ statusFilters }}" as="sf" hint-placeholder-count="6">
+            <button onClick="{{ sf.toggle }}" style="border:1px solid {{ sf.border }};background:{{ sf.bg }};color:{{ sf.color }};padding:7px 13px;border-radius:9999px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;">{{ sf.label }}</button>
+          </sc-for>
+        </div>
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;overflow:auto;">
+          <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:900px;">
+            <thead>
+              <tr style="text-align:left;color:#A0AEC0;">
+                <th style="padding:12px 14px;font-weight:600;">Lead</th>
+                <th style="padding:12px 10px;font-weight:600;">Company</th>
+                <th style="padding:12px 10px;font-weight:600;">Email</th>
+                <th style="padding:12px 10px;font-weight:600;">Phone</th>
+                <th style="padding:12px 10px;font-weight:600;">ICP Score</th>
+                <th style="padding:12px 10px;font-weight:600;">Status</th>
+                <th style="padding:12px 10px;font-weight:600;">Sequence</th>
+              </tr>
+            </thead>
+            <tbody>
+              <sc-for list="{{ leads }}" as="ld" hint-placeholder-count="8">
+                <tr onClick="{{ ld.open }}" style="border-top:1px solid rgba(255,255,255,0.06);cursor:pointer;background:{{ ld.rowBg }};" style-hover="background:#16233D;">
+                  <td style="padding:11px 14px;">
+                    <div style="display:flex;align-items:center;gap:10px;">
+                      <div style="width:30px;height:30px;border-radius:9999px;background:{{ theme.secondary }};display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:#0A0F1F;flex-shrink:0;">{{ ld.initials }}</div>
+                      <div><div style="font-weight:600;color:#FFFFFF;">{{ ld.name }}</div><div style="font-size:11px;color:#6B7B93;">{{ ld.title }}</div></div>
+                    </div>
+                  </td>
+                  <td style="padding:11px 10px;color:#A0AEC0;">{{ ld.company }}</td>
+                  <td style="padding:11px 10px;">
+                    <div style="display:flex;align-items:center;gap:6px;">
+                      <div style="width:7px;height:7px;border-radius:9999px;background:{{ ld.emailDot }};flex-shrink:0;"></div>
+                      <span style="color:{{ ld.emailColor }};">{{ ld.email }}</span>
+                    </div>
+                  </td>
+                  <td style="padding:11px 10px;color:{{ ld.phoneColor }};">{{ ld.phone }}</td>
+                  <td style="padding:11px 10px;">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                      <div style="width:44px;height:5px;border-radius:4px;background:rgba(255,255,255,0.08);overflow:hidden;"><div style="height:100%;width:{{ ld.scorePct }};background:{{ ld.scoreColor }};border-radius:4px;"></div></div>
+                      <span style="color:#FFFFFF;font-weight:600;">{{ ld.score }}</span>
+                    </div>
+                  </td>
+                  <td style="padding:11px 10px;"><span style="background:{{ ld.statusBg }};color:{{ ld.statusColor }};font-size:11px;font-weight:600;padding:3px 9px;border-radius:9999px;white-space:nowrap;">{{ ld.status }}</span></td>
+                  <td style="padding:11px 10px;color:#A0AEC0;">{{ ld.sequence }}</td>
+                </tr>
+              </sc-for>
+            </tbody>
+          </table>
+        </div>
+      </sc-if>
+
+      <!-- ENRICHMENT -->
+      <sc-if value="{{ isEnrichment }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-bottom:16px;">
+          <div style="font-size:22px;font-weight:700;">Enrichment</div>
+          <div style="font-size:13px;color:#A0AEC0;">Waterfall runs across providers until a verified match is found</div>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px;">
+          <sc-for list="{{ enrichKpis }}" as="ek" hint-placeholder-count="4">
+            <div onMouseMove="{{ tilt }}" onMouseLeave="{{ untilt }}" style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:16px;transition:transform 0.15s ease, box-shadow 0.15s ease;will-change:transform;">
+              <div style="font-size:11px;color:#A0AEC0;margin-bottom:8px;">{{ ek.label }}</div>
+              <div style="font-size:24px;font-weight:700;">{{ ek.value }}</div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:16px;">
+          <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:20px;">
+            <div style="font-size:14px;font-weight:600;margin-bottom:16px;">Provider Waterfall</div>
+            <div style="display:flex;flex-direction:column;gap:10px;">
+              <sc-for list="{{ providers }}" as="pv" hint-placeholder-count="5">
+                <div style="display:flex;align-items:center;gap:12px;background:#16233D;border-radius:10px;padding:12px 14px;">
+                  <div style="width:22px;height:22px;border-radius:6px;background:rgba(255,255,255,0.08);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:#A0AEC0;flex-shrink:0;">{{ pv.rank }}</div>
+                  <div style="flex:1;"><div style="font-size:13px;font-weight:600;">{{ pv.name }}</div><div style="font-size:11px;color:#6B7B93;">{{ pv.type }}</div></div>
+                  <div style="width:110px;"><div style="height:5px;border-radius:4px;background:rgba(255,255,255,0.08);overflow:hidden;"><div style="height:100%;width:{{ pv.hitPct }};background:{{ theme.secondary }};border-radius:4px;"></div></div></div>
+                  <div style="width:70px;font-size:12px;text-align:right;color:#A0AEC0;">{{ pv.hitRate }} hit</div>
+                  <div style="width:70px;font-size:12px;text-align:right;color:#6B7B93;">{{ pv.cost }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+          <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:20px;">
+            <div style="font-size:14px;font-weight:600;margin-bottom:16px;">Running Jobs</div>
+            <div style="display:flex;flex-direction:column;gap:12px;">
+              <sc-for list="{{ jobs }}" as="jb" hint-placeholder-count="3">
+                <div style="background:#16233D;border-radius:10px;padding:14px;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
+                    <div style="font-size:12px;font-weight:600;">{{ jb.name }}</div>
+                    <sc-if value="{{ jb.running }}" hint-placeholder-val="{{ false }}">
+                      <div style="width:12px;height:12px;border-radius:9999px;border:2px solid rgba(255,255,255,0.1);border-top-color:{{ theme.secondary }};animation:spin 0.8s linear infinite;"></div>
+                    </sc-if>
+                    <sc-if value="{{ jb.done }}" hint-placeholder-val="{{ false }}">
+                      <span style="font-size:10px;font-weight:600;color:#10B981;">DONE</span>
+                    </sc-if>
+                  </div>
+                  <div style="height:5px;border-radius:4px;background:rgba(255,255,255,0.08);overflow:hidden;margin-bottom:6px;"><div style="height:100%;width:{{ jb.pct }};background:{{ jb.barColor }};border-radius:4px;"></div></div>
+                  <div style="font-size:11px;color:#6B7B93;">{{ jb.detail }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+      <!-- SEQUENCES -->
+      <sc-if value="{{ isSequences }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:16px;flex-wrap:wrap;">
+          <div>
+            <div style="font-size:22px;font-weight:700;">Sequences</div>
+            <div style="font-size:13px;color:#A0AEC0;">Multichannel touch plans — email, LinkedIn, call</div>
+          </div>
+          <button style="border:none;background:{{ theme.accent }};color:#0A0F1F;padding:10px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">New Sequence</button>
+        </div>
+        <div style="position:relative;background:#0F1A2E;border:1px solid {{ theme.accent }}44;border-radius:12px;padding:20px;margin-bottom:16px;overflow:hidden;animation:screenIn 0.4s ease;">
+          <div style="position:absolute;top:-60px;left:-60px;width:220px;height:220px;border-radius:9999px;background:radial-gradient(circle, {{ theme.accent }}1e, transparent 70%);animation:glowPulse 5s ease-in-out infinite;pointer-events:none;"></div>
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+            <div style="width:26px;height:26px;border-radius:7px;background:{{ theme.accent }}22;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:{{ theme.accent }};">✦</div>
+            <div style="font-size:14px;font-weight:600;">Generate a sequence</div>
+            <div style="margin-left:auto;font-size:11px;color:#6B7B93;">Sends via your connected email · opens, reads &amp; replies tracked</div>
+          </div>
+          <textarea rows="2" placeholder="What's the goal? e.g. Book demo calls with talent leads at MCNs — lead with the 48h churn-signal angle, casual founder tone" style="width:100%;box-sizing:border-box;background:#0A0F1F;border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:12px 14px;color:#FFFFFF;font-size:13px;font-family:inherit;resize:none;line-height:1.5;"></textarea>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap;">
+            <sc-for list="{{ toneChips }}" as="tc" hint-placeholder-count="3">
+              <button onClick="{{ tc.pick }}" style="border:1px solid {{ tc.border }};background:{{ tc.bg }};color:{{ tc.color }};border-radius:9999px;padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;">{{ tc.label }}</button>
+            </sc-for>
+            <div style="width:1px;height:18px;background:rgba(255,255,255,0.1);"></div>
+            <sc-for list="{{ stepChips }}" as="stc" hint-placeholder-count="3">
+              <button onClick="{{ stc.pick }}" style="border:1px solid {{ stc.border }};background:{{ stc.bg }};color:{{ stc.color }};border-radius:9999px;padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;">{{ stc.label }}</button>
+            </sc-for>
+            <button onClick="{{ genSequence }}" style="margin-left:auto;border:none;background:{{ theme.accent }};color:#0A0F1F;padding:9px 18px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;">{{ genLabel }}</button>
+          </div>
+          <sc-if value="{{ genWorking }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;align-items:center;gap:10px;margin-top:12px;font-size:12px;color:{{ theme.accent }};">
+              <div style="width:13px;height:13px;border-radius:9999px;border:2px solid rgba(255,255,255,0.1);border-top-color:{{ theme.accent }};animation:spin 0.8s linear infinite;"></div>
+              Writing your touch plan…
+            </div>
+          </sc-if>
+          <sc-if value="{{ genDone }}" hint-placeholder-val="{{ false }}">
+            <div style="display:flex;flex-direction:column;gap:8px;margin-top:14px;">
+              <sc-for list="{{ genSteps }}" as="gs" hint-placeholder-count="5">
+                <div style="display:flex;gap:12px;align-items:center;background:#0A0F1F;border:1px solid rgba(255,255,255,0.08);border-radius:8px;padding:10px 14px;">
+                  <div style="width:24px;height:24px;border-radius:6px;background:{{ theme.accent }}18;border:1px solid {{ theme.accent }}55;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:{{ theme.accent }};flex-shrink:0;">{{ gs.icon }}</div>
+                  <div style="flex:1;min-width:0;">
+                    <div style="font-size:12px;font-weight:600;">{{ gs.title }}</div>
+                    <div style="font-size:11px;color:#6B7B93;">{{ gs.detail }}</div>
+                  </div>
+                  <span style="font-size:10px;color:#6B7B93;">{{ gs.day }}</span>
+                </div>
+              </sc-for>
+              <div style="display:flex;gap:8px;margin-top:6px;">
+                <button style="border:none;background:{{ theme.accent }};color:#0A0F1F;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;">Create sequence from this</button>
+                <button onClick="{{ genSequence }}" style="border:1px solid rgba(255,255,255,0.15);background:transparent;color:#FFFFFF;padding:8px 16px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;">Regenerate</button>
+              </div>
+            </div>
+          </sc-if>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:12px;">
+          <sc-for list="{{ sequences }}" as="sq" hint-placeholder-count="4">
+            <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:18px 20px;display:flex;align-items:center;gap:20px;flex-wrap:wrap;">
+              <div style="flex:1;min-width:200px;">
+                <div style="display:flex;align-items:center;gap:10px;margin-bottom:4px;">
+                  <div style="font-size:14px;font-weight:600;">{{ sq.name }}</div>
+                  <span style="background:{{ sq.stateBg }};color:{{ sq.stateColor }};font-size:10px;font-weight:600;padding:2px 8px;border-radius:9999px;">{{ sq.state }}</span>
+                </div>
+                <div style="font-size:11px;color:#6B7B93;">{{ sq.meta }}</div>
+              </div>
+              <div style="display:flex;gap:6px;align-items:center;">
+                <sc-for list="{{ sq.steps }}" as="st" hint-placeholder-count="5">
+                  <div style="display:flex;align-items:center;gap:6px;">
+                    <div title="{{ st.label }}" style="width:28px;height:28px;border-radius:6px;background:{{ st.bg }};border:1px solid {{ st.border }};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:{{ st.color }};">{{ st.icon }}</div>
+                    <sc-if value="{{ st.hasNext }}" hint-placeholder-val="{{ true }}"><div style="width:12px;height:1px;background:rgba(255,255,255,0.15);"></div></sc-if>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="display:flex;gap:24px;">
+                <div><div style="font-size:10px;color:#6B7B93;">ACTIVE</div><div style="font-size:16px;font-weight:700;">{{ sq.active }}</div></div>
+                <div><div style="font-size:10px;color:#6B7B93;">OPEN</div><div style="font-size:16px;font-weight:700;">{{ sq.open }}</div></div>
+                <div><div style="font-size:10px;color:#6B7B93;">REPLY</div><div style="font-size:16px;font-weight:700;color:{{ theme.secondary }};">{{ sq.reply }}</div></div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <!-- INBOX -->
+      <sc-if value="{{ isInbox }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-bottom:16px;">
+          <div style="font-size:22px;font-weight:700;">Reply Inbox</div>
+          <div style="font-size:13px;color:#A0AEC0;">Replies classified by intent — clear positives first</div>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:10px;">
+          <sc-for list="{{ replies }}" as="rp" hint-placeholder-count="5">
+            <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:16px 18px;display:flex;gap:14px;align-items:flex-start;">
+              <div style="width:34px;height:34px;border-radius:9999px;background:{{ theme.secondary }};display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;color:#0A0F1F;flex-shrink:0;">{{ rp.initials }}</div>
+              <div style="flex:1;min-width:0;">
+                <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                  <span style="font-size:13px;font-weight:600;">{{ rp.name }}</span>
+                  <span style="font-size:11px;color:#6B7B93;">{{ rp.company }}</span>
+                  <span style="background:{{ rp.intentBg }};color:{{ rp.intentColor }};font-size:10px;font-weight:600;padding:2px 8px;border-radius:9999px;">{{ rp.intent }}</span>
+                  <span style="margin-left:auto;font-size:11px;color:#6B7B93;">{{ rp.time }}</span>
+                </div>
+                <div style="font-size:12px;color:#A0AEC0;margin-top:6px;line-height:1.5;">{{ rp.snippet }}</div>
+                <div style="display:flex;gap:8px;margin-top:10px;">
+                  <button style="border:none;background:{{ theme.accent }};color:#0A0F1F;padding:6px 12px;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;">{{ rp.primaryAction }}</button>
+                  <button style="border:1px solid rgba(255,255,255,0.15);background:transparent;color:#FFFFFF;padding:6px 12px;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;">Snooze</button>
+                </div>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <!-- TEMPLATES -->
+      <sc-if value="{{ isTemplates }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:16px;flex-wrap:wrap;">
+          <div>
+            <div style="font-size:22px;font-weight:700;">Message Templates</div>
+            <div style="font-size:13px;color:#A0AEC0;">{{ templateCountLabel }}</div>
+          </div>
+          <button style="border:none;background:{{ theme.accent }};color:#0A0F1F;padding:10px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">New Template</button>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap;">
+          <sc-for list="{{ segmentFilters }}" as="sg" hint-placeholder-count="5">
+            <button onClick="{{ sg.toggle }}" style="border:1px solid {{ sg.border }};background:{{ sg.bg }};color:{{ sg.color }};padding:7px 13px;border-radius:9999px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;">{{ sg.label }}</button>
+          </sc-for>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px;">
+          <sc-for list="{{ templates }}" as="tp" hint-placeholder-count="6">
+            <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:18px;">
+              <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;flex-wrap:wrap;">
+                <span style="background:{{ theme.secondary }}22;color:{{ theme.secondary }};font-size:10px;font-weight:600;padding:3px 9px;border-radius:9999px;">{{ tp.segment }}</span>
+                <sc-if value="{{ tp.hasVariant }}" hint-placeholder-val="{{ false }}">
+                  <span style="background:#3B82F622;color:#3B82F6;font-size:10px;font-weight:600;padding:3px 9px;border-radius:9999px;">A/B</span>
+                </sc-if>
+                <span style="margin-left:auto;font-size:11px;color:#6B7B93;">{{ tp.stats }}</span>
+              </div>
+              <div style="font-size:13px;font-weight:600;margin-bottom:6px;line-height:1.4;">{{ tp.subject }}</div>
+              <div style="font-size:12px;color:#A0AEC0;line-height:1.55;margin-bottom:14px;">{{ tp.preview }}</div>
+              <div style="display:flex;gap:8px;">
+                <button style="border:none;background:{{ theme.accent }};color:#0A0F1F;padding:6px 12px;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;">Use in Sequence</button>
+                <button style="border:1px solid rgba(255,255,255,0.15);background:transparent;color:#FFFFFF;padding:6px 12px;border-radius:4px;font-size:12px;font-weight:600;cursor:pointer;">Preview</button>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+      </sc-if>
+
+      <!-- CONTENT -->
+      <sc-if value="{{ isContent }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:16px;flex-wrap:wrap;">
+          <div>
+            <div style="font-size:22px;font-weight:700;">Content Calendar</div>
+            <div style="font-size:13px;color:#A0AEC0;">Plan, generate and publish to every platform you've connected</div>
+          </div>
+          <button style="border:none;background:{{ theme.accent }};color:#0A0F1F;padding:10px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">Schedule Post</button>
+        </div>
+        <div style="display:flex;gap:6px;background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:9999px;padding:4px;width:max-content;margin-bottom:16px;">
+          <sc-for list="{{ contentTabs }}" as="ctb" hint-placeholder-count="3">
+            <button onClick="{{ ctb.pick }}" style="border:none;background:{{ ctb.bg }};color:{{ ctb.color }};border-radius:9999px;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;">{{ ctb.label }}</button>
+          </sc-for>
+        </div>
+
+        <sc-if value="{{ contentTabCalendar }}" hint-placeholder-val="{{ true }}">
+        <div style="display:grid;grid-template-columns:repeat(7,1fr);gap:10px;animation:screenIn 0.4s ease;">
+          <sc-for list="{{ calendarDays }}" as="cd" hint-placeholder-count="7">
+            <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:12px;min-height:210px;">
+              <div style="font-size:11px;font-weight:600;color:{{ cd.headColor }};margin-bottom:10px;">{{ cd.label }}</div>
+              <div style="display:flex;flex-direction:column;gap:8px;">
+                <sc-for list="{{ cd.posts }}" as="po" hint-placeholder-count="2">
+                  <div style="background:#16233D;border-left:3px solid {{ po.color }};border-radius:6px;padding:8px 10px;">
+                    <div style="display:flex;justify-content:space-between;gap:6px;margin-bottom:3px;">
+                      <span style="font-size:10px;font-weight:700;color:{{ po.color }};">{{ po.platform }}</span>
+                      <span style="font-size:10px;color:#6B7B93;">{{ po.time }}</span>
+                    </div>
+                    <div style="font-size:11px;color:#A0AEC0;line-height:1.4;">{{ po.text }}</div>
+                    <div style="font-size:9px;font-weight:600;color:{{ po.statusColor }};margin-top:4px;text-transform:uppercase;">{{ po.status }}</div>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+          </sc-for>
+        </div>
+        </sc-if>
+
+        <sc-if value="{{ contentTabGenerate }}" hint-placeholder-val="{{ false }}">
+          <div style="position:relative;background:#0F1A2E;border:1px solid {{ theme.secondary }}44;border-radius:12px;padding:20px;overflow:hidden;animation:screenIn 0.4s ease;">
+            <div style="position:absolute;top:-60px;right:-60px;width:220px;height:220px;border-radius:9999px;background:radial-gradient(circle, {{ theme.secondary }}22, transparent 70%);animation:glowPulse 4s ease-in-out infinite;pointer-events:none;"></div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+              <div style="width:26px;height:26px;border-radius:7px;background:{{ theme.secondary }}22;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:{{ theme.secondary }};">✦</div>
+              <div style="font-size:14px;font-weight:600;">Generate content for your niche</div>
+            </div>
+            <textarea rows="2" placeholder="Describe your niche and what you want this week — e.g. Retention tips for YouTube creator managers; 5 posts, educational with one case study" style="width:100%;box-sizing:border-box;background:#0A0F1F;border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:12px 14px;color:#FFFFFF;font-size:13px;font-family:inherit;resize:none;line-height:1.5;"></textarea>
+            <div style="display:flex;gap:8px;align-items:center;margin-top:12px;flex-wrap:wrap;">
+              <sc-for list="{{ platformChips }}" as="pc" hint-placeholder-count="6">
+                <button onClick="{{ pc.pick }}" style="border:1px solid {{ pc.border }};background:{{ pc.bg }};color:{{ pc.color }};border-radius:9999px;padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;">{{ pc.label }}</button>
+              </sc-for>
+              <div style="width:1px;height:18px;background:rgba(255,255,255,0.1);"></div>
+              <sc-for list="{{ formatChips }}" as="fmc" hint-placeholder-count="3">
+                <button onClick="{{ fmc.pick }}" style="border:1px solid {{ fmc.border }};background:{{ fmc.bg }};color:{{ fmc.color }};border-radius:9999px;padding:6px 12px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;">{{ fmc.label }}</button>
+              </sc-for>
+              <button onClick="{{ genCaptions }}" style="margin-left:auto;border:none;background:{{ theme.secondary }};color:#0A0F1F;padding:9px 18px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;">{{ capLabel }}</button>
+            </div>
+            <sc-if value="{{ capWorking }}" hint-placeholder-val="{{ false }}">
+              <div style="display:flex;align-items:center;gap:10px;margin-top:12px;font-size:12px;color:{{ theme.secondary }};">
+                <div style="width:13px;height:13px;border-radius:9999px;border:2px solid rgba(255,255,255,0.1);border-top-color:{{ theme.secondary }};animation:spin 0.8s linear infinite;"></div>
+                Writing hooks, captions and CTAs…
+              </div>
+            </sc-if>
+          </div>
+          <sc-if value="{{ capDone }}" hint-placeholder-val="{{ false }}">
+            <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:16px;">
+              <sc-for list="{{ genPosts }}" as="gp" hint-placeholder-count="3">
+                <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:18px;display:flex;flex-direction:column;gap:10px;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <span style="background:{{ theme.secondary }}22;color:{{ theme.secondary }};font-size:10px;font-weight:600;padding:3px 9px;border-radius:9999px;">{{ gp.platform }}</span>
+                    <span style="font-size:10px;color:#6B7B93;">{{ gp.format }}</span>
+                  </div>
+                  <div><div style="font-size:10px;font-weight:700;color:{{ theme.accent }};letter-spacing:1px;margin-bottom:3px;">HOOK</div><div style="font-size:12px;font-weight:600;line-height:1.45;">{{ gp.hook }}</div></div>
+                  <div><div style="font-size:10px;font-weight:700;color:#6B7B93;letter-spacing:1px;margin-bottom:3px;">BODY</div><div style="font-size:12px;color:#A0AEC0;line-height:1.5;">{{ gp.body }}</div></div>
+                  <div><div style="font-size:10px;font-weight:700;color:{{ theme.secondary }};letter-spacing:1px;margin-bottom:3px;">CTA</div><div style="font-size:12px;color:#FFFFFF;">{{ gp.cta }}</div></div>
+                  <div style="display:flex;gap:8px;margin-top:auto;">
+                    <button style="flex:1;border:none;background:{{ theme.accent }};color:#0A0F1F;padding:7px;border-radius:5px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;">Schedule</button>
+                    <button style="border:1px solid rgba(255,255,255,0.15);background:transparent;color:#FFFFFF;padding:7px 12px;border-radius:5px;font-size:11px;font-weight:600;cursor:pointer;font-family:inherit;">Edit</button>
+                  </div>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+        </sc-if>
+
+        <sc-if value="{{ contentTabUpload }}" hint-placeholder-val="{{ false }}">
+          <div style="display:grid;grid-template-columns:1.2fr 1fr;gap:16px;animation:screenIn 0.4s ease;">
+            <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:20px;">
+              <div style="font-size:14px;font-weight:600;margin-bottom:14px;">Upload your content</div>
+              <div style="border:2px dashed rgba(255,255,255,0.15);border-radius:12px;padding:44px 20px;text-align:center;margin-bottom:16px;cursor:pointer;" style-hover="border-color:{{ theme.secondary }};">
+                <div style="width:44px;height:44px;border-radius:12px;background:{{ theme.secondary }}18;display:flex;align-items:center;justify-content:center;font-size:20px;color:{{ theme.secondary }};margin:0 auto 12px;">⇪</div>
+                <div style="font-size:13px;font-weight:600;margin-bottom:4px;">Drop images or videos here</div>
+                <div style="font-size:11px;color:#6B7B93;">PNG, JPG, MP4, MOV · up to 500MB</div>
+              </div>
+              <label style="font-size:12px;font-weight:600;color:#A0AEC0;display:block;margin-bottom:6px;">Caption</label>
+              <textarea rows="3" placeholder="Write your caption — or generate one from the Generate tab" style="width:100%;box-sizing:border-box;background:#0A0F1F;border:1px solid rgba(255,255,255,0.12);border-radius:8px;padding:12px 14px;color:#FFFFFF;font-size:13px;font-family:inherit;resize:none;line-height:1.5;"></textarea>
+            </div>
+            <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:20px;display:flex;flex-direction:column;">
+              <div style="font-size:14px;font-weight:600;margin-bottom:14px;">Publish to</div>
+              <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:18px;">
+                <sc-for list="{{ publishTargets }}" as="pt" hint-placeholder-count="6">
+                  <button onClick="{{ pt.pick }}" style="display:flex;align-items:center;gap:10px;border:1px solid {{ pt.border }};background:{{ pt.bg }};border-radius:8px;padding:10px 12px;cursor:pointer;font-family:inherit;text-align:left;">
+                    <div style="width:8px;height:8px;border-radius:9999px;background:{{ pt.dot }};flex-shrink:0;"></div>
+                    <span style="font-size:12px;font-weight:600;color:#FFFFFF;flex:1;">{{ pt.label }}</span>
+                    <span style="font-size:10px;font-weight:700;color:{{ pt.checkColor }};">{{ pt.check }}</span>
+                  </button>
+                </sc-for>
+              </div>
+              <label style="font-size:12px;font-weight:600;color:#A0AEC0;display:block;margin-bottom:6px;">Schedule</label>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px;">
+                <input type="date" value="2026-07-30" style="background:#0A0F1F;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:10px 12px;color:#FFFFFF;font-size:12px;font-family:inherit;"></input>
+                <input type="time" value="10:00" style="background:#0A0F1F;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:10px 12px;color:#FFFFFF;font-size:12px;font-family:inherit;"></input>
+              </div>
+              <button style="margin-top:auto;border:none;background:{{ theme.accent }};color:#0A0F1F;padding:12px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;">{{ publishLabel }}</button>
+            </div>
+          </div>
+        </sc-if>
+      </sc-if>
+
+      <!-- CAMPAIGNS -->
+      <sc-if value="{{ isCampaigns }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;gap:16px;flex-wrap:wrap;">
+          <div>
+            <div style="font-size:22px;font-weight:700;">Ad Campaigns</div>
+            <div style="font-size:13px;color:#A0AEC0;">Budget, spend and return across channels</div>
+          </div>
+          <button style="border:none;background:{{ theme.accent }};color:#0A0F1F;padding:10px 16px;border-radius:6px;font-size:13px;font-weight:600;cursor:pointer;">New Campaign</button>
+        </div>
+        <div style="display:flex;gap:6px;background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:9999px;padding:4px;width:max-content;margin-bottom:16px;">
+          <sc-for list="{{ campTabs }}" as="cpt" hint-placeholder-count="3">
+            <button onClick="{{ cpt.pick }}" style="border:none;background:{{ cpt.bg }};color:{{ cpt.color }};border-radius:9999px;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;">{{ cpt.label }}</button>
+          </sc-for>
+        </div>
+
+        <sc-if value="{{ campTabOverview }}" hint-placeholder-val="{{ true }}">
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:16px;">
+          <sc-for list="{{ campaignKpis }}" as="ck" hint-placeholder-count="4">
+            <div onMouseMove="{{ tilt }}" onMouseLeave="{{ untilt }}" style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:16px;transition:transform 0.15s ease, box-shadow 0.15s ease;will-change:transform;">
+              <div style="font-size:11px;color:#A0AEC0;margin-bottom:8px;">{{ ck.label }}</div>
+              <div style="font-size:24px;font-weight:700;">{{ ck.value }}</div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;overflow:auto;">
+          <table style="width:100%;border-collapse:collapse;font-size:12px;min-width:800px;">
+            <thead>
+              <tr style="text-align:left;color:#A0AEC0;">
+                <th style="padding:12px 14px;font-weight:600;">Campaign</th>
+                <th style="padding:12px 10px;font-weight:600;">Channel</th>
+                <th style="padding:12px 10px;font-weight:600;">Budget</th>
+                <th style="padding:12px 10px;font-weight:600;">Spend</th>
+                <th style="padding:12px 10px;font-weight:600;">ROAS</th>
+                <th style="padding:12px 10px;font-weight:600;">CTR</th>
+                <th style="padding:12px 10px;font-weight:600;">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              <sc-for list="{{ campaigns }}" as="cp" hint-placeholder-count="4">
+                <tr style="border-top:1px solid rgba(255,255,255,0.06);">
+                  <td style="padding:11px 14px;font-weight:600;">{{ cp.name }}</td>
+                  <td style="padding:11px 10px;color:#A0AEC0;">{{ cp.channel }}</td>
+                  <td style="padding:11px 10px;color:#A0AEC0;">{{ cp.budget }}</td>
+                  <td style="padding:11px 10px;">
+                    <div style="display:flex;align-items:center;gap:8px;">
+                      <div style="width:56px;height:5px;border-radius:4px;background:rgba(255,255,255,0.08);overflow:hidden;"><div style="height:100%;width:{{ cp.spendPct }};background:{{ cp.spendColor }};border-radius:4px;"></div></div>
+                      <span style="color:#A0AEC0;">{{ cp.spend }}</span>
+                    </div>
+                  </td>
+                  <td style="padding:11px 10px;font-weight:600;color:{{ cp.roasColor }};">{{ cp.roas }}</td>
+                  <td style="padding:11px 10px;color:#A0AEC0;">{{ cp.ctr }}</td>
+                  <td style="padding:11px 10px;"><span style="background:{{ cp.statusBg }};color:{{ cp.statusColor }};font-size:11px;font-weight:600;padding:3px 9px;border-radius:9999px;">{{ cp.status }}</span></td>
+                </tr>
+              </sc-for>
+            </tbody>
+          </table>
+        </div>
+        <div style="font-size:11px;color:#6B7B93;margin-top:10px;">Analytics pull directly from your connected ad accounts.</div>
+        </sc-if>
+
+        <sc-if value="{{ campTabAssets }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:10px;flex-wrap:wrap;animation:screenIn 0.4s ease;">
+            <div style="font-size:13px;color:#A0AEC0;">Images &amp; videos used across your campaigns</div>
+            <div style="display:flex;gap:8px;">
+              <button style="border:1px solid rgba(255,255,255,0.15);background:transparent;color:#FFFFFF;padding:8px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;">Upload assets</button>
+              <button onClick="{{ analyzeAssets }}" style="border:none;background:{{ theme.secondary }};color:#0A0F1F;padding:8px 14px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;">{{ analyzeLabel }}</button>
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:14px;">
+            <sc-for list="{{ assets }}" as="as" hint-placeholder-count="8">
+              <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;overflow:hidden;">
+                <div style="height:110px;background:linear-gradient(135deg, {{ as.g1 }}, {{ as.g2 }});display:flex;align-items:center;justify-content:center;position:relative;">
+                  <span style="font-size:22px;opacity:0.9;">{{ as.glyph }}</span>
+                  <span style="position:absolute;top:8px;left:8px;background:rgba(10,15,31,0.75);color:#FFFFFF;font-size:9px;font-weight:700;padding:3px 8px;border-radius:4px;letter-spacing:0.5px;">{{ as.type }}</span>
+                </div>
+                <div style="padding:12px;">
+                  <div style="font-size:12px;font-weight:600;margin-bottom:3px;">{{ as.name }}</div>
+                  <div style="display:flex;justify-content:space-between;align-items:center;">
+                    <span style="font-size:10px;color:#6B7B93;">{{ as.meta }}</span>
+                    <span style="font-size:10px;font-weight:600;color:{{ as.statusColor }};">{{ as.status }}</span>
+                  </div>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </sc-if>
+
+        <sc-if value="{{ campTabAI }}" hint-placeholder-val="{{ false }}">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;animation:screenIn 0.4s ease;">
+            <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:20px;">
+              <div style="font-size:14px;font-weight:600;margin-bottom:4px;">AI Autopilot</div>
+              <div style="font-size:12px;color:#6B7B93;margin-bottom:14px;">Let AI run posting, scheduling and asset hygiene for this venture</div>
+              <div style="display:flex;flex-direction:column;gap:10px;">
+                <sc-for list="{{ aiToggles }}" as="at" hint-placeholder-count="4">
+                  <div style="display:flex;align-items:center;gap:12px;background:#16233D;border-radius:10px;padding:12px 14px;">
+                    <div style="flex:1;">
+                      <div style="font-size:13px;font-weight:600;">{{ at.name }}</div>
+                      <div style="font-size:11px;color:#6B7B93;">{{ at.desc }}</div>
+                    </div>
+                    <button onClick="{{ at.flip }}" style="width:32px;height:18px;border-radius:9999px;background:{{ at.bg }};position:relative;border:none;cursor:pointer;flex-shrink:0;"><span style="width:14px;height:14px;border-radius:9999px;background:#0A0F1F;position:absolute;top:2px;{{ at.knob }}:2px;"></span></button>
+                  </div>
+                </sc-for>
+              </div>
+            </div>
+            <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:20px;">
+              <div style="font-size:14px;font-weight:600;margin-bottom:4px;">Ad accounts</div>
+              <div style="font-size:12px;color:#6B7B93;margin-bottom:14px;">Campaigns and analytics sync from these</div>
+              <div style="display:flex;flex-direction:column;gap:10px;">
+                <sc-for list="{{ adAccounts }}" as="aa" hint-placeholder-count="3">
+                  <div style="display:flex;align-items:center;gap:12px;background:#16233D;border-radius:10px;padding:12px 14px;">
+                    <div style="width:8px;height:8px;border-radius:9999px;background:{{ aa.dot }};flex-shrink:0;"></div>
+                    <div style="flex:1;">
+                      <div style="font-size:13px;font-weight:600;">{{ aa.name }}</div>
+                      <div style="font-size:11px;color:#6B7B93;">{{ aa.detail }}</div>
+                    </div>
+                    <span style="font-size:11px;font-weight:600;color:{{ aa.stateColor }};">{{ aa.state }}</span>
+                  </div>
+                </sc-for>
+              </div>
+              <div style="background:{{ theme.secondary }}10;border:1px solid {{ theme.secondary }}33;border-radius:10px;padding:14px;margin-top:14px;">
+                <div style="font-size:12px;font-weight:600;color:{{ theme.secondary }};margin-bottom:4px;">Last AI review — today 7:00a</div>
+                <div style="font-size:11px;color:#A0AEC0;line-height:1.55;">Paused 1 underperforming ad set, flagged 2 assets for cleanup, shifted $180 budget to the retargeting set (3.8× ROAS).</div>
+              </div>
+            </div>
+          </div>
+        </sc-if>
+      </sc-if>
+
+      <!-- SETTINGS -->
+      <sc-if value="{{ isSettings }}" hint-placeholder-val="{{ false }}">
+        <div style="margin-bottom:16px;">
+          <div style="font-size:22px;font-weight:700;">Settings</div>
+          <div style="font-size:13px;color:#A0AEC0;">Ventures, integrations and automation</div>
+        </div>
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:20px;margin-bottom:16px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+            <div style="font-size:14px;font-weight:600;">Ventures</div>
+            <button style="border:1px solid {{ theme.secondary }};background:transparent;color:{{ theme.secondary }};padding:7px 13px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">+ Add Venture</button>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
+            <sc-for list="{{ ventureCards }}" as="vc" hint-placeholder-count="3">
+              <div style="background:#16233D;border-radius:10px;padding:14px;display:flex;gap:12px;align-items:center;">
+                <div style="width:34px;height:34px;border-radius:8px;background:{{ vc.secondary }};display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#0A0F1F;flex-shrink:0;">{{ vc.initial }}</div>
+                <div style="flex:1;min-width:0;">
+                  <div style="font-size:13px;font-weight:600;">{{ vc.name }}</div>
+                  <div style="font-size:11px;color:#6B7B93;">{{ vc.meta }}</div>
+                </div>
+                <div style="display:flex;gap:4px;">
+                  <div style="width:12px;height:12px;border-radius:4px;background:{{ vc.secondary }};"></div>
+                  <div style="width:12px;height:12px;border-radius:4px;background:{{ vc.accent }};"></div>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+          <div style="font-size:11px;color:#6B7B93;margin-top:12px;">Each venture has its own leads, sequences, templates and theme.</div>
+        </div>
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+          <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:20px;">
+            <div style="font-size:14px;font-weight:600;margin-bottom:4px;">Connected accounts</div>
+            <div style="font-size:12px;color:#6B7B93;margin-bottom:14px;">Where your outreach sends from and syncs to</div>
+            <div style="display:flex;flex-direction:column;gap:10px;">
+              <sc-for list="{{ integrations }}" as="ig" hint-placeholder-count="5">
+                <div style="display:flex;align-items:center;gap:12px;background:#16233D;border-radius:10px;padding:12px 14px;">
+                  <div style="width:8px;height:8px;border-radius:9999px;background:{{ ig.dot }};flex-shrink:0;"></div>
+                  <div style="flex:1;">
+                    <div style="font-size:13px;font-weight:600;">{{ ig.name }}</div>
+                    <div style="font-size:11px;color:#6B7B93;">{{ ig.role }}</div>
+                  </div>
+                  <span style="font-size:11px;font-weight:600;color:{{ ig.stateColor }};">{{ ig.state }}</span>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+          <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:20px;">
+            <div style="font-size:14px;font-weight:600;margin-bottom:4px;">Automations</div>
+            <div style="font-size:12px;color:#6B7B93;margin-bottom:14px;">Rules that run on your pipeline automatically</div>
+            <div style="display:flex;flex-direction:column;gap:10px;">
+              <sc-for list="{{ automations }}" as="au" hint-placeholder-count="3">
+                <div style="background:#16233D;border-radius:10px;padding:12px 14px;">
+                  <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                    <div style="font-size:13px;font-weight:600;">{{ au.name }}</div>
+                    <div style="width:32px;height:18px;border-radius:9999px;background:{{ au.toggleBg }};position:relative;"><div style="width:14px;height:14px;border-radius:9999px;background:#0A0F1F;position:absolute;top:2px;{{ au.knob }}:2px;"></div></div>
+                  </div>
+                  <div style="font-size:11px;color:#6B7B93;">{{ au.rule }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+      </sc-if>
+
+    </div>
+
+    <!-- LEAD DETAIL DRAWER -->
+    <sc-if value="{{ drawerOpen }}" hint-placeholder-val="{{ false }}">
+      <div style="width:340px;background:#0F1A2E;border-left:1px solid rgba(255,255,255,0.08);flex-shrink:0;overflow-y:auto;padding:20px;">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;">
+          <div style="display:flex;gap:12px;align-items:center;">
+            <div style="width:44px;height:44px;border-radius:9999px;background:{{ theme.secondary }};display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:600;color:#0A0F1F;">{{ sel.initials }}</div>
+            <div>
+              <div style="font-size:15px;font-weight:600;">{{ sel.name }}</div>
+              <div style="font-size:11px;color:#A0AEC0;">{{ sel.title }} · {{ sel.company }}</div>
+            </div>
+          </div>
+          <button onClick="{{ closeDrawer }}" style="border:none;background:transparent;color:#A0AEC0;font-size:16px;cursor:pointer;padding:4px;">✕</button>
+        </div>
+        <span style="background:{{ sel.statusBg }};color:{{ sel.statusColor }};font-size:11px;font-weight:600;padding:4px 10px;border-radius:9999px;">{{ sel.status }}</span>
+        <div style="background:#16233D;border-radius:10px;padding:14px;margin-top:16px;">
+          <div style="font-size:10px;color:#6B7B93;letter-spacing:1px;margin-bottom:10px;">SCORE BREAKDOWN</div>
+          <sc-for list="{{ sel.scores }}" as="sc" hint-placeholder-count="3">
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;">
+              <div style="width:80px;font-size:11px;color:#A0AEC0;">{{ sc.label }}</div>
+              <div style="flex:1;height:5px;border-radius:4px;background:rgba(255,255,255,0.08);overflow:hidden;"><div style="height:100%;width:{{ sc.pct }};background:{{ sc.color }};border-radius:4px;"></div></div>
+              <div style="width:32px;font-size:11px;font-weight:600;text-align:right;">{{ sc.val }}</div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="background:#16233D;border-radius:10px;padding:14px;margin-top:12px;">
+          <div style="font-size:10px;color:#6B7B93;letter-spacing:1px;margin-bottom:10px;">ENRICHED DATA</div>
+          <sc-for list="{{ sel.fields }}" as="fd" hint-placeholder-count="4">
+            <div style="display:flex;justify-content:space-between;gap:8px;padding:6px 0;border-top:1px solid rgba(255,255,255,0.06);">
+              <span style="font-size:11px;color:#A0AEC0;">{{ fd.label }}</span>
+              <span style="font-size:11px;color:{{ fd.color }};text-align:right;">{{ fd.value }}</span>
+            </div>
+          </sc-for>
+          <div style="font-size:10px;color:#6B7B93;margin-top:8px;">Sources: {{ sel.sources }}</div>
+        </div>
+        <div style="background:#16233D;border-radius:10px;padding:14px;margin-top:12px;">
+          <div style="font-size:10px;color:#6B7B93;letter-spacing:1px;margin-bottom:10px;">TIMELINE</div>
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            <sc-for list="{{ sel.timeline }}" as="tl" hint-placeholder-count="4">
+              <div style="display:flex;gap:10px;">
+                <div style="width:7px;height:7px;border-radius:9999px;background:{{ tl.color }};margin-top:4px;flex-shrink:0;"></div>
+                <div><div style="font-size:11px;">{{ tl.text }}</div><div style="font-size:10px;color:#6B7B93;">{{ tl.time }}</div></div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="display:flex;gap:8px;margin-top:16px;">
+          <button style="flex:1;border:none;background:{{ theme.accent }};color:#0A0F1F;padding:10px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">Add to Sequence</button>
+          <button style="flex:1;border:1px solid {{ theme.secondary }};background:transparent;color:{{ theme.secondary }};padding:10px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;">Re-enrich</button>
+        </div>
+      </div>
+    </sc-if>
+
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;venture&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;retentionrail&quot;,&quot;filmops&quot;,&quot;rentahub&quot;],&quot;default&quot;:&quot;retentionrail&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Brand&quot;},&quot;startScreen&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;dashboard&quot;,&quot;leads&quot;,&quot;enrichment&quot;,&quot;sequences&quot;,&quot;inbox&quot;],&quot;default&quot;:&quot;dashboard&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Behavior&quot;}}">
+class Component extends DCLogic {
+  state = { venture: this.props.venture ?? 'retentionrail', screen: this.props.startScreen ?? 'dashboard', selectedLead: null, statusFilter: 'All', profileOpen: false,
+    contentTab: 'calendar', campTab: 'overview', pullPhase: 'idle', genPhase: 'idle', capPhase: 'idle', analyzePhase: 'idle',
+    genTone: 'Direct', genSteps: 5, genPlatforms: ['Instagram', 'LinkedIn'], genFormat: 'Image',
+    publishTo: ['Instagram', 'LinkedIn', 'TikTok'], ai: { autopost: true, autoschedule: true, cleanup: true, budget: false } };
+
+  runPhase(key, doneMs) {
+    this.setState({ [key]: 'working' });
+    setTimeout(() => this.setState({ [key]: 'done' }), doneMs);
+  }
+
+  ventures = {
+    retentionrail: { label: 'RetentionRail', primary: '#0F1A2E', secondary: '#00D4B4', accent: '#FF6B2B' },
+    filmops: { label: 'FilmOps', primary: '#1A1A1A', secondary: '#FF9500', accent: '#FFBF47' },
+    rentahub: { label: 'RENTAHUB', primary: '#0F1520', secondary: '#00C2A8', accent: '#FF6B4A' }
+  };
+
+  statusMap(theme) {
+    return {
+      New: { bg: '#3B82F622', color: '#3B82F6' },
+      Enriching: { bg: '#F59E0B22', color: '#F59E0B' },
+      Outreaching: { bg: theme.secondary + '22', color: theme.secondary },
+      Replied: { bg: '#F59E0B22', color: '#F59E0B' },
+      Qualified: { bg: '#10B98122', color: '#10B981' },
+      Dead: { bg: '#EF444422', color: '#EF4444' }
+    };
+  }
+
+  leadData = [
+    { name: 'Jordan Diaz', title: 'VP Talent', company: 'Fullscreen Media', email: 'jordan@fullscreen.co', emailState: 'verified', phone: '+1 310 555 0142', phoneState: 'found', score: 85, status: 'Qualified', sequence: '7-Touch MCN' },
+    { name: 'Priya Nair', title: 'Head of Creator Ops', company: 'Studio71', email: 'priya.n@studio71.com', emailState: 'verified', phone: '+1 424 555 0177', phoneState: 'found', score: 78, status: 'Outreaching', sequence: '7-Touch MCN' },
+    { name: 'Marcus Lee', title: 'Producer', company: 'Kinetic Films', email: 'm.lee@kineticfilms.io', emailState: 'verified', phone: 'Finding…', phoneState: 'finding', score: 71, status: 'Replied', sequence: 'Prod Co Intro' },
+    { name: 'Aiko Tanaka', title: 'Partnerships Lead', company: 'Wavecrest MCN', email: 'Finding…', emailState: 'finding', phone: '—', phoneState: 'missing', score: 66, status: 'Enriching', sequence: '—' },
+    { name: 'Ben Ostrower', title: 'Founder', company: 'Bright Vine Agency', email: 'ben@brightvine.agency', emailState: 'verified', phone: '+1 917 555 0193', phoneState: 'found', score: 90, status: 'Qualified', sequence: 'Agency Warm-Up' },
+    { name: 'Sofia Reyes', title: 'Ops Director', company: 'Prop House LA', email: 'sofia@prophousela.com', emailState: 'verified', phone: '—', phoneState: 'missing', score: 58, status: 'Outreaching', sequence: 'Rental Intro' },
+    { name: 'Dan Whitfield', title: 'Line Producer', company: 'Northlight Prods', email: 'bounced', emailState: 'bounced', phone: '+1 646 555 0121', phoneState: 'found', score: 42, status: 'Dead', sequence: '—' },
+    { name: 'Grace Kim', title: 'Talent Manager', company: 'Viral Nation', email: 'grace.kim@viralnation.com', emailState: 'verified', phone: 'Finding…', phoneState: 'finding', score: 74, status: 'New', sequence: '—' }
+  ];
+
+  extraScreens(theme) {
+    const seg = this.state.segmentFilter || 'All';
+    const allTemplates = [
+      { segment: 'MCN', subject: 'Why your 150 creators are leaving (and how to stop them 48h early)', preview: 'Managing 150+ creators without real retention signals is like flying blind. You only see churn when it\u2019s already happened…', hasVariant: true, stats: '34% open · 6% reply' },
+      { segment: 'MCN', subject: 'Your competitors\u2019 winning hooks, decoded weekly', preview: 'Most MCNs spend 40% of time analyzing what already happened. None predict what\u2019s coming…', hasVariant: true, stats: '29% open · 4% reply' },
+      { segment: 'Production House', subject: '8 hours of script breakdown, done before your coffee', preview: 'Every production coordinator we talk to does breakdowns by hand. FilmOps automates the pass and bridges payroll…', hasVariant: false, stats: '31% open · 5% reply' },
+      { segment: 'Production House', subject: 'Bali shoot logistics without the 14-email chain', preview: 'Transport for crews in Southeast Asia is still WhatsApp chaos. RENTAHUB gives your fixer a fleet dashboard…', hasVariant: false, stats: '26% open · 3% reply' },
+      { segment: 'Agency', subject: 'Client retention ROI, on one slide your CFO will like', preview: 'Agencies lose renewals because value is invisible. RetentionRail tracks the retention delta you created…', hasVariant: true, stats: '33% open · 7% reply' },
+      { segment: 'Media Company', subject: 'Segment analytics your dashboard vendor won\u2019t build', preview: 'Real-time competitor tracking plus segment-level retention — not another vanity dashboard…', hasVariant: false, stats: '27% open · 4% reply' },
+      { segment: 'Network', subject: 'An affiliate line your talent team hasn\u2019t priced yet', preview: 'Creator transport partnerships monetize audiences you already have. Here\u2019s the math for a 2M-sub network…', hasVariant: false, stats: '24% open · 3% reply' },
+      { segment: 'Agency', subject: 'The 15-minute teardown of your last 5 campaigns', preview: 'I\u2019ll show you which scripts underperformed before publish and what we\u2019d catch that your stack misses…', hasVariant: true, stats: '36% open · 8% reply' }
+    ];
+    const segNames = ['All', 'MCN', 'Production House', 'Agency', 'Media Company', 'Network'];
+    const segmentFilters = segNames.map(s => {
+      const active = seg === s;
+      return {
+        label: s,
+        toggle: () => this.setState({ segmentFilter: s }),
+        bg: active ? theme.accent : 'transparent',
+        color: active ? '#0A0F1F' : '#A0AEC0',
+        border: active ? theme.accent : 'rgba(255,255,255,0.15)'
+      };
+    });
+    const templates = allTemplates.filter(t => seg === 'All' || t.segment === seg);
+
+    const platformColors = { IG: '#E1306C', LI: '#0A66C2', TT: '#00F2EA', X: '#A0AEC0', YT: '#FF0000' };
+    const statusColors = { scheduled: '#F59E0B', approved: theme.secondary, published: '#10B981', draft: '#6B7B93' };
+    const mkPost = (platform, time, text, status) => ({ platform, time, text, status, color: platformColors[platform], statusColor: statusColors[status] });
+    const calendarDays = [
+      { label: 'MON 27', posts: [mkPost('LI', '9:00a', 'Founder note: why retention beats reach', 'published')] },
+      { label: 'TUE 28', posts: [mkPost('IG', '11:00a', 'Creator churn stat carousel', 'published'), mkPost('X', '2:00p', 'Thread: 48h churn signals', 'scheduled')], head: true },
+      { label: 'WED 29', posts: [mkPost('TT', '10:00a', 'BTS: script breakdown in 40s', 'approved')] },
+      { label: 'THU 30', posts: [mkPost('LI', '9:00a', 'Case: agency renewal save', 'scheduled'), mkPost('YT', '4:00p', 'Demo: waterfall enrichment', 'draft')] },
+      { label: 'FRI 31', posts: [mkPost('IG', '12:00p', 'Bali fleet partner spotlight', 'approved')] },
+      { label: 'SAT 1', posts: [] },
+      { label: 'SUN 2', posts: [mkPost('X', '6:00p', 'Week recap + reply stats', 'draft')] }
+    ].map(d => ({ ...d, headColor: d.head ? theme.accent : '#6B7B93' }));
+
+    const campaignKpis = [
+      { label: 'Total Budget', value: '$12.0k' },
+      { label: 'Spend to Date', value: '$7.4k' },
+      { label: 'Blended ROAS', value: '3.1×' },
+      { label: 'Avg. CTR', value: '1.9%' }
+    ];
+    const cStatus = { Active: { bg: '#10B98122', color: '#10B981' }, Paused: { bg: '#F59E0B22', color: '#F59E0B' }, Completed: { bg: '#6B7B9322', color: '#A0AEC0' } };
+    const campaigns = [
+      { name: 'MCN Retargeting Q3', channel: 'Meta', budget: '$4,000', spend: '$2,850', spendPctN: 71, roas: '3.8×', ctr: '2.3%', status: 'Active' },
+      { name: 'FilmOps Search — "script breakdown"', channel: 'Google', budget: '$3,000', spend: '$2,120', spendPctN: 71, roas: '2.9×', ctr: '1.7%', status: 'Active' },
+      { name: 'RENTAHUB Bali Travel', channel: 'Meta', budget: '$2,500', spend: '$2,430', spendPctN: 97, roas: '4.2×', ctr: '2.8%', status: 'Paused' },
+      { name: 'LinkedIn ABM — Top 30', channel: 'LinkedIn', budget: '$2,500', spend: '$0', spendPctN: 0, roas: '—', ctr: '—', status: 'Completed' }
+    ].map(c => ({
+      ...c, spendPct: c.spendPctN + '%',
+      spendColor: c.spendPctN > 90 ? '#EF4444' : theme.secondary,
+      roasColor: c.roas === '—' ? '#6B7B93' : parseFloat(c.roas) >= 3 ? '#10B981' : '#F59E0B',
+      statusBg: cStatus[c.status].bg, statusColor: cStatus[c.status].color
+    }));
+
+    const ventureCards = Object.values(this.ventures).map(v => ({
+      name: v.label, initial: v.label[0], secondary: v.secondary, accent: v.accent,
+      meta: v.label === 'RetentionRail' ? '96 leads · 3 sequences' : v.label === 'FilmOps' ? '31 leads · 2 sequences' : '16 leads · 1 sequence'
+    }));
+
+    const integrations = [
+      { name: 'Email account', role: 'chris@leadrail.io · SPF/DKIM verified', on: true },
+      { name: 'LinkedIn', role: 'Send connection requests & messages from sequences', on: true },
+
+      { name: 'Calendar', role: 'One-click meeting booking from replies', on: true },
+      { name: 'Instagram / Facebook', role: 'Publish scheduled content', on: false }
+    ].map(i => ({ ...i, dot: i.on ? '#10B981' : '#6B7B93', state: i.on ? 'Connected' : 'Connect', stateColor: i.on ? '#10B981' : theme.secondary }));
+
+    const automations = [
+      { name: 'High score → enroll', rule: 'Score ≥ 80 → add to top sequence, tag VIP', on: true },
+      { name: 'No engagement → re-sequence', rule: '3 opens, 0 replies after step 4 → switch variant B', on: true },
+      { name: 'Bounce → mark dead', rule: '2 bounces → status Dead, stop all sends', on: true },
+      { name: 'New contact → welcome', rule: 'Contact created manually → intro email in 10 min', on: false }
+    ].map(a => ({ ...a, toggleBg: a.on ? theme.secondary : 'rgba(255,255,255,0.15)', knob: a.on ? 'right' : 'left' }));
+
+    const chip = (label, active, pick) => ({
+      label, pick,
+      border: active ? theme.secondary : 'rgba(255,255,255,0.15)',
+      bg: active ? theme.secondary + '18' : 'transparent',
+      color: active ? theme.secondary : '#A0AEC0'
+    });
+
+    const finderChips = [{ label: 'Industry: Media & Entertainment' }, { label: 'Size: 50–200' }, { label: 'Region: North America' }, { label: 'Titles: VP Talent, Head of Creator Ops' }];
+
+    const toneChips = ['Direct', 'Casual', 'Formal'].map(t => chip(t, this.state.genTone === t, () => this.setState({ genTone: t })));
+    const stepChips = [3, 5, 7].map(n => chip(n + ' steps', this.state.genSteps === n, () => this.setState({ genSteps: n })));
+    const stepIcons = ['E', 'E', 'L', 'W', 'E', 'C', 'E'];
+    const stepTitles = [
+      'Email — "The 48h churn signal your dashboard misses"',
+      'Email — "3 creators on [Company]\u2019s roster showing early drop-off"',
+      'LinkedIn — connection note referencing their latest post',
+      'Wait — 2 days, skip if replied',
+      'Email — case study: agency saved a $240k renewal',
+      'Call — 4-line opener referencing opened emails',
+      'Email — breakup: "closing the loop"'
+    ];
+    const genSteps = Array.from({ length: this.state.genSteps }, (_, i) => ({
+      icon: stepIcons[i], title: stepTitles[i],
+      detail: this.state.genTone + ' tone · personalized per lead from enrichment data',
+      day: 'Day ' + (i * 2 + 1)
+    }));
+
+    const platformNames = ['Instagram', 'TikTok', 'LinkedIn', 'X', 'YouTube', 'Facebook'];
+    const platformChips = platformNames.map(p => {
+      const on = this.state.genPlatforms.includes(p);
+      return chip(p, on, () => this.setState(s => ({ genPlatforms: on ? s.genPlatforms.filter(x => x !== p) : [...s.genPlatforms, p] })));
+    });
+    const formatChips = ['Image', 'Video', 'Carousel'].map(f => chip(f, this.state.genFormat === f, () => this.setState({ genFormat: f })));
+    const genPosts = this.state.genPlatforms.slice(0, 3).map((p, i) => ({
+      platform: p, format: this.state.genFormat,
+      hook: ['Your best creator already decided to leave. 48 hours ago.', 'The retention report nobody sends their CEO.', 'We watched 200 channels churn. One pattern kept repeating.'][i % 3],
+      body: ['Most managers see churn in the monthly report — 3 weeks too late. Here\u2019s the early-warning stack we use across 50+ rosters.', 'Views are up, retention is down. Which number does your renewal depend on? A 60-second breakdown.', 'Upload cadence broke first. Then reply rates. Then the contract. The order is always the same — and it\u2019s catchable.'][i % 3],
+      cta: ['→ Comment RETAIN and we\u2019ll send the checklist', '→ Full teardown at the link in bio', '→ Save this for your next roster review'][i % 3]
+    }));
+
+    const publishTargets = platformNames.map(p => {
+      const on = this.state.publishTo.includes(p);
+      return {
+        label: p,
+        pick: () => this.setState(s => ({ publishTo: on ? s.publishTo.filter(x => x !== p) : [...s.publishTo, p] })),
+        border: on ? theme.secondary : 'rgba(255,255,255,0.1)',
+        bg: on ? theme.secondary + '10' : '#0A0F1F',
+        dot: on ? '#10B981' : '#6B7B93',
+        check: on ? '✓' : '', checkColor: theme.secondary
+      };
+    });
+
+    const contentTabs = [['calendar', 'Calendar'], ['generate', 'Generate'], ['upload', 'Upload & Post']].map(([id, label]) => ({
+      label, pick: () => this.setState({ contentTab: id }),
+      bg: this.state.contentTab === id ? theme.accent : 'transparent',
+      color: this.state.contentTab === id ? '#0A0F1F' : '#A0AEC0'
+    }));
+    const campTabs = [['overview', 'Overview'], ['assets', 'Assets'], ['ai', 'AI Autopilot']].map(([id, label]) => ({
+      label, pick: () => this.setState({ campTab: id }),
+      bg: this.state.campTab === id ? theme.accent : 'transparent',
+      color: this.state.campTab === id ? '#0A0F1F' : '#A0AEC0'
+    }));
+
+    const analyzed = this.state.analyzePhase === 'done';
+    const assets = [
+      { name: 'churn-stat-carousel-01', type: 'IMAGE', glyph: '◫', meta: '1080×1350 · 420KB', ok: true, g1: '#123', g2: '#1E2C46' },
+      { name: 'retention-demo-cut.mp4', type: 'VIDEO', glyph: '▶', meta: '0:42 · 38MB', ok: true, g1: '#16233D', g2: '#0F1A2E' },
+      { name: 'mcn-retarget-static-a', type: 'IMAGE', glyph: '◫', meta: '1200×628 · 610KB', ok: !analyzed ? true : false, fix: 'Text covers 34% — resize', g1: '#1A2440', g2: '#101830' },
+      { name: 'founder-hook-15s.mp4', type: 'VIDEO', glyph: '▶', meta: '0:15 · 21MB', ok: true, g1: '#0F1A2E', g2: '#1E2C46' },
+      { name: 'bali-fleet-hero', type: 'IMAGE', glyph: '◫', meta: '1080×1080 · 890KB', ok: !analyzed ? true : false, fix: 'Off-brand palette', g1: '#14263C', g2: '#0C1226' },
+      { name: 'script-breakdown-demo.mp4', type: 'VIDEO', glyph: '▶', meta: '1:20 · 64MB', ok: true, g1: '#101830', g2: '#1A2440' },
+      { name: 'roas-testimonial-card', type: 'IMAGE', glyph: '◫', meta: '1080×1350 · 380KB', ok: true, g1: '#1E2C46', g2: '#123' },
+      { name: 'agency-case-study-cut.mp4', type: 'VIDEO', glyph: '▶', meta: '0:58 · 47MB', ok: true, g1: '#0C1226', g2: '#16233D' }
+    ].map(a => ({
+      ...a,
+      status: !analyzed ? 'Ready' : (a.ok ? 'Clean ✓' : a.fix),
+      statusColor: !analyzed ? '#A0AEC0' : (a.ok ? '#10B981' : '#F59E0B')
+    }));
+
+    const aiDefs = [
+      { id: 'autopost', name: 'Auto-posting', desc: 'Publish approved content at optimal times' },
+      { id: 'autoschedule', name: 'Auto-scheduling', desc: 'Fill the calendar from your generated queue' },
+      { id: 'cleanup', name: 'Asset analysis & cleanup', desc: 'Flag off-brand, low-res or text-heavy assets' },
+      { id: 'budget', name: 'Budget rebalancing', desc: 'Shift spend toward the highest-ROAS ad sets' }
+    ];
+    const aiToggles = aiDefs.map(d => {
+      const on = this.state.ai[d.id];
+      return {
+        ...d,
+        flip: () => this.setState(s => ({ ai: { ...s.ai, [d.id]: !on } })),
+        bg: on ? theme.secondary : 'rgba(255,255,255,0.15)', knob: on ? 'right' : 'left'
+      };
+    });
+
+    const adAccounts = [
+      { name: 'Meta Ads', detail: '2 active campaigns · synced 12m ago', on: true },
+      { name: 'Google Ads', detail: '1 active campaign · synced 12m ago', on: true },
+      { name: 'LinkedIn Ads', detail: 'Not connected', on: false }
+    ].map(a => ({ ...a, dot: a.on ? '#10B981' : '#6B7B93', state: a.on ? 'Connected' : 'Connect', stateColor: a.on ? '#10B981' : theme.secondary }));
+
+    return {
+      segmentFilters, templates,
+      templateCountLabel: templates.length + ' of 90 messages · ' + theme.label + ' · ' + seg,
+      calendarDays, campaignKpis, campaigns, ventureCards, integrations, automations,
+      finderChips,
+      pullLeads: () => this.runPhase('pullPhase', 1600),
+      pullLabel: this.state.pullPhase === 'done' ? 'Pull again' : 'Pull leads',
+      pullWorking: this.state.pullPhase === 'working', pullDone: this.state.pullPhase === 'done',
+      toneChips, stepChips, genSteps,
+      genSequence: () => this.runPhase('genPhase', 1800),
+      genLabel: this.state.genPhase === 'done' ? 'Regenerate' : 'Generate',
+      genWorking: this.state.genPhase === 'working', genDone: this.state.genPhase === 'done',
+      contentTabs, platformChips, formatChips, genPosts,
+      genCaptions: () => this.runPhase('capPhase', 1700),
+      capLabel: this.state.capPhase === 'done' ? 'Regenerate' : 'Generate posts',
+      capWorking: this.state.capPhase === 'working', capDone: this.state.capPhase === 'done',
+      contentTabCalendar: this.state.contentTab === 'calendar',
+      contentTabGenerate: this.state.contentTab === 'generate',
+      contentTabUpload: this.state.contentTab === 'upload',
+      publishTargets, publishLabel: 'Schedule to ' + this.state.publishTo.length + ' platform' + (this.state.publishTo.length === 1 ? '' : 's'),
+      campTabs,
+      campTabOverview: this.state.campTab === 'overview',
+      campTabAssets: this.state.campTab === 'assets',
+      campTabAI: this.state.campTab === 'ai',
+      assets,
+      analyzeAssets: () => this.runPhase('analyzePhase', 1900),
+      analyzeLabel: this.state.analyzePhase === 'working' ? 'Analyzing…' : this.state.analyzePhase === 'done' ? '✓ 2 flagged — re-run' : 'Analyze & clean (AI)',
+      aiToggles, adAccounts,
+      tilt: (e) => {
+        const el = e.currentTarget, r = el.getBoundingClientRect();
+        const x = (e.clientX - r.left) / r.width - 0.5, y = (e.clientY - r.top) / r.height - 0.5;
+        el.style.transform = 'perspective(600px) rotateY(' + (x * 8).toFixed(2) + 'deg) rotateX(' + (-y * 8).toFixed(2) + 'deg) translateY(-2px)';
+        el.style.boxShadow = '0 8px 24px rgba(0,0,0,0.25)';
+      },
+      untilt: (e) => { e.currentTarget.style.transform = 'none'; e.currentTarget.style.boxShadow = 'none'; }
+    };
+  }
+
+  renderVals() {
+    const theme = this.ventures[this.state.venture];
+    const sm = this.statusMap(theme);
+    const screen = this.state.screen;
+    const setScreen = (s) => this.setState({ screen: s, selectedLead: null });
+
+    const ventureList = Object.keys(this.ventures).map(key => ({
+      name: this.ventures[key].label,
+      select: () => this.setState({ venture: key }),
+      bg: key === this.state.venture ? this.ventures[key].accent : 'transparent',
+      color: key === this.state.venture ? '#0A0F1F' : '#A0AEC0'
+    }));
+
+    const navDefs = [
+      { id: 'dashboard', label: 'Dashboard' },
+      { id: 'leads', label: 'Leads', count: '143' },
+      { id: 'enrichment', label: 'Enrichment', count: '2' },
+      { id: 'sequences', label: 'Sequences' },
+      { id: 'templates', label: 'Templates', count: '90' },
+      { id: 'inbox', label: 'Inbox', count: '5' },
+      { id: 'content', label: 'Content' },
+      { id: 'campaigns', label: 'Campaigns' },
+      { id: 'settings', label: 'Settings' }
+    ];
+    const navItems = navDefs.map(n => ({
+      label: n.label, count: n.count || false,
+      go: () => setScreen(n.id),
+      bg: screen === n.id ? theme.accent + '22' : 'transparent',
+      color: screen === n.id ? theme.accent : '#A0AEC0',
+      weight: screen === n.id ? 600 : 400
+    }));
+
+    const kpis = [
+      { label: 'Total Leads', value: '143', trend: '↑ 12% this week', trendColor: '#10B981' },
+      { label: 'Enriched', value: '118', trend: '82% coverage', trendColor: '#A0AEC0' },
+      { label: 'In Sequence', value: '58', trend: '↑ 6%', trendColor: '#10B981' },
+      { label: 'Replied', value: '24', trend: '↑ 19%', trendColor: '#10B981' },
+      { label: 'Qualified', value: '11', trend: '7.7% conv.', trendColor: '#A0AEC0' }
+    ];
+
+    const funnel = [
+      { label: 'Sourced', value: 143, rate: '100%' },
+      { label: 'Enriched', value: 118, rate: '82%' },
+      { label: 'Contacted', value: 58, rate: '49%' },
+      { label: 'Replied', value: 24, rate: '41%' },
+      { label: 'Qualified', value: 11, rate: '46%' }
+    ].map((f, i) => ({ ...f, pct: Math.round(f.value / 143 * 100) + '%', color: i < 2 ? theme.secondary : i < 4 ? theme.accent : '#10B981' }));
+
+    const attention = [
+      { text: '3 replies waiting over 24h in the inbox', meta: 'Inbox', color: '#F59E0B' },
+      { text: 'Wavecrest batch: 12 leads missing verified email', meta: 'Enrichment', color: '#EF4444' },
+      { text: 'Agency Warm-Up step 4 open rate dropped to 31%', meta: 'Sequences', color: '#F59E0B' },
+      { text: 'Credits at 68% — projected to run out Aug 12', meta: 'Billing', color: theme.secondary }
+    ];
+
+    const activity = [
+      { text: 'Jordan Diaz marked Qualified from reply classification', time: '10:42a', color: '#10B981' },
+      { text: 'Waterfall found phone for Marcus Lee via ContactOut', time: '10:15a', color: theme.secondary },
+      { text: 'Priya Nair — step 2 email sent (7-Touch MCN)', time: '9:00a', color: '#A0AEC0' },
+      { text: 'Import: 24 leads from CSV "prod-cos-jul.csv"', time: '8:30a', color: '#A0AEC0' },
+      { text: 'Dan Whitfield marked Dead — email bounced twice', time: 'Yesterday', color: '#EF4444' }
+    ];
+
+    const filterNames = ['All', 'New', 'Enriching', 'Outreaching', 'Replied', 'Qualified', 'Dead'];
+    const statusFilters = filterNames.map(f => {
+      const active = this.state.statusFilter === f;
+      return {
+        label: f,
+        toggle: () => this.setState({ statusFilter: f }),
+        bg: active ? theme.accent : 'transparent',
+        color: active ? '#0A0F1F' : '#A0AEC0',
+        border: active ? theme.accent : 'rgba(255,255,255,0.15)'
+      };
+    });
+
+    const filtered = this.leadData.filter(l => this.state.statusFilter === 'All' || l.status === this.state.statusFilter);
+    const emailStyles = { verified: { dot: '#10B981', color: '#FFFFFF' }, finding: { dot: '#F59E0B', color: '#F59E0B' }, missing: { dot: '#6B7B93', color: '#6B7B93' }, bounced: { dot: '#EF4444', color: '#EF4444' } };
+    const leads = filtered.map((l, i) => ({
+      ...l,
+      initials: l.name.split(' ').map(w => w[0]).join(''),
+      email: l.emailState === 'bounced' ? 'Bounced' : l.email,
+      emailDot: emailStyles[l.emailState].dot,
+      emailColor: emailStyles[l.emailState].color,
+      phoneColor: l.phoneState === 'found' ? '#A0AEC0' : l.phoneState === 'finding' ? '#F59E0B' : '#6B7B93',
+      scorePct: l.score + '%',
+      scoreColor: l.score >= 75 ? '#10B981' : l.score >= 55 ? theme.secondary : '#EF4444',
+      statusBg: sm[l.status].bg, statusColor: sm[l.status].color,
+      rowBg: this.state.selectedLead === l.name ? '#16233D' : 'transparent',
+      open: () => this.setState({ selectedLead: l.name })
+    }));
+
+    const enrichKpis = [
+      { label: 'Coverage', value: '82%' },
+      { label: 'Verified Emails', value: '104' },
+      { label: 'Phones Found', value: '61' },
+      { label: 'Avg. Cost / Lead', value: '1.8 cr' }
+    ];
+
+    const providers = [
+      { rank: 1, name: 'LinkedIn Scrape', type: 'Profile + role data', hitRate: '64%', cost: 'Free' },
+      { rank: 2, name: 'Apollo', type: 'Email + firmographics', hitRate: '48%', cost: '1 cr' },
+      { rank: 3, name: 'Hunter', type: 'Email finder', hitRate: '31%', cost: '1 cr' },
+      { rank: 4, name: 'ContactOut', type: 'Phone numbers', hitRate: '22%', cost: '3 cr' },
+      { rank: 5, name: 'NeverBounce', type: 'Email verification', hitRate: '96%', cost: '0.2 cr' }
+    ].map(p => ({ ...p, hitPct: p.hitRate }));
+
+    const jobs = [
+      { name: 'prod-cos-jul.csv — 24 leads', running: true, done: false, pct: '62%', barColor: theme.secondary, detail: '15 of 24 enriched · step 3 of 5 (Hunter)' },
+      { name: 'Wavecrest MCN batch — 31 leads', running: true, done: false, pct: '28%', barColor: theme.secondary, detail: '9 of 31 enriched · 12 emails unresolved' },
+      { name: 'Agency list re-verify — 40 leads', running: false, done: true, pct: '100%', barColor: '#10B981', detail: '38 verified · 2 bounced, marked Dead' }
+    ];
+
+    const stepStyle = (type) => {
+      const m = { E: { label: 'Email' }, L: { label: 'LinkedIn' }, C: { label: 'Call' }, W: { label: 'Wait' } };
+      return {
+        icon: type, label: m[type].label,
+        bg: type === 'W' ? 'transparent' : theme.secondary + '18',
+        border: type === 'W' ? 'rgba(255,255,255,0.15)' : theme.secondary + '55',
+        color: type === 'W' ? '#6B7B93' : theme.secondary
+      };
+    };
+    const mkSteps = (arr) => arr.map((t, i) => ({ ...stepStyle(t), hasNext: i < arr.length - 1 }));
+
+    const sequences = [
+      { name: '7-Touch MCN', state: 'Active', meta: '7 steps · 14 days · owner CF', steps: mkSteps(['E', 'L', 'E', 'W', 'C', 'E', 'E']), active: 32, open: '58%', reply: '17%' },
+      { name: 'Agency Warm-Up', state: 'Active', meta: '5 steps · 10 days · owner CF', steps: mkSteps(['L', 'E', 'W', 'E', 'C']), active: 14, open: '46%', reply: '12%' },
+      { name: 'Prod Co Intro', state: 'Active', meta: '4 steps · 8 days · owner CF', steps: mkSteps(['E', 'E', 'L', 'E']), active: 12, open: '61%', reply: '21%' },
+      { name: 'Rental Intro', state: 'Paused', meta: '5 steps · 12 days · paused Jul 24', steps: mkSteps(['E', 'W', 'E', 'C', 'E']), active: 0, open: '39%', reply: '8%' }
+    ].map(s => ({
+      ...s,
+      stateBg: s.state === 'Active' ? '#10B98122' : '#F59E0B22',
+      stateColor: s.state === 'Active' ? '#10B981' : '#F59E0B'
+    }));
+
+    const intentStyles = {
+      'Positive': { bg: '#10B98122', color: '#10B981' },
+      'Question': { bg: '#3B82F622', color: '#3B82F6' },
+      'Objection': { bg: '#F59E0B22', color: '#F59E0B' },
+      'Not now': { bg: '#6B7B9322', color: '#A0AEC0' },
+      'Unsubscribe': { bg: '#EF444422', color: '#EF4444' }
+    };
+    const replies = [
+      { name: 'Marcus Lee', company: 'Kinetic Films', intent: 'Positive', time: '32m ago', snippet: '"This is timely actually — we\'re staffing two productions in Sept. Do you have 20 min Thursday?"', primaryAction: 'Book Meeting' },
+      { name: 'Grace Kim', company: 'Viral Nation', intent: 'Question', time: '2h ago', snippet: '"Curious — does this integrate with our existing roster tracker or is it standalone?"', primaryAction: 'Reply' },
+      { name: 'Sofia Reyes', company: 'Prop House LA', intent: 'Objection', time: '5h ago', snippet: '"We tried something similar last year and adoption was rough. What\'s different here?"', primaryAction: 'Reply' },
+      { name: 'Tom Barrett', company: 'Meridian Talent', intent: 'Not now', time: '1d ago', snippet: '"Not a priority this quarter but circle back in October when planning starts."', primaryAction: 'Set Reminder' },
+      { name: 'Lena Fox', company: 'Castwork', intent: 'Unsubscribe', time: '1d ago', snippet: '"Please remove me from this list."', primaryAction: 'Mark Dead' }
+    ].map(r => ({ ...r, initials: r.name.split(' ').map(w => w[0]).join(''), intentBg: intentStyles[r.intent].bg, intentColor: intentStyles[r.intent].color }));
+
+    const selRaw = this.leadData.find(l => l.name === this.state.selectedLead);
+    const sel = selRaw ? {
+      initials: selRaw.name.split(' ').map(w => w[0]).join(''),
+      name: selRaw.name, title: selRaw.title, company: selRaw.company,
+      status: selRaw.status, statusBg: sm[selRaw.status].bg, statusColor: sm[selRaw.status].color,
+      scores: [
+        { label: 'ICP Fit', val: selRaw.score, pct: selRaw.score + '%', color: theme.accent },
+        { label: 'Engagement', val: Math.max(20, selRaw.score - 13), pct: Math.max(20, selRaw.score - 13) + '%', color: theme.secondary },
+        { label: 'Deal Prob.', val: Math.max(10, selRaw.score - 20), pct: Math.max(10, selRaw.score - 20) + '%', color: '#10B981' }
+      ],
+      fields: [
+        { label: 'Email', value: selRaw.emailState === 'verified' ? selRaw.email : selRaw.emailState === 'finding' ? 'Finding…' : 'Not found', color: selRaw.emailState === 'verified' ? '#FFFFFF' : '#F59E0B' },
+        { label: 'Phone', value: selRaw.phoneState === 'found' ? selRaw.phone : selRaw.phoneState === 'finding' ? 'Finding…' : 'Not found', color: selRaw.phoneState === 'found' ? '#FFFFFF' : '#6B7B93' },
+        { label: 'Company size', value: '51–200', color: '#FFFFFF' },
+        { label: 'LinkedIn', value: 'Connected 2nd°', color: '#FFFFFF' }
+      ],
+      sources: 'LinkedIn → Apollo → NeverBounce',
+      timeline: [
+        { text: 'Reply classified — moved to ' + selRaw.status, time: 'Today, 10:42a', color: '#10B981' },
+        { text: 'Opened step 2 email (2×)', time: 'Yesterday, 3:20p', color: theme.secondary },
+        { text: 'Enrolled in ' + (selRaw.sequence === '—' ? 'queue' : selRaw.sequence), time: 'Jul 24', color: '#A0AEC0' },
+        { text: 'Enriched via waterfall (3 providers)', time: 'Jul 23', color: '#A0AEC0' }
+      ]
+    } : {};
+
+    return {
+      theme, ventureList, navItems, kpis, funnel, attention, activity,
+      statusFilters, leads, leadCountLabel: filtered.length + ' of 143 leads · ' + this.state.statusFilter,
+      enrichKpis, providers, jobs, sequences, replies,
+      isDashboard: screen === 'dashboard', isLeads: screen === 'leads',
+      isEnrichment: screen === 'enrichment', isSequences: screen === 'sequences', isInbox: screen === 'inbox',
+      isTemplates: screen === 'templates', isContent: screen === 'content',
+      isCampaigns: screen === 'campaigns', isSettings: screen === 'settings',
+      ...this.extraScreens(theme),
+      goLeads: () => setScreen('leads'),
+      drawerOpen: !!selRaw && screen === 'leads', sel,
+      closeDrawer: () => this.setState({ selectedLead: null }),
+      creditsLabel: '3,420 credits', creditsPct: '68%', creditsDetail: '3,420 of 5,000 used · resets Aug 1',
+      profileOpen: this.state.profileOpen,
+      toggleProfile: () => this.setState(s => ({ profileOpen: !s.profileOpen })),
+      profileItems: [
+        { label: 'Profile & preferences', color: '#FFFFFF' },
+        { label: 'Team & workspaces', color: '#FFFFFF' },
+        { label: 'Billing & credits', color: '#FFFFFF' },
+        { label: 'Sign out', color: '#EF4444' }
+      ].map(i => ({ ...i, click: () => this.setState({ profileOpen: false }) }))
+    };
+  }
+}
+</script>
+</body>
+</html>

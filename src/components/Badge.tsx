@@ -10,3 +10,17 @@ const tones: Record<Tone, string> = {
 export default function Badge({ children, tone = 'gray' }: { children: React.ReactNode; tone?: Tone }) {
   return <span className={`inline-block rounded-full px-2.5 py-0.5 text-xs font-medium ${tones[tone]}`}>{children}</span>;
 }
+
+// DESIGN.md status -> color map (fixed, never re-map):
+// new -> Info/blue, outreaching -> brand secondary/indigo,
+// replied -> Warning/amber, qualified -> Success/green, dead -> Error/red.
+export function statusTone(status: string): Tone {
+  switch (status) {
+    case 'qualified': return 'green';
+    case 'replied': return 'amber';
+    case 'dead': return 'red';
+    case 'outreaching': return 'indigo';
+    case 'new': return 'blue';
+    default: return 'gray';
+  }
+}

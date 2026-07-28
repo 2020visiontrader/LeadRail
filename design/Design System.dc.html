@@ -1,0 +1,562 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Menlo&display=swap" rel="stylesheet">
+<style>
+body{margin:0;background:#0A0F1F;font-family:'Inter',sans-serif;}
+a{color:#00D4B4;text-decoration:none;}
+a:hover{color:#3EE8CC;}
+::-webkit-scrollbar{width:10px;height:10px;}
+::-webkit-scrollbar-thumb{background:#1E2C46;border-radius:8px;}
+@keyframes spin{to{transform:rotate(360deg);}}
+@keyframes pulse{0%,100%{opacity:.4;}50%{opacity:.9;}}
+</style>
+</helmet>
+
+<div style="min-height:100vh;background:#0A0F1F;color:#FFFFFF;">
+
+  <div style="position:sticky;top:0;z-index:50;display:flex;align-items:center;justify-content:space-between;gap:24px;min-height:64px;padding:12px 32px;background:rgba(10,15,31,0.92);backdrop-filter:blur(8px);border-bottom:1px solid rgba(255,255,255,0.08);flex-wrap:wrap;">
+    <div style="display:flex;align-items:center;gap:24px;flex-wrap:wrap;min-width:0;">
+      <div style="font-size:16px;font-weight:700;letter-spacing:-0.25px;white-space:nowrap;">Outreach Dashboard <span style="color:#A0AEC0;font-weight:400;">/ Design System</span></div>
+      <nav style="display:flex;gap:18px;flex-wrap:wrap;">
+        <a href="#tokens" style="font-size:13px;color:#A0AEC0;white-space:nowrap;">Foundations</a>
+        <a href="#atoms" style="font-size:13px;color:#A0AEC0;white-space:nowrap;">Atoms</a>
+        <a href="#molecules" style="font-size:13px;color:#A0AEC0;white-space:nowrap;">Molecules</a>
+        <a href="#organisms" style="font-size:13px;color:#A0AEC0;white-space:nowrap;">Organisms</a>
+        <a href="#template" style="font-size:13px;color:#A0AEC0;white-space:nowrap;">Template</a>
+      </nav>
+    </div>
+    <div style="display:flex;gap:6px;background:#0F1A2E;padding:4px;border-radius:9999px;border:1px solid rgba(255,255,255,0.08);flex-shrink:0;">
+      <sc-for list="{{ ventureList }}" as="v" hint-placeholder-count="3">
+        <button onClick="{{ v.select }}" style="border:none;padding:6px 14px;border-radius:9999px;font-size:12px;font-weight:600;cursor:pointer;background:{{ v.bg }};color:{{ v.color }};">{{ v.name }}</button>
+      </sc-for>
+    </div>
+  </div>
+
+  <div style="max-width:1440px;margin:0 auto;padding:48px 32px 120px;">
+
+    <div style="margin-bottom:64px;">
+      <div style="font-size:12px;font-weight:600;letter-spacing:1px;color:{{ theme.accent }};text-transform:uppercase;margin-bottom:12px;">Phase 0 → Phase 1 Handoff</div>
+      <h1 style="font-size:40px;font-weight:700;letter-spacing:-0.5px;margin:0 0 12px;line-height:1.15;">Design System Architecture</h1>
+      <p style="font-size:16px;color:#A0AEC0;max-width:640px;line-height:1.6;margin:0;">Foundations, components and the Phase 1 Outreach dashboard template for RetentionRail, FilmOps &amp; RENTAHUB — currently previewing <strong style="color:#FFFFFF;">{{ theme.label }}</strong>.</p>
+    </div>
+
+    <!-- FOUNDATIONS -->
+    <section id="tokens" style="margin-bottom:96px;">
+      <h2 style="font-size:24px;font-weight:600;letter-spacing:-0.25px;margin:0 0 24px;">Foundations</h2>
+
+      <div style="font-size:13px;font-weight:600;color:#A0AEC0;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;">Brand Palettes</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-bottom:40px;">
+        <sc-for list="{{ ventureCards }}" as="vc" hint-placeholder-count="3">
+          <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:20px;">
+            <div style="font-size:15px;font-weight:600;margin-bottom:14px;">{{ vc.label }}</div>
+            <div style="display:flex;gap:8px;">
+              <sc-for list="{{ vc.swatches }}" as="s" hint-placeholder-count="4">
+                <div style="flex:1;">
+                  <div style="height:48px;border-radius:8px;background:{{ s.hex }};border:1px solid rgba(255,255,255,0.1);"></div>
+                  <div style="font-size:10px;color:#A0AEC0;margin-top:6px;">{{ s.name }}</div>
+                  <div style="font-size:10px;font-family:Menlo,monospace;color:#6B7B93;">{{ s.hex }}</div>
+                </div>
+              </sc-for>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="font-size:13px;font-weight:600;color:#A0AEC0;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:12px;">Semantic Colors</div>
+      <div style="display:flex;gap:12px;margin-bottom:40px;">
+        <sc-for list="{{ semanticSwatches }}" as="s" hint-placeholder-count="4">
+          <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:14px 18px;display:flex;align-items:center;gap:10px;">
+            <div style="width:16px;height:16px;border-radius:9999px;background:{{ s.hex }};"></div>
+            <div>
+              <div style="font-size:12px;font-weight:600;">{{ s.name }}</div>
+              <div style="font-size:10px;font-family:Menlo,monospace;color:#6B7B93;">{{ s.hex }}</div>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1.3fr 1fr;gap:16px;margin-bottom:40px;">
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;">
+          <div style="font-size:13px;font-weight:600;color:#A0AEC0;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:16px;">Typography — Inter</div>
+          <sc-for list="{{ typeScale }}" as="t" hint-placeholder-count="6">
+            <div style="display:flex;align-items:baseline;gap:16px;padding:10px 0;border-bottom:1px solid rgba(255,255,255,0.06);">
+              <div style="width:90px;font-size:11px;color:#6B7B93;">{{ t.label }}</div>
+              <div style="font-size:{{ t.size }};font-weight:{{ t.weight }};">Outreach Dashboard</div>
+              <div style="margin-left:auto;font-size:11px;font-family:Menlo,monospace;color:#6B7B93;">{{ t.size }} / {{ t.weight }}</div>
+            </div>
+          </sc-for>
+        </div>
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;">
+          <div style="font-size:13px;font-weight:600;color:#A0AEC0;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:16px;">Spacing Scale (4px base)</div>
+          <div style="display:flex;flex-direction:column;gap:10px;">
+            <sc-for list="{{ spacingScale }}" as="sp" hint-placeholder-count="8">
+              <div style="display:flex;align-items:center;gap:12px;">
+                <div style="width:36px;font-size:11px;font-family:Menlo,monospace;color:#A0AEC0;">{{ sp.px }}</div>
+                <div style="height:8px;border-radius:2px;background:{{ theme.secondary }};width:{{ sp.px }};"></div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;">
+          <div style="font-size:13px;font-weight:600;color:#A0AEC0;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:16px;">Elevation</div>
+          <div style="display:flex;gap:16px;">
+            <sc-for list="{{ shadowLevels }}" as="sh" hint-placeholder-count="5">
+              <div style="width:56px;height:56px;border-radius:10px;background:#16233D;box-shadow:{{ sh.shadow }};display:flex;align-items:center;justify-content:center;font-size:11px;color:#A0AEC0;">{{ sh.label }}</div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;">
+          <div style="font-size:13px;font-weight:600;color:#A0AEC0;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:16px;">Border Radius</div>
+          <div style="display:flex;gap:16px;">
+            <sc-for list="{{ radiusScale }}" as="r" hint-placeholder-count="5">
+              <div style="width:56px;height:56px;border-radius:{{ r.px }};background:{{ theme.accent }};display:flex;align-items:center;justify-content:center;font-size:10px;color:#0A0F1F;font-weight:600;">{{ r.label }}</div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ATOMS -->
+    <section id="atoms" style="margin-bottom:96px;">
+      <h2 style="font-size:24px;font-weight:600;letter-spacing:-0.25px;margin:0 0 24px;">Atoms</h2>
+
+      <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;margin-bottom:16px;">
+        <div style="font-size:14px;font-weight:600;margin-bottom:16px;">Button</div>
+        <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;margin-bottom:16px;">
+          <sc-for list="{{ buttonVariants }}" as="b" hint-placeholder-count="4">
+            <button style="border:{{ b.border }};background:{{ b.bg }};color:{{ b.color }};padding:10px 16px;border-radius:6px;font-size:14px;font-weight:600;cursor:pointer;">{{ b.name }}</button>
+          </sc-for>
+          <button disabled="{{ true }}" style="border:none;background:{{ theme.accent }};color:#0A0F1F;padding:10px 16px;border-radius:6px;font-size:14px;font-weight:600;opacity:0.5;cursor:not-allowed;">Disabled</button>
+          <button style="border:none;background:{{ theme.accent }};color:#0A0F1F;padding:10px 16px;border-radius:6px;font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px;">
+            <div style="width:14px;height:14px;border-radius:9999px;border:2px solid rgba(10,15,31,0.3);border-top-color:#0A0F1F;animation:spin 0.8s linear infinite;"></div>
+            Loading
+          </button>
+        </div>
+        <div style="display:flex;gap:12px;align-items:center;">
+          <button style="border:none;background:{{ theme.accent }};color:#0A0F1F;padding:6px 12px;border-radius:4px;font-size:12px;font-weight:600;">sm 32px</button>
+          <button style="border:none;background:{{ theme.accent }};color:#0A0F1F;padding:10px 16px;border-radius:6px;font-size:14px;font-weight:600;">md 40px</button>
+          <button style="border:none;background:{{ theme.accent }};color:#0A0F1F;padding:13px 20px;border-radius:6px;font-size:16px;font-weight:600;">lg 48px</button>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;">
+          <div style="font-size:14px;font-weight:600;margin-bottom:16px;">Badge</div>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <sc-for list="{{ badgeVariants }}" as="bd" hint-placeholder-count="5">
+              <span style="background:{{ bd.bg }};color:{{ bd.color }};font-size:11px;font-weight:600;padding:4px 10px;border-radius:9999px;">{{ bd.label }}</span>
+            </sc-for>
+          </div>
+        </div>
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;">
+          <div style="font-size:14px;font-weight:600;margin-bottom:16px;">Avatar</div>
+          <div style="display:flex;gap:10px;align-items:center;">
+            <sc-for list="{{ avatarSizes }}" as="av" hint-placeholder-count="5">
+              <div style="width:{{ av.px }};height:{{ av.px }};border-radius:9999px;background:{{ theme.secondary }};display:flex;align-items:center;justify-content:center;font-size:{{ av.font }};font-weight:600;color:#0A0F1F;">{{ av.initials }}</div>
+            </sc-for>
+          </div>
+        </div>
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;">
+          <div style="font-size:14px;font-weight:600;margin-bottom:16px;">Icon <span style="color:#6B7B93;font-weight:400;font-size:12px;">(16/20/24/32)</span></div>
+          <div style="display:flex;gap:16px;align-items:center;">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#A0AEC0" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#A0AEC0" stroke-width="2"><polyline points="20 6 9 17 4 12"></polyline></svg>
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="{{ theme.accent }}" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="{{ theme.secondary }}" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="16" x2="12" y2="12"></line><line x1="12" y1="8" x2="12" y2="8"></line></svg>
+          </div>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1.4fr 1fr 1fr;gap:16px;">
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;">
+          <div style="font-size:14px;font-weight:600;margin-bottom:16px;">Card &amp; Input</div>
+          <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px;margin-bottom:16px;">
+            <div style="background:#16233D;border-radius:8px;padding:16px;box-shadow:0 4px 12px rgba(0,0,0,0.15);font-size:12px;color:#A0AEC0;">Elevated</div>
+            <div style="background:#16233D;border-radius:8px;padding:16px;border:1px solid rgba(255,255,255,0.12);font-size:12px;color:#A0AEC0;">Outlined</div>
+            <div style="background:#16233D;border-radius:8px;padding:16px;font-size:12px;color:#A0AEC0;">Default</div>
+          </div>
+          <div style="display:flex;gap:12px;">
+            <input placeholder="Default" style="flex:1;background:#0A0F1F;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:10px 12px;color:#FFFFFF;font-size:13px;"></input>
+            <input placeholder="Focused" style="flex:1;background:#0A0F1F;border:1px solid {{ theme.secondary }};box-shadow:0 0 0 3px {{ theme.secondary }}22;border-radius:6px;padding:10px 12px;color:#FFFFFF;font-size:13px;"></input>
+            <input placeholder="Error" style="flex:1;background:#0A0F1F;border:1px solid #EF4444;border-radius:6px;padding:10px 12px;color:#FFFFFF;font-size:13px;"></input>
+          </div>
+        </div>
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;">
+          <div style="font-size:14px;font-weight:600;margin-bottom:16px;">Loading</div>
+          <div style="display:flex;flex-direction:column;gap:12px;">
+            <div style="width:24px;height:24px;border-radius:9999px;border:3px solid rgba(255,255,255,0.1);border-top-color:{{ theme.accent }};animation:spin 0.8s linear infinite;"></div>
+            <div style="height:10px;width:80%;border-radius:4px;background:rgba(255,255,255,0.08);animation:pulse 1.4s ease-in-out infinite;"></div>
+            <div style="height:6px;border-radius:4px;background:rgba(255,255,255,0.08);overflow:hidden;"><div style="height:100%;width:60%;background:{{ theme.secondary }};border-radius:4px;"></div></div>
+          </div>
+        </div>
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;">
+          <div style="font-size:14px;font-weight:600;margin-bottom:16px;">Divider</div>
+          <div style="font-size:12px;color:#A0AEC0;margin-bottom:8px;">Horizontal</div>
+          <div style="height:1px;background:rgba(255,255,255,0.12);margin-bottom:16px;"></div>
+          <div style="display:flex;align-items:center;gap:12px;font-size:12px;color:#A0AEC0;">
+            <span>Left</span><div style="width:1px;height:20px;background:rgba(255,255,255,0.12);"></div><span>Right</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- MOLECULES -->
+    <section id="molecules" style="margin-bottom:96px;">
+      <h2 style="font-size:24px;font-weight:600;letter-spacing:-0.25px;margin:0 0 24px;">Molecules</h2>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px;">
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;">
+          <div style="font-size:14px;font-weight:600;margin-bottom:16px;">FormField</div>
+          <label style="font-size:12px;font-weight:600;color:#A0AEC0;display:block;margin-bottom:6px;">Email <span style="color:#EF4444;">*</span></label>
+          <input placeholder="you@company.com" style="width:100%;box-sizing:border-box;background:#0A0F1F;border:1px solid #EF4444;border-radius:6px;padding:10px 12px;color:#FFFFFF;font-size:13px;margin-bottom:4px;"></input>
+          <div style="font-size:11px;color:#EF4444;">Enter a valid email address</div>
+        </div>
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;">
+          <div style="font-size:14px;font-weight:600;margin-bottom:16px;">Select</div>
+          <div style="background:#0A0F1F;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:10px 12px;display:flex;justify-content:space-between;align-items:center;font-size:13px;color:#FFFFFF;">
+            <span>RetentionRail</span>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#A0AEC0" stroke-width="2"><polyline points="6 9 12 15 18 9"></polyline></svg>
+          </div>
+        </div>
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;">
+          <div style="font-size:14px;font-weight:600;margin-bottom:16px;">TagInput</div>
+          <div style="display:flex;flex-wrap:wrap;gap:6px;background:#0A0F1F;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:8px;">
+            <span style="background:{{ theme.secondary }}22;color:{{ theme.secondary }};font-size:11px;padding:3px 8px;border-radius:9999px;">MCN ×</span>
+            <span style="background:{{ theme.secondary }}22;color:{{ theme.secondary }};font-size:11px;padding:3px 8px;border-radius:9999px;">Agency ×</span>
+          </div>
+        </div>
+      </div>
+      <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;">
+        <div style="font-size:14px;font-weight:600;margin-bottom:16px;">Checkbox / Radio / Toggle</div>
+        <div style="display:flex;gap:32px;align-items:center;">
+          <div style="display:flex;gap:8px;align-items:center;font-size:13px;color:#A0AEC0;"><div style="width:16px;height:16px;border-radius:4px;background:{{ theme.accent }};"></div>Checked</div>
+          <div style="display:flex;gap:8px;align-items:center;font-size:13px;color:#A0AEC0;"><div style="width:16px;height:16px;border-radius:4px;border:1.5px solid rgba(255,255,255,0.3);"></div>Unchecked</div>
+          <div style="display:flex;gap:8px;align-items:center;font-size:13px;color:#A0AEC0;"><div style="width:16px;height:16px;border-radius:9999px;border:1.5px solid {{ theme.accent }};display:flex;align-items:center;justify-content:center;"><div style="width:8px;height:8px;border-radius:9999px;background:{{ theme.accent }};"></div></div>Selected</div>
+          <div style="display:flex;gap:8px;align-items:center;font-size:13px;color:#A0AEC0;">
+            <div style="width:36px;height:20px;border-radius:9999px;background:{{ theme.accent }};position:relative;"><div style="width:16px;height:16px;border-radius:9999px;background:#0A0F1F;position:absolute;top:2px;right:2px;"></div></div>
+            On
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ORGANISMS -->
+    <section id="organisms" style="margin-bottom:96px;">
+      <h2 style="font-size:24px;font-weight:600;letter-spacing:-0.25px;margin:0 0 24px;">Organisms</h2>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px;">
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;">
+          <div style="font-size:14px;font-weight:600;margin-bottom:16px;">LeadCard</div>
+          <div style="display:flex;gap:14px;align-items:flex-start;">
+            <div style="width:44px;height:44px;border-radius:9999px;background:{{ theme.secondary }};display:flex;align-items:center;justify-content:center;font-size:15px;font-weight:600;color:#0A0F1F;flex-shrink:0;">JD</div>
+            <div style="flex:1;">
+              <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+                <div>
+                  <div style="font-size:15px;font-weight:600;">Jordan Diaz</div>
+                  <div style="font-size:12px;color:#A0AEC0;">VP Talent · Fullscreen Media</div>
+                </div>
+                <span style="background:#10B98122;color:#10B981;font-size:11px;font-weight:600;padding:4px 10px;border-radius:9999px;">Qualified</span>
+              </div>
+              <div style="display:flex;gap:16px;margin-top:14px;font-size:12px;color:#A0AEC0;">
+                <span>ICP <strong style="color:#FFFFFF;">85%</strong></span>
+                <span>Engagement <strong style="color:#FFFFFF;">72%</strong></span>
+                <span>Deal <strong style="color:#FFFFFF;">65%</strong></span>
+              </div>
+              <div style="display:flex;gap:8px;margin-top:14px;">
+                <button style="border:none;background:{{ theme.accent }};color:#0A0F1F;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;">Enroll</button>
+                <button style="border:1px solid rgba(255,255,255,0.15);background:transparent;color:#FFFFFF;padding:6px 12px;border-radius:6px;font-size:12px;font-weight:600;">View</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;">
+          <div style="font-size:14px;font-weight:600;margin-bottom:16px;">ScoreRing</div>
+          <div style="display:flex;gap:24px;align-items:center;">
+            <svg width="110" height="110" viewBox="0 0 110 110">
+              <circle cx="55" cy="55" r="48" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="6"></circle>
+              <circle cx="55" cy="55" r="48" fill="none" stroke="{{ theme.accent }}" stroke-width="6" stroke-dasharray="301.6" stroke-dashoffset="45.2" stroke-linecap="round" transform="rotate(-90 55 55)"></circle>
+              <circle cx="55" cy="55" r="36" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="6"></circle>
+              <circle cx="55" cy="55" r="36" fill="none" stroke="{{ theme.secondary }}" stroke-width="6" stroke-dasharray="226.2" stroke-dashoffset="63.3" stroke-linecap="round" transform="rotate(-90 55 55)"></circle>
+              <circle cx="55" cy="55" r="24" fill="none" stroke="rgba(255,255,255,0.08)" stroke-width="6"></circle>
+              <circle cx="55" cy="55" r="24" fill="none" stroke="#10B981" stroke-width="6" stroke-dasharray="150.8" stroke-dashoffset="52.8" stroke-linecap="round" transform="rotate(-90 55 55)"></circle>
+              <text x="55" y="60" text-anchor="middle" fill="#FFFFFF" font-size="20" font-weight="700">74</text>
+            </svg>
+            <div style="display:flex;flex-direction:column;gap:8px;font-size:12px;">
+              <div style="display:flex;align-items:center;gap:8px;color:#A0AEC0;"><div style="width:8px;height:8px;border-radius:9999px;background:{{ theme.accent }};"></div>ICP Fit — 85%</div>
+              <div style="display:flex;align-items:center;gap:8px;color:#A0AEC0;"><div style="width:8px;height:8px;border-radius:9999px;background:{{ theme.secondary }};"></div>Engagement — 72%</div>
+              <div style="display:flex;align-items:center;gap:8px;color:#A0AEC0;"><div style="width:8px;height:8px;border-radius:9999px;background:#10B981;"></div>Deal Probability — 65%</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;margin-bottom:16px;">
+        <div style="font-size:14px;font-weight:600;margin-bottom:16px;">FilterBar</div>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+          <input placeholder="Search name, company, email" style="flex:1;min-width:220px;background:#0A0F1F;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:9px 12px;color:#FFFFFF;font-size:13px;"></input>
+          <span style="background:#0A0F1F;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:9px 14px;font-size:12px;color:#A0AEC0;">Status: All ▾</span>
+          <span style="background:#0A0F1F;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:9px 14px;font-size:12px;color:#A0AEC0;">Venture: All ▾</span>
+          <div style="display:flex;align-items:center;gap:8px;background:#0A0F1F;border:1px solid rgba(255,255,255,0.12);border-radius:6px;padding:9px 14px;font-size:12px;color:#A0AEC0;">
+            Score <div style="width:70px;height:4px;border-radius:4px;background:rgba(255,255,255,0.15);position:relative;"><div style="position:absolute;left:0;top:0;height:4px;width:60%;background:{{ theme.accent }};border-radius:4px;"></div></div>
+          </div>
+          <button style="border:none;background:transparent;color:#A0AEC0;font-size:12px;font-weight:600;cursor:pointer;">Clear all</button>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:14px;margin-bottom:16px;">
+        <sc-for list="{{ kpis }}" as="k" hint-placeholder-count="5">
+          <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:18px;">
+            <div style="font-size:11px;color:#A0AEC0;margin-bottom:8px;">{{ k.label }}</div>
+            <div style="font-size:24px;font-weight:700;margin-bottom:4px;">{{ k.value }}</div>
+            <div style="font-size:11px;color:{{ k.trendColor }};">{{ k.trend }}</div>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1.4fr 1fr;gap:16px;">
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;overflow:auto;">
+          <div style="font-size:14px;font-weight:600;margin-bottom:16px;">OutreachQueueTable</div>
+          <table style="width:100%;border-collapse:collapse;font-size:12px;">
+            <thead>
+              <tr style="text-align:left;color:#A0AEC0;">
+                <th style="padding:8px 10px;font-weight:600;">Lead</th>
+                <th style="padding:8px 10px;font-weight:600;">Company</th>
+                <th style="padding:8px 10px;font-weight:600;">Status</th>
+                <th style="padding:8px 10px;font-weight:600;">Step</th>
+                <th style="padding:8px 10px;font-weight:600;">Scheduled</th>
+              </tr>
+            </thead>
+            <tbody>
+              <sc-for list="{{ tableRows }}" as="row" hint-placeholder-count="5">
+                <tr style="border-top:1px solid rgba(255,255,255,0.06);">
+                  <td style="padding:10px;">{{ row.name }}</td>
+                  <td style="padding:10px;color:#A0AEC0;">{{ row.company }}</td>
+                  <td style="padding:10px;"><span style="background:{{ row.statusBg }};color:{{ row.statusColor }};font-size:11px;font-weight:600;padding:3px 9px;border-radius:9999px;">{{ row.status }}</span></td>
+                  <td style="padding:10px;color:#A0AEC0;">{{ row.step }}</td>
+                  <td style="padding:10px;color:#A0AEC0;">{{ row.scheduled }}</td>
+                </tr>
+              </sc-for>
+            </tbody>
+          </table>
+        </div>
+
+        <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:12px;padding:24px;">
+          <div style="font-size:14px;font-weight:600;margin-bottom:16px;">ActivityTimeline</div>
+          <div style="display:flex;flex-direction:column;gap:16px;">
+            <sc-for list="{{ activity }}" as="ev" hint-placeholder-count="4">
+              <div style="display:flex;gap:10px;">
+                <div style="width:8px;height:8px;border-radius:9999px;background:{{ ev.color }};margin-top:5px;flex-shrink:0;"></div>
+                <div>
+                  <div style="font-size:12px;color:#FFFFFF;">{{ ev.text }}</div>
+                  <div style="font-size:11px;color:#6B7B93;">{{ ev.time }}</div>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TEMPLATE -->
+    <section id="template" style="margin-bottom:40px;">
+      <h2 style="font-size:24px;font-weight:600;letter-spacing:-0.25px;margin:0 0 24px;">Template — OutreachSection</h2>
+      <div style="border:1px solid rgba(255,255,255,0.08);border-radius:14px;overflow:hidden;box-shadow:0 16px 48px rgba(0,0,0,0.35);">
+        <div style="display:flex;align-items:center;justify-content:space-between;height:56px;padding:0 20px;background:{{ theme.primary }};border-bottom:1px solid rgba(255,255,255,0.08);">
+          <div style="font-size:14px;font-weight:700;">{{ theme.label }}</div>
+          <div style="display:flex;align-items:center;gap:14px;">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#A0AEC0" stroke-width="2"><path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"></path></svg>
+            <div style="width:28px;height:28px;border-radius:9999px;background:{{ theme.secondary }};display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:#0A0F1F;">CF</div>
+          </div>
+        </div>
+        <div style="display:flex;min-height:480px;">
+          <div style="width:200px;background:{{ theme.primary }};border-right:1px solid rgba(255,255,255,0.08);padding:20px 12px;flex-shrink:0;">
+            <sc-for list="{{ navItems }}" as="n" hint-placeholder-count="5">
+              <div style="display:flex;align-items:center;gap:10px;padding:9px 12px;border-radius:6px;font-size:13px;margin-bottom:4px;background:{{ n.bg }};color:{{ n.color }};font-weight:{{ n.weight }};">
+                <div style="width:6px;height:6px;border-radius:9999px;background:{{ n.color }};opacity:0.7;"></div>{{ n.label }}
+              </div>
+            </sc-for>
+          </div>
+          <div style="flex:1;background:#0A0F1F;padding:24px;">
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+              <div>
+                <div style="font-size:20px;font-weight:700;">Outreach</div>
+                <div style="font-size:12px;color:#A0AEC0;">Active sequences across all ventures</div>
+              </div>
+              <button style="border:none;background:{{ theme.accent }};color:#0A0F1F;padding:9px 16px;border-radius:6px;font-size:13px;font-weight:600;">Enroll Leads</button>
+            </div>
+            <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:10px;margin-bottom:16px;">
+              <sc-for list="{{ kpis }}" as="k2" hint-placeholder-count="5">
+                <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:12px;">
+                  <div style="font-size:10px;color:#A0AEC0;margin-bottom:6px;">{{ k2.label }}</div>
+                  <div style="font-size:18px;font-weight:700;">{{ k2.value }}</div>
+                </div>
+              </sc-for>
+            </div>
+            <div style="background:#0F1A2E;border:1px solid rgba(255,255,255,0.08);border-radius:10px;padding:16px;overflow:auto;">
+              <table style="width:100%;border-collapse:collapse;font-size:12px;">
+                <thead><tr style="text-align:left;color:#A0AEC0;"><th style="padding:6px 8px;">Lead</th><th style="padding:6px 8px;">Company</th><th style="padding:6px 8px;">Status</th><th style="padding:6px 8px;">Scheduled</th></tr></thead>
+                <tbody>
+                  <sc-for list="{{ tableRows }}" as="row2" hint-placeholder-count="4">
+                    <tr style="border-top:1px solid rgba(255,255,255,0.06);">
+                      <td style="padding:8px;">{{ row2.name }}</td>
+                      <td style="padding:8px;color:#A0AEC0;">{{ row2.company }}</td>
+                      <td style="padding:8px;"><span style="background:{{ row2.statusBg }};color:{{ row2.statusColor }};font-size:10px;font-weight:600;padding:2px 8px;border-radius:9999px;">{{ row2.status }}</span></td>
+                      <td style="padding:8px;color:#A0AEC0;">{{ row2.scheduled }}</td>
+                    </tr>
+                  </sc-for>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+class Component extends DCLogic {
+  state = { venture: 'retentionrail' };
+
+  ventures = {
+    retentionrail: { label: 'RetentionRail', primary: '#0F1A2E', secondary: '#00D4B4', accent: '#FF6B2B' },
+    filmops: { label: 'FilmOps', primary: '#1A1A1A', secondary: '#FF9500', accent: '#FFBF47' },
+    rentahub: { label: 'RENTAHUB', primary: '#0F1520', secondary: '#00C2A8', accent: '#FF6B4A' }
+  };
+
+  renderVals() {
+    const theme = this.ventures[this.state.venture];
+    const ventureList = Object.keys(this.ventures).map(key => ({
+      name: this.ventures[key].label,
+      select: () => this.setState({ venture: key }),
+      bg: key === this.state.venture ? this.ventures[key].accent : 'transparent',
+      color: key === this.state.venture ? '#0A0F1F' : '#A0AEC0'
+    }));
+
+    const ventureCards = Object.values(this.ventures).map(v => ({
+      label: v.label,
+      swatches: [
+        { name: 'Primary', hex: v.primary },
+        { name: 'Secondary', hex: v.secondary },
+        { name: 'Accent', hex: v.accent },
+        { name: 'Background', hex: '#0A0F1F' }
+      ]
+    }));
+
+    const semanticSwatches = [
+      { name: 'Success', hex: '#10B981' },
+      { name: 'Error', hex: '#EF4444' },
+      { name: 'Warning', hex: '#F59E0B' },
+      { name: 'Info', hex: '#3B82F6' }
+    ];
+
+    const typeScale = [
+      { label: 'Display H1', size: '32px', weight: 700 },
+      { label: 'Heading H2', size: '24px', weight: 600 },
+      { label: 'Subhead H3', size: '18px', weight: 600 },
+      { label: 'Body Large', size: '16px', weight: 400 },
+      { label: 'Body Reg.', size: '14px', weight: 400 },
+      { label: 'Caption', size: '12px', weight: 400 }
+    ];
+
+    const spacingScale = [2, 4, 8, 12, 16, 24, 32, 48].map(px => ({ px: px + 'px' }));
+
+    const shadowLevels = [
+      { label: 'L1', shadow: '0 2px 8px rgba(0,0,0,0.12)' },
+      { label: 'L2', shadow: '0 4px 12px rgba(0,0,0,0.15)' },
+      { label: 'L3', shadow: '0 8px 24px rgba(0,0,0,0.18)' },
+      { label: 'L4', shadow: '0 16px 48px rgba(0,0,0,0.25)' },
+      { label: 'L5', shadow: '0 12px 32px rgba(0,0,0,0.22)' }
+    ];
+
+    const radiusScale = [
+      { label: '2', px: '2px' },
+      { label: '4', px: '4px' },
+      { label: '8', px: '8px' },
+      { label: '12', px: '12px' },
+      { label: 'Full', px: '9999px' }
+    ];
+
+    const buttonVariants = [
+      { name: 'Primary', bg: theme.accent, color: '#0A0F1F', border: 'none' },
+      { name: 'Secondary', bg: 'transparent', color: theme.secondary, border: '1px solid ' + theme.secondary },
+      { name: 'Tertiary', bg: 'transparent', color: '#A0AEC0', border: 'none' },
+      { name: 'Danger', bg: '#EF4444', color: '#FFFFFF', border: 'none' }
+    ];
+
+    const badgeVariants = [
+      { label: 'New', bg: '#3B82F622', color: '#3B82F6' },
+      { label: 'Outreaching', bg: theme.secondary + '22', color: theme.secondary },
+      { label: 'Replied', bg: '#F59E0B22', color: '#F59E0B' },
+      { label: 'Qualified', bg: '#10B98122', color: '#10B981' },
+      { label: 'Dead', bg: '#EF444422', color: '#EF4444' }
+    ];
+
+    const avatarSizes = [
+      { px: '24px', font: '9px', initials: 'A' },
+      { px: '32px', font: '11px', initials: 'B' },
+      { px: '40px', font: '13px', initials: 'C' },
+      { px: '56px', font: '16px', initials: 'D' },
+      { px: '80px', font: '22px', initials: 'E' }
+    ];
+
+    const kpis = [
+      { label: 'Total Leads', value: '143', trend: '↑ 12%', trendColor: '#10B981' },
+      { label: 'Outreaching', value: '58', trend: '↑ 6%', trendColor: '#10B981' },
+      { label: 'Replied', value: '24', trend: '↑ 19%', trendColor: '#10B981' },
+      { label: 'Qualified', value: '11', trend: '↓ 2%', trendColor: '#EF4444' },
+      { label: 'Conv. Rate', value: '7.7%', trend: '↑ 1.4pt', trendColor: '#10B981' }
+    ];
+
+    const statusStyles = {
+      Outreaching: { bg: theme.secondary + '22', color: theme.secondary },
+      Replied: { bg: '#F59E0B22', color: '#F59E0B' },
+      Qualified: { bg: '#10B98122', color: '#10B981' }
+    };
+    const tableRows = [
+      { name: 'Jordan Diaz', company: 'Fullscreen Media', status: 'Qualified', step: '5/7', scheduled: 'Jul 29, 9:00a' },
+      { name: 'Priya Nair', company: 'Studio71', status: 'Outreaching', step: '2/7', scheduled: 'Jul 29, 11:30a' },
+      { name: 'Marcus Lee', company: 'Kinetic Films', status: 'Replied', step: '3/5', scheduled: 'Jul 30, 8:00a' },
+      { name: 'Aiko Tanaka', company: 'Wavecrest MCN', status: 'Outreaching', step: '1/7', scheduled: 'Jul 30, 2:00p' },
+      { name: 'Ben Ostrower', company: 'Bright Vine Agency', status: 'Qualified', step: '7/7', scheduled: 'Aug 1, 9:00a' }
+    ].map(r => ({ ...r, statusBg: statusStyles[r.status].bg, statusColor: statusStyles[r.status].color }));
+
+    const activity = [
+      { text: 'Jordan Diaz opened "Intro: 48h churn signal"', time: 'Today, 10:42a', color: theme.secondary },
+      { text: 'Priya Nair — step 2 email sent', time: 'Today, 9:00a', color: '#A0AEC0' },
+      { text: 'Marcus Lee replied to sequence', time: 'Yesterday, 4:12p', color: '#10B981' },
+      { text: 'Aiko Tanaka enrolled in 7-Touch MCN', time: 'Yesterday, 11:05a', color: '#A0AEC0' }
+    ];
+
+    const navLabels = ['Dashboard', 'Outreach', 'Sequences', 'Leads', 'Activity'];
+    const navItems = navLabels.map((label, i) => ({
+      label,
+      bg: i === 1 ? theme.accent + '22' : 'transparent',
+      color: i === 1 ? theme.accent : '#A0AEC0',
+      weight: i === 1 ? 600 : 400
+    }));
+
+    return {
+      theme, ventureList, ventureCards, semanticSwatches, typeScale, spacingScale,
+      shadowLevels, radiusScale, buttonVariants, badgeVariants, avatarSizes,
+      kpis, tableRows, activity, navItems
+    };
+  }
+}
+</script>
+</body>
+</html>

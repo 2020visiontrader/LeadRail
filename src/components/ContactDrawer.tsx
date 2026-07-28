@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { Contact } from '@/lib/types';
-import Badge from '@/components/Badge';
+import Badge, { statusTone } from '@/components/Badge';
 import Button from '@/components/Button';
 
 interface Props {
@@ -32,7 +32,7 @@ export default function ContactDrawer({ contact, isOpen, onClose, onUpdate, onDe
         <div className="space-y-5 px-6 py-5">
           <div className="flex items-center gap-2">
             <Badge tone="indigo">{contact.segment}</Badge>
-            <Badge tone={contact.status === 'engaged' ? 'green' : contact.status === 'contacted' ? 'amber' : 'gray'}>{contact.status}</Badge>
+            <Badge tone={statusTone(contact.status)}>{contact.status}</Badge>
             <span className="ml-auto text-lg font-bold text-green-600">{contact.score}</span>
           </div>
 

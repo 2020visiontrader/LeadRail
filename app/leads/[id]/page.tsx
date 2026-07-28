@@ -62,7 +62,7 @@ export default function LeadDetail() {
         <Input label="Company" value={contact.company || ''} onChange={(e) => setContact({ ...contact, company: e.target.value })} />
         <Input label="Title" value={contact.title || ''} onChange={(e) => setContact({ ...contact, title: e.target.value })} />
         <Dropdown label="Status" value={contact.status} onChange={(e) => setContact({ ...contact, status: e.target.value as Contact['status'] })}
-          options={['new', 'contacted', 'engaged'].map((s) => ({ value: s, label: s }))} />
+          options={['new', 'outreaching', 'replied', 'qualified', 'dead'].map((s) => ({ value: s, label: s }))} />
       </div>
 
       <div className="flex gap-3">
