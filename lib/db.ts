@@ -162,3 +162,61 @@ export async function insertContacts(rows: Record<string, any>[]) {
   if (error) throw error;
   return data;
 }
+
+// ============================================================
+// Message templates — account-scoped, optional brand scope
+// ============================================================
+export async function getTemplates(accountId: string, brandId?: string) {
+  let q = supabase.from('message_templates').select('*').eq('account_id', accountId);
+  if (brandId) q = q.or(`brand_id.eq.${brandId},brand_id.is.null`);
+  const { data, error } = await q.order('created_at', { ascending: false });
+  if (error) throw error;
+  return data;
+}
+
+export async function createTemplate(row: {
+  account_id: string; brand_id?: string | null; name: string;
+  category?: string | null; subject?: string | null; body: string;
+}) {
+  const { data, error } = await supabase.from('message_templates').insert([{
+    account_id: row.account_id,
+    brand_id: row.brand_id ?? null,
+    name: row.name,
+    category: row.category ?? null,
+    subject: row.subject ?? null,
+    body: row.body,
+  }]).select().single();
+  if (error) throw error;
+  return data;
+}
+
+export async function deleteTemplate(id: string) {
+  const { error } = await supabase.from('message_templates').delete().eq('id', id);
+  if (error) throw error;
+  return { id, deleted: true };
+}
+
+// ============================================================
+// Inbox — account-scoped
+// ============================================================
+export async function getInbox(accountId: string, limit = 50) {
+  const { data, error } = await supabase
+    .from('inbox_messages')
+    .select('*')
+    .eq('account_id', accountId)
+    .order('received_at', { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return data;
+}
+
+export async function markInboxRead(id: string, isRead = true) {
+  const { data, error } = await supabase
+    .from('inbox_messages')
+    .update({ is_read: isRead })
+    .eq('id', id)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
