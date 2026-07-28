@@ -132,3 +132,82 @@ export function candidateToContact(
     enriched: { apollo_id: c.external_id, seniority: c.seniority, location: c.location, email_status: c.email_status },
   };
 }
+
+export interface ApolloEnrichment {
+  title: string | null;
+  seniority: string | null;
+  headline: string | null;
+  location: string | null;
+  linkedin_url: string | null;
+  employment_history: Array<{ title?: string; organization_name?: string }>;
+  organization: { name?: string; industry?: string; estimated_num_employees?: number; website_url?: string } | null;
+  email: string | null;
+  email_status: 'verified' | 'locked' | 'unavailable';
+  raw: Record<string, any>;
+}
+
+/**
+ * Enrich a single person via Apollo People Match. Match keys (any subset):
+ * email, linkedin_url, name + company. Returns a deep profile or throws typed.
+ */
+export async function matchPerson(keys: {
+  email?: string | null;
+  linkedin_url?: string | null;
+  name?: string | null;
+  company?: string | null;
+}): Promise<ApolloEnrichment> {
+  const key = process.env.APOLLO_API_KEY;
+  if (!key) {
+    const err: any = new Error('Apollo is not connected');
+    err.code = 'not_configured';
+    throw err;
+  }
+  const body: Record<string, any> = {
+    reveal_personal_emails: false,
+    email: keys.email && !/@locked\.apollo$/.test(keys.email) ? keys.email : undefined,
+    linkedin_url: keys.linkedin_url || undefined,
+    name: keys.name || undefined,
+    organization_name: keys.company || undefined,
+  };
+  Object.keys(body).forEach((k) => body[k] === undefined && delete body[k]);
+
+  const res = await fetch(`${APOLLO_BASE}/people/match`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-Api-Key': key },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    const err: any = new Error(`Apollo enrich failed (${res.status})`);
+    err.code = res.status === 401 || res.status === 403 ? 'auth' : 'upstream';
+    err.detail = text.slice(0, 300);
+    throw err;
+  }
+  const json = await res.json();
+  const p = json.person || json.people?.[0] || {};
+  const org = p.organization || {};
+  const rawEmail: string | undefined = p.email;
+  const locked = !rawEmail || /not_unlocked/i.test(rawEmail);
+  return {
+    title: p.title || null,
+    seniority: p.seniority || null,
+    headline: p.headline || null,
+    location: [p.city, p.state, p.country].filter(Boolean).join(', ') || null,
+    linkedin_url: p.linkedin_url || null,
+    employment_history: (p.employment_history || []).map((e: any) => ({
+      title: e.title,
+      organization_name: e.organization_name,
+    })),
+    organization: org.name
+      ? {
+          name: org.name,
+          industry: org.industry,
+          estimated_num_employees: org.estimated_num_employees,
+          website_url: org.website_url,
+        }
+      : null,
+    email: locked ? null : rawEmail!,
+    email_status: locked ? 'locked' : 'verified',
+    raw: p,
+  };
+}
