@@ -12,6 +12,7 @@
  * Usage:  bun run migrations/push.ts
  */
 import { readFileSync } from 'node:fs';
+// @ts-ignore - 'bun' is a runtime module; this script is executed with `bun run`, not tsc.
 import { SQL } from 'bun';
 
 const sql = readFileSync(new URL('./apply_all.sql', import.meta.url), 'utf8');

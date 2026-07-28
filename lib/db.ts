@@ -220,3 +220,23 @@ export async function markInboxRead(id: string, isRead = true) {
   if (error) throw error;
   return data;
 }
+
+// ============================================================
+// Campaign assets (generated static images) — account-scoped
+// ============================================================
+export async function insertCampaignAsset(row: {
+  campaign_id: string;
+  account_id: string;
+  kind?: string;
+  url: string;
+  ai_analysis?: Record<string, any>;
+  status?: string;
+}) {
+  const { data, error } = await supabase
+    .from('campaign_assets')
+    .insert([{ kind: 'image', status: 'raw', ...row }])
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
