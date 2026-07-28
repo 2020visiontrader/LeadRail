@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { Contact } from '@/lib/types';
+import { Contact, CONTACT_STATUSES } from '@/lib/types';
 import Badge, { statusTone } from '@/components/Badge';
 import Button from '@/components/Button';
 
@@ -10,9 +10,10 @@ interface Props {
   onClose: () => void;
   onUpdate?: (contact: Contact) => void;
   onDelete?: (contact: Contact) => void;
+  onEnrich?: (contact: Contact) => void;
 }
 
-export default function ContactDrawer({ contact, isOpen, onClose, onUpdate, onDelete }: Props) {
+export default function ContactDrawer({ contact, isOpen, onClose, onUpdate, onDelete, onEnrich }: Props) {
   const [draft, setDraft] = useState<Contact | null>(contact);
   const [editing, setEditing] = useState(false);
   useEffect(() => { setDraft(contact); setEditing(false); }, [contact]);
@@ -52,7 +53,7 @@ export default function ContactDrawer({ contact, isOpen, onClose, onUpdate, onDe
                 <span className="mb-1 block text-xs font-medium uppercase text-slate-500">status</span>
                 <select className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm" value={draft.status}
                   onChange={(e) => setDraft({ ...draft, status: e.target.value as Contact['status'] })}>
-                  {['new', 'contacted', 'engaged'].map((s) => <option key={s} value={s}>{s}</option>)}
+                  {CONTACT_STATUSES.map((s) => <option key={s} value={s}>{s}</option>)}
                 </select>
               </label>
               <div className="flex gap-2 pt-1">
@@ -65,8 +66,12 @@ export default function ContactDrawer({ contact, isOpen, onClose, onUpdate, onDe
               <Row label="Email" value={contact.email} />
               <Row label="Company" value={contact.company || '—'} />
               <Row label="Title" value={contact.title || '—'} />
+              {contact.fit_verdict && (
+                <Row label="Fit" value={`${contact.fit_verdict}${contact.enrichment_status ? ` · ${contact.enrichment_status}` : ''}`} />
+              )}
               <div className="flex gap-2 pt-1">
                 <Button onClick={() => setEditing(true)}>Edit</Button>
+                {onEnrich && <Button variant="secondary" onClick={() => onEnrich(contact)}>Enrich</Button>}
                 <Link href={`/leads/${contact.id}`}><Button variant="secondary">Open full page</Button></Link>
               </div>
             </dl>

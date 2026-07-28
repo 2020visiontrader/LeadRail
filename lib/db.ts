@@ -69,12 +69,10 @@ export async function findContactByEmail(email: string) {
 // ============================================================
 // Ventures (brands) — account-scoped
 // ============================================================
-export async function getVentures(accountId: string) {
-  const { data, error } = await supabase
-    .from('brands')
-    .select('*')
-    .eq('account_id', accountId)
-    .order('created_at', { ascending: true });
+export async function getVentures(accountId?: string) {
+  let q = supabase.from('brands').select('*').order('created_at', { ascending: true });
+  if (accountId) q = q.eq('account_id', accountId);
+  const { data, error } = await q;
   if (error) throw error;
   return data;
 }
