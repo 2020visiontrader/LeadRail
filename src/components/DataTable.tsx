@@ -12,8 +12,8 @@ export default function DataTable({ contacts, isLoading, onRowClick }: DataTable
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
 
   const sorted = [...contacts].sort((a, b) => {
-    const aVal = a[sortKey];
-    const bVal = b[sortKey];
+    const aVal = a[sortKey] ?? "";
+    const bVal = b[sortKey] ?? "";
     const cmp = aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
     return sortDir === 'asc' ? cmp : -cmp;
   });

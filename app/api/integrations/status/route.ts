@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getIntegrationStatus } from '@/lib/integrations/env';
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: NextRequest) {
   try {
     const status = getIntegrationStatus();

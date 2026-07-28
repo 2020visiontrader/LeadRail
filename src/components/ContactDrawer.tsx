@@ -20,7 +20,7 @@ export default function ContactDrawer({ contact, isOpen, onClose, onUpdate }: Co
   };
 
   const handleSave = () => {
-    if (onUpdate) {
+    if (onUpdate && editingField) {
       onUpdate({ ...contact, [editingField]: editValue });
     }
     setEditingField(null);

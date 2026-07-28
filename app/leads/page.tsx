@@ -1,3 +1,5 @@
+'use client';
+
 import { useState, useEffect } from 'react';
 import DataTable from '@/components/DataTable';
 import ContactDrawer from '@/components/ContactDrawer';

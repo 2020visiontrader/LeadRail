@@ -1,4 +1,5 @@
-import { supabase } from '@/lib/db';
+import { supabase, findContactByEmail } from '@/lib/db';
+import { withRetry } from '@/lib/integrations/retry';
 
 const BREVO_API_URL = 'https://api.brevo.com/v3';
 const BREVO_API_KEY = process.env.BREVO_API_KEY;
@@ -21,46 +22,46 @@ export interface BrevoEmail {
 
 export async function createBrevoContact(contact: BrevoContact) {
   if (!BREVO_API_KEY) throw new Error('BREVO_API_KEY not set');
-
-  const response = await fetch(`${BREVO_API_URL}/contacts`, {
-    method: 'POST',
-    headers: {
-      'api-key': BREVO_API_KEY,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(contact),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Brevo error: ${response.statusText}`);
-  }
-
-  return response.json();
+  const response = await withRetry(() =>
+    fetch(`${BREVO_API_URL}/contacts`, {
+      method: 'POST',
+      headers: { 'api-key': BREVO_API_KEY!, 'Content-Type': 'application/json' },
+      body: JSON.stringify(contact),
+    }).then(async (r) => {
+      if (!r.ok) throw new Error(`Brevo error: ${r.status} ${r.statusText}`);
+      return r.json();
+    })
+  );
+  return response;
 }
 
-export async function sendBrevoEmail(email: BrevoEmail) {
+/**
+ * Send a transactional email and record it against a contact.
+ * contactId is REQUIRED because email_campaigns.contact_id is NOT NULL.
+ */
+export async function sendBrevoEmail(email: BrevoEmail, contactId: string, templateId?: string) {
   if (!BREVO_API_KEY) throw new Error('BREVO_API_KEY not set');
+  if (!contactId) throw new Error('contactId is required to record an email campaign');
 
-  const response = await fetch(`${BREVO_API_URL}/smtp/email`, {
-    method: 'POST',
-    headers: {
-      'api-key': BREVO_API_KEY,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(email),
-  });
+  const data = await withRetry(() =>
+    fetch(`${BREVO_API_URL}/smtp/email`, {
+      method: 'POST',
+      headers: { 'api-key': BREVO_API_KEY!, 'Content-Type': 'application/json' },
+      body: JSON.stringify(email),
+    }).then(async (r) => {
+      if (!r.ok) throw new Error(`Brevo email send error: ${r.status} ${r.statusText}`);
+      return r.json();
+    })
+  );
 
-  if (!response.ok) {
-    throw new Error(`Brevo email send error: ${response.statusText}`);
-  }
-
-  const data = await response.json();
-  
-  // Store email tracking info
   await supabase.from('email_campaigns').insert([{
-    brevo_id: data.messageId,
+    contact_id: contactId,
+    template_id: templateId ?? null,
+    subject: email.subject,
+    body: email.htmlContent,
+    brevo_id: data.messageId ?? null,
     status: 'sent',
-    sent_at: new Date(),
+    sent_at: new Date().toISOString(),
   }]);
 
   return data;
@@ -68,29 +69,33 @@ export async function sendBrevoEmail(email: BrevoEmail) {
 
 export async function getBrevoEmailStatus(messageId: string) {
   if (!BREVO_API_KEY) throw new Error('BREVO_API_KEY not set');
-
   const response = await fetch(`${BREVO_API_URL}/smtp/statistics/events?messageId=${messageId}`, {
     headers: { 'api-key': BREVO_API_KEY },
   });
-
   if (!response.ok) throw new Error('Failed to fetch Brevo status');
   return response.json();
 }
 
+/** Brevo webhook. Uses real schema columns; resolves contact email -> contact_id. */
 export async function handleBrevoWebhook(event: any) {
-  const { messageId, event: eventType, contact } = event;
+  const messageId = event['message-id'] || event.messageId;
+  const eventType = event.event;
+  const email = event.email;
 
-  if (eventType === 'opened') {
-    await supabase.from('email_campaigns').update({ opened_at: new Date() }).eq('brevo_id', messageId);
+  if (eventType === 'opened' || eventType === 'unique_opened') {
+    if (messageId) await supabase.from('email_campaigns').update({ opened_at: new Date().toISOString(), status: 'opened' }).eq('brevo_id', messageId);
   }
   if (eventType === 'click') {
-    await supabase.from('contact_events').insert([{
-      contact_email: contact,
-      event_type: 'link_clicked',
-      timestamp: new Date(),
-    }]);
+    const contact = email ? await findContactByEmail(email) : null;
+    if (contact) {
+      await supabase.from('contact_events').insert([{
+        contact_id: contact.id,
+        event_type: 'link_clicked',
+        event_data: { message_id: messageId, url: event.link ?? null },
+      }]);
+    }
   }
-  if (eventType === 'bounce' || eventType === 'complaint') {
-    await supabase.from('email_campaigns').update({ status: 'bounced' }).eq('brevo_id', messageId);
+  if (eventType === 'hard_bounce' || eventType === 'soft_bounce' || eventType === 'spam' || eventType === 'complaint') {
+    if (messageId) await supabase.from('email_campaigns').update({ status: 'bounced' }).eq('brevo_id', messageId);
   }
 }
