@@ -212,3 +212,80 @@ export async function deleteNote(id: string) {
   if (error) throw error;
   return { ok: true };
 }
+
+// ---------------------------------------------------------------------------
+// Company upsert-by-name — used by the Apollo import to build the Account layer.
+// Idempotent per (account_id, lower(name)); returns the company id or null.
+// ---------------------------------------------------------------------------
+export async function upsertCompanyByName(
+  accountId: string,
+  brandId: string | null,
+  name: string,
+  extra: { domain?: string; industry?: string; website?: string; size?: string } = {}
+): Promise<string | null> {
+  const clean = (name || '').trim();
+  if (!clean) return null;
+  const { data: existing } = await supabase
+    .from('companies')
+    .select('id')
+    .eq('account_id', accountId)
+    .ilike('name', clean)
+    .limit(1);
+  if (existing && existing.length) return existing[0].id;
+  const { data, error } = await supabase
+    .from('companies')
+    .insert([{ account_id: accountId, brand_id: brandId, name: clean, ...extra }])
+    .select('id')
+    .single();
+  if (error) { console.error('[upsertCompany]', error.message); return null; }
+  await writeAudit({ account_id: accountId, brand_id: brandId, action: 'create', entity_type: 'company', entity_id: data.id, detail: { via: 'apollo_import' } });
+  return data.id;
+}
+
+// ---------------------------------------------------------------------------
+// Territories
+// ---------------------------------------------------------------------------
+export async function getTerritories(accountId: string, brandId?: string | null) {
+  let q = supabase.from('territories').select('*').eq('account_id', accountId);
+  if (brandId) q = q.eq('brand_id', brandId);
+  const { data, error } = await q.order('created_at', { ascending: false });
+  if (error) throw error;
+  return data;
+}
+export async function createTerritory(row: Record<string, any>) {
+  const { data, error } = await supabase.from('territories').insert([row]).select().single();
+  if (error) throw error;
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Campaign members (ad_campaigns membership)
+// ---------------------------------------------------------------------------
+export async function getCampaignMembers(campaignId: string) {
+  const { data, error } = await supabase
+    .from('campaign_members').select('*, contacts(name,email,company)').eq('campaign_id', campaignId);
+  if (error) throw error;
+  return data;
+}
+export async function addCampaignMembers(campaignId: string, accountId: string, contactIds: string[]) {
+  const rows = contactIds.map((cid) => ({ campaign_id: campaignId, account_id: accountId, contact_id: cid }));
+  const { data, error } = await supabase.from('campaign_members').upsert(rows, { onConflict: 'campaign_id,contact_id' }).select();
+  if (error) throw error;
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// Contact ↔ company roles (multi-org)
+// ---------------------------------------------------------------------------
+export async function getContactCompanyRoles(contactId: string) {
+  const { data, error } = await supabase
+    .from('contact_company_roles').select('*, companies(name,domain)').eq('contact_id', contactId);
+  if (error) throw error;
+  return data;
+}
+export async function linkContactCompany(row: { account_id: string; contact_id: string; company_id: string; role?: string; is_primary?: boolean }) {
+  const { data, error } = await supabase
+    .from('contact_company_roles').upsert([row], { onConflict: 'contact_id,company_id' }).select().single();
+  if (error) throw error;
+  return data;
+}

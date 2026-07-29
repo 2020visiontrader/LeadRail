@@ -394,3 +394,64 @@ export interface ContactAlias {
   source?: string;
   created_at: string;
 }
+
+// ---------------------------------------------------------------------------
+// CRM object model — Wave 2 (migration 006)
+// ---------------------------------------------------------------------------
+export interface ContactCompanyRole {
+  id: string;
+  account_id: string;
+  contact_id: string;
+  company_id: string;
+  role?: string;
+  is_primary: boolean;
+  created_at: string;
+}
+export interface Partner {
+  id: string;
+  account_id: string;
+  brand_id?: string;
+  name: string;
+  type?: string;
+  contact_email?: string;
+  status: string;
+  notes?: string;
+  created_at: string;
+}
+export interface SupportCase {
+  id: string;
+  account_id: string;
+  brand_id?: string;
+  company_id?: string;
+  contact_id?: string;
+  subject: string;
+  description?: string;
+  status: 'open' | 'pending' | 'resolved' | 'closed';
+  priority: 'low' | 'normal' | 'high' | 'urgent';
+  assigned_to?: string;
+  created_at: string;
+  updated_at: string;
+  resolved_at?: string;
+}
+export interface KnowledgeArticle {
+  id: string;
+  account_id: string;
+  brand_id?: string;
+  title: string;
+  body?: string;
+  tags?: string[];
+  status: 'draft' | 'published';
+  created_at: string;
+  updated_at: string;
+}
+export interface Entitlement {
+  id: string;
+  account_id: string;
+  company_id?: string;
+  plan?: string;
+  sla_tier?: string;
+  seats?: number;
+  starts_at?: string;
+  ends_at?: string;
+  created_at: string;
+}
