@@ -3,6 +3,8 @@ import { candidateToContact } from '@/lib/integrations/apollo';
 import { insertContacts, findContactByEmail, assertBrandOwned, dbReady } from '@/lib/db';
 import { scoreContact } from '@/lib/scoring';
 import { upsertCompanyByName, writeAudit } from '@/lib/crm';
+import { enqueueCompanyEnrichment } from '@/lib/enrichment-jobs';
+import { apolloConfigured } from '@/lib/integrations/apollo';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 import type { ApolloCandidate } from '@/lib/integrations/apollo';
 
@@ -54,6 +56,15 @@ export async function POST(request: NextRequest) {
     }
     const inserted = await insertContacts(rows);
     await writeAudit({ account_id: accountId, brand_id: brandId, action: 'import', entity_type: 'contact', detail: { imported: inserted.length, skipped, source: 'apollo' } });
+
+    // Phase C #16: queue firmographic enrichment for each distinct company we
+    // attached. Runs off the request path via the tick; the unique live-job
+    // index dedupes, so re-imports never double-spend. Best-effort.
+    if (apolloConfigured()) {
+      const companyIds = [...new Set([...companyCache.values()].filter(Boolean))] as string[];
+      await Promise.all(companyIds.map((cid) => enqueueCompanyEnrichment(accountId, cid).catch(() => null)));
+    }
+
     return NextResponse.json({ imported: inserted.length, skipped, contacts: inserted }, { status: 201 });
   } catch (error) {
     return errorResponse(error);

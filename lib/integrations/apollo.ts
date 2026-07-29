@@ -232,3 +232,119 @@ export async function matchPerson(keys: {
     raw: p,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Phase C, item 16 — Organization enrichment + bulk people match.
+// Both stay within the free-tier data we already get; org-enrich in particular
+// returns firmographics (industry, headcount, funding, tech) with no per-email
+// unlock cost, so it's the cheapest data lift on the import path.
+// ---------------------------------------------------------------------------
+
+export interface ApolloOrg {
+  name: string | null;
+  domain: string | null;
+  website_url: string | null;
+  industry: string | null;
+  estimated_num_employees: number | null;
+  annual_revenue: number | null;
+  founded_year: number | null;
+  linkedin_url: string | null;
+  location: string | null;
+  technologies: string[];
+  raw: Record<string, any>;
+}
+
+/** Enrich a company by domain (preferred) or name via Apollo Organization Enrichment. */
+export async function enrichOrganization(keys: { domain?: string | null; name?: string | null }): Promise<ApolloOrg | null> {
+  const key = apolloKey();
+  if (!key) {
+    const err: any = new Error('Apollo is not connected');
+    err.code = 'not_configured';
+    throw err;
+  }
+  const domain = (keys.domain || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '').trim();
+  if (!domain && !keys.name) return null;
+
+  const params = new URLSearchParams();
+  if (domain) params.set('domain', domain);
+  else if (keys.name) params.set('name', keys.name);
+
+  const res = await fetch(`${APOLLO_BASE}/organizations/enrich?${params.toString()}`, {
+    method: 'GET',
+    headers: { Accept: 'application/json', 'X-Api-Key': key },
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    const err: any = new Error(`Apollo org enrich failed (${res.status})`);
+    err.code = res.status === 401 || res.status === 403 ? 'auth' : 'upstream';
+    err.detail = text.slice(0, 300);
+    throw err;
+  }
+  const json = await res.json();
+  const o = json.organization || json.account || null;
+  if (!o) return null;
+  return {
+    name: o.name || null,
+    domain: o.primary_domain || o.domain || domain || null,
+    website_url: o.website_url || null,
+    industry: o.industry || null,
+    estimated_num_employees: o.estimated_num_employees ?? null,
+    annual_revenue: o.annual_revenue ?? o.organization_revenue ?? null,
+    founded_year: o.founded_year ?? null,
+    linkedin_url: o.linkedin_url || null,
+    location: [o.city, o.state, o.country].filter(Boolean).join(', ') || null,
+    technologies: Array.isArray(o.technology_names) ? o.technology_names : [],
+    raw: o,
+  };
+}
+
+/** Enrich up to 10 people in one call via Apollo People Bulk Match. */
+export async function matchPeopleBulk(
+  details: Array<{ email?: string | null; linkedin_url?: string | null; name?: string | null; company?: string | null }>
+): Promise<ApolloEnrichment[]> {
+  const key = apolloKey();
+  if (!key) {
+    const err: any = new Error('Apollo is not connected');
+    err.code = 'not_configured';
+    throw err;
+  }
+  const details_body = details.slice(0, 10).map((k) => {
+    const d: Record<string, any> = {};
+    if (k.email && !/@locked\.apollo$/.test(k.email)) d.email = k.email;
+    if (k.linkedin_url) d.linkedin_url = k.linkedin_url;
+    if (k.name) d.name = k.name;
+    if (k.company) d.organization_name = k.company;
+    return d;
+  });
+  const res = await fetch(`${APOLLO_BASE}/people/bulk_match`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'X-Api-Key': key },
+    body: JSON.stringify({ reveal_personal_emails: false, details: details_body }),
+  });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    const err: any = new Error(`Apollo bulk match failed (${res.status})`);
+    err.code = res.status === 401 || res.status === 403 ? 'auth' : 'upstream';
+    err.detail = text.slice(0, 300);
+    throw err;
+  }
+  const json = await res.json();
+  const matches: any[] = json.matches || json.people || [];
+  return matches.map((p: any): ApolloEnrichment => {
+    const org = p?.organization || {};
+    const rawEmail: string | undefined = p?.email;
+    const locked = !rawEmail || /not_unlocked/i.test(rawEmail);
+    return {
+      title: p?.title || null,
+      seniority: p?.seniority || null,
+      headline: p?.headline || null,
+      location: [p?.city, p?.state, p?.country].filter(Boolean).join(', ') || null,
+      linkedin_url: p?.linkedin_url || null,
+      employment_history: (p?.employment_history || []).map((e: any) => ({ title: e.title, organization_name: e.organization_name })),
+      organization: org.name ? { name: org.name, industry: org.industry, estimated_num_employees: org.estimated_num_employees, website_url: org.website_url } : null,
+      email: locked ? null : rawEmail!,
+      email_status: locked ? 'locked' : 'verified',
+      raw: p || {},
+    };
+  });
+}

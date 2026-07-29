@@ -242,3 +242,23 @@ Executed items 9–13. Typecheck + production build pass. Migration `010_data_mo
 **Deploy:** apply `bun run migrations/push.ts` (010 is in `apply_all.sql`). Generated tsvector columns build the FTS index automatically; backfills run inside the migration.
 
 **Next:** Phase C — typed steps + A/B variants, business-hours scheduling, structured reply outcomes, saved ICP + org/bulk enrichment.
+
+---
+
+## 9. Phase C — SHIPPED (2026-07-30)
+
+Executed items 6, 7, 8, 16, 17. Typecheck + production build pass. Migration `011_typed_sequencing.sql` (idempotent). Extends the Phase A send loop; no send-path behaviour changes for existing (plain email) sequences.
+
+| # | Item | Status | Files |
+|---|------|--------|-------|
+| 6 | Typed steps + A/B variants | ✅ | `sequence_steps.type` (email/wait/manual/task/branch); `sequence_step_variants` (+ per-variant sent/open/click/reply counters, `increment_variant_counter()`); `email_events.variant_id`, `sequence_enrollments.last_variant_id`; engine in `lib/sequences.ts` handles each type — wait/branch advance without sending, manual pauses for a human task, task opens a task and flows on, email sends the step or a weight-selected variant |
+| 7 | Business-hours scheduling | ✅ | `accounts.business_hours` + `sequences.business_hours` JSONB (seq overrides account); `lib/business-hours.ts` (`nextBusinessTime` shifts every `next_run_at` into the tz/day/hour window); applied at enroll + every advance |
+| 8 | Structured reply outcomes | ✅ | `sequence_enrollments.outcome` (converted/not_interested/no_budget/has_solution/bad_timing/unknown); `lib/reply-classifier.ts` (rule-based, zero-LLM) runs inside `stopRepliedEnrollments`; also credits the sent variant a reply |
+| 16 | Saved ICP + org/bulk enrichment | ✅ | `icp_profiles` table; `lib/icp.ts`; `GET/POST /api/icp`, `GET/PATCH/DELETE /api/icp/[id]`; Apollo `enrichOrganization` + `matchPeopleBulk`; org-enrich auto-queued on Apollo import; `POST /api/leads/enrich/bulk` |
+| 17 | Async enrichment handshake | ✅ | `enrichment_jobs` table (+ unique live-job index = no double-spend, `claim_enrichment_jobs()`); `lib/enrichment-jobs.ts`; drained by `hermes/tick` alongside sequences; bounded retries (3) |
+
+**Scope honesty:** step type `branch` is stored and treated as a no-op skip until the data-driven automations engine (Phase D #19) lands — no conditional branching yet. The reply classifier is deliberately rule-based; the enum + call site are shaped so an LLM pass can replace `classifyReply` without touching the engine.
+
+**Deploy:** apply `bun run migrations/push.ts` (011 is in `apply_all.sql`). All new columns default to today's behaviour (type='email', business_hours=null → 24/7), so existing sequences are unaffected until configured.
+
+**Next:** Phase D — unified conversations, GHL location-id fix, signed webhooks, data-driven automations engine (pgvector qualifier optional/deferred).

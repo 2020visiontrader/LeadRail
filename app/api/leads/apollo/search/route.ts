@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { searchPeople, apolloConfigured } from '@/lib/integrations/apollo';
 import { logApolloSearch, dbReady, assertBrandOwned } from '@/lib/db';
+import { recordIcpRun } from '@/lib/icp';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 import type { ApolloQuery } from '@/lib/types';
 
@@ -38,6 +39,8 @@ export async function POST(request: NextRequest) {
     if (dbReady()) {
       logApolloSearch({ account_id: accountId, brand_id: brandId, query, result_count: candidates.length })
         .catch((e) => console.error('[apollo-log]', e?.message || e));
+      // When the search was launched from a saved ICP, stamp the run onto it.
+      if (body?.icpId) recordIcpRun(String(body.icpId), accountId, candidates.length);
     }
     return NextResponse.json({ candidates, total, returned: candidates.length });
   } catch (error: any) {
