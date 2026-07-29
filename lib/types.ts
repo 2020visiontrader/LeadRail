@@ -14,6 +14,7 @@ export interface Contact {
   name: string;
   email: string;
   company?: string;
+  company_id?: string | null;
   title?: string;
   segment: Segment;
   score: number;
@@ -229,5 +230,167 @@ export interface CampaignAsset {
   url: string;
   ai_analysis?: Record<string, any>;
   status: AssetStatus;
+  created_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// CRM object model — Wave 1 (migration 005)
+// ---------------------------------------------------------------------------
+export interface Company {
+  id: string;
+  account_id: string;
+  brand_id?: string;
+  name: string;
+  domain?: string;
+  website?: string;
+  industry?: string;
+  size?: string;
+  linkedin_url?: string;
+  location?: string;
+  description?: string;
+  enriched?: Record<string, any>;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PipelineStage {
+  id: string;
+  account_id: string;
+  brand_id?: string;
+  name: string;
+  position: number;
+  is_won: boolean;
+  is_lost: boolean;
+  created_at: string;
+}
+
+export type DealStatus = 'open' | 'won' | 'lost';
+
+export interface Deal {
+  id: string;
+  account_id: string;
+  brand_id?: string;
+  company_id?: string;
+  primary_contact_id?: string;
+  stage_id?: string;
+  name: string;
+  amount?: number;
+  currency: string;
+  status: DealStatus;
+  probability?: number;
+  expected_close_date?: string;
+  source?: string;
+  owner_email?: string;
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+  closed_at?: string;
+}
+
+export interface DealContactRole {
+  id: string;
+  deal_id: string;
+  contact_id: string;
+  role?: string;
+  created_at: string;
+}
+
+export type ActivityType = 'task' | 'call' | 'meeting' | 'email' | 'event';
+
+export interface Activity {
+  id: string;
+  account_id: string;
+  brand_id?: string;
+  type: ActivityType;
+  subject?: string;
+  body?: string;
+  status: 'open' | 'done';
+  due_at?: string;
+  completed_at?: string;
+  contact_id?: string;
+  company_id?: string;
+  deal_id?: string;
+  owner_email?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Note {
+  id: string;
+  account_id: string;
+  brand_id?: string;
+  body: string;
+  contact_id?: string;
+  company_id?: string;
+  deal_id?: string;
+  author_email?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface Attachment {
+  id: string;
+  account_id: string;
+  brand_id?: string;
+  filename?: string;
+  url: string;
+  mime_type?: string;
+  size_bytes?: number;
+  contact_id?: string;
+  company_id?: string;
+  deal_id?: string;
+  created_at: string;
+}
+
+export interface CampaignMember {
+  id: string;
+  campaign_id: string;
+  account_id: string;
+  contact_id?: string;
+  status: 'targeted' | 'sent' | 'responded' | 'converted';
+  created_at: string;
+}
+
+export interface Territory {
+  id: string;
+  account_id: string;
+  brand_id?: string;
+  name: string;
+  region?: string;
+  country?: string;
+  owner_email?: string;
+  created_at: string;
+}
+
+export interface AuditLogEntry {
+  id: string;
+  account_id: string;
+  brand_id?: string;
+  actor_email?: string;
+  action: 'import' | 'enrich' | 'merge' | 'create' | 'update' | 'delete';
+  entity_type?: string;
+  entity_id?: string;
+  detail?: Record<string, any>;
+  created_at: string;
+}
+
+export interface ContactMerge {
+  id: string;
+  account_id: string;
+  surviving_contact_id?: string;
+  merged_contact_id?: string;
+  merged_snapshot?: Record<string, any>;
+  reason?: string;
+  actor_email?: string;
+  created_at: string;
+}
+
+export interface ContactAlias {
+  id: string;
+  account_id: string;
+  contact_id: string;
+  alias_type: 'email' | 'name' | 'phone' | 'source_id';
+  alias_value: string;
+  source?: string;
   created_at: string;
 }
