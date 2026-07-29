@@ -15,26 +15,37 @@ import { useToast } from '@/components/ToastProvider';
 import { apiGet, apiSend } from '@/lib/api';
 import { ContentPost } from '@/lib/types';
 
-const BRAND = 'rentahub';
+interface Venture { id: string; name: string; account_id: string }
+
 const PLATFORMS = ['instagram', 'tiktok', 'linkedin', 'twitter', 'facebook', 'threads', 'reddit', 'youtube'];
 
 export default function ContentPage() {
   const { notify } = useToast();
+  const [ventures, setVentures] = useState<Venture[]>([]);
+  const [venture, setVenture] = useState<Venture | null>(null);
   const [posts, setPosts] = useState<ContentPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [selected, setSelected] = useState<ContentPost | null>(null);
+  const [publishing, setPublishing] = useState<string>('');
   const [form, setForm] = useState({ platform: 'instagram', post_body: '', scheduled_for: '' });
   const [topic, setTopic] = useState('');
   const [generating, setGenerating] = useState(false);
 
+  useEffect(() => {
+    apiGet<{ ventures: Venture[] }>('/api/ventures')
+      .then((d) => { const vs = d.ventures || []; setVentures(vs); setVenture((cur) => cur || vs[0] || null); })
+      .catch(() => setVentures([]));
+  }, []);
+
   const generate = async () => {
+    if (!venture) { notify('Select a venture first', 'error'); return; }
     if (!topic.trim()) { notify('Enter a topic to generate', 'error'); return; }
     setGenerating(true);
     try {
       const r = await apiSend<{ post: { hook: string; post_body: string } }>('/api/generate/content', 'POST', {
-        venture: { name: BRAND }, platform: form.platform, topic: topic.trim(),
+        venture: { name: venture.name }, platform: form.platform, topic: topic.trim(),
       });
       const body = [r.post.hook, r.post.post_body].filter(Boolean).join('\n\n');
       setForm((f) => ({ ...f, post_body: body }));
@@ -45,23 +56,36 @@ export default function ContentPage() {
   };
 
   const load = useCallback(async () => {
+    if (!venture) return;
     setLoading(true);
-    const data = await apiGet<ContentPost[]>(`/api/content?brandId=${BRAND}`).catch(() => []);
+    const data = await apiGet<ContentPost[]>(`/api/content?brandId=${venture.id}`).catch(() => []);
     setPosts(Array.isArray(data) ? data : []);
     setLoading(false);
-  }, []);
+  }, [venture]);
   useEffect(() => { load(); }, [load]);
 
   const create = async () => {
+    if (!venture) { notify('Select a venture first', 'error'); return; }
     if (!form.post_body) { notify('Post body required', 'error'); return; }
     setSaving(true);
     try {
-      await apiSend('/api/content', 'POST', { brand_id: BRAND, ...form, scheduled_for: form.scheduled_for || null });
+      await apiSend('/api/content', 'POST', { brand_id: venture.id, ...form, scheduled_for: form.scheduled_for || null });
       notify('Post scheduled');
       setOpen(false); setForm({ platform: 'instagram', post_body: '', scheduled_for: '' });
       load();
     } catch (e: any) { notify(e.message || 'Create failed', 'error'); }
     finally { setSaving(false); }
+  };
+
+  const publish = async (p: ContentPost) => {
+    if (!confirm(`Publish to ${p.platform}?`)) return;
+    setPublishing(p.id);
+    try {
+      await apiSend(`/api/content/${p.id}/publish`, 'POST');
+      notify(`Published to ${p.platform}`);
+      setSelected(null); load();
+    } catch (e: any) { notify(e.message || 'Publish failed', 'error'); }
+    finally { setPublishing(''); }
   };
 
   const remove = async (p: ContentPost) => {
@@ -72,18 +96,27 @@ export default function ContentPage() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold">Content</h1>
           <p className="text-sm text-slate-500">Social content calendar</p>
         </div>
         <div className="flex items-center gap-2">
-          <ImportExport exportPath="/api/content/export" importPath="/api/content/import" brandId={BRAND} onImported={load} />
-          <Button onClick={() => setOpen(true)}>+ New Post</Button>
+          {ventures.length > 1 && (
+            <Dropdown
+              value={venture?.id || ''}
+              onChange={(e) => setVenture(ventures.find((v) => v.id === e.target.value) || null)}
+              options={ventures.map((v) => ({ value: v.id, label: v.name }))}
+            />
+          )}
+          {venture && <ImportExport exportPath="/api/content/export" importPath="/api/content/import" brandId={venture.id} onImported={load} />}
+          <Button onClick={() => setOpen(true)} disabled={!venture}>+ New Post</Button>
         </div>
       </div>
 
-      {loading ? <LoadingSpinner /> : posts.length === 0 ? (
+      {!venture ? (
+        <EmptyState icon="🏢" title="Select a venture" hint="Choose a brand above to manage its content." />
+      ) : loading ? <LoadingSpinner /> : posts.length === 0 ? (
         <EmptyState icon="📱" title="No content scheduled" hint="Schedule your first post. Publishing requires Postiz/Meta + Supabase connected." action={<Button onClick={() => setOpen(true)}>New Post</Button>} />
       ) : (
         <ContentCalendar posts={posts} onSelect={setSelected} />
@@ -111,7 +144,13 @@ export default function ContentPage() {
             </div>
             <p className="text-sm text-slate-700">{selected.post_body}</p>
             <p className="text-xs text-slate-400">{selected.scheduled_for ? new Date(selected.scheduled_for).toLocaleString() : 'Unscheduled'}</p>
-            <Button variant="danger" className="w-full" onClick={() => remove(selected)}>Delete Post</Button>
+            {selected.status !== 'published' && (
+              <Button className="w-full" onClick={() => publish(selected)} loading={saving}>🚀 Publish Now</Button>
+            )}
+            <div className="flex gap-2">
+              <Button className="flex-1" loading={publishing === selected.id} onClick={() => publish(selected)}>🚀 Publish</Button>
+              <Button variant="danger" className="flex-1" onClick={() => remove(selected)}>Delete</Button>
+            </div>
           </div>
         )}
       </Drawer>

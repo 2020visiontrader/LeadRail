@@ -32,8 +32,16 @@ export async function POST(request: NextRequest) {
     if (!body?.brand_id || !body?.platform || !body?.post_body) {
       return NextResponse.json({ error: 'brand_id, platform, and post_body are required' }, { status: 400 });
     }
+    // Resolve account_id from the brand so the post is publishable (publish path
+    // needs account_id to look up account-scoped Meta/Postiz tokens).
+    let accountId = body.account_id ?? null;
+    if (!accountId) {
+      const { data: brand } = await supabase.from('brands').select('account_id').eq('id', body.brand_id).single();
+      accountId = brand?.account_id ?? null;
+    }
     const { data, error } = await supabase.from('content_calendar').insert([{
       brand_id: body.brand_id,
+      account_id: accountId,
       platform: body.platform,
       post_body: body.post_body,
       media_urls: Array.isArray(body.media_urls) ? body.media_urls : null,

@@ -1,7 +1,19 @@
 import { withRetry } from '@/lib/integrations/retry';
 
-const POSTIZ_API_URL = 'https://api.postiz.io/v1';
-const POSTIZ_API_KEY = process.env.POSTIZ_API_KEY;
+const POSTIZ_API_URL = 'https://api.postiz.com/public/v1';
+let _POSTIZ_API_KEY = process.env.POSTIZ_API_KEY;
+
+import { getConnections } from '@/lib/db';
+
+async function getPostizApiKey(accountId?: string): Promise<string> {
+  if (accountId) {
+    const conns = await getConnections(accountId);
+    const postizConn = conns.find(c => c.provider === 'postiz' && c.status === 'connected');
+    if (postizConn?.meta?.access_token) return String(postizConn.meta.access_token);
+  }
+  if (!_POSTIZ_API_KEY) throw new Error('POSTIZ_API_KEY not set — connect Postiz in Settings → Integrations');
+  return _POSTIZ_API_KEY;
+}
 
 export type Platform = 'instagram' | 'tiktok' | 'linkedin' | 'twitter' | 'facebook' | 'threads' | 'reddit' | 'youtube';
 
@@ -13,12 +25,12 @@ export interface PostizPost {
   hashtags?: string[];
 }
 
-export async function schedulePostizPost(post: PostizPost) {
-  if (!POSTIZ_API_KEY) throw new Error('POSTIZ_API_KEY not set');
+export async function schedulePostizPost(post: PostizPost, accountId?: string) {
+  const apiKey = await getPostizApiKey(accountId);
   return withRetry(() =>
     fetch(`${POSTIZ_API_URL}/posts`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${POSTIZ_API_KEY}`, 'Content-Type': 'application/json' },
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         message: post.content,
         platforms: post.platforms,
@@ -33,10 +45,10 @@ export async function schedulePostizPost(post: PostizPost) {
   );
 }
 
-export async function getPostizMetrics(postId: string) {
-  if (!POSTIZ_API_KEY) throw new Error('POSTIZ_API_KEY not set');
+export async function getPostizMetrics(postId: string, accountId?: string) {
+  const apiKey = await getPostizApiKey(accountId);
   const response = await fetch(`${POSTIZ_API_URL}/posts/${postId}/analytics`, {
-    headers: { Authorization: `Bearer ${POSTIZ_API_KEY}` },
+    headers: { Authorization: `Bearer ${apiKey}` },
   });
   if (!response.ok) throw new Error('Failed to fetch Postiz metrics');
   return response.json();

@@ -1,57 +1,179 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import Badge from '@/components/Badge';
 import LoadingSpinner from '@/components/LoadingSpinner';
-import { apiGet } from '@/lib/api';
+import Button from '@/components/Button';
+import Input from '@/components/Input';
+import { apiGet, apiSend } from '@/lib/api';
 
-const META: Record<string, { label: string; desc: string }> = {
-  supabase: { label: 'Supabase', desc: 'Database & auth' },
-  apollo: { label: 'Apollo', desc: 'Lead sourcing & enrichment' },
-  gemini: { label: 'Gemini (Nano Banana)', desc: 'AI text + static image generation' },
-  brevo: { label: 'Brevo', desc: 'Email delivery' },
-  resend: { label: 'Resend', desc: 'Email delivery (alt)' },
-  postiz: { label: 'Postiz', desc: 'Social scheduling (8 platforms)' },
-  meta: { label: 'Meta', desc: 'Instagram / Facebook ads' },
-  google_ads: { label: 'Google Ads', desc: 'Search & display campaigns' },
-  nim: { label: 'NVIDIA NIM', desc: 'AI generation (alt)' },
+interface Connection {
+  provider: string;
+  status: string;
+  meta: Record<string, any>;
+  updated_at: string;
+}
+
+interface PlatformInfo {
+  label: string;
+  desc: string;
+  requiresToken: boolean;
+  tokenLabel: string;
+  helpUrl: string;
+  helpText: string;
+  validatorProvider: string;
+}
+
+const PLATFORMS: Record<string, PlatformInfo> = {
+  supabase: { label: 'Supabase', desc: 'Database & auth', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
+  apollo: { label: 'Apollo', desc: 'Lead sourcing & enrichment', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
+  gemini: { label: 'Gemini (Nano Banana)', desc: 'AI text + image generation', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
+  brevo: { label: 'Brevo', desc: 'Email delivery', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
+  resend: { label: 'Resend', desc: 'Email + newsletters', requiresToken: true, tokenLabel: 'Resend API key', helpUrl: 'https://resend.com/api-keys', helpText: 'Create a Full access key at Resend → API Keys (send-only keys can send but cannot list/read emails). Paste it here.', validatorProvider: 'resend' },
+  postiz: { label: 'Postiz', desc: 'Social publishing — 8 platforms unified', requiresToken: true, tokenLabel: 'Postiz API key', helpUrl: 'https://app.postiz.io/settings/api', helpText: 'Sign up at Postiz → Settings → API. One key covers Instagram, TikTok, LinkedIn, X, Facebook, Threads, Reddit, YouTube.', validatorProvider: 'postiz' },
+  meta: { label: 'Meta (Facebook + Instagram)', desc: 'Social posting & ads via Graph API', requiresToken: true, tokenLabel: 'Meta access token', helpUrl: 'https://developers.facebook.com/tools/explorer/', helpText: 'Go to Graph API Explorer → select your App → get User Token → extend to pages_show_list + instagram_basic + instagram_content_publish + ads_management. Paste the long-lived token here.', validatorProvider: 'meta' },
+  tiktok: { label: 'TikTok', desc: 'Content publishing & analytics', requiresToken: true, tokenLabel: 'TikTok access token', helpUrl: 'https://developers.tiktok.com/apps/', helpText: 'Create a TikTok Developer app → get access token with video.publish + user.info.basic scopes. Paste here.', validatorProvider: 'tiktok' },
+  google_ads: { label: 'Google Ads', desc: 'Search & display campaigns', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
+  nim: { label: 'NVIDIA NIM', desc: 'AI generation (alt)', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
 };
 
 export default function Settings() {
-  const [status, setStatus] = useState<Record<string, boolean> | null>(null);
+  const [envStatus, setEnvStatus] = useState<Record<string, boolean>>({});
+  const [connections, setConnections] = useState<Connection[]>([]);
   const [dbReady, setDbReady] = useState(false);
   const [loading, setLoading] = useState(true);
-  useEffect(() => {
-    apiGet('/api/integrations').then((r) => { setStatus(r.integrations); setDbReady(r.db_ready); }).catch(() => {}).finally(() => setLoading(false));
-  }, []);
+  const accountId = '00000000-0000-0000-0000-0000000000b1';
+
+  const [showConnect, setShowConnect] = useState<string | null>(null);
+  const [tokenValue, setTokenValue] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    apiGet(`/api/integrations?accountId=${accountId}`)
+      .then((r) => {
+        setEnvStatus(r.env || {});
+        setConnections(r.connections || []);
+        setDbReady(r.db_ready);
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [accountId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  function isConnected(platform: string): boolean {
+    const env = envStatus[platform] ?? false;
+    const conn = connections.find((c) => c.provider === platform && c.status === 'connected');
+    return env || !!conn;
+  }
+
+  function connectedVia(platform: string): string | null {
+    if (envStatus[platform]) return 'env var';
+    const conn = connections.find((c) => c.provider === platform && c.status === 'connected');
+    return conn ? `account token (${conn.meta?.platform_name || 'validated'})` : null;
+  }
+
+  async function handleConnect(platform: string) {
+    setBusy(true);
+    setFeedback(null);
+    const info = PLATFORMS[platform];
+    try {
+      const result = await apiSend('/api/integrations/validate', 'POST', {
+        provider: info.validatorProvider,
+        token: tokenValue,
+        accountId,
+      });
+      setFeedback({ ok: true, msg: `Connected to ${result.external_name} (${info.label})` });
+      setShowConnect(null);
+      setTokenValue('');
+      load();
+    } catch (e: any) {
+      setFeedback({ ok: false, msg: e?.message || 'Validation failed' });
+    } finally {
+      setBusy(false);
+    }
+  }
 
   return (
     <div className="max-w-3xl space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Settings</h1>
-        <p className="text-sm text-slate-500">Integration hub — live connection status</p>
+        <p className="text-sm text-slate-500">Integration hub — connect platforms per-account</p>
       </div>
 
-      {loading ? <LoadingSpinner /> : (
+      {loading ? (
+        <LoadingSpinner />
+      ) : (
         <>
           <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm">
             Database: {dbReady ? <Badge tone="green">connected</Badge> : <Badge tone="amber">not configured</Badge>}
           </div>
+
           <div className="grid gap-4 sm:grid-cols-2">
-            {Object.entries(META).map(([key, m]) => {
-              const on = status?.[key];
+            {Object.entries(PLATFORMS).map(([key, info]) => {
+              const on = isConnected(key);
+              const via = connectedVia(key);
               return (
-                <div key={key} className="flex items-start justify-between rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <div>
-                    <h3 className="font-semibold">{m.label}</h3>
-                    <p className="text-sm text-slate-500">{m.desc}</p>
+                <div key={key} className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <h3 className="font-semibold">{info.label}</h3>
+                      <p className="text-sm text-slate-500">{info.desc}</p>
+                      {via && <p className="mt-1 text-xs text-slate-400">{via}</p>}
+                    </div>
+                    <Badge tone={on ? 'green' : 'gray'}>{on ? 'connected' : 'off'}</Badge>
                   </div>
-                  <Badge tone={on ? 'green' : 'gray'}>{on ? 'connected' : 'off'}</Badge>
+
+                  {info.requiresToken && !on && showConnect !== key && (
+                    <Button variant="secondary" className="w-full text-xs" onClick={() => { setShowConnect(key); setTokenValue(''); setFeedback(null); }}>
+                      + Connect {info.label}
+                    </Button>
+                  )}
+
+                  {info.requiresToken && on && showConnect !== key && (
+                    <Button variant="ghost" className="w-full text-xs" onClick={() => { setShowConnect(key); setTokenValue(''); setFeedback(null); }}>
+                      Reconnect
+                    </Button>
+                  )}
+
+                  {showConnect === key && (
+                    <div className="space-y-3 rounded-lg bg-slate-50 p-3">
+                      <p className="text-xs text-slate-600">{info.helpText}</p>
+                      <a href={info.helpUrl} target="_blank" rel="noopener" className="text-xs text-blue-600 underline">
+                        Open setup guide →
+                      </a>
+                      <Input
+                        type="password"
+                        label={info.tokenLabel}
+                        placeholder="Paste your token or API key…"
+                        value={tokenValue}
+                        onChange={(e) => { setTokenValue((e.target as HTMLInputElement).value); setFeedback(null); }}
+                      />
+                      {feedback && (
+                        <p className={`text-xs ${feedback.ok ? 'text-green-600' : 'text-red-600'}`}>
+                          {feedback.msg}
+                        </p>
+                      )}
+                      <div className="flex gap-2">
+                        <Button onClick={() => handleConnect(key)} loading={busy} disabled={!tokenValue.trim()} className="flex-1 text-xs">
+                          Validate & Connect
+                        </Button>
+                        <Button variant="ghost" onClick={() => { setShowConnect(null); setFeedback(null); }} className="text-xs">
+                          Cancel
+                        </Button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
           </div>
+
           <p className="text-xs text-slate-400">
-            Set API keys as environment variables (see <code>.env.local.example</code>). Connection reflects which keys are present.
+            Env vars set: {Object.entries(envStatus).filter(([,v]) => v).map(([k]) => PLATFORMS[k]?.label || k).join(', ') || 'none'}<br />
+            Per-account connections: {connections.filter((c) => c.status === 'connected').map((c) => PLATFORMS[c.provider]?.label || c.provider).join(', ') || 'none'}<br />
+            Recommended: use <strong>Postiz</strong> for all social platforms (one key, 8 platforms). Tokens validated live against each platform's API.
           </p>
         </>
       )}

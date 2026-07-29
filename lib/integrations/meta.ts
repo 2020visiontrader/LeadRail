@@ -1,8 +1,9 @@
 import { withRetry } from '@/lib/integrations/retry';
+import { getConnections } from '@/lib/db';
 
 // Instagram Content Publishing runs on the Facebook Graph host, NOT graph.instagram.com.
 const META_API_URL = 'https://graph.facebook.com/v18.0';
-const META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
+const ENV_META_ACCESS_TOKEN = process.env.META_ACCESS_TOKEN;
 
 export interface MetaPost {
   caption: string;
@@ -10,21 +11,48 @@ export interface MetaPost {
   videoUrl?: string;
 }
 
-async function graph(path: string, body: Record<string, any>) {
+export interface MetaCreds {
+  token: string;
+  igUserId?: string;
+}
+
+/**
+ * Resolve Meta credentials for an account: prefer the account-scoped token
+ * stored in integration_connections (meta.access_token / meta.ig_user_id),
+ * fall back to the process-level env token for the demo/owner account.
+ */
+export async function getMetaCreds(accountId?: string): Promise<MetaCreds> {
+  if (accountId) {
+    try {
+      const conns = await getConnections(accountId);
+      const metaConn = conns.find((c) => c.provider === 'meta' && c.status === 'connected');
+      const token = metaConn?.meta?.access_token;
+      if (token) {
+        return { token: String(token), igUserId: metaConn?.meta?.ig_user_id ? String(metaConn.meta.ig_user_id) : undefined };
+      }
+    } catch {
+      // fall through to env
+    }
+  }
+  if (!ENV_META_ACCESS_TOKEN) throw new Error('META_ACCESS_TOKEN not set — connect Meta in Settings → Integrations');
+  return { token: ENV_META_ACCESS_TOKEN };
+}
+
+async function graph(path: string, body: Record<string, any>, token: string) {
   const res = await fetch(`${META_API_URL}/${path}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ ...body, access_token: META_ACCESS_TOKEN }),
+    body: JSON.stringify({ ...body, access_token: token }),
   });
   const json = await res.json();
   if (!res.ok) throw new Error(`Meta error (${res.status}): ${json?.error?.message || res.statusText}`);
   return json;
 }
 
-async function waitForContainer(containerId: string, attempts = 10, delayMs = 3000) {
+async function waitForContainer(containerId: string, token: string, attempts = 10, delayMs = 3000) {
   for (let i = 0; i < attempts; i++) {
     const res = await fetch(
-      `${META_API_URL}/${containerId}?fields=status_code&access_token=${META_ACCESS_TOKEN}`
+      `${META_API_URL}/${containerId}?fields=status_code&access_token=${token}`
     );
     const json = await res.json();
     if (json.status_code === 'FINISHED') return;
@@ -34,9 +62,10 @@ async function waitForContainer(containerId: string, attempts = 10, delayMs = 30
   throw new Error('Meta media processing timed out');
 }
 
-/** Publish an image or reel to an Instagram Business account (igUserId). */
-export async function postToInstagram(igUserId: string, post: MetaPost) {
-  if (!META_ACCESS_TOKEN) throw new Error('META_ACCESS_TOKEN not set');
+/** Publish an image or reel to an Instagram Business account (igUserId), using an explicit token. */
+export async function postToInstagram(igUserId: string, post: MetaPost, token?: string) {
+  const accessToken = token || ENV_META_ACCESS_TOKEN;
+  if (!accessToken) throw new Error('META_ACCESS_TOKEN not set');
 
   const createBody: Record<string, any> = { caption: post.caption };
   let isVideo = false;
@@ -50,16 +79,26 @@ export async function postToInstagram(igUserId: string, post: MetaPost) {
     throw new Error('postToInstagram requires imageUrl or videoUrl');
   }
 
-  const media = await withRetry(() => graph(`${igUserId}/media`, createBody));
-  if (isVideo) await waitForContainer(media.id);
+  const media = await withRetry(() => graph(`${igUserId}/media`, createBody, accessToken));
+  if (isVideo) await waitForContainer(media.id, accessToken);
 
-  return withRetry(() => graph(`${igUserId}/media_publish`, { creation_id: media.id }));
+  return withRetry(() => graph(`${igUserId}/media_publish`, { creation_id: media.id }, accessToken));
 }
 
-export async function getInstagramInsights(mediaId: string) {
-  if (!META_ACCESS_TOKEN) throw new Error('META_ACCESS_TOKEN not set');
+/** Account-aware publish: resolves the stored token + IG user id from the DB. */
+export async function publishToInstagramForAccount(accountId: string, post: MetaPost) {
+  const { token, igUserId } = await getMetaCreds(accountId);
+  if (!igUserId) {
+    throw new Error('No Instagram Business account linked — reconnect Meta in Settings so we can resolve your ig_user_id');
+  }
+  return postToInstagram(igUserId, post, token);
+}
+
+export async function getInstagramInsights(mediaId: string, token?: string) {
+  const accessToken = token || ENV_META_ACCESS_TOKEN;
+  if (!accessToken) throw new Error('META_ACCESS_TOKEN not set');
   const response = await fetch(
-    `${META_API_URL}/${mediaId}/insights?metric=engagement,impressions,reach&access_token=${META_ACCESS_TOKEN}`
+    `${META_API_URL}/${mediaId}/insights?metric=engagement,impressions,reach&access_token=${accessToken}`
   );
   const json = await response.json();
   if (!response.ok) throw new Error(`Failed to fetch Meta insights: ${json?.error?.message || response.statusText}`);

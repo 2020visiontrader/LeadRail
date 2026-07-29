@@ -12,21 +12,28 @@ import { useToast } from '@/components/ToastProvider';
 import { apiGet, apiSend } from '@/lib/api';
 import { AdCampaign } from '@/lib/types';
 
-const BRAND = 'rentahub';
+interface Venture { id: string; name: string; account_id: string }
 const CHANNELS = ['meta', 'google', 'tiktok', 'linkedin', 'other'];
 
 export default function CampaignsPage() {
   const { notify } = useToast();
+  const [ventures, setVentures] = useState<Venture[]>([]);
+  const [venture, setVenture] = useState<Venture | null>(null);
   const [rows, setRows] = useState<AdCampaign[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ name: '', channel: 'meta', budget: '', start_date: '', end_date: '' });
-  // Asset workspace for the selected campaign
   const [assetCampaign, setAssetCampaign] = useState<AdCampaign | null>(null);
   const [assets, setAssets] = useState<any[]>([]);
   const [assetUrl, setAssetUrl] = useState('');
   const [assetBusy, setAssetBusy] = useState(false);
+
+  useEffect(() => {
+    apiGet<{ ventures: Venture[] }>('/api/ventures')
+      .then((d) => { const vs = d.ventures || []; setVentures(vs); setVenture((cur) => cur || vs[0] || null); })
+      .catch(() => setVentures([]));
+  }, []);
 
   const openAssets = async (c: AdCampaign) => {
     setAssetCampaign(c); setAssets([]);
@@ -52,18 +59,19 @@ export default function CampaignsPage() {
   };
 
   const load = useCallback(async () => {
+    if (!venture) return;
     setLoading(true);
-    const data = await apiGet<AdCampaign[]>(`/api/campaigns?brandId=${BRAND}`).catch(() => []);
+    const data = await apiGet<AdCampaign[]>(`/api/campaigns?brandId=${venture.id}`).catch(() => []);
     setRows(Array.isArray(data) ? data : []);
     setLoading(false);
-  }, []);
+  }, [venture]);
   useEffect(() => { load(); }, [load]);
 
   const create = async () => {
     if (!form.name) { notify('Name required', 'error'); return; }
     setSaving(true);
     try {
-      await apiSend('/api/campaigns', 'POST', { brand_id: BRAND, ...form, budget: Number(form.budget) || 0, start_date: form.start_date || null, end_date: form.end_date || null });
+      await apiSend('/api/campaigns', 'POST', { brand_id: venture?.id, ...form, budget: Number(form.budget) || 0, start_date: form.start_date || null, end_date: form.end_date || null });
       notify('Campaign created');
       setOpen(false); setForm({ name: '', channel: 'meta', budget: '', start_date: '', end_date: '' });
       load();
@@ -83,9 +91,22 @@ export default function CampaignsPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Campaigns</h1>
-          <p className="text-sm text-slate-500">Ad campaigns</p>
+        <div className="flex items-center gap-4">
+          <div>
+            <h1 className="text-2xl font-bold">Campaigns</h1>
+            <p className="text-sm text-slate-500">Ad campaigns</p>
+          </div>
+          {ventures.length > 1 && (
+            <select
+              value={venture?.id || ''}
+              onChange={(e) => setVenture(ventures.find((v) => v.id === e.target.value) || null)}
+              className="rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface)] px-3 py-1.5 text-sm text-[var(--text-primary)]"
+            >
+              {ventures.map((v) => (
+                <option key={v.id} value={v.id}>{v.name}</option>
+              ))}
+            </select>
+          )}
         </div>
         <Button onClick={() => setOpen(true)}>+ New Campaign</Button>
       </div>

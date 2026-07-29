@@ -13,10 +13,12 @@ import { useToast } from '@/components/ToastProvider';
 import { apiGet, apiSend } from '@/lib/api';
 import { Contact, EmailCampaign } from '@/lib/types';
 
-const BRAND = 'rentahub';
+interface Venture { id: string; name: string; account_id: string }
 
 export default function OutreachPage() {
   const { notify } = useToast();
+  const [ventures, setVentures] = useState<Venture[]>([]);
+  const [venture, setVenture] = useState<Venture | null>(null);
   const [campaigns, setCampaigns] = useState<EmailCampaign[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(true);
@@ -26,13 +28,19 @@ export default function OutreachPage() {
   const [goal, setGoal] = useState('');
   const [generating, setGenerating] = useState(false);
 
+  useEffect(() => {
+    apiGet<{ ventures: Venture[] }>('/api/ventures')
+      .then((d) => { const vs = d.ventures || []; setVentures(vs); setVenture((cur) => cur || vs[0] || null); })
+      .catch(() => setVentures([]));
+  }, []);
+
   const generate = async () => {
     if (!goal.trim()) { notify('Describe the goal of the email', 'error'); return; }
     setGenerating(true);
     try {
       const contact = contacts.find((c) => c.id === form.contactId);
       const r = await apiSend<{ draft: { subject: string; body: string } }>('/api/generate/outreach', 'POST', {
-        venture: { name: BRAND }, goal: goal.trim(),
+        venture: { name: venture?.name || '' }, goal: goal.trim(),
         contact: contact ? { name: contact.name, title: contact.title, company: contact.company } : {},
       });
       setForm((f) => ({ ...f, subject: r.draft.subject || f.subject, html: r.draft.body || f.html }));
@@ -43,15 +51,16 @@ export default function OutreachPage() {
   };
 
   const load = useCallback(async () => {
+    if (!venture) return;
     setLoading(true);
     const [c, k] = await Promise.all([
       apiGet<EmailCampaign[]>('/api/outreach').catch(() => []),
-      apiGet<Contact[]>(`/api/leads?brandId=${BRAND}&limit=100`).catch(() => []),
+      apiGet<Contact[]>(`/api/leads?brandId=${venture.id}&limit=100`).catch(() => []),
     ]);
     setCampaigns(Array.isArray(c) ? c : []);
     setContacts(Array.isArray(k) ? k : []);
     setLoading(false);
-  }, []);
+  }, [venture]);
   useEffect(() => { load(); }, [load]);
 
   const send = async () => {
@@ -69,9 +78,22 @@ export default function OutreachPage() {
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold">Outreach</h1>
-          <p className="text-sm text-slate-500">Email campaigns</p>
+        <div className="flex items-center gap-4">
+          <div>
+            <h1 className="text-2xl font-bold">Outreach</h1>
+            <p className="text-sm text-slate-500">Email campaigns</p>
+          </div>
+          {ventures.length > 1 && (
+            <select
+              value={venture?.id || ''}
+              onChange={(e) => setVenture(ventures.find((v) => v.id === e.target.value) || null)}
+              className="rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface)] px-3 py-1.5 text-sm text-[var(--text-primary)]"
+            >
+              {ventures.map((v) => (
+                <option key={v.id} value={v.id}>{v.name}</option>
+              ))}
+            </select>
+          )}
         </div>
         <div className="flex gap-2">
           <Link href="/outreach/templates"><Button variant="secondary">Templates</Button></Link>

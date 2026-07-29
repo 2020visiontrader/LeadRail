@@ -1,4 +1,5 @@
 import { getContact } from '@/lib/db';
+import { sendResendEmail } from '@/lib/integrations/resend';
 import { sendBrevoEmail } from '@/lib/integrations/brevo';
 
 export interface OutreachRequest {
@@ -8,20 +9,36 @@ export interface OutreachRequest {
   templateId?: string;
 }
 
-/**
- * Single code path for sending an outreach email to a contact.
- * Used by both POST /api/outreach/send and the Hermes engine
- * (avoids server-side self-fetch, which needs an absolute URL on serverless).
- */
 export async function sendOutreachEmail(req: OutreachRequest) {
   if (!req.contactId) throw new Error('contactId is required');
   if (!req.subject) throw new Error('subject is required');
 
   const contact = await getContact(req.contactId);
 
-  const senderEmail = process.env.BREVO_SENDER_EMAIL || 'noreply@example.com';
-  const senderName = process.env.BREVO_SENDER_NAME || 'Marketing Agency OS';
+  const senderEmail = process.env.RESEND_SENDER_EMAIL
+    || process.env.BREVO_SENDER_EMAIL
+    || 'onboarding@resend.dev';
+  const senderName = process.env.RESEND_SENDER_NAME
+    || process.env.BREVO_SENDER_NAME
+    || 'LeadRail CRM';
+  const from = `${senderName} <${senderEmail}>`;
 
+  // Resend primary, Brevo fallback
+  if (process.env.RESEND_API_KEY) {
+    return sendResendEmail(
+      {
+        from,
+        to: [contact.email],
+        subject: req.subject,
+        html: req.html || `<p>Hi ${contact.name},</p>`,
+        replyTo: process.env.REPLY_TO_EMAIL || undefined,
+      },
+      contact.id,
+      req.templateId
+    );
+  }
+
+  // Fallback to Brevo
   return sendBrevoEmail(
     {
       to: [{ email: contact.email, name: contact.name }],

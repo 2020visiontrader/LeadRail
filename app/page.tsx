@@ -8,88 +8,113 @@ import Badge from '@/components/Badge';
 import { apiGet } from '@/lib/api';
 import { Contact } from '@/lib/types';
 
-const BRAND = 'rentahub';
+interface Venture { id: string; name: string; account_id: string }
 
 export default function Overview() {
+  const [ventures, setVentures] = useState<Venture[]>([]);
+  const [venture, setVenture] = useState<Venture | null>(null);
   const [stats, setStats] = useState<any>(null);
   const [recent, setRecent] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    apiGet<{ ventures: Venture[] }>('/api/ventures')
+      .then((d) => { const vs = d.ventures || []; setVentures(vs); setVenture((cur) => cur || vs[0] || null); })
+      .catch(() => setVentures([]));
+  }, []);
+
+  useEffect(() => {
+    if (!venture) return;
+    setLoading(true);
     Promise.all([
-      apiGet(`/api/overview?brandId=${BRAND}`).catch(() => null),
-      apiGet<Contact[]>(`/api/leads?brandId=${BRAND}&limit=5`).catch(() => []),
+      apiGet(`/api/overview?brandId=${venture.id}`).catch(() => null),
+      apiGet<Contact[]>(`/api/leads?brandId=${venture.id}&limit=5`).catch(() => []),
     ]).then(([s, r]) => {
       setStats(s);
       setRecent(Array.isArray(r) ? r : []);
       setLoading(false);
     });
-  }, []);
+  }, [venture]);
 
   const segCounts = recent.reduce((acc: Record<string, number>, c) => {
     acc[c.segment] = (acc[c.segment] || 0) + 1;
     return acc;
   }, {});
-  const chartData = Object.entries(segCounts).map(([label, value]) => ({ label, value }));
+
+  if (loading) return <LoadingSpinner label="Loading dashboard…" />;
 
   return (
-    <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-bold">Overview</h1>
-        <p className="text-sm text-slate-500">Your agency at a glance</p>
+    <div className="space-y-6">
+      <div className="flex items-center gap-4 flex-wrap">
+        <h1 className="text-2xl font-bold">Dashboard</h1>
+        {ventures.length > 1 && (
+          <select
+            value={venture?.id || ''}
+            onChange={(e) => setVenture(ventures.find((v) => v.id === e.target.value) || null)}
+            className="rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface)] px-3 py-1.5 text-sm text-[var(--text-primary)]"
+          >
+            {ventures.map((v) => (
+              <option key={v.id} value={v.id}>{v.name}</option>
+            ))}
+          </select>
+        )}
       </div>
 
-      {loading ? (
-        <LoadingSpinner />
+      {!stats ? (
+        <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50 p-8 text-center">
+          <p className="text-slate-500">No data yet — add leads to populate the dashboard.</p>
+        </div>
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
-            <KPICard label="Leads" value={stats?.leads ?? '—'} icon="📋" />
-            <KPICard label="Avg Score" value={stats?.avgScore ?? '—'} icon="⭐" />
-            <KPICard label="Emails Sent" value={stats?.emails ?? '—'} icon="📧" />
-            <KPICard label="Scheduled Posts" value={stats?.posts ?? '—'} icon="📱" />
-            <KPICard label="Ad Campaigns" value={stats?.campaigns ?? '—'} icon="🎯" />
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <KPICard label="Total Contacts" value={stats.contacts || 0} />
+            <KPICard label="Active Deals" value={stats.deals || 0} icon="💼" />
+            <KPICard label="Won" value={stats.won || 0} icon="✅" />
+            <KPICard label="CVR" value={`${stats.conversion_rate || 0}%`} />
           </div>
-          {!stats && (
-            <p className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-              Live stats need Supabase connected + migrations applied. Showing placeholders.
-            </p>
+
+          {Object.keys(segCounts).length > 0 && (
+            <div className="rounded-xl border border-[var(--border-strong)] bg-[var(--bg-surface)] p-4">
+              <h3 className="mb-3 text-sm font-semibold">Lead segments</h3>
+              <Chart
+                data={Object.entries(segCounts).map(([seg, n]) => ({ label: seg, value: n }))}
+                height={160}
+              />
+            </div>
           )}
 
-          <div className="grid gap-6 lg:grid-cols-3">
-            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm lg:col-span-2">
-              <div className="mb-4 flex items-center justify-between">
-                <h2 className="font-semibold">Recent Leads</h2>
-                <Link href="/leads" className="text-sm text-indigo-600 hover:underline">View all →</Link>
-              </div>
-              {recent.length === 0 ? (
-                <p className="py-8 text-center text-sm text-slate-400">No leads yet.</p>
-              ) : (
-                <ul className="divide-y divide-slate-100">
-                  {recent.map((c) => (
-                    <li key={c.id} className="flex items-center justify-between py-3">
-                      <div>
-                        <Link href={`/leads/${c.id}`} className="text-sm font-medium hover:text-indigo-600">{c.name}</Link>
-                        <p className="text-xs text-slate-400">{c.company || c.email}</p>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Badge tone="indigo">{c.segment}</Badge>
-                        <span className="text-sm font-semibold text-green-600">{c.score}</span>
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-              <h2 className="mb-4 font-semibold">Segment Mix (recent)</h2>
-              {chartData.length ? <Chart data={chartData} /> : <p className="py-8 text-center text-sm text-slate-400">No data.</p>}
-              <div className="mt-6 space-y-2">
-                <Link href="/outreach" className="block rounded-lg bg-slate-50 px-3 py-2 text-sm hover:bg-slate-100">📧 Compose outreach</Link>
-                <Link href="/content" className="block rounded-lg bg-slate-50 px-3 py-2 text-sm hover:bg-slate-100">📱 Schedule content</Link>
-                <Link href="/campaigns" className="block rounded-lg bg-slate-50 px-3 py-2 text-sm hover:bg-slate-100">🎯 New campaign</Link>
+          {recent.length > 0 && (
+            <div>
+              <h3 className="mb-2 text-sm font-semibold">Recent leads</h3>
+              <div className="overflow-hidden rounded-lg border border-[var(--border-strong)]">
+                <table className="w-full text-left text-sm">
+                  <thead className="bg-[var(--bg-raised)]">
+                    <tr>
+                      <th className="px-4 py-2 font-medium">Name</th>
+                      <th className="px-4 py-2 font-medium">Company</th>
+                      <th className="px-4 py-2 font-medium">Segment</th>
+                      <th className="px-4 py-2 font-medium">Score</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--border-weak)]">
+                    {recent.map((c) => (
+                      <tr key={c.id} className="hover:bg-[var(--bg-raised)]">
+                        <td className="px-4 py-2">{c.name}</td>
+                        <td className="px-4 py-2 text-[var(--text-secondary)]">{c.company || '—'}</td>
+                        <td className="px-4 py-2"><Badge tone="blue">{c.segment}</Badge></td>
+                        <td className="px-4 py-2 font-mono">{c.score}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
             </div>
+          )}
+
+          <div className="flex gap-3">
+            <Link href="/leads" className="inline-flex items-center rounded-lg bg-[var(--brand)] px-4 py-2 text-sm font-medium text-white hover:brightness-110">📋 View all leads</Link>
+            <Link href="/outreach" className="inline-flex items-center rounded-lg bg-[var(--bg-raised)] px-4 py-2 text-sm font-medium hover:brightness-95">✉️ Send outreach</Link>
+            <Link href="/campaigns" className="inline-flex items-center rounded-lg bg-[var(--bg-raised)] px-4 py-2 text-sm font-medium hover:brightness-95">🎯 New campaign</Link>
           </div>
         </>
       )}
