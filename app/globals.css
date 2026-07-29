@@ -2,71 +2,107 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Semantic CSS classes */
-.btn-primary {
-  @apply px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition;
+/* =========================================================================
+   Brand: warm beige + white + near-black ink (primary). Blue + red tints are
+   SECONDARY accents only. Matte/flat, soft rounded, geometric headings (Poppins).
+   Light is the primary brand; .dark is the dark variant. Everything flows through
+   CSS vars so the same Tailwind classes flip between modes.
+   Status = 3 signals: active(blue) / positive(green) / negative(red) + neutral.
+   ========================================================================= */
+:root {
+  --bg-canvas: #F4EFE6;          /* warm beige — the page */
+  --bg-surface: #FFFFFF;         /* cards, chrome */
+  --bg-raised: #EFE9DD;          /* nested tiles, hover rows */
+
+  --text-primary: #14110E;       /* near-black ink */
+  --text-secondary: #5B554C;
+  --text-muted: #9A9284;
+
+  --border-default: #E7E1D6;
+  --border-strong: #D8D1C4;
+
+  --ink: #14110E;                /* PRIMARY action = black */
+  --ink-hover: #2A2620;
+  --ink-fg: #FFFFFF;             /* text on ink */
+
+  --brand: #2563EB;              /* SECONDARY = blue */
+  --brand-hover: #1D4ED8;
+  --brand-soft: rgba(37, 99, 235, 0.10);
+
+  --accent: #DC2626;             /* red tint — sparing */
+  --accent-soft: rgba(220, 38, 38, 0.10);
+
+  --status-active: #2563EB;      /* new, outreaching */
+  --status-positive: #16A34A;    /* replied/responded, qualified */
+  --status-negative: #DC2626;    /* not responded, unsubscribed, dead */
+  --status-neutral: #9A9284;
+
+  --scrim: rgba(20, 17, 14, 0.35);
+  --shadow-card: 0 1px 2px rgba(20, 17, 14, 0.05), 0 4px 16px rgba(20, 17, 14, 0.04);
+  --shadow-pop: 0 12px 32px rgba(20, 17, 14, 0.14);
+  --focus-ring: 0 0 0 3px rgba(37, 99, 235, 0.18);
+
+  --radius-sm: 6px; --radius-md: 10px; --radius-lg: 14px; --radius-full: 9999px;
+
+  --font-display: 'Poppins', system-ui, sans-serif;
+  --font-sans: 'Inter', system-ui, sans-serif;
 }
 
-.btn-secondary {
-  @apply px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300 transition;
+.dark {
+  --bg-canvas: #14120F;          /* warm near-black */
+  --bg-surface: #1D1A16;
+  --bg-raised: #26221C;
+
+  --text-primary: #F4EFE6;       /* beige white */
+  --text-secondary: #B4AC9E;
+  --text-muted: #7C7466;
+
+  --border-default: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.14);
+
+  --ink: #F4EFE6;                /* primary action inverts to light in dark mode */
+  --ink-hover: #E7E1D6;
+  --ink-fg: #14120F;
+
+  --brand: #4B8BFF;
+  --brand-hover: #6BA1FF;
+  --brand-soft: rgba(75, 139, 255, 0.16);
+
+  --accent: #F0574B;
+  --accent-soft: rgba(240, 87, 75, 0.16);
+
+  --status-active: #4B8BFF;
+  --status-positive: #22C55E;
+  --status-negative: #F0574B;
+  --status-neutral: #7C7466;
+
+  --scrim: rgba(0, 0, 0, 0.60);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --focus-ring: 0 0 0 3px rgba(75, 139, 255, 0.25);
 }
 
-.btn-danger {
-  @apply px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition;
-}
-
-.card {
-  @apply p-6 border border-gray-200 rounded-lg bg-white shadow-sm hover:shadow-md transition;
-}
-
-.input-field {
-  @apply px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500;
-}
-
-.badge {
-  @apply inline-block px-3 py-1 text-sm font-semibold rounded-full;
-}
-
-.badge-success {
-  @apply bg-green-100 text-green-800;
-}
-
-.badge-error {
-  @apply bg-red-100 text-red-800;
-}
-
-.badge-warning {
-  @apply bg-yellow-100 text-yellow-800;
-}
-
-/* Animations */
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(-10px);
+@layer base {
+  html, body {
+    background: var(--bg-canvas);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
   }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  h1, h2, h3, h4 { color: var(--text-primary); font-family: var(--font-display); letter-spacing: -0.01em; }
 }
 
-.animate-fade-in {
-  animation: fadeIn 0.3s ease-in-out;
-}
+/* Surfaces have a single role in this app → centralize the flip here. */
+.bg-white { background-color: var(--bg-surface) !important; }
+.bg-slate-50 { background-color: var(--bg-raised) !important; }
+.bg-slate-100 { background-color: var(--bg-raised) !important; }
+.hover\:bg-slate-50:hover { background-color: var(--bg-raised) !important; }
+.hover\:bg-slate-100:hover { background-color: var(--bg-raised) !important; }
 
-/* Responsive tables */
-@media (max-width: 768px) {
-  table {
-    font-size: 0.875rem;
-  }
-  
-  td, th {
-    padding: 0.5rem 0.25rem;
-  }
-}
+.card { background: var(--bg-surface); border: 1px solid var(--border-default); border-radius: var(--radius-lg); padding: 24px; box-shadow: var(--shadow-card); }
+.badge { display: inline-block; padding: 4px 10px; font-size: 11px; font-weight: 600; border-radius: var(--radius-full); }
 
-/* Loading skeleton */
-.skeleton {
-  @apply bg-gray-200 rounded animate-pulse;
-}
+@keyframes fadeIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+.animate-fade-in { animation: fadeIn 0.25s ease-in-out; }
+
+@media (max-width: 768px) { table { font-size: 12px; } }
