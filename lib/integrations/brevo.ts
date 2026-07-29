@@ -1,5 +1,6 @@
-import { supabase, findContactByEmail } from '@/lib/db';
+import { supabase, findContactByEmailUnscoped } from '@/lib/db';
 import { withRetry } from '@/lib/integrations/retry';
+import { addSuppression } from '@/lib/suppressions';
 
 const BREVO_API_URL = 'https://api.brevo.com/v3';
 const BREVO_API_KEY = process.env.BREVO_API_KEY;
@@ -86,7 +87,7 @@ export async function handleBrevoWebhook(event: any) {
     if (messageId) await supabase.from('email_campaigns').update({ opened_at: new Date().toISOString(), status: 'opened' }).eq('brevo_id', messageId);
   }
   if (eventType === 'click') {
-    const contact = email ? await findContactByEmail(email) : null;
+    const contact = email ? await findContactByEmailUnscoped(email) : null;
     if (contact) {
       await supabase.from('contact_events').insert([{
         contact_id: contact.id,
@@ -97,5 +98,17 @@ export async function handleBrevoWebhook(event: any) {
   }
   if (eventType === 'hard_bounce' || eventType === 'soft_bounce' || eventType === 'spam' || eventType === 'complaint') {
     if (messageId) await supabase.from('email_campaigns').update({ status: 'bounced' }).eq('brevo_id', messageId);
+    // Permanent failures / complaints must never be re-sent: add to suppression list.
+    if (email && (eventType === 'hard_bounce' || eventType === 'spam' || eventType === 'complaint')) {
+      const contact = await findContactByEmailUnscoped(email);
+      if (contact?.account_id) {
+        await addSuppression({
+          accountId: contact.account_id,
+          email,
+          reason: eventType === 'hard_bounce' ? 'hard_bounce' : 'complaint',
+          source: 'webhook',
+        });
+      }
+    }
   }
 }

@@ -1,15 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase } from '@/lib/db';
-import { requireAuth, errorResponse } from '@/lib/http';
+import { supabase, getContact } from '@/lib/db';
+import { requireSession, errorResponse } from '@/lib/http';
 
 export const dynamic = 'force-dynamic';
 
-// List email campaigns (optionally by contactId).
+// List email campaigns (optionally by contactId), scoped to the caller's account
+// via the owning contact (email_campaigns has no account_id of its own).
 export async function GET(request: NextRequest) {
+  const { session, error } = await requireSession(request);
+  if (error) return error;
   const contactId = request.nextUrl.searchParams.get('contactId');
   const limit = Math.min(parseInt(request.nextUrl.searchParams.get('limit') || '50', 10), 200);
   try {
-    let q = supabase.from('email_campaigns').select('*').order('created_at', { ascending: false }).limit(limit);
+    let q = supabase
+      .from('email_campaigns')
+      .select('*, contacts!inner(account_id)')
+      .eq('contacts.account_id', session.accountId)
+      .order('created_at', { ascending: false })
+      .limit(limit);
     if (contactId) q = q.eq('contact_id', contactId);
     const { data, error } = await q;
     if (error) throw error;
@@ -19,13 +27,14 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// Create a draft email campaign row.
 export async function POST(request: NextRequest) {
-  const unauthorized = requireAuth(request);
-  if (unauthorized) return unauthorized;
+  const { session, error } = await requireSession(request);
+  if (error) return error;
   try {
     const body = await request.json();
     if (!body?.contact_id) return NextResponse.json({ error: 'contact_id is required' }, { status: 400 });
+    // Assert the contact belongs to the caller's account.
+    await getContact(body.contact_id, session.accountId);
     const { data, error } = await supabase.from('email_campaigns').insert([{
       contact_id: body.contact_id,
       template_id: body.template_id ?? null,

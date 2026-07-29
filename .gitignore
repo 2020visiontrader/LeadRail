@@ -6,4 +6,5 @@ tsconfig.tsbuildinfo
 # AI-generated static images (admin, on-demand)
 public/generated/
 .env*.local
+.env.production
 .env.production.local

@@ -14,6 +14,20 @@ import { MessageTemplate } from '@/lib/types';
 
 interface Venture { id: string; name: string; account_id: string }
 
+function groupByCategory(templates: MessageTemplate[]): [string, MessageTemplate[]][] {
+  const groups = new Map<string, MessageTemplate[]>();
+  for (const t of templates) {
+    const key = t.category?.trim() || 'Uncategorized';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key)!.push(t);
+  }
+  return Array.from(groups.entries()).sort(([a], [b]) => {
+    if (a === 'Uncategorized') return 1;
+    if (b === 'Uncategorized') return -1;
+    return a.localeCompare(b);
+  });
+}
+
 export default function TemplatesPage() {
   const { notify } = useToast();
   const [ventures, setVentures] = useState<Venture[]>([]);
@@ -61,15 +75,22 @@ export default function TemplatesPage() {
         <EmptyState icon="📝" title="No templates yet" hint="Create your first reusable template." action={<Button onClick={() => setOpen(true)}>New Template</Button>} />
       ) : (
         <div className="grid gap-6 lg:grid-cols-3">
-          <ul className="space-y-2">
-            {rows.map((t) => (
-              <li key={t.id}>
-                <button onClick={() => setActive(t)} className={`w-full rounded-lg border p-3 text-left text-sm ${active?.id === t.id ? 'border-indigo-400 bg-indigo-50' : 'border-slate-200 bg-white hover:bg-slate-50'}`}>
-                  <div className="flex items-center justify-between"><span className="font-medium">{t.name}</span>{t.category && <Badge tone="indigo">{t.category}</Badge>}</div>
-                </button>
-              </li>
+          <div className="space-y-5">
+            {groupByCategory(rows).map(([category, templates]) => (
+              <div key={category}>
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">{category}</h3>
+                <ul className="space-y-2">
+                  {templates.map((t) => (
+                    <li key={t.id}>
+                      <button onClick={() => setActive(t)} className={`w-full rounded-lg border p-3 text-left text-sm ${active?.id === t.id ? 'border-indigo-400 bg-indigo-50' : 'border-slate-200 bg-white hover:bg-slate-50'}`}>
+                        <div className="flex items-center justify-between"><span className="font-medium">{t.name}</span>{t.category && <Badge tone="indigo">{t.category}</Badge>}</div>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
             ))}
-          </ul>
+          </div>
           <div className="lg:col-span-2">
             {active && (
               <div className="rounded-xl border border-slate-200 bg-white p-5">

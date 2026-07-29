@@ -12,8 +12,15 @@ function fromB64url(s: string): Uint8Array {
   return out;
 }
 async function key(): Promise<CryptoKey> {
-  const secret = process.env.APP_SESSION_SECRET || 'dev-insecure-secret-change-me';
-  return crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+  const secret = process.env.APP_SESSION_SECRET;
+  if (!secret) {
+    // Fail closed in production: a missing secret would let anyone forge a session.
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('APP_SESSION_SECRET is required in production');
+    }
+  }
+  const effective = secret || 'dev-insecure-secret-change-me';
+  return crypto.subtle.importKey('raw', enc.encode(effective), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
 }
 export interface Session { email: string; accountId: string; role: string; exp: number; }
 

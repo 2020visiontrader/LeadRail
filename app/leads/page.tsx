@@ -18,7 +18,7 @@ const LIMIT = 30;
 const emptyLead = { name: '', email: '', company: '', title: '', segment: 'investor' };
 const emptyICP = { industry: '', titles: '', seniority: '', location: '', company_size: '', keywords: '', limit: 25 };
 
-interface Venture { id: string; name: string; account_id: string }
+interface Venture { id: string; name: string; account_id: string; contact_count?: number }
 
 export default function LeadsPage() {
   const { notify } = useToast();
@@ -50,7 +50,12 @@ export default function LeadsPage() {
       .then((d) => {
         const vs = d.ventures || [];
         setVentures(vs);
-        setVenture((cur) => cur || vs[0] || null);
+        // Default to the venture that actually has leads (most contacts), so the
+        // page never opens on an empty brand while data sits under another.
+        const preferred = [...vs].sort(
+          (a, b) => (b.contact_count || 0) - (a.contact_count || 0)
+        )[0];
+        setVenture((cur) => cur || preferred || vs[0] || null);
       })
       .catch(() => setVentures([]));
   }, []);

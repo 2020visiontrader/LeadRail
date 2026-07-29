@@ -44,8 +44,8 @@ export async function getCompanies(accountId: string, brandId?: string | null, l
   return data;
 }
 
-export async function getCompany(id: string) {
-  const { data, error } = await supabase.from('companies').select('*').eq('id', id).single();
+export async function getCompany(id: string, accountId: string) {
+  const { data, error } = await supabase.from('companies').select('*').eq('id', id).eq('account_id', accountId).single();
   if (error) throw error;
   return data;
 }
@@ -57,11 +57,12 @@ export async function createCompany(row: Record<string, any>) {
   return data;
 }
 
-export async function updateCompany(id: string, updates: Record<string, any>) {
+export async function updateCompany(id: string, accountId: string, updates: Record<string, any>) {
   const { data, error } = await supabase
     .from('companies')
     .update({ ...updates, updated_at: new Date().toISOString() })
     .eq('id', id)
+    .eq('account_id', accountId)
     .select()
     .single();
   if (error) throw error;
@@ -69,11 +70,12 @@ export async function updateCompany(id: string, updates: Record<string, any>) {
   return data;
 }
 
-export async function deleteCompany(id: string) {
-  const { data } = await supabase.from('companies').select('account_id, brand_id').eq('id', id).single();
-  const { error } = await supabase.from('companies').delete().eq('id', id);
+export async function deleteCompany(id: string, accountId: string) {
+  const { data } = await supabase.from('companies').select('account_id, brand_id').eq('id', id).eq('account_id', accountId).single();
+  if (!data) throw new Error('not found');
+  const { error } = await supabase.from('companies').delete().eq('id', id).eq('account_id', accountId);
   if (error) throw error;
-  if (data) await writeAudit({ account_id: data.account_id, brand_id: data.brand_id, action: 'delete', entity_type: 'company', entity_id: id });
+  await writeAudit({ account_id: data.account_id, brand_id: data.brand_id, action: 'delete', entity_type: 'company', entity_id: id });
   return { ok: true };
 }
 
@@ -106,8 +108,8 @@ export async function getDeals(accountId: string, brandId?: string | null, limit
   return data;
 }
 
-export async function getDeal(id: string) {
-  const { data, error } = await supabase.from('deals').select('*').eq('id', id).single();
+export async function getDeal(id: string, accountId: string) {
+  const { data, error } = await supabase.from('deals').select('*').eq('id', id).eq('account_id', accountId).single();
   if (error) throw error;
   return data;
 }
@@ -119,11 +121,12 @@ export async function createDeal(row: Record<string, any>) {
   return data;
 }
 
-export async function updateDeal(id: string, updates: Record<string, any>) {
+export async function updateDeal(id: string, accountId: string, updates: Record<string, any>) {
   const { data, error } = await supabase
     .from('deals')
     .update({ ...updates, updated_at: new Date().toISOString() })
     .eq('id', id)
+    .eq('account_id', accountId)
     .select()
     .single();
   if (error) throw error;
@@ -131,23 +134,26 @@ export async function updateDeal(id: string, updates: Record<string, any>) {
   return data;
 }
 
-export async function moveDealStage(id: string, stageId: string) {
-  // Reflect won/lost status from the target stage.
-  const { data: stage } = await supabase.from('pipeline_stages').select('is_won, is_lost').eq('id', stageId).single();
+export async function moveDealStage(id: string, accountId: string, stageId: string) {
+  // Reflect won/lost status from the target stage. Scope the stage lookup to the
+  // same account so a caller can't move a deal onto another tenant's stage.
+  const { data: stage } = await supabase.from('pipeline_stages').select('is_won, is_lost').eq('id', stageId).eq('account_id', accountId).single();
+  if (!stage) throw new Error('stage not found');
   const status = stage?.is_won ? 'won' : stage?.is_lost ? 'lost' : 'open';
   const patch: Record<string, any> = { stage_id: stageId, status, updated_at: new Date().toISOString() };
   if (status !== 'open') patch.closed_at = new Date().toISOString();
-  const { data, error } = await supabase.from('deals').update(patch).eq('id', id).select().single();
+  const { data, error } = await supabase.from('deals').update(patch).eq('id', id).eq('account_id', accountId).select().single();
   if (error) throw error;
   await writeAudit({ account_id: data.account_id, brand_id: data.brand_id, action: 'update', entity_type: 'deal', entity_id: id, detail: { stage_id: stageId, status } });
   return data;
 }
 
-export async function deleteDeal(id: string) {
-  const { data } = await supabase.from('deals').select('account_id, brand_id').eq('id', id).single();
-  const { error } = await supabase.from('deals').delete().eq('id', id);
+export async function deleteDeal(id: string, accountId: string) {
+  const { data } = await supabase.from('deals').select('account_id, brand_id').eq('id', id).eq('account_id', accountId).single();
+  if (!data) throw new Error('not found');
+  const { error } = await supabase.from('deals').delete().eq('id', id).eq('account_id', accountId);
   if (error) throw error;
-  if (data) await writeAudit({ account_id: data.account_id, brand_id: data.brand_id, action: 'delete', entity_type: 'deal', entity_id: id });
+  await writeAudit({ account_id: data.account_id, brand_id: data.brand_id, action: 'delete', entity_type: 'deal', entity_id: id });
   return { ok: true };
 }
 
@@ -171,20 +177,22 @@ export async function createActivity(row: Record<string, any>) {
   return data;
 }
 
-export async function updateActivity(id: string, updates: Record<string, any>) {
+export async function updateActivity(id: string, accountId: string, updates: Record<string, any>) {
   const { data, error } = await supabase
     .from('activities')
     .update({ ...updates, updated_at: new Date().toISOString() })
     .eq('id', id)
+    .eq('account_id', accountId)
     .select()
     .single();
   if (error) throw error;
   return data;
 }
 
-export async function deleteActivity(id: string) {
-  const { error } = await supabase.from('activities').delete().eq('id', id);
+export async function deleteActivity(id: string, accountId: string) {
+  const { data, error } = await supabase.from('activities').delete().eq('id', id).eq('account_id', accountId).select('id');
   if (error) throw error;
+  if (!data || !data.length) throw new Error('not found');
   return { ok: true };
 }
 
@@ -207,9 +215,10 @@ export async function createNote(row: Record<string, any>) {
   return data;
 }
 
-export async function deleteNote(id: string) {
-  const { error } = await supabase.from('notes').delete().eq('id', id);
+export async function deleteNote(id: string, accountId: string) {
+  const { data, error } = await supabase.from('notes').delete().eq('id', id).eq('account_id', accountId).select('id');
   if (error) throw error;
+  if (!data || !data.length) throw new Error('not found');
   return { ok: true };
 }
 
@@ -261,9 +270,9 @@ export async function createTerritory(row: Record<string, any>) {
 // ---------------------------------------------------------------------------
 // Campaign members (ad_campaigns membership)
 // ---------------------------------------------------------------------------
-export async function getCampaignMembers(campaignId: string) {
+export async function getCampaignMembers(campaignId: string, accountId: string) {
   const { data, error } = await supabase
-    .from('campaign_members').select('*, contacts(name,email,company)').eq('campaign_id', campaignId);
+    .from('campaign_members').select('*, contacts(name,email,company)').eq('campaign_id', campaignId).eq('account_id', accountId);
   if (error) throw error;
   return data;
 }
@@ -277,9 +286,9 @@ export async function addCampaignMembers(campaignId: string, accountId: string, 
 // ---------------------------------------------------------------------------
 // Contact ↔ company roles (multi-org)
 // ---------------------------------------------------------------------------
-export async function getContactCompanyRoles(contactId: string) {
+export async function getContactCompanyRoles(contactId: string, accountId: string) {
   const { data, error } = await supabase
-    .from('contact_company_roles').select('*, companies(name,domain)').eq('contact_id', contactId);
+    .from('contact_company_roles').select('*, companies(name,domain)').eq('contact_id', contactId).eq('account_id', accountId);
   if (error) throw error;
   return data;
 }
@@ -337,8 +346,8 @@ export async function mergeContacts(opts: {
   return { survivingId, mergedId, aliasesAdded: aliases.length };
 }
 
-export async function getContactAliases(contactId: string) {
-  const { data, error } = await supabase.from('contact_aliases').select('*').eq('contact_id', contactId);
+export async function getContactAliases(contactId: string, accountId: string) {
+  const { data, error } = await supabase.from('contact_aliases').select('*').eq('contact_id', contactId).eq('account_id', accountId);
   if (error) throw error;
   return data ?? [];
 }
@@ -361,16 +370,17 @@ function scoped(table: string) {
       await writeAudit({ account_id: row.account_id, brand_id: row.brand_id ?? null, action: 'create', entity_type: table, entity_id: data.id });
       return data;
     },
-    async update(id: string, updates: Record<string, any>, accountId?: string) {
-      const { data, error } = await supabase.from(table).update(updates).eq('id', id).select().single();
+    async update(id: string, updates: Record<string, any>, accountId: string) {
+      const { data, error } = await supabase.from(table).update(updates).eq('id', id).eq('account_id', accountId).select().single();
       if (error) throw error;
-      if (accountId) await writeAudit({ account_id: accountId, action: 'update', entity_type: table, entity_id: id });
+      await writeAudit({ account_id: accountId, action: 'update', entity_type: table, entity_id: id });
       return data;
     },
-    async remove(id: string, accountId?: string) {
-      const { error } = await supabase.from(table).delete().eq('id', id);
+    async remove(id: string, accountId: string) {
+      const { data, error } = await supabase.from(table).delete().eq('id', id).eq('account_id', accountId).select('id');
       if (error) throw error;
-      if (accountId) await writeAudit({ account_id: accountId, action: 'delete', entity_type: table, entity_id: id });
+      if (!data || !data.length) throw new Error('not found');
+      await writeAudit({ account_id: accountId, action: 'delete', entity_type: table, entity_id: id });
       return { id };
     },
   };
@@ -397,8 +407,8 @@ export async function createEntitlement(row: Record<string, any>) {
 // ===========================================================================
 // Campaign assets + analytics
 // ===========================================================================
-export async function getCampaignAssets(campaignId: string) {
-  const { data, error } = await supabase.from('campaign_assets').select('*').eq('campaign_id', campaignId).order('created_at', { ascending: false });
+export async function getCampaignAssets(campaignId: string, accountId: string) {
+  const { data, error } = await supabase.from('campaign_assets').select('*').eq('campaign_id', campaignId).eq('account_id', accountId).order('created_at', { ascending: false });
   if (error) throw error;
   return data ?? [];
 }

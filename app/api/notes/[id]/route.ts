@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { deleteNote } from '@/lib/crm';
-import { requireAuth, errorResponse } from '@/lib/http';
+import { requireSession, errorResponse } from '@/lib/http';
 
 export const dynamic = 'force-dynamic';
 
 export async function DELETE(request: NextRequest, { params }: { params: { id: string } }) {
-  const unauthorized = requireAuth(request);
-  if (unauthorized) return unauthorized;
-  try { return NextResponse.json(await deleteNote(params.id)); }
+  const { session, error } = await requireSession(request);
+  if (error) return error;
+  try { return NextResponse.json(await deleteNote(params.id, session.accountId)); }
   catch (error) { return errorResponse(error); }
 }

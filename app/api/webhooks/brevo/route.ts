@@ -8,7 +8,9 @@ export const dynamic = 'force-dynamic';
 // (configure the endpoint as .../webhooks/brevo?token=<BREVO_WEBHOOK_SECRET>).
 export async function POST(request: NextRequest) {
   const secret = process.env.BREVO_WEBHOOK_SECRET;
-  if (secret && request.nextUrl.searchParams.get('token') !== secret) {
+  if (!secret) {
+    if (process.env.NODE_ENV === 'production') return NextResponse.json({ error: 'Webhook not configured' }, { status: 503 });
+  } else if (request.nextUrl.searchParams.get('token') !== secret) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
   try {

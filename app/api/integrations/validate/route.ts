@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { dbReady, upsertConnection } from '@/lib/db';
-import { requireAuth, errorResponse, badRequest } from '@/lib/http';
+import { requireSession, errorResponse, badRequest } from '@/lib/http';
 
 export const dynamic = 'force-dynamic';
 
@@ -91,8 +91,8 @@ const VALIDATORS: Record<string, (token: string) => Promise<ValidatorResult>> = 
 };
 
 export async function POST(request: NextRequest) {
-  const unauthorized = requireAuth(request);
-  if (unauthorized) return unauthorized;
+  const { session, error: authErr } = await requireSession(request);
+  if (authErr) return authErr;
 
   try {
     const body = await request.json();
@@ -113,8 +113,9 @@ export async function POST(request: NextRequest) {
       external_id: result.id,
     };
 
-    const accountId = String(body?.accountId || '');
-    if (accountId && dbReady()) {
+    // account_id is authoritative from the session, never the client body.
+    const accountId = session.accountId;
+    if (dbReady()) {
       const metaPayload: Record<string, any> = {
         platform_id: result.id,
         platform_name: result.name,

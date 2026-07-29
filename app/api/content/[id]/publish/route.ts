@@ -1,25 +1,24 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/db';
-import { requireAuth, errorResponse, badRequest } from '@/lib/http';
+import { requireSession, errorResponse, badRequest } from '@/lib/http';
 import { schedulePostizPost } from '@/lib/integrations/postiz';
 import { publishToInstagramForAccount } from '@/lib/integrations/meta';
 
 export const dynamic = 'force-dynamic';
 
-export async function POST(
-  _request: NextRequest,
-  { params }: { params: { id: string } }
-) {
-  const unauthorized = requireAuth(_request);
-  if (unauthorized) return unauthorized;
+export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
+  const { session, error } = await requireSession(request);
+  if (error) return error;
 
   const { id } = params;
   if (!id) return badRequest('id is required');
 
+  // Scope the post to the caller's account so only their own posts publish.
   const { data: post, error: fetchErr } = await supabase
     .from('content_calendar')
     .select('*')
     .eq('id', id)
+    .eq('account_id', session.accountId)
     .single();
 
   if (fetchErr || !post) {
@@ -37,7 +36,6 @@ export async function POST(
   try {
     if (['instagram', 'facebook'].includes(platform)) {
       if (!accountId) throw new Error('Post has no account_id — reconnect Meta in Settings → Integrations and re-save this post');
-      // Resolves the account-scoped token + ig_user_id from integration_connections.
       const res = await publishToInstagramForAccount(accountId, {
         caption: body,
         imageUrl: mediaUrls[0],
@@ -60,7 +58,8 @@ export async function POST(
     await supabase
       .from('content_calendar')
       .update({ status: 'published', ...(externalId ? { postiz_id: externalId } : {}) })
-      .eq('id', id);
+      .eq('id', id)
+      .eq('account_id', session.accountId);
 
     return NextResponse.json({ publishedTo, externalId });
   } catch (error: any) {

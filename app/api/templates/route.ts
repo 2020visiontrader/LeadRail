@@ -1,33 +1,31 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getTemplates, createTemplate, dbReady } from '@/lib/db';
-import { requireAuth, errorResponse, badRequest } from '@/lib/http';
+import { getTemplates, createTemplate, dbReady, assertBrandOwned } from '@/lib/db';
+import { requireSession, errorResponse, badRequest } from '@/lib/http';
 
 export const dynamic = 'force-dynamic';
 
-// GET /api/templates?accountId=...&brandId=(optional)
 export async function GET(request: NextRequest) {
-  const accountId = request.nextUrl.searchParams.get('accountId');
+  const { session, error } = await requireSession(request);
+  if (error) return error;
   const brandId = request.nextUrl.searchParams.get('brandId') || undefined;
-  if (!accountId) return badRequest('accountId is required');
   if (!dbReady()) return NextResponse.json([]);
   try {
-    return NextResponse.json(await getTemplates(accountId, brandId));
+    return NextResponse.json(await getTemplates(session.accountId, brandId));
   } catch (error) {
     return errorResponse(error);
   }
 }
 
 export async function POST(request: NextRequest) {
-  const unauthorized = requireAuth(request);
-  if (unauthorized) return unauthorized;
+  const { session, error } = await requireSession(request);
+  if (error) return error;
   if (!dbReady()) return badRequest('database not connected');
   try {
     const body = await request.json();
-    if (!body?.accountId || !body?.name || !body?.body) {
-      return badRequest('accountId, name, and body are required');
-    }
+    if (!body?.name || !body?.body) return badRequest('name and body are required');
+    if (body.brandId && !(await assertBrandOwned(body.brandId, session.accountId))) return badRequest('unknown brandId');
     const tpl = await createTemplate({
-      account_id: body.accountId,
+      account_id: session.accountId,
       brand_id: body.brandId ?? null,
       name: String(body.name),
       category: body.category ?? null,

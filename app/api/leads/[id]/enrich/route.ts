@@ -2,31 +2,29 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getContact, updateContact, dbReady } from '@/lib/db';
 import { matchPerson, apolloConfigured } from '@/lib/integrations/apollo';
 import { computeFitVerdict } from '@/lib/enrichment';
-import { requireAuth, errorResponse, badRequest } from '@/lib/http';
+import { requireSession, errorResponse, badRequest } from '@/lib/http';
 
 export const dynamic = 'force-dynamic';
 
 // POST /api/leads/:id/enrich
-// Deepens a single contact via Apollo People Match, computes a fit verdict,
-// and persists { enriched, enrichment_status, fit_verdict, score, ...found fields }.
 export async function POST(request: NextRequest, ctx: { params: { id: string } }) {
-  const unauthorized = requireAuth(request);
-  if (unauthorized) return unauthorized;
+  const { session, error: authErr } = await requireSession(request);
+  if (authErr) return authErr;
   if (!dbReady()) return badRequest('database not connected');
 
   const id = ctx.params.id;
+  const accountId = session.accountId;
   let contact: any;
   try {
-    contact = await getContact(id);
+    contact = await getContact(id, accountId);
   } catch (error) {
     return errorResponse(error, 404, 'contact not found');
   }
 
   if (!apolloConfigured()) {
-    // No enrichment provider: still compute a base verdict so the UI isn't dead.
     const fit = computeFitVerdict(contact, null);
     try {
-      const updated = await updateContact(id, {
+      const updated = await updateContact(id, accountId, {
         fit_verdict: fit.verdict,
         score: fit.score,
         enrichment_status: 'none',
@@ -65,11 +63,10 @@ export async function POST(request: NextRequest, ctx: { params: { id: string } }
     if (enr.linkedin_url && !contact.linkedin_url) updates.linkedin_url = enr.linkedin_url;
     if (enr.email && /@locked\.apollo$/.test(contact.email || '')) updates.email = enr.email;
 
-    const updated = await updateContact(id, updates);
+    const updated = await updateContact(id, accountId, updates);
     return NextResponse.json({ contact: updated, fit });
   } catch (error: any) {
-    // Mark the failure so the UI can show it, then surface a clean error.
-    await updateContact(id, { enrichment_status: 'failed' }).catch(() => {});
+    await updateContact(id, accountId, { enrichment_status: 'failed' }).catch(() => {});
     if (error?.code === 'auth') return errorResponse(error, 401, 'Apollo rejected the API key');
     return errorResponse(error, 502, 'Apollo enrichment failed');
   }

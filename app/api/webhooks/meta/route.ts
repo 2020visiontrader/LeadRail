@@ -10,7 +10,8 @@ export async function GET(request: NextRequest) {
   const mode = request.nextUrl.searchParams.get('hub.mode');
   const token = request.nextUrl.searchParams.get('hub.verify_token');
   const challenge = request.nextUrl.searchParams.get('hub.challenge');
-  if (mode === 'subscribe' && token && token === process.env.META_VERIFY_TOKEN) {
+  const verifyToken = process.env.META_WEBHOOK_VERIFY_TOKEN || process.env.META_VERIFY_TOKEN;
+  if (mode === 'subscribe' && token && verifyToken && token === verifyToken) {
     return new NextResponse(challenge || '', { status: 200 });
   }
   return NextResponse.json({ error: 'Verification failed' }, { status: 403 });
@@ -20,7 +21,12 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const appSecret = process.env.META_APP_SECRET;
   const raw = await request.text();
-  if (appSecret) {
+  if (!appSecret) {
+    // Fail closed in production rather than accepting unsigned events.
+    if (process.env.NODE_ENV === 'production') {
+      return NextResponse.json({ error: 'Webhook not configured' }, { status: 503 });
+    }
+  } else {
     const sig = request.headers.get('x-hub-signature-256') || '';
     const expected = 'sha256=' + crypto.createHmac('sha256', appSecret).update(raw).digest('hex');
     const a = Buffer.from(sig);

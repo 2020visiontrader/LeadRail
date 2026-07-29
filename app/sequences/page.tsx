@@ -23,6 +23,8 @@ export default function SequencesPage() {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ name: '', channel: 'email', steps: 'Day 0 | Intro | Hi {{name}}, ...\nDay 3 | Follow-up | Just circling back ...' });
+  const [aiDescription, setAiDescription] = useState('');
+  const [generating, setGenerating] = useState(false);
 
   useEffect(() => { apiGet<{ ventures: Venture[] }>('/api/ventures').then((d) => { setVentures(d.ventures || []); setVenture((c) => c || d.ventures?.[0] || null); }).catch(() => {}); }, []);
   const load = useCallback(async () => {
@@ -48,6 +50,26 @@ export default function SequencesPage() {
     finally { setSaving(false); }
   };
 
+  const generateWithAi = async () => {
+    if (!aiDescription.trim() || !venture) { notify('Describe the sequence you want', 'error'); return; }
+    setGenerating(true);
+    try {
+      const draft = await apiSend<{ name: string; steps: { step_order: number; delay_hours: number; subject: string; body: string }[] }>(
+        '/api/sequences/generate',
+        'POST',
+        { accountId: venture.account_id, brandId: venture.id, ventureName: venture.name, description: aiDescription.trim() }
+      );
+      const stepsText = (draft.steps || [])
+        .sort((a, b) => a.step_order - b.step_order)
+        .map((s) => `Day ${Math.round((s.delay_hours || 0) / 24)} | ${s.subject} | ${s.body}`)
+        .join('\n');
+      setForm({ name: draft.name || form.name, channel: form.channel, steps: stepsText || form.steps });
+      setOpen(true);
+      notify('Draft generated — review and create');
+    } catch (e: any) { notify(e.message || 'Generation failed', 'error'); }
+    finally { setGenerating(false); }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -55,6 +77,19 @@ export default function SequencesPage() {
         <div className="flex items-center gap-2">
           <Dropdown value={venture?.id || ''} onChange={(e) => setVenture(ventures.find((v) => v.id === e.target.value) || null)} options={ventures.map((v) => ({ value: v.id, label: v.name }))} />
           <Button onClick={() => setOpen(true)}>+ New Sequence</Button>
+        </div>
+      </div>
+      <div className="rounded-xl border border-slate-200 bg-white p-4">
+        <h2 className="text-sm font-semibold">Generate a sequence with AI</h2>
+        <p className="mt-1 text-xs text-slate-500">Describe the cadence you want and the AI drafts the steps for you to review.</p>
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
+          <Textarea
+            rows={2}
+            placeholder="e.g. 3-step cold outreach for enterprise MCNs: intro, case-study follow-up after 3 days, breakup after 7 days"
+            value={aiDescription}
+            onChange={(e) => setAiDescription(e.target.value)}
+          />
+          <Button onClick={generateWithAi} disabled={generating}>{generating ? 'Generating…' : 'Generate with AI'}</Button>
         </div>
       </div>
       {loading ? <LoadingSpinner /> : rows.length === 0 ? (

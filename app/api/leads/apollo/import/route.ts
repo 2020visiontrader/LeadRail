@@ -1,20 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { candidateToContact } from '@/lib/integrations/apollo';
-import { insertContacts, findContactByEmail, dbReady } from '@/lib/db';
+import { insertContacts, findContactByEmail, assertBrandOwned, dbReady } from '@/lib/db';
 import { scoreContact } from '@/lib/scoring';
 import { upsertCompanyByName, writeAudit } from '@/lib/crm';
-import { requireAuth, errorResponse, badRequest } from '@/lib/http';
+import { requireSession, errorResponse, badRequest } from '@/lib/http';
 import type { ApolloCandidate } from '@/lib/integrations/apollo';
 
 export const dynamic = 'force-dynamic';
 
 // POST /api/leads/apollo/import
-// body: { accountId, brandId, candidates: ApolloCandidate[] }
-// Persists selected Apollo candidates as contacts (source='apollo'), skipping
-// duplicates by email. Returns { imported, skipped }.
+// body: { brandId, candidates: ApolloCandidate[] } — accountId comes from the session.
 export async function POST(request: NextRequest) {
-  const unauthorized = requireAuth(request);
-  if (unauthorized) return unauthorized;
+  const { session, error } = await requireSession(request);
+  if (error) return error;
   if (!dbReady()) return badRequest('database not connected');
 
   let body: any;
@@ -23,10 +21,12 @@ export async function POST(request: NextRequest) {
   } catch {
     return badRequest('invalid JSON body');
   }
-  const { accountId, brandId } = body || {};
+  const accountId = session.accountId;
+  const { brandId } = body || {};
   const candidates: ApolloCandidate[] = Array.isArray(body?.candidates) ? body.candidates : [];
-  if (!accountId || !brandId) return badRequest('accountId and brandId are required');
+  if (!brandId) return badRequest('brandId is required');
   if (!candidates.length) return badRequest('candidates array is required');
+  if (!(await assertBrandOwned(brandId, accountId))) return badRequest('unknown brandId');
 
   try {
     const rows: Record<string, any>[] = [];
@@ -34,10 +34,9 @@ export async function POST(request: NextRequest) {
     const companyCache = new Map<string, string | null>();
     for (const c of candidates) {
       const row = candidateToContact(c, accountId, brandId);
-      const existing = await findContactByEmail(row.email);
+      const existing = await findContactByEmail(row.email, accountId);
       if (existing) { skipped++; continue; }
       row.score = scoreContact(row.segment, row.title || '');
-      // Build the Account layer: upsert the contact's org into companies and link it.
       const orgName = (c.company || '').trim();
       if (orgName) {
         let companyId = companyCache.get(orgName.toLowerCase());

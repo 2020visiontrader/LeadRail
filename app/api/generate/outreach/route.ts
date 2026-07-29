@@ -1,24 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth, errorResponse, badRequest } from '@/lib/http';
+import { requireSession, errorResponse, badRequest } from '@/lib/http';
 import { generateOutreach } from '@/lib/ai/generation';
 import { geminiConfigured } from '@/lib/ai/gemini';
 
 export const dynamic = 'force-dynamic';
 
-// POST /api/generate/outreach  (admin/account-scoped, on-demand only)
-// body: { venture: {name, pitch?}, contact?: {...}, goal, tone?, framework? }
-// Returns a draft { subject, body }. Does NOT send or persist anything.
 export async function POST(request: NextRequest) {
-  const unauthorized = requireAuth(request);
-  if (unauthorized) return unauthorized;
+  const { error: authErr } = await requireSession(request);
+  if (authErr) return authErr;
   if (!geminiConfigured()) return NextResponse.json({ error: 'not_configured', provider: 'gemini' }, { status: 409 });
 
   let body: any;
-  try {
-    body = await request.json();
-  } catch {
-    return badRequest('invalid JSON body');
-  }
+  try { body = await request.json(); } catch { return badRequest('invalid JSON body'); }
   if (!body?.venture?.name) return badRequest('venture.name is required');
   if (!body?.goal) return badRequest('goal is required');
 

@@ -3,7 +3,10 @@ import { verifySession, SESSION_COOKIE } from '@/lib/session';
 
 // Public paths that never require a session.
 const PUBLIC_PAGES = ['/login', '/privacy', '/terms', '/data-deletion'];
-const PUBLIC_API = ['/api/auth/login', '/api/webhooks', '/api/hermes/tick', '/api/social/meta/callback'];
+// Only genuinely public endpoints: user login, provider webhooks (signature-verified),
+// the cron tick (bearer-protected), and the Meta OAuth callback. Everything else —
+// including all social read/write routes — now requires a session.
+const PUBLIC_API = ['/api/auth/login', '/api/webhooks', '/api/hermes/tick', '/api/social/meta/callback', '/api/track', '/api/unsubscribe'];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;

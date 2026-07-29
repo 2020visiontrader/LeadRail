@@ -22,10 +22,26 @@ export function dbReady(): boolean {
   return Boolean(supabaseUrl && serviceKey);
 }
 
-export async function getContacts(brandId: string, limit = 30, offset = 0) {
+/**
+ * Verify a brand belongs to the given account. Returns true only when the brand
+ * exists AND is owned by accountId. Callers use this to reject client-supplied
+ * brandId values that belong to another tenant.
+ */
+export async function assertBrandOwned(brandId: string, accountId: string): Promise<boolean> {
+  const { data } = await supabase
+    .from('brands')
+    .select('id')
+    .eq('id', brandId)
+    .eq('account_id', accountId)
+    .maybeSingle();
+  return Boolean(data);
+}
+
+export async function getContacts(accountId: string, brandId: string, limit = 30, offset = 0) {
   const { data, error } = await supabase
     .from('contacts')
     .select('*')
+    .eq('account_id', accountId)
     .eq('brand_id', brandId)
     .order('created_at', { ascending: false })
     .range(offset, offset + limit - 1);
@@ -33,8 +49,13 @@ export async function getContacts(brandId: string, limit = 30, offset = 0) {
   return data;
 }
 
-export async function getContact(id: string) {
-  const { data, error } = await supabase.from('contacts').select('*').eq('id', id).single();
+export async function getContact(id: string, accountId: string) {
+  const { data, error } = await supabase
+    .from('contacts')
+    .select('*')
+    .eq('id', id)
+    .eq('account_id', accountId)
+    .single();
   if (error) throw error;
   return data;
 }
@@ -45,24 +66,54 @@ export async function createContact(contact: Record<string, any>) {
   return data[0];
 }
 
-export async function updateContact(id: string, updates: Record<string, any>) {
+export async function updateContact(id: string, accountId: string, updates: Record<string, any>) {
   const { data, error } = await supabase
     .from('contacts')
     .update({ ...updates, updated_at: new Date().toISOString() })
     .eq('id', id)
+    .eq('account_id', accountId)
     .select();
   if (error) throw error;
+  if (!data || !data.length) throw new Error('not found');
   return data[0];
 }
 
-export async function deleteContact(id: string) {
-  const { error } = await supabase.from('contacts').delete().eq('id', id);
+export async function deleteContact(id: string, accountId: string) {
+  const { data, error } = await supabase
+    .from('contacts')
+    .delete()
+    .eq('id', id)
+    .eq('account_id', accountId)
+    .select('id');
   if (error) throw error;
+  if (!data || !data.length) throw new Error('not found');
   return { id, deleted: true };
 }
 
-export async function findContactByEmail(email: string) {
-  const { data } = await supabase.from('contacts').select('id').eq('email', email).limit(1);
+export async function findContactByEmail(email: string, accountId: string) {
+  const { data } = await supabase
+    .from('contacts')
+    .select('id')
+    .eq('email', email)
+    .eq('account_id', accountId)
+    .limit(1);
+  return data && data.length ? data[0] : null;
+}
+
+// -----------------------------------------------------------------------------
+// TRUSTED INTERNAL-ONLY fetchers. Not tenant-scoped. Use ONLY from server-side
+// automation (sequence/hermes runners) or provider webhooks where the id/email
+// originates from the platform's own data, never from an end-user HTTP request.
+// Never call these directly from a user-facing route handler.
+// -----------------------------------------------------------------------------
+export async function getContactUnscoped(id: string) {
+  const { data, error } = await supabase.from('contacts').select('*').eq('id', id).single();
+  if (error) throw error;
+  return data;
+}
+
+export async function findContactByEmailUnscoped(email: string) {
+  const { data } = await supabase.from('contacts').select('id, account_id').eq('email', email).limit(1);
   return data && data.length ? data[0] : null;
 }
 
@@ -74,7 +125,19 @@ export async function getVentures(accountId?: string) {
   if (accountId) q = q.eq('account_id', accountId);
   const { data, error } = await q;
   if (error) throw error;
-  return data;
+  const brands = data || [];
+  // Attach a contact_count per brand so the UI can default to a brand that has
+  // leads instead of an arbitrary insertion-first brand that may be empty.
+  const counts: Record<string, number> = {};
+  await Promise.all(
+    brands.map(async (b: any) => {
+      let cq = supabase.from('contacts').select('id', { count: 'exact', head: true }).eq('brand_id', b.id);
+      if (accountId) cq = cq.eq('account_id', accountId);
+      const { count } = await cq;
+      counts[b.id] = count || 0;
+    })
+  );
+  return brands.map((b: any) => ({ ...b, contact_count: counts[b.id] ?? 0 }));
 }
 
 export async function getVenture(brandId: string) {
@@ -188,9 +251,10 @@ export async function createTemplate(row: {
   return data;
 }
 
-export async function deleteTemplate(id: string) {
-  const { error } = await supabase.from('message_templates').delete().eq('id', id);
+export async function deleteTemplate(id: string, accountId: string) {
+  const { data, error } = await supabase.from('message_templates').delete().eq('id', id).eq('account_id', accountId).select('id');
   if (error) throw error;
+  if (!data || !data.length) throw new Error('not found');
   return { id, deleted: true };
 }
 
@@ -208,11 +272,12 @@ export async function getInbox(accountId: string, limit = 50) {
   return data;
 }
 
-export async function markInboxRead(id: string, isRead = true) {
+export async function markInboxRead(id: string, accountId: string, isRead = true) {
   const { data, error } = await supabase
     .from('inbox_messages')
     .update({ is_read: isRead })
     .eq('id', id)
+    .eq('account_id', accountId)
     .select()
     .single();
   if (error) throw error;

@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { requireAuth, errorResponse } from '@/lib/http';
+import { requireSession, errorResponse } from '@/lib/http';
 import { sendOutreachEmail } from '@/lib/outreach';
 
 export const dynamic = 'force-dynamic';
 
 export async function POST(request: NextRequest) {
-  const unauthorized = requireAuth(request);
-  if (unauthorized) return unauthorized;
+  const { session, error } = await requireSession(request);
+  if (error) return error;
   try {
     const body = await request.json();
     if (!body?.contactId) return NextResponse.json({ error: 'contactId is required' }, { status: 400 });
@@ -16,6 +16,7 @@ export async function POST(request: NextRequest) {
       subject: body.subject,
       html: body.html,
       templateId: body.templateId,
+      accountId: session.accountId,
     });
     return NextResponse.json({ sent: true, result });
   } catch (error) {
