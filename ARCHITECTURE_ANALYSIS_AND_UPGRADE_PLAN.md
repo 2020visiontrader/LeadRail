@@ -224,3 +224,21 @@ Executed items 1–5. Typecheck + production build pass. Not committed/deployed.
 **Deploy step:** apply the migration — `bun run migrations/push.ts` (uses `DATABASE_URL` or `SUPABASE_ACCESS_TOKEN`+`SUPABASE_PROJECT_REF`). Set `APP_URL` (or `NEXT_PUBLIC_APP_URL`) so tracking pixels/links resolve; without it, tracking no-ops and sends still work. Middleware now treats `/api/track` + `/api/unsubscribe` as public.
 
 **Next:** Phase B (custom_fields JSONB + tags, unified timeline_activities, soft-delete, FTS).
+
+---
+
+## 8. Phase B — SHIPPED (2026-07-30)
+
+Executed items 9–13. Typecheck + production build pass. Migration `010_data_model_depth.sql` (idempotent, backfills existing data).
+
+| # | Item | Status | Files |
+|---|------|--------|-------|
+| 11 | Flexible fields + tags | ✅ | `contacts/companies/deals.custom_fields JSONB`; `tags`+`contact_tags`; `lib/tags.ts`; `GET/POST/DELETE /api/tags`, `/api/contacts/[id]/tags`; `custom_fields` accepted in `validation.ts` |
+| 9 | Unified timeline | ✅ | `timeline_activities` (backfilled from `contact_events`); `lib/timeline.ts` (`recordTimeline` on note/activity create; `getContactTimeline` merges timeline + `email_events`); `GET /api/contacts/[id]/timeline` |
+| 12 | Soft delete + purge cron | ✅ | `deleted_at` on contacts/companies/deals; reads filter `deleted_at IS NULL`; deletes now soft; `purge_soft_deleted(30d)` runs each `hermes/tick` |
+| 13 | Full-text search | ✅ | generated `search_tsv` + GIN on contacts/companies; `lib/search.ts` (`websearch` type); `GET /api/search?q=` |
+| 10 | Polymorphic note/task targets | ✅ | `note_targets`/`task_targets` (backfilled); `syncTargets()` mirrors fixed FKs on create; existing columns still work |
+
+**Deploy:** apply `bun run migrations/push.ts` (010 is in `apply_all.sql`). Generated tsvector columns build the FTS index automatically; backfills run inside the migration.
+
+**Next:** Phase C — typed steps + A/B variants, business-hours scheduling, structured reply outcomes, saved ICP + org/bulk enrichment.

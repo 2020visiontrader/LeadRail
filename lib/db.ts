@@ -43,6 +43,7 @@ export async function getContacts(accountId: string, brandId: string, limit = 30
     .select('*')
     .eq('account_id', accountId)
     .eq('brand_id', brandId)
+    .is('deleted_at', null)
     .order('created_at', { ascending: false })
     .range(offset, offset + limit - 1);
   if (error) throw error;
@@ -55,6 +56,7 @@ export async function getContact(id: string, accountId: string) {
     .select('*')
     .eq('id', id)
     .eq('account_id', accountId)
+    .is('deleted_at', null)
     .single();
   if (error) throw error;
   return data;
@@ -79,11 +81,14 @@ export async function updateContact(id: string, accountId: string, updates: Reco
 }
 
 export async function deleteContact(id: string, accountId: string) {
+  // Soft delete: mark deleted_at so the row is recoverable until the purge cron
+  // (purge_soft_deleted) hard-removes it after the retention window.
   const { data, error } = await supabase
     .from('contacts')
-    .delete()
+    .update({ deleted_at: new Date().toISOString() })
     .eq('id', id)
     .eq('account_id', accountId)
+    .is('deleted_at', null)
     .select('id');
   if (error) throw error;
   if (!data || !data.length) throw new Error('not found');

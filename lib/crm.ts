@@ -2,6 +2,7 @@
 // Every mutation records an audit_log row via writeAudit(). Server-side only
 // (uses the service-role Supabase client from db.ts). Admin/account-scoped.
 import { supabase } from '@/lib/db';
+import { recordTimeline } from '@/lib/timeline';
 
 // ---------------------------------------------------------------------------
 // Audit log — best-effort, never fails the caller's operation.
@@ -37,7 +38,7 @@ export async function getAuditLog(accountId: string, limit = 100) {
 // Companies
 // ---------------------------------------------------------------------------
 export async function getCompanies(accountId: string, brandId?: string | null, limit = 50, offset = 0) {
-  let q = supabase.from('companies').select('*').eq('account_id', accountId);
+  let q = supabase.from('companies').select('*').eq('account_id', accountId).is('deleted_at', null);
   if (brandId) q = q.eq('brand_id', brandId);
   const { data, error } = await q.order('created_at', { ascending: false }).range(offset, offset + limit - 1);
   if (error) throw error;
@@ -45,7 +46,7 @@ export async function getCompanies(accountId: string, brandId?: string | null, l
 }
 
 export async function getCompany(id: string, accountId: string) {
-  const { data, error } = await supabase.from('companies').select('*').eq('id', id).eq('account_id', accountId).single();
+  const { data, error } = await supabase.from('companies').select('*').eq('id', id).eq('account_id', accountId).is('deleted_at', null).single();
   if (error) throw error;
   return data;
 }
@@ -71,9 +72,9 @@ export async function updateCompany(id: string, accountId: string, updates: Reco
 }
 
 export async function deleteCompany(id: string, accountId: string) {
-  const { data } = await supabase.from('companies').select('account_id, brand_id').eq('id', id).eq('account_id', accountId).single();
+  const { data } = await supabase.from('companies').select('account_id, brand_id').eq('id', id).eq('account_id', accountId).is('deleted_at', null).single();
   if (!data) throw new Error('not found');
-  const { error } = await supabase.from('companies').delete().eq('id', id).eq('account_id', accountId);
+  const { error } = await supabase.from('companies').update({ deleted_at: new Date().toISOString() }).eq('id', id).eq('account_id', accountId);
   if (error) throw error;
   await writeAudit({ account_id: data.account_id, brand_id: data.brand_id, action: 'delete', entity_type: 'company', entity_id: id });
   return { ok: true };
@@ -101,7 +102,7 @@ export async function createPipelineStage(row: Record<string, any>) {
 // Deals
 // ---------------------------------------------------------------------------
 export async function getDeals(accountId: string, brandId?: string | null, limit = 100, offset = 0) {
-  let q = supabase.from('deals').select('*').eq('account_id', accountId);
+  let q = supabase.from('deals').select('*').eq('account_id', accountId).is('deleted_at', null);
   if (brandId) q = q.eq('brand_id', brandId);
   const { data, error } = await q.order('created_at', { ascending: false }).range(offset, offset + limit - 1);
   if (error) throw error;
@@ -109,7 +110,7 @@ export async function getDeals(accountId: string, brandId?: string | null, limit
 }
 
 export async function getDeal(id: string, accountId: string) {
-  const { data, error } = await supabase.from('deals').select('*').eq('id', id).eq('account_id', accountId).single();
+  const { data, error } = await supabase.from('deals').select('*').eq('id', id).eq('account_id', accountId).is('deleted_at', null).single();
   if (error) throw error;
   return data;
 }
@@ -149,9 +150,9 @@ export async function moveDealStage(id: string, accountId: string, stageId: stri
 }
 
 export async function deleteDeal(id: string, accountId: string) {
-  const { data } = await supabase.from('deals').select('account_id, brand_id').eq('id', id).eq('account_id', accountId).single();
+  const { data } = await supabase.from('deals').select('account_id, brand_id').eq('id', id).eq('account_id', accountId).is('deleted_at', null).single();
   if (!data) throw new Error('not found');
-  const { error } = await supabase.from('deals').delete().eq('id', id).eq('account_id', accountId);
+  const { error } = await supabase.from('deals').update({ deleted_at: new Date().toISOString() }).eq('id', id).eq('account_id', accountId);
   if (error) throw error;
   await writeAudit({ account_id: data.account_id, brand_id: data.brand_id, action: 'delete', entity_type: 'deal', entity_id: id });
   return { ok: true };
@@ -174,6 +175,17 @@ export async function createActivity(row: Record<string, any>) {
   const { data, error } = await supabase.from('activities').insert([row]).select().single();
   if (error) throw error;
   await writeAudit({ account_id: row.account_id, brand_id: row.brand_id, action: 'create', entity_type: 'activity', entity_id: data.id });
+  await syncTargets('task_targets', 'activity_id', data.id, data);
+  await recordTimeline({
+    account_id: data.account_id,
+    entity_type: data.contact_id ? 'contact' : data.company_id ? 'company' : 'deal',
+    entity_id: data.contact_id || data.company_id || data.deal_id,
+    contact_id: data.contact_id,
+    type: 'activity',
+    title: `${data.type || 'task'}${data.subject ? `: ${data.subject}` : ''}`,
+    body: data.body ?? null,
+    actor_email: data.owner_email ?? null,
+  });
   return data;
 }
 
@@ -212,7 +224,32 @@ export async function getNotes(accountId: string, filters: { contactId?: string;
 export async function createNote(row: Record<string, any>) {
   const { data, error } = await supabase.from('notes').insert([row]).select().single();
   if (error) throw error;
+  await syncTargets('note_targets', 'note_id', data.id, data);
+  await recordTimeline({
+    account_id: data.account_id,
+    entity_type: data.contact_id ? 'contact' : data.company_id ? 'company' : 'deal',
+    entity_id: data.contact_id || data.company_id || data.deal_id,
+    contact_id: data.contact_id,
+    type: 'note',
+    title: 'Note added',
+    body: data.body ?? null,
+    actor_email: data.author_email ?? null,
+  });
   return data;
+}
+
+/** Mirror a note/activity's fixed FK columns into the polymorphic target join. */
+async function syncTargets(table: 'note_targets' | 'task_targets', fk: string, id: string, row: Record<string, any>) {
+  const rows: any[] = [];
+  if (row.contact_id) rows.push({ [fk]: id, target_type: 'contact', target_id: row.contact_id });
+  if (row.company_id) rows.push({ [fk]: id, target_type: 'company', target_id: row.company_id });
+  if (row.deal_id) rows.push({ [fk]: id, target_type: 'deal', target_id: row.deal_id });
+  if (!rows.length) return;
+  try {
+    await supabase.from(table).upsert(rows, { onConflict: `${fk},target_type,target_id`, ignoreDuplicates: true });
+  } catch (e: any) {
+    console.error('[targets]', e?.message || e);
+  }
 }
 
 export async function deleteNote(id: string, accountId: string) {

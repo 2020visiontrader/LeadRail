@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { processDueJobs } from '@/lib/hermes/agent';
 import { processDueEnrollments } from '@/lib/sequences';
 import { requireAuth, errorResponse } from '@/lib/http';
+import { supabase } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,7 +18,10 @@ export async function POST(request: NextRequest) {
       processDueJobs(limit).catch((e) => ({ error: String(e?.message || e) })),
       processDueEnrollments(limit).catch((e) => ({ error: String(e?.message || e) })),
     ]);
-    return NextResponse.json({ ok: true, legacy, sequences });
+    // Trash cron: hard-purge rows soft-deleted past the retention window.
+    // Best-effort; a purge failure (or 010 not yet applied) never fails the tick.
+    const { data: purged } = await supabase.rpc('purge_soft_deleted', { p_days: 30 });
+    return NextResponse.json({ ok: true, legacy, sequences, purged: purged ?? 0 });
   } catch (error) {
     return errorResponse(error);
   }

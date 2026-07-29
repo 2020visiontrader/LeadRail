@@ -28,6 +28,10 @@ export function validateContactInput(body: any): ValidationResult<Record<string,
   if (body.company != null) value.company = String(body.company);
   if (body.title != null) value.title = String(body.title);
   if (body.notes != null) value.notes = String(body.notes);
+  if (body.custom_fields != null) {
+    if (typeof body.custom_fields !== 'object' || Array.isArray(body.custom_fields)) errors.push('custom_fields must be an object');
+    else value.custom_fields = body.custom_fields;
+  }
 
   if (body.segment != null) {
     if (!SEGMENTS.includes(body.segment as Segment)) errors.push(`segment must be one of: ${SEGMENTS.join(', ')}`);
@@ -54,6 +58,10 @@ export function validateContactPatch(body: any): ValidationResult<Record<string,
   const passthrough = ['name', 'email', 'company', 'title', 'notes'];
   for (const k of passthrough) if (body[k] != null) value[k] = String(body[k]);
   if (value.email && !EMAIL_RE.test(value.email)) errors.push('invalid email');
+  if (body.custom_fields != null) {
+    if (typeof body.custom_fields !== 'object' || Array.isArray(body.custom_fields)) errors.push('custom_fields must be an object');
+    else value.custom_fields = body.custom_fields;
+  }
   if (body.segment != null) {
     if (!SEGMENTS.includes(body.segment as Segment)) errors.push('invalid segment');
     else value.segment = body.segment;
