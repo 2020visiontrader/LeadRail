@@ -19,6 +19,23 @@ const NAV = [
   { href: '/settings', label: 'Settings' },
 ];
 
+function AccountFooter() {
+  const [email, setEmail] = useState<string>('');
+  useEffect(() => { fetch('/api/auth/me', { headers: { Accept: 'application/json' } }).then((r) => r.ok ? r.json() : null).then((d) => d?.email && setEmail(d.email)).catch(() => {}); }, []);
+  const logout = async () => {
+    await fetch('/api/auth/logout', { method: 'POST', headers: { Accept: 'application/json' } }).catch(() => {});
+    window.location.href = '/login';
+  };
+  return (
+    <div className="px-3">
+      <div className="truncate px-3 pb-1 text-[11px] text-[var(--text-muted)]">{email || 'Admin'} · BDB Productions</div>
+      <button onClick={logout} className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-[var(--text-secondary)] transition hover:bg-[var(--bg-raised)]">
+        <span aria-hidden>⇥</span>Sign out
+      </button>
+    </div>
+  );
+}
+
 function ThemeToggle() {
   const [dark, setDark] = useState(false);
   useEffect(() => { setDark(document.documentElement.classList.contains('dark')); }, []);
@@ -47,6 +64,7 @@ function Wordmark() {
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const isActive = (href: string) => (href === '/' ? pathname === '/' : pathname.startsWith(href));
+  if (pathname === '/login') return <>{children}</>;
   return (
     <div className="flex min-h-screen bg-[var(--bg-canvas)] text-[var(--text-primary)]">
       <aside className="hidden w-60 shrink-0 flex-col border-r border-[var(--border-default)] bg-[var(--bg-surface)] md:flex">
@@ -68,9 +86,9 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
             );
           })}
         </nav>
-        <div className="border-t border-[var(--border-default)] px-3 py-3">
+        <div className="space-y-1 border-t border-[var(--border-default)] px-3 py-3">
           <ThemeToggle />
-          <div className="px-3 pt-2 text-[11px] text-[var(--text-muted)]">Admin · BDB Productions</div>
+          <AccountFooter />
         </div>
       </aside>
       <div className="flex min-w-0 flex-1 flex-col">

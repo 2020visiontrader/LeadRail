@@ -831,3 +831,8 @@ BEGIN
     EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY;', t);
   END LOOP;
 END $$;
+
+-- ===== 007_auth =====
+-- Auth: password login for account members.
+ALTER TABLE account_members ADD COLUMN IF NOT EXISTS password_hash TEXT;
+ALTER TABLE account_members ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
