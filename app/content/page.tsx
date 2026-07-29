@@ -10,6 +10,7 @@ import Badge from '@/components/Badge';
 import EmptyState from '@/components/EmptyState';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ContentCalendar from '@/components/ContentCalendar';
+import ImportExport from '@/components/ImportExport';
 import { useToast } from '@/components/ToastProvider';
 import { apiGet, apiSend } from '@/lib/api';
 import { ContentPost } from '@/lib/types';
@@ -25,6 +26,23 @@ export default function ContentPage() {
   const [saving, setSaving] = useState(false);
   const [selected, setSelected] = useState<ContentPost | null>(null);
   const [form, setForm] = useState({ platform: 'instagram', post_body: '', scheduled_for: '' });
+  const [topic, setTopic] = useState('');
+  const [generating, setGenerating] = useState(false);
+
+  const generate = async () => {
+    if (!topic.trim()) { notify('Enter a topic to generate', 'error'); return; }
+    setGenerating(true);
+    try {
+      const r = await apiSend<{ post: { hook: string; post_body: string } }>('/api/generate/content', 'POST', {
+        venture: { name: BRAND }, platform: form.platform, topic: topic.trim(),
+      });
+      const body = [r.post.hook, r.post.post_body].filter(Boolean).join('\n\n');
+      setForm((f) => ({ ...f, post_body: body }));
+      notify('Draft generated');
+    } catch (e: any) {
+      notify(e.message === 'not_configured' ? 'Connect Gemini to generate' : e.message || 'Generation failed', 'error');
+    } finally { setGenerating(false); }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -59,7 +77,10 @@ export default function ContentPage() {
           <h1 className="text-2xl font-bold">Content</h1>
           <p className="text-sm text-slate-500">Social content calendar</p>
         </div>
-        <Button onClick={() => setOpen(true)}>+ New Post</Button>
+        <div className="flex items-center gap-2">
+          <ImportExport exportPath="/api/content/export" importPath="/api/content/import" brandId={BRAND} onImported={load} />
+          <Button onClick={() => setOpen(true)}>+ New Post</Button>
+        </div>
       </div>
 
       {loading ? <LoadingSpinner /> : posts.length === 0 ? (
@@ -72,6 +93,10 @@ export default function ContentPage() {
         <div className="space-y-4">
           <Dropdown label="Platform" value={form.platform} onChange={(e) => setForm({ ...form, platform: e.target.value })}
             options={PLATFORMS.map((p) => ({ value: p, label: p }))} />
+          <div className="flex items-end gap-2 rounded-lg border border-indigo-100 bg-indigo-50/50 p-3">
+            <div className="flex-1"><Input label="AI topic" placeholder="e.g. weekend scooter deals" value={topic} onChange={(e) => setTopic(e.target.value)} /></div>
+            <Button variant="secondary" loading={generating} onClick={generate}>✨ Generate</Button>
+          </div>
           <Textarea label="Post body" rows={5} value={form.post_body} onChange={(e) => setForm({ ...form, post_body: e.target.value })} />
           <Input label="Schedule for" type="datetime-local" value={form.scheduled_for} onChange={(e) => setForm({ ...form, scheduled_for: e.target.value })} />
         </div>

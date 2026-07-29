@@ -22,6 +22,34 @@ export default function CampaignsPage() {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ name: '', channel: 'meta', budget: '', start_date: '', end_date: '' });
+  // Asset workspace for the selected campaign
+  const [assetCampaign, setAssetCampaign] = useState<AdCampaign | null>(null);
+  const [assets, setAssets] = useState<any[]>([]);
+  const [assetUrl, setAssetUrl] = useState('');
+  const [assetBusy, setAssetBusy] = useState(false);
+
+  const openAssets = async (c: AdCampaign) => {
+    setAssetCampaign(c); setAssets([]);
+    try { setAssets(await apiGet<any[]>(`/api/campaigns/${c.id}/assets`)); } catch { /* empty */ }
+  };
+  const addAsset = async () => {
+    if (!assetUrl.trim() || !assetCampaign) return;
+    setAssetBusy(true);
+    try {
+      await apiSend(`/api/campaigns/${assetCampaign.id}/assets`, 'POST', { account_id: (assetCampaign as any).account_id || '00000000-0000-0000-0000-0000000000b1', url: assetUrl.trim(), kind: 'image' });
+      setAssetUrl(''); openAssets(assetCampaign);
+    } catch (e: any) { notify(e.message || 'Add failed', 'error'); }
+    finally { setAssetBusy(false); }
+  };
+  const analyzeAssets = async () => {
+    if (!assetCampaign) return;
+    setAssetBusy(true);
+    try {
+      const r = await apiSend<{ analyzed: number }>(`/api/campaigns/${assetCampaign.id}/assets/analyze`, 'POST');
+      notify(`Analyzed ${r.analyzed} asset(s)`); openAssets(assetCampaign);
+    } catch (e: any) { notify(e.message === 'not_configured' ? 'Connect Gemini to analyze' : e.message || 'Analyze failed', 'error'); }
+    finally { setAssetBusy(false); }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -83,7 +111,10 @@ export default function CampaignsPage() {
                   <td className="p-3"><Badge tone="blue">{c.channel || '—'}</Badge></td>
                   <td className="p-3 text-right">${Number(c.budget).toLocaleString()}</td>
                   <td className="p-3"><Badge tone={c.status === 'active' ? 'green' : 'gray'}>{c.status}</Badge></td>
-                  <td className="p-3 text-right"><button className="text-red-600 hover:underline" onClick={() => remove(c)}>Delete</button></td>
+                  <td className="p-3 text-right">
+                    <button className="mr-3 text-indigo-600 hover:underline" onClick={() => openAssets(c)}>Assets</button>
+                    <button className="text-red-600 hover:underline" onClick={() => remove(c)}>Delete</button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -99,6 +130,28 @@ export default function CampaignsPage() {
           <div className="grid grid-cols-2 gap-3">
             <Input label="Start" type="date" value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value })} />
             <Input label="End" type="date" value={form.end_date} onChange={(e) => setForm({ ...form, end_date: e.target.value })} />
+          </div>
+        </div>
+      </Modal>
+
+      <Modal isOpen={!!assetCampaign} title={`Assets — ${assetCampaign?.name || ''}`} onClose={() => setAssetCampaign(null)} submitLabel="Analyze with AI" onSubmit={analyzeAssets} loading={assetBusy}>
+        <div className="space-y-4">
+          <p className="text-xs text-slate-500">Static ad images only (no video generation yet). Add image URLs, then run AI QA to score composition, legibility, and ad-policy fit.</p>
+          <div className="flex items-end gap-2">
+            <div className="flex-1"><Input label="Image URL" placeholder="https://…" value={assetUrl} onChange={(e) => setAssetUrl(e.target.value)} /></div>
+            <Button variant="secondary" loading={assetBusy} onClick={addAsset}>Add</Button>
+          </div>
+          <div className="max-h-64 space-y-2 overflow-auto">
+            {assets.length === 0 && <p className="text-sm text-slate-400">No assets yet.</p>}
+            {assets.map((a) => (
+              <div key={a.id} className="flex items-center justify-between rounded border border-slate-200 bg-white p-2 text-sm">
+                <span className="truncate max-w-[60%]">{a.url}</span>
+                <div className="flex items-center gap-2">
+                  {a.ai_analysis?.score !== undefined && <span className="text-xs text-slate-500">score {a.ai_analysis.score}</span>}
+                  <Badge tone={a.status === 'approved' ? 'green' : a.status === 'rejected' ? 'red' : 'gray'}>{a.status}</Badge>
+                </div>
+              </div>
+            ))}
           </div>
         </div>
       </Modal>

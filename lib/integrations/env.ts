@@ -51,6 +51,7 @@ export function getIntegrationStatus() {
   const status: Record<string, boolean> = {
     supabase: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
     apollo: !!(process.env.APOLLO_API_KEY || process.env.Apollo_Api_Key || process.env.APOLLO_KEY),
+    gemini: !!(process.env.GEMINI_API_KEY || process.env.Gemini_api_key || process.env.GOOGLE_API_KEY),
     brevo: !!process.env.BREVO_API_KEY,
     resend: !!process.env.RESEND_API_KEY,
     postiz: !!process.env.POSTIZ_API_KEY,

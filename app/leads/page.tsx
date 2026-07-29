@@ -1,6 +1,7 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
 import DataTable from '@/components/DataTable';
+import ImportExport from '@/components/ImportExport';
 import ContactDrawer from '@/components/ContactDrawer';
 import SearchInput from '@/components/SearchInput';
 import FilterBar from '@/components/FilterBar';
@@ -194,6 +195,11 @@ export default function LeadsPage() {
           <Button variant="secondary" onClick={() => setSourceOpen((o) => !o)}>Find Leads (Apollo)</Button>
           <Button onClick={() => setAddOpen(true)}>+ Add Lead</Button>
         </div>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+        <span className="text-xs text-slate-500">Bulk: import a CSV/Excel list, or export the current venture&apos;s leads.</span>
+        <ImportExport exportPath="/api/leads/export" importPath="/api/leads/import" brandId={venture?.id} accountId={venture?.account_id} onImported={load} />
       </div>
 
       {sourceOpen && (

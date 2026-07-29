@@ -23,6 +23,24 @@ export default function OutreachPage() {
   const [open, setOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [form, setForm] = useState({ contactId: '', subject: '', html: '' });
+  const [goal, setGoal] = useState('');
+  const [generating, setGenerating] = useState(false);
+
+  const generate = async () => {
+    if (!goal.trim()) { notify('Describe the goal of the email', 'error'); return; }
+    setGenerating(true);
+    try {
+      const contact = contacts.find((c) => c.id === form.contactId);
+      const r = await apiSend<{ draft: { subject: string; body: string } }>('/api/generate/outreach', 'POST', {
+        venture: { name: BRAND }, goal: goal.trim(),
+        contact: contact ? { name: contact.name, title: contact.title, company: contact.company } : {},
+      });
+      setForm((f) => ({ ...f, subject: r.draft.subject || f.subject, html: r.draft.body || f.html }));
+      notify('Draft generated');
+    } catch (e: any) {
+      notify(e.message === 'not_configured' ? 'Connect Gemini to generate' : e.message || 'Generation failed', 'error');
+    } finally { setGenerating(false); }
+  };
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -86,6 +104,10 @@ export default function OutreachPage() {
         <div className="space-y-4">
           <Dropdown label="Recipient" value={form.contactId} onChange={(e) => setForm({ ...form, contactId: e.target.value })}
             options={[{ value: '', label: 'Select a contact…' }, ...contacts.map((c) => ({ value: c.id, label: `${c.name} — ${c.email}` }))]} />
+          <div className="flex items-end gap-2 rounded-lg border border-indigo-100 bg-indigo-50/50 p-3">
+            <div className="flex-1"><Input label="AI goal" placeholder="e.g. book a 15-min intro call" value={goal} onChange={(e) => setGoal(e.target.value)} /></div>
+            <Button variant="secondary" loading={generating} onClick={generate}>✨ Generate</Button>
+          </div>
           <Input label="Subject" value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} />
           <Textarea label="Body (HTML)" rows={5} value={form.html} onChange={(e) => setForm({ ...form, html: e.target.value })} />
         </div>
