@@ -14,6 +14,7 @@ export interface MetaPost {
 export interface MetaCreds {
   token: string;
   igUserId?: string;
+  pageId?: string;
 }
 
 /**
@@ -28,7 +29,11 @@ export async function getMetaCreds(accountId?: string): Promise<MetaCreds> {
       const metaConn = conns.find((c) => c.provider === 'meta' && c.status === 'connected');
       const token = metaConn?.meta?.access_token;
       if (token) {
-        return { token: String(token), igUserId: metaConn?.meta?.ig_user_id ? String(metaConn.meta.ig_user_id) : undefined };
+        return {
+          token: String(token),
+          igUserId: metaConn?.meta?.ig_user_id ? String(metaConn.meta.ig_user_id) : undefined,
+          pageId: metaConn?.meta?.page_id ? String(metaConn.meta.page_id) : undefined,
+        };
       }
     } catch {
       // fall through to env
@@ -92,6 +97,28 @@ export async function publishToInstagramForAccount(accountId: string, post: Meta
     throw new Error('No Instagram Business account linked — reconnect Meta in Settings so we can resolve your ig_user_id');
   }
   return postToInstagram(igUserId, post, token);
+}
+
+export interface FacebookPagePost {
+  message: string;
+  link?: string;
+  imageUrl?: string;
+}
+
+/** Publish to a Facebook Page using the account-scoped Page token + page_id from the DB. */
+export async function publishToFacebookPage(accountId: string, post: FacebookPagePost) {
+  const { token, pageId } = await getMetaCreds(accountId);
+  if (!pageId) {
+    throw new Error('No Facebook Page linked — connect Facebook in Settings so we can resolve your page_id');
+  }
+  if (post.imageUrl) {
+    return withRetry(() =>
+      graph(`${pageId}/photos`, { url: post.imageUrl, caption: post.message }, token)
+    );
+  }
+  const body: Record<string, any> = { message: post.message };
+  if (post.link) body.link = post.link;
+  return withRetry(() => graph(`${pageId}/feed`, body, token));
 }
 
 export async function getInstagramInsights(mediaId: string, token?: string) {

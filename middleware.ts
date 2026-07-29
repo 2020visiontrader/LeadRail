@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifySession, SESSION_COOKIE } from '@/lib/session';
 
 // Public paths that never require a session.
-const PUBLIC_PAGES = ['/login'];
-const PUBLIC_API = ['/api/auth/login', '/api/webhooks', '/api/hermes/tick'];
+const PUBLIC_PAGES = ['/login', '/privacy', '/terms', '/data-deletion'];
+const PUBLIC_API = ['/api/auth/login', '/api/webhooks', '/api/hermes/tick', '/api/social/meta/callback'];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;

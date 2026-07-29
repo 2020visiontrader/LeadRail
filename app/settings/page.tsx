@@ -21,6 +21,7 @@ interface PlatformInfo {
   helpUrl: string;
   helpText: string;
   validatorProvider: string;
+  oauth?: string;
 }
 
 const PLATFORMS: Record<string, PlatformInfo> = {
@@ -30,7 +31,7 @@ const PLATFORMS: Record<string, PlatformInfo> = {
   brevo: { label: 'Brevo', desc: 'Email delivery', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
   resend: { label: 'Resend', desc: 'Email + newsletters', requiresToken: true, tokenLabel: 'Resend API key', helpUrl: 'https://resend.com/api-keys', helpText: 'Create a Full access key at Resend → API Keys (send-only keys can send but cannot list/read emails). Paste it here.', validatorProvider: 'resend' },
   postiz: { label: 'Postiz', desc: 'Social publishing — 8 platforms unified', requiresToken: true, tokenLabel: 'Postiz API key', helpUrl: 'https://app.postiz.io/settings/api', helpText: 'Sign up at Postiz → Settings → API. One key covers Instagram, TikTok, LinkedIn, X, Facebook, Threads, Reddit, YouTube.', validatorProvider: 'postiz' },
-  meta: { label: 'Meta (Facebook + Instagram)', desc: 'Social posting & ads via Graph API', requiresToken: true, tokenLabel: 'Meta access token', helpUrl: 'https://developers.facebook.com/tools/explorer/', helpText: 'Go to Graph API Explorer → select your App → get User Token → extend to pages_show_list + instagram_basic + instagram_content_publish + ads_management. Paste the long-lived token here.', validatorProvider: 'meta' },
+  meta: { label: 'Meta (Facebook + Instagram)', desc: 'Post to your Facebook Page + Instagram', requiresToken: false, tokenLabel: '', helpUrl: 'https://developers.facebook.com/apps/', helpText: 'Sign in with Facebook to connect your Page — no token to paste. Requires the LeadRail Meta app (META_APP_ID / META_APP_SECRET) to be set.', validatorProvider: 'meta', oauth: '/api/social/meta/connect' },
   tiktok: { label: 'TikTok', desc: 'Content publishing & analytics', requiresToken: true, tokenLabel: 'TikTok access token', helpUrl: 'https://developers.tiktok.com/apps/', helpText: 'Create a TikTok Developer app → get access token with video.publish + user.info.basic scopes. Paste here.', validatorProvider: 'tiktok' },
   google_ads: { label: 'Google Ads', desc: 'Search & display campaigns', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
   nim: { label: 'NVIDIA NIM', desc: 'AI generation (alt)', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
@@ -61,6 +62,30 @@ export default function Settings() {
   }, [accountId]);
 
   useEffect(() => { load(); }, [load]);
+
+  // Surface the Meta OAuth redirect result, then clean the URL.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    if (q.get('connected') === 'meta') {
+      const page = q.get('page') || 'your Page';
+      const ig = q.get('ig');
+      setFeedback({ ok: true, msg: `Facebook connected — ${page}${ig ? ` (+ Instagram @${ig})` : ''}` });
+    } else if (q.get('error')?.startsWith('meta')) {
+      const map: Record<string, string> = {
+        meta_not_configured: 'Meta app not configured — set META_APP_ID and META_APP_SECRET first.',
+        meta_denied: 'You declined the Facebook permission request.',
+        meta_bad_state: 'Security check failed — please try connecting again.',
+        meta_no_pages: 'No Facebook Page found on that account. Create/manage a Page, then reconnect.',
+        meta_exchange: 'Could not complete the Facebook handshake.',
+      };
+      const code = q.get('error')!;
+      const detail = q.get('detail');
+      setFeedback({ ok: false, msg: `${map[code] || 'Facebook connect failed.'}${detail ? ` (${detail})` : ''}` });
+    }
+    if (q.has('connected') || q.has('error')) {
+      window.history.replaceState({}, '', '/settings');
+    }
+  }, []);
 
   function isConnected(platform: string): boolean {
     const env = envStatus[platform] ?? false;
@@ -110,6 +135,12 @@ export default function Settings() {
             Database: {dbReady ? <Badge tone="green">connected</Badge> : <Badge tone="amber">not configured</Badge>}
           </div>
 
+          {feedback && showConnect === null && (
+            <div className={`rounded-lg border px-4 py-3 text-sm ${feedback.ok ? 'border-green-200 bg-green-50 text-green-700' : 'border-red-200 bg-red-50 text-red-700'}`}>
+              {feedback.msg}
+            </div>
+          )}
+
           <div className="grid gap-4 sm:grid-cols-2">
             {Object.entries(PLATFORMS).map(([key, info]) => {
               const on = isConnected(key);
@@ -124,6 +155,14 @@ export default function Settings() {
                     </div>
                     <Badge tone={on ? 'green' : 'gray'}>{on ? 'connected' : 'off'}</Badge>
                   </div>
+
+                  {info.oauth && (
+                    <a href={info.oauth} className="w-full">
+                      <Button variant={on ? 'ghost' : 'secondary'} className="w-full text-xs">
+                        {on ? 'Reconnect Facebook' : 'Connect with Facebook'}
+                      </Button>
+                    </a>
+                  )}
 
                   {info.requiresToken && !on && showConnect !== key && (
                     <Button variant="secondary" className="w-full text-xs" onClick={() => { setShowConnect(key); setTokenValue(''); setFeedback(null); }}>

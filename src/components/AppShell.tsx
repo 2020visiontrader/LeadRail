@@ -64,7 +64,8 @@ function Wordmark() {
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const isActive = (href: string) => (href === '/' ? pathname === '/' : pathname.startsWith(href));
-  if (pathname === '/login') return <>{children}</>;
+  const bareRoutes = ['/login', '/privacy', '/terms', '/data-deletion'];
+  if (bareRoutes.some((r) => pathname === r)) return <>{children}</>;
   return (
     <div className="flex min-h-screen bg-[var(--bg-canvas)] text-[var(--text-primary)]">
       <aside className="hidden w-60 shrink-0 flex-col border-r border-[var(--border-default)] bg-[var(--bg-surface)] md:flex">
