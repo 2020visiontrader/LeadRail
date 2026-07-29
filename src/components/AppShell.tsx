@@ -3,14 +3,18 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
 const NAV = [
-  { href: '/', label: 'Overview', icon: '📊' },
+  { href: '/', label: 'Dashboard', icon: '📊' },
   { href: '/leads', label: 'Leads', icon: '📋' },
-  { href: '/companies', label: 'Companies', icon: '🏢' },
-  { href: '/deals', label: 'Pipeline', icon: '💰' },
-  { href: '/activities', label: 'Activities', icon: '✅' },
+  { href: '/enrichment', label: 'Enrichment', icon: '🔎' },
+  { href: '/sequences', label: 'Sequences', icon: '🔁' },
+  { href: '/templates', label: 'Templates', icon: '📝' },
+  { href: '/inbox', label: 'Inbox', icon: '📥' },
   { href: '/outreach', label: 'Outreach', icon: '📧' },
   { href: '/content', label: 'Content', icon: '📱' },
   { href: '/campaigns', label: 'Campaigns', icon: '🎯' },
+  { href: '/companies', label: 'Companies', icon: '🏢' },
+  { href: '/deals', label: 'Pipeline', icon: '💰' },
+  { href: '/activities', label: 'Activities', icon: '✅' },
   { href: '/settings', label: 'Settings', icon: '⚙️' },
 ];
 
