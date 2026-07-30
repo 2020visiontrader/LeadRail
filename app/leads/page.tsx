@@ -18,7 +18,7 @@ const LIMIT = 30;
 const emptyLead = { name: '', email: '', company: '', title: '', segment: 'investor' };
 const emptyICP = { industry: '', titles: '', seniority: '', location: '', company_size: '', keywords: '', limit: 25 };
 
-interface Venture { id: string; name: string; account_id: string; contact_count?: number }
+interface Venture { id: string; name: string; account_id: string; contact_count?: number; icp_profile?: any; deck_summary?: string; lead_goal?: string }
 
 export default function LeadsPage() {
   const { notify } = useToast();
@@ -70,6 +70,32 @@ export default function LeadsPage() {
       notify(e.message === 'not_configured' ? 'Connect OpenCode to use plain-language search' : e.message || 'Could not parse', 'error');
     } finally { setParsing(false); }
   };
+
+  // Prefill the Apollo form from the venture's stored ICP profile (derived from
+  // its pitch deck + lead goal + sectors at onboarding). Lets a user source
+  // tailored leads without hand-tuning any filter.
+  const hasProfile = Boolean(venture?.icp_profile && Object.keys(venture.icp_profile).length);
+  const applyVentureProfile = () => {
+    const p = venture?.icp_profile;
+    if (!p) return;
+    setIcp({
+      industry: p.industry || '',
+      titles: Array.isArray(p.titles) ? p.titles.join(', ') : (p.titles || ''),
+      seniority: Array.isArray(p.seniority) ? p.seniority.join(', ') : (p.seniority || ''),
+      location: p.location || '',
+      company_size: p.company_size || '',
+      keywords: p.keywords || '',
+      limit: 25,
+    });
+    setNlSummary(venture?.deck_summary ? `Tailored from ${venture.name}: ${venture.deck_summary}` : `Tailored from ${venture?.name}'s profile`);
+  };
+  // Auto-prefill the first time the panel opens for a venture that has a profile
+  // and the form is still untouched (never clobber the user's own edits).
+  useEffect(() => {
+    const empty = !icp.industry && !icp.titles && !icp.seniority && !icp.keywords;
+    if (sourceOpen && hasProfile && empty) applyVentureProfile();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sourceOpen, venture?.id]);
 
   // Load ventures once (for the scope selector). Does NOT touch Apollo.
   useEffect(() => {
@@ -261,9 +287,16 @@ export default function LeadsPage() {
 
       {sourceOpen && (
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-4">
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2">
             <h2 className="font-semibold">Source leads from Apollo</h2>
-            <span className="text-xs text-slate-500">Nothing is pulled until you click Search</span>
+            <div className="flex items-center gap-2">
+              {hasProfile && (
+                <Button variant="secondary" onClick={applyVentureProfile} title="Fill filters from this venture's pitch-deck profile">
+                  ✨ Use {venture?.name} profile
+                </Button>
+              )}
+              <span className="text-xs text-slate-500">Nothing is pulled until you click Search</span>
+            </div>
           </div>
 
           <div className="rounded-lg border border-indigo-200 bg-indigo-50/60 p-3 space-y-2">
