@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCampaignAssets, updateCampaignAsset } from '@/lib/crm';
-import { generateText, geminiConfigured } from '@/lib/ai/gemini';
+import { generateText, opencodeConfigured } from '@/lib/ai/opencode';
 import { requireSession, errorResponse } from '@/lib/http';
 export const dynamic = 'force-dynamic';
 // Admin-only, on-demand. Analyzes each raw static image asset for ad-quality issues.
 export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
-  if (!geminiConfigured()) return NextResponse.json({ error: 'not_configured', message: 'Connect Gemini to analyze assets' }, { status: 409 });
+  if (!opencodeConfigured()) return NextResponse.json({ error: 'not_configured', message: 'Connect OpenCode to analyze assets' }, { status: 409 });
   try {
     const assets = (await getCampaignAssets(params.id, session.accountId)).filter((a: any) => a.kind === 'image' && a.status === 'raw');
     const results: any[] = [];

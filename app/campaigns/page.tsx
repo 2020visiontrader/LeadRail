@@ -54,7 +54,7 @@ export default function CampaignsPage() {
     try {
       const r = await apiSend<{ analyzed: number }>(`/api/campaigns/${assetCampaign.id}/assets/analyze`, 'POST');
       notify(`Analyzed ${r.analyzed} asset(s)`); openAssets(assetCampaign);
-    } catch (e: any) { notify(e.message === 'not_configured' ? 'Connect Gemini to analyze' : e.message || 'Analyze failed', 'error'); }
+    } catch (e: any) { notify(e.message === 'not_configured' ? 'Connect OpenCode to analyze' : e.message || 'Analyze failed', 'error'); }
     finally { setAssetBusy(false); }
   };
 

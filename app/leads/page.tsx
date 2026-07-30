@@ -67,7 +67,7 @@ export default function LeadsPage() {
       setNlSummary(parsed.summary || '');
       notify('Search built — review and hit Search Apollo');
     } catch (e: any) {
-      notify(e.message === 'not_configured' ? 'Connect Gemini to use plain-language search' : e.message || 'Could not parse', 'error');
+      notify(e.message === 'not_configured' ? 'Connect OpenCode to use plain-language search' : e.message || 'Could not parse', 'error');
     } finally { setParsing(false); }
   };
 

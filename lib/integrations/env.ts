@@ -12,6 +12,7 @@ export interface OptionalEnv {
   POSTIZ_API_KEY?: string;
   META_ACCESS_TOKEN?: string;
   NIM_API_KEY?: string;
+  OPENCODE_API_KEY?: string;
 }
 
 export function validateEnv(): RequiredEnv & OptionalEnv {
@@ -31,6 +32,7 @@ export function validateEnv(): RequiredEnv & OptionalEnv {
     'POSTIZ_API_KEY',
     'META_ACCESS_TOKEN',
     'NIM_API_KEY',
+    'OPENCODE_API_KEY',
   ];
 
   const env: RequiredEnv & OptionalEnv = {
@@ -52,6 +54,7 @@ export function getIntegrationStatus() {
     supabase: !!process.env.NEXT_PUBLIC_SUPABASE_URL,
     apollo: !!(process.env.APOLLO_API_KEY || process.env.Apollo_Api_Key || process.env.APOLLO_KEY),
     gemini: !!(process.env.GEMINI_API_KEY || process.env.Gemini_api_key || process.env.GOOGLE_API_KEY),
+    opencode: !!(process.env.OPENCODE_API_KEY || process.env.OpenCode_Api_Key || process.env.OPENCODE_GO_API_KEY),
     brevo: !!process.env.BREVO_API_KEY,
     resend: !!process.env.RESEND_API_KEY,
     postiz: !!process.env.POSTIZ_API_KEY,

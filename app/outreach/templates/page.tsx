@@ -69,7 +69,7 @@ export default function Templates() {
       setInstruction('');
       notify('Refined — review and Save');
     } catch (e: any) {
-      notify(e.message === 'not_configured' ? 'Connect Gemini to refine with AI' : e.message || 'Refine failed', 'error');
+      notify(e.message === 'not_configured' ? 'Connect OpenCode to refine with AI' : e.message || 'Refine failed', 'error');
     } finally { setRefining(false); }
   };
 

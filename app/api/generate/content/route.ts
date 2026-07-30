@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 import { generateContentPost } from '@/lib/ai/generation';
-import { geminiConfigured } from '@/lib/ai/gemini';
+import { opencodeConfigured } from '@/lib/ai/opencode';
 import { violatesWhiteLabel } from '@/lib/ai/marketing';
 
 export const dynamic = 'force-dynamic';
@@ -9,7 +9,7 @@ export const dynamic = 'force-dynamic';
 export async function POST(request: NextRequest) {
   const { error: authErr } = await requireSession(request);
   if (authErr) return authErr;
-  if (!geminiConfigured()) return NextResponse.json({ error: 'not_configured', provider: 'gemini' }, { status: 409 });
+  if (!opencodeConfigured()) return NextResponse.json({ error: 'not_configured', provider: 'opencode' }, { status: 409 });
 
   let body: any;
   try { body = await request.json(); } catch { return badRequest('invalid JSON body'); }
@@ -29,7 +29,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ post, white_label_ok: leaks.length === 0 });
   } catch (error: any) {
     if (error?.code === 'not_configured') return NextResponse.json({ error: 'not_configured' }, { status: 409 });
-    if (error?.code === 'auth') return NextResponse.json({ error: 'gemini_auth_failed' }, { status: 502 });
+    if (error?.code === 'auth') return NextResponse.json({ error: 'opencode_auth_failed' }, { status: 502 });
     return errorResponse(error);
   }
 }

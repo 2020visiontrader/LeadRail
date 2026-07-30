@@ -82,7 +82,7 @@ export default function SequencesPage() {
       setChat([...next, { role: 'assistant', content: res.reply }]);
       if (res.sequence) setPendingSeq(res.sequence);
     } catch (e: any) {
-      const msg = e.message === 'not_configured' ? 'Connect Gemini in Settings to use the AI builder' : e.message || 'AI failed';
+      const msg = e.message === 'not_configured' ? 'Connect OpenCode in Settings to use the AI builder' : e.message || 'AI failed';
       setChat([...next, { role: 'assistant', content: `⚠️ ${msg}` }]);
     } finally { setChatLoading(false); }
   };

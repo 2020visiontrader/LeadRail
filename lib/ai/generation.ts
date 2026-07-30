@@ -1,8 +1,10 @@
-// High-level generators — combine prompt-improver + marketing scaffolding + Gemini.
-// On-demand only (a route calls these on explicit request). Nothing here writes
-// to the database or posts anywhere; callers decide what to do with the output.
+// High-level generators — combine prompt-improver + marketing scaffolding.
+// Text + multi-turn chat run on OpenCode Go (DeepSeek V4 Pro); image generation
+// stays on Gemini (invoked directly by the image route). On-demand only (a route
+// calls these on explicit request). Nothing here writes to the database or posts
+// anywhere; callers decide what to do with the output.
 
-import { generateText, generateChat, type ChatMessage } from './gemini';
+import { generateText, generateChat, type ChatMessage } from './opencode';
 import { buildPersona, improvePrompt } from './prompt-improver';
 import { marketingGuidance, whiteLabelGuard, COPY_FRAMEWORKS } from './marketing';
 import { HUMANIZE_RULES, stripAiMarkers } from './humanizer';

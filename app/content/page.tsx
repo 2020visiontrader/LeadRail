@@ -51,7 +51,7 @@ export default function ContentPage() {
       setForm((f) => ({ ...f, post_body: body }));
       notify('Draft generated');
     } catch (e: any) {
-      notify(e.message === 'not_configured' ? 'Connect Gemini to generate' : e.message || 'Generation failed', 'error');
+      notify(e.message === 'not_configured' ? 'Connect OpenCode to generate' : e.message || 'Generation failed', 'error');
     } finally { setGenerating(false); }
   };
 
