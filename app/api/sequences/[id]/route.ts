@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSequence, updateSequence, deleteSequence } from '@/lib/sequences';
+import { getSequence, updateSequence, deleteSequence, setSequenceSteps } from '@/lib/sequences';
 import { dbReady } from '@/lib/db';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 
@@ -22,7 +22,13 @@ export async function PATCH(request: NextRequest, ctx: { params: { id: string } 
   if (!dbReady()) return badRequest('database not connected');
   try {
     const body = await request.json();
-    return NextResponse.json(await updateSequence(ctx.params.id, session.accountId, body));
+    // When steps are provided, replace the cadence (edit-after-create).
+    if (Array.isArray(body.steps)) {
+      await setSequenceSteps(ctx.params.id, session.accountId, body.steps);
+    }
+    // Metadata fields (name/channel/is_active) go through updateSequence.
+    const meta = await updateSequence(ctx.params.id, session.accountId, body).catch(() => null);
+    return NextResponse.json(meta ?? (await getSequence(ctx.params.id, session.accountId)));
   } catch (error) {
     return errorResponse(error);
   }

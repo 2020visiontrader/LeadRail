@@ -32,7 +32,10 @@ export async function POST(request: NextRequest) {
       brand_id: body.brandId,
       name: String(body.name),
       channel: body.channel,
-      is_active: body.is_active,
+      // Default ACTIVE: an inactive sequence silently completes every enrollment
+      // with zero sends, so a freshly-created cadence must be live unless the
+      // user explicitly pauses it.
+      is_active: body.is_active ?? true,
       steps: Array.isArray(body.steps) ? body.steps : [],
     });
     return NextResponse.json(seq, { status: 201 });

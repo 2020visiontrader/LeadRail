@@ -212,6 +212,57 @@ export async function deleteSequence(id: string, accountId: string) {
   return { id, deleted: true };
 }
 
+/**
+ * Replace a sequence's steps wholesale (edit-after-create). Ownership is checked
+ * via getSequence; steps are deleted and re-inserted so a user can fix a typo in
+ * step 3 or re-order the cadence without recreating the sequence.
+ */
+export async function setSequenceSteps(id: string, accountId: string, steps: StepInput[]) {
+  await getSequence(id, accountId); // throws if not owned
+  await supabase.from('sequence_steps').delete().eq('sequence_id', id);
+  const rows = (steps || []).map((s, i) => ({
+    sequence_id: id,
+    step_order: s.step_order ?? i,
+    type: STEP_TYPES.has(s.type || '') ? s.type : 'email',
+    delay_hours: s.delay_hours ?? 0,
+    template_id: s.template_id ?? null,
+    subject: s.subject ?? null,
+    body: s.body ?? null,
+  }));
+  if (rows.length) {
+    const { error } = await supabase.from('sequence_steps').insert(rows);
+    if (error) throw error;
+  }
+  return getSequence(id, accountId);
+}
+
+/** Enrollments for a sequence, joined to their contact, with a status rollup. */
+export async function listEnrollments(sequenceId: string, accountId: string) {
+  await getSequence(sequenceId, accountId); // ownership gate
+  const { data, error } = await supabase
+    .from('sequence_enrollments')
+    .select('id, status, current_step, next_run_at, last_event, created_at, contact_id, contacts!inner(id, name, email, account_id)')
+    .eq('sequence_id', sequenceId)
+    .eq('contacts.account_id', accountId)
+    .order('created_at', { ascending: false })
+    .limit(500);
+  if (error) throw error;
+  const rows = (data || []).map((e: any) => ({
+    id: e.id,
+    status: e.status,
+    current_step: e.current_step,
+    next_run_at: e.next_run_at,
+    last_event: e.last_event,
+    created_at: e.created_at,
+    contact_id: e.contact_id,
+    name: e.contacts?.name || '—',
+    email: e.contacts?.email || '',
+  }));
+  const summary: Record<string, number> = {};
+  for (const r of rows) summary[r.status] = (summary[r.status] || 0) + 1;
+  return { enrollments: rows, summary, total: rows.length };
+}
+
 /** Load the effective business-hours window for a sequence (seq override → account default). */
 async function resolveBusinessHours(seq: any): Promise<BusinessHours | null> {
   const own = normalizeBusinessHours(seq?.business_hours);

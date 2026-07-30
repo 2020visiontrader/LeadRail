@@ -1,5 +1,7 @@
 'use client';
 import { useEffect, useState, useCallback } from 'react';
+import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import Button from '@/components/Button';
 import Modal from '@/components/Modal';
 import Input from '@/components/Input';
@@ -16,6 +18,7 @@ interface Venture { id: string; name: string; account_id: string }
 
 export default function SequencesPage() {
   const { notify } = useToast();
+  const router = useRouter();
   const [ventures, setVentures] = useState<Venture[]>([]);
   const [venture, setVenture] = useState<Venture | null>(null);
   const [rows, setRows] = useState<Sequence[]>([]);
@@ -44,10 +47,20 @@ export default function SequencesPage() {
     });
     setSaving(true);
     try {
-      await apiSend('/api/sequences', 'POST', { accountId: venture.account_id, brandId: venture.id, name: form.name.trim(), channel: form.channel, steps });
-      notify('Sequence created'); setOpen(false); setForm({ ...form, name: '' }); load();
+      const created = await apiSend<Sequence>('/api/sequences', 'POST', { accountId: venture.account_id, brandId: venture.id, name: form.name.trim(), channel: form.channel, steps });
+      notify('Sequence created — now enroll leads'); setOpen(false); setForm({ ...form, name: '' });
+      // Go straight to the detail page so the user can enroll contacts and send.
+      if (created?.id) router.push(`/sequences/${created.id}`); else load();
     } catch (e: any) { notify(e.message || 'Create failed', 'error'); }
     finally { setSaving(false); }
+  };
+
+  const toggle = async (s: Sequence) => {
+    try {
+      await apiSend(`/api/sequences/${s.id}`, 'PATCH', { is_active: !s.is_active });
+      setRows((prev) => prev.map((x) => (x.id === s.id ? { ...x, is_active: !x.is_active } : x)));
+      notify(!s.is_active ? 'Activated' : 'Paused');
+    } catch (e: any) { notify(e.message || 'Failed', 'error'); }
   };
 
   const generateWithAi = async () => {
@@ -97,9 +110,16 @@ export default function SequencesPage() {
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
           {rows.map((s) => (
-            <div key={s.id} className="rounded-xl border border-slate-200 bg-white p-4">
-              <div className="flex items-center justify-between"><span className="font-semibold">{s.name}</span><Badge tone={s.is_active ? 'green' : 'gray'}>{s.is_active ? 'active' : 'paused'}</Badge></div>
+            <div key={s.id} className="rounded-xl border border-slate-200 bg-white p-4 transition hover:border-indigo-300 hover:shadow-sm">
+              <div className="flex items-center justify-between">
+                <Link href={`/sequences/${s.id}`} className="font-semibold hover:text-indigo-600">{s.name}</Link>
+                <Badge tone={s.is_active ? 'green' : 'gray'}>{s.is_active ? 'active' : 'paused'}</Badge>
+              </div>
               <p className="mt-1 text-xs text-slate-500">{s.channel} · created {new Date(s.created_at).toLocaleDateString()}</p>
+              <div className="mt-3 flex items-center gap-2">
+                <Link href={`/sequences/${s.id}`}><Button variant="secondary">Open & enroll</Button></Link>
+                <Button variant="secondary" onClick={() => toggle(s)}>{s.is_active ? 'Pause' : 'Activate'}</Button>
+              </div>
             </div>
           ))}
         </div>

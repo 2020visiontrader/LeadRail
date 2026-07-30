@@ -3,8 +3,9 @@ import Link from 'next/link';
 import { Contact, CONTACT_STATUSES } from '@/lib/types';
 import Badge, { statusTone } from '@/components/Badge';
 import Button from '@/components/Button';
-import { apiGet } from '@/lib/api';
+import { apiGet, apiSend } from '@/lib/api';
 
+interface SeqLite { id: string; name: string; is_active: boolean }
 interface TimelineItem { id: string; kind: string; title?: string | null; body?: string | null; at: string }
 const TL_ICON: Record<string, string> = {
   email_open: '📧', email_click: '🔗', email_sent: '✉️', note: '📝',
@@ -32,7 +33,30 @@ export default function ContactDrawer({ contact, isOpen, onClose, onUpdate, onDe
   const [editing, setEditing] = useState(false);
   const [timeline, setTimeline] = useState<TimelineItem[]>([]);
   const [tlLoading, setTlLoading] = useState(false);
+  const [sequences, setSequences] = useState<SeqLite[]>([]);
+  const [seqId, setSeqId] = useState('');
+  const [enrolling, setEnrolling] = useState(false);
   useEffect(() => { setDraft(contact); setEditing(false); }, [contact]);
+
+  useEffect(() => {
+    if (!isOpen || !contact?.brand_id) { setSequences([]); return; }
+    setSeqId('');
+    apiGet<SeqLite[]>(`/api/sequences?brandId=${contact.brand_id}`)
+      .then((d) => setSequences(Array.isArray(d) ? d : []))
+      .catch(() => setSequences([]));
+  }, [isOpen, contact?.brand_id]);
+
+  const enrollInSequence = async () => {
+    if (!seqId || !contact) return;
+    setEnrolling(true);
+    try {
+      await apiSend(`/api/sequences/${seqId}/enroll`, 'POST', { contactIds: [contact.id] });
+      const s = sequences.find((x) => x.id === seqId);
+      alert(`Added ${contact.name} to “${s?.name}”.${s && !s.is_active ? ' Activate the sequence to start sending.' : ''}`);
+      setSeqId('');
+    } catch (e: any) { alert(e?.message || 'Enroll failed'); }
+    finally { setEnrolling(false); }
+  };
 
   useEffect(() => {
     if (!isOpen || !contact?.id) return;
@@ -102,6 +126,22 @@ export default function ContactDrawer({ contact, isOpen, onClose, onUpdate, onDe
               </div>
             </dl>
           )}
+
+          <div className="border-t border-slate-200 pt-4">
+            <h3 className="mb-2 text-sm font-semibold">Add to sequence</h3>
+            {sequences.length === 0 ? (
+              <p className="text-sm text-slate-400">No sequences for this venture yet. <Link href="/sequences" className="text-indigo-600 underline">Create one</Link>.</p>
+            ) : (
+              <div className="flex items-center gap-2">
+                <select value={seqId} onChange={(e) => setSeqId(e.target.value)}
+                  className="flex-1 rounded-lg border border-slate-300 px-3 py-2 text-sm">
+                  <option value="">Select a sequence…</option>
+                  {sequences.map((s) => <option key={s.id} value={s.id}>{s.name}{s.is_active ? '' : ' (paused)'}</option>)}
+                </select>
+                <Button loading={enrolling} disabled={!seqId} onClick={enrollInSequence}>Enroll</Button>
+              </div>
+            )}
+          </div>
 
           <div className="border-t border-slate-200 pt-4">
             <h3 className="mb-2 text-sm font-semibold">Engagement Timeline</h3>
