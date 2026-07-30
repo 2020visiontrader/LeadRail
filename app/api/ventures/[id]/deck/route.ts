@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { supabase, getVenture, updateVenture, assertBrandOwned, dbReady } from '@/lib/db';
+import { getVenture, updateVenture, assertBrandOwned, dbReady } from '@/lib/db';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 import { extractDeckText, isSupportedDeck } from '@/lib/ai/deck';
 import { profileVentureFromDeck } from '@/lib/ai/generation';
 import { opencodeConfigured } from '@/lib/ai/opencode';
+import { DECK_BUCKET, DECK_URL_TTL, putPrivate, signUrl } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 
-const BUCKET = 'venture-decks';
 const MAX_BYTES = 25 * 1024 * 1024; // 25MB — decks can be image-heavy
 
 // POST /api/ventures/:id/deck  (multipart: file)
@@ -35,14 +35,11 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   const safeName = (file.name || 'deck').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 90);
   const path = `${session.accountId}/${params.id}/${Date.now()}-${safeName}`;
 
-  // 1) Store the file (durable, so the user can re-download / re-profile later).
-  await supabase.storage.createBucket(BUCKET, { public: true }).catch(() => {});
-  const up = await supabase.storage.from(BUCKET).upload(path, buf, {
-    contentType: file.type || 'application/octet-stream',
-    upsert: true,
-  });
-  if (up.error) return errorResponse(up.error, 502, 'upload failed — is Supabase Storage enabled?');
-  const { data: pub } = supabase.storage.from(BUCKET).getPublicUrl(path);
+  // 1) Store the file in the PRIVATE deck bucket (never public). We persist the
+  //    storage path; reads are served via short-lived signed URLs on demand.
+  const put = await putPrivate(DECK_BUCKET, path, buf, file.type);
+  if (put.error) return errorResponse(put.error, 502, 'upload failed — is Supabase Storage enabled?');
+  const signed = await signUrl(DECK_BUCKET, path, DECK_URL_TTL);
 
   // 2) Extract text (guarded — never throws).
   const extracted = await extractDeckText(file.name || safeName, buf);
@@ -69,7 +66,8 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   }
 
   // 4) Persist onto the brand.
-  const patch: Record<string, any> = { deck_url: pub.publicUrl, deck_name: file.name || safeName };
+  // Persist the storage PATH (opaque ref), not a public URL.
+  const patch: Record<string, any> = { deck_url: path, deck_name: file.name || safeName };
   if (profile) {
     patch.deck_summary = profile.summary;
     patch.icp_profile = profile.icp;
@@ -77,11 +75,25 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   const saved = await updateVenture(params.id, session.accountId, patch);
 
   return NextResponse.json({
-    deck_url: pub.publicUrl,
+    deck_url: signed, // short-lived signed URL for immediate preview/download
     deck_name: file.name || safeName,
     extracted_chars: extracted.chars,
     profile,
     note: profileNote,
     venture: saved,
   });
+}
+
+// GET /api/ventures/:id/deck — 302 to a fresh signed URL for the stored deck.
+// The bucket is private, so this is the only way to download it; account-scoped.
+export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
+  const { session, error } = await requireSession(request);
+  if (error) return error;
+  if (!(await assertBrandOwned(params.id, session.accountId))) return badRequest('unknown venture');
+  const venture = await getVenture(params.id);
+  const path = venture?.deck_url;
+  if (!path) return badRequest('no deck on file');
+  const signed = await signUrl(DECK_BUCKET, path, DECK_URL_TTL);
+  if (!signed) return errorResponse('sign failed', 502, 'could not sign deck url');
+  return NextResponse.redirect(signed);
 }

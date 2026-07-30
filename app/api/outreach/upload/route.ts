@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/db';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
+import { ATTACHMENT_BUCKET, ATTACHMENT_URL_TTL, putPrivate, signUrl } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 
-const BUCKET = 'outreach-attachments';
 const MAX_BYTES = 15 * 1024 * 1024; // 15MB — keep decks reasonable for email
 
 // Upload a document/image (pitch deck, one-pager, hero image) to durable
@@ -23,28 +23,24 @@ export async function POST(request: NextRequest) {
     const safeName = (file.name || 'file').replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 80);
     const path = `${session.accountId}/${Date.now()}-${safeName}`;
 
-    // Ensure the bucket exists (idempotent — ignore "already exists").
-    await supabase.storage.createBucket(BUCKET, { public: true }).catch(() => {});
+    // Store in the PRIVATE attachment bucket; email links use a signed URL that
+    // expires (30d) rather than a permanent public link.
+    const put = await putPrivate(ATTACHMENT_BUCKET, path, buf, file.type);
+    if (put.error) return errorResponse(put.error, 502, 'upload failed — is Supabase Storage enabled?');
+    const signed = await signUrl(ATTACHMENT_BUCKET, path, ATTACHMENT_URL_TTL);
+    if (!signed) return errorResponse('sign failed', 502, 'could not sign attachment url');
 
-    const up = await supabase.storage.from(BUCKET).upload(path, buf, {
-      contentType: file.type || 'application/octet-stream',
-      upsert: true,
-    });
-    if (up.error) return errorResponse(up.error, 502, 'upload failed — is Supabase Storage enabled?');
-
-    const { data: pub } = supabase.storage.from(BUCKET).getPublicUrl(path);
-
-    // Record it as an attachment row (best-effort — table may vary by env).
+    // Record it (store the durable path so we can re-sign later; best-effort).
     await supabase.from('attachments').insert([{
       account_id: session.accountId,
       filename: file.name || safeName,
-      url: pub.publicUrl,
+      url: path,
       mime_type: file.type || null,
       size_bytes: file.size,
     }]).then(() => {}, () => {});
 
     return NextResponse.json({
-      url: pub.publicUrl,
+      url: signed,
       filename: file.name || safeName,
       mime: file.type || 'application/octet-stream',
       size: file.size,

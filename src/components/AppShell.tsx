@@ -16,6 +16,7 @@ const NAV = [
   { href: '/companies', label: 'Companies' },
   { href: '/deals', label: 'Pipeline' },
   { href: '/activities', label: 'Activities' },
+  { href: '/referrals', label: 'Ambassador' },
   { href: '/settings', label: 'Settings' },
 ];
 

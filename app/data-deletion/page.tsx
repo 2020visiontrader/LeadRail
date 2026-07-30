@@ -23,7 +23,18 @@ export default function DataDeletionPage() {
           </p>
 
           <section>
-            <h2 className="text-lg font-semibold text-neutral-900">Option 1 — Delete it yourself in the app</h2>
+            <h2 className="text-lg font-semibold text-neutral-900">Delete your entire account</h2>
+            <p className="mt-3">
+              To erase everything, sign in and go to <span className="font-medium">Settings → Data &amp; privacy → Delete
+              account</span>. Deletion is scheduled 30 days out: during that window the account keeps working and you can
+              cancel; after it, every contact, venture, message, and uploaded file is permanently and irreversibly erased,
+              including all stored files. The same page has <span className="font-medium">Export my data</span> to download
+              everything as JSON first.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="text-lg font-semibold text-neutral-900">Option 1 — Delete a connection yourself in the app</h2>
             <ol className="mt-3 list-decimal space-y-1 pl-5">
               <li>Sign in to LeadRail.</li>
               <li>Go to <span className="font-medium">Settings → Integrations</span>.</li>

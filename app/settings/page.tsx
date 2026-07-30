@@ -38,6 +38,86 @@ const PLATFORMS: Record<string, PlatformInfo> = {
   nim: { label: 'NVIDIA NIM', desc: 'AI generation (alt)', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
 };
 
+function DataPrivacySection() {
+  const [status, setStatus] = useState<{ scheduled_for: string | null; grace_days: number } | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [reason, setReason] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    apiGet('/api/account/delete').then((r) => setStatus(r)).catch(() => {});
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function requestDelete() {
+    setBusy(true); setMsg(null);
+    try { const r = await apiSend('/api/account/delete', 'POST', { reason }); setMsg(null); setConfirming(false); load(); void r; }
+    catch (e: any) { setMsg(e?.message || 'Could not schedule deletion'); }
+    finally { setBusy(false); }
+  }
+  async function cancelDelete() {
+    setBusy(true); setMsg(null);
+    try { await apiSend('/api/account/delete', 'DELETE'); load(); }
+    catch (e: any) { setMsg(e?.message || 'Could not cancel'); }
+    finally { setBusy(false); }
+  }
+
+  const scheduled = status?.scheduled_for ? new Date(status.scheduled_for) : null;
+
+  return (
+    <div className="space-y-4 rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-5">
+      <div>
+        <h2 className="text-lg font-semibold">Data &amp; privacy</h2>
+        <p className="text-sm text-[var(--text-secondary)]">Your data is private to your account. Export or delete it any time.</p>
+      </div>
+
+      {scheduled ? (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+          This account is scheduled for permanent deletion on <strong>{scheduled.toLocaleDateString()}</strong>.
+          All data and files are erased then. You can still cancel until that date.
+          <div className="mt-3">
+            <Button variant="secondary" onClick={cancelDelete} loading={busy} className="text-xs">Cancel deletion</Button>
+          </div>
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-3">
+          <a href="/api/account/export">
+            <Button variant="secondary" className="text-xs">⬇ Export my data (JSON)</Button>
+          </a>
+          {!confirming ? (
+            <Button variant="danger" className="text-xs" onClick={() => { setConfirming(true); setMsg(null); }}>
+              Delete account
+            </Button>
+          ) : (
+            <div className="w-full rounded-lg border border-red-200 bg-red-50 p-4">
+              <p className="text-sm font-medium text-red-800">Delete this account and everything in it?</p>
+              <p className="mt-1 text-xs text-red-700">
+                We schedule a permanent purge {status?.grace_days ?? 30} days out. During that window the account keeps
+                working and you can cancel. After it, every contact, venture, message, and uploaded file is
+                irreversibly erased. Owner only.
+              </p>
+              <div className="mt-3">
+                <Input label="Reason (optional)" placeholder="Helps us improve" value={reason}
+                  onChange={(e) => setReason((e.target as HTMLInputElement).value)} />
+              </div>
+              <div className="mt-3 flex gap-2">
+                <Button variant="danger" className="text-xs" onClick={requestDelete} loading={busy}>Yes, schedule deletion</Button>
+                <Button variant="ghost" className="text-xs" onClick={() => setConfirming(false)}>Keep my account</Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+      {msg && <p className="text-xs text-red-600">{msg}</p>}
+      <p className="text-xs text-[var(--text-muted)]">
+        Files (decks, attachments) are stored in private buckets and served via short-lived signed links — never public.
+        See our <a href="/privacy" className="underline">Privacy Policy</a> and <a href="/data-deletion" className="underline">Data Deletion</a> page.
+      </p>
+    </div>
+  );
+}
+
 export default function Settings() {
   const [envStatus, setEnvStatus] = useState<Record<string, boolean>>({});
   const [connections, setConnections] = useState<Connection[]>([]);
@@ -215,6 +295,8 @@ export default function Settings() {
             Per-account connections: {connections.filter((c) => c.status === 'connected').map((c) => PLATFORMS[c.provider]?.label || c.provider).join(', ') || 'none'}<br />
             Recommended: use <strong>Postiz</strong> for all social platforms (one key, 8 platforms). Tokens validated live against each platform's API.
           </p>
+
+          <DataPrivacySection />
         </>
       )}
     </div>

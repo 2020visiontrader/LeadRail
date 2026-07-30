@@ -142,7 +142,7 @@ export async function findContactByEmailUnscoped(email: string) {
 // Ventures (brands) — account-scoped
 // ============================================================
 export async function getVentures(accountId?: string) {
-  let q = supabase.from('brands').select('*').order('created_at', { ascending: true });
+  let q = supabase.from('brands').select('*').is('deleted_at', null).order('created_at', { ascending: true });
   if (accountId) q = q.eq('account_id', accountId);
   const { data, error } = await q;
   if (error) throw error;

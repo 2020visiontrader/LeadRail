@@ -5,6 +5,8 @@ import { processEnrichmentJobs } from '@/lib/enrichment-jobs';
 import { processDueWebhookDeliveries } from '@/lib/webhooks-out';
 import { requireAuth, errorResponse } from '@/lib/http';
 import { supabase } from '@/lib/db';
+import { purgeDueAccounts } from '@/lib/privacy';
+import { maturateRewards } from '@/lib/referrals';
 
 export const dynamic = 'force-dynamic';
 
@@ -23,10 +25,16 @@ export async function POST(request: NextRequest) {
       processEnrichmentJobs(Math.min(limit, 10)).catch((e) => ({ error: String(e?.message || e) })),
       processDueWebhookDeliveries(Math.min(limit, 20)).catch((e) => ({ error: String(e?.message || e) })),
     ]);
-    // Trash cron: hard-purge rows soft-deleted past the retention window.
-    // Best-effort; a purge failure (or 010 not yet applied) never fails the tick.
+    // Retention cron: hard-purge rows soft-deleted past the window, then
+    // hard-purge accounts whose deletion grace window has elapsed (storage +
+    // cascade). Both best-effort; a failure never fails the tick.
     const { data: purged } = await supabase.rpc('purge_soft_deleted', { p_days: 30 });
-    return NextResponse.json({ ok: true, legacy, sequences, enrichment, webhooks, purged: purged ?? 0 });
+    const purgedAccounts = await purgeDueAccounts(25).catch(() => [] as string[]);
+    const maturedRewards = await maturateRewards().catch(() => 0);
+    return NextResponse.json({
+      ok: true, legacy, sequences, enrichment, webhooks,
+      purged: purged ?? 0, purgedAccounts: purgedAccounts.length, maturedRewards,
+    });
   } catch (error) {
     return errorResponse(error);
   }

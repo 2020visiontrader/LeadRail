@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getVenture, updateVenture, assertBrandOwned, dbReady } from '@/lib/db';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
+import { softDeleteVenture } from '@/lib/privacy';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,6 +35,21 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
   if (Array.isArray(body?.skills)) patch.skills = body.skills.map(String);
   try {
     return NextResponse.json({ venture: await updateVenture(params.id, session.accountId, patch) });
+  } catch (e) {
+    return errorResponse(e);
+  }
+}
+
+// DELETE /api/ventures/:id — soft-delete a venture. It disappears from lists
+// immediately and is hard-purged (with its contacts) after the retention window.
+export async function DELETE(request: NextRequest, { params }: { params: { id: string } }) {
+  const { session, error } = await requireSession(request);
+  if (error) return error;
+  if (!dbReady()) return badRequest('database not configured');
+  if (!(await assertBrandOwned(params.id, session.accountId))) return badRequest('unknown venture');
+  try {
+    const res = await softDeleteVenture(params.id, session.accountId, session.email);
+    return NextResponse.json({ ok: true, deleted: !!res });
   } catch (e) {
     return errorResponse(e);
   }
