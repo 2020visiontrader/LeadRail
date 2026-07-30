@@ -3,6 +3,20 @@ import Link from 'next/link';
 import { Contact, CONTACT_STATUSES } from '@/lib/types';
 import Badge, { statusTone } from '@/components/Badge';
 import Button from '@/components/Button';
+import { apiGet } from '@/lib/api';
+
+interface TimelineItem { id: string; kind: string; title?: string | null; body?: string | null; at: string }
+const TL_ICON: Record<string, string> = {
+  email_open: '📧', email_click: '🔗', email_sent: '✉️', note: '📝',
+  status_change: '🔀', enrich: '✨', activity: '📌', deal: '💼',
+};
+const timeAgo = (iso: string) => {
+  const d = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (d < 60) return 'just now';
+  if (d < 3600) return `${Math.floor(d / 60)}m ago`;
+  if (d < 86400) return `${Math.floor(d / 3600)}h ago`;
+  return `${Math.floor(d / 86400)}d ago`;
+};
 
 interface Props {
   contact: Contact | null;
@@ -16,7 +30,18 @@ interface Props {
 export default function ContactDrawer({ contact, isOpen, onClose, onUpdate, onDelete, onEnrich }: Props) {
   const [draft, setDraft] = useState<Contact | null>(contact);
   const [editing, setEditing] = useState(false);
+  const [timeline, setTimeline] = useState<TimelineItem[]>([]);
+  const [tlLoading, setTlLoading] = useState(false);
   useEffect(() => { setDraft(contact); setEditing(false); }, [contact]);
+
+  useEffect(() => {
+    if (!isOpen || !contact?.id) return;
+    setTlLoading(true); setTimeline([]);
+    apiGet<{ timeline: TimelineItem[] }>(`/api/contacts/${contact.id}/timeline?limit=50`)
+      .then((d) => setTimeline(Array.isArray(d.timeline) ? d.timeline : []))
+      .catch(() => setTimeline([]))
+      .finally(() => setTlLoading(false));
+  }, [isOpen, contact?.id]);
 
   if (!isOpen || !contact || !draft) return null;
 
@@ -79,11 +104,24 @@ export default function ContactDrawer({ contact, isOpen, onClose, onUpdate, onDe
 
           <div className="border-t border-slate-200 pt-4">
             <h3 className="mb-2 text-sm font-semibold">Engagement Timeline</h3>
-            <div className="space-y-1.5 text-sm text-slate-500">
-              <p>📧 Email opened — 2 days ago</p>
-              <p>🔗 Link clicked — 3 days ago</p>
-              <p>📧 Email sent — 4 days ago</p>
-            </div>
+            {tlLoading ? (
+              <p className="text-sm text-slate-400">Loading activity…</p>
+            ) : timeline.length === 0 ? (
+              <p className="text-sm text-slate-400">No activity yet. Opens, clicks, notes and status changes will appear here.</p>
+            ) : (
+              <div className="space-y-1.5 text-sm text-slate-600">
+                {timeline.map((t) => (
+                  <div key={t.id} className="flex items-start gap-2">
+                    <span aria-hidden>{TL_ICON[t.kind] || '•'}</span>
+                    <span className="flex-1">
+                      {t.title || t.kind.replace(/_/g, ' ')}
+                      {t.body ? <span className="text-slate-400"> — {t.body}</span> : null}
+                    </span>
+                    <span className="whitespace-nowrap text-xs text-slate-400">{timeAgo(t.at)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
 
           <Button variant="danger" className="w-full" onClick={() => onDelete?.(contact)}>Delete Contact</Button>

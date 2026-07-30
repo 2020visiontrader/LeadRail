@@ -11,7 +11,8 @@ import { Contact } from '@/lib/types';
 
 interface Venture { id: string; name: string; account_id: string }
 const verdictTone = (v?: string) => (v === 'good_fit' ? 'green' : v === 'maybe' ? 'amber' : v === 'skip' ? 'red' : 'gray');
-const statusTone = (s?: string) => (s === 'enriched' ? 'green' : s === 'pending' ? 'amber' : s === 'failed' ? 'red' : 'gray');
+const statusTone = (s?: string) => (s === 'done' ? 'green' : s === 'pending' ? 'amber' : s === 'failed' ? 'red' : 'gray');
+const statusLabel = (s?: string) => (s === 'done' ? 'enriched' : s || 'none');
 
 export default function EnrichmentPage() {
   const { notify } = useToast();
@@ -38,7 +39,7 @@ export default function EnrichmentPage() {
     finally { setBusy(null); }
   };
   const enrichPending = async () => {
-    const pending = rows.filter((r) => (r.enrichment_status || 'none') !== 'enriched');
+    const pending = rows.filter((r) => (r.enrichment_status || 'none') !== 'done' && (r.enrichment_status || 'none') !== 'failed');
     if (!pending.length) { notify('Nothing pending'); return; }
     setBusy('all');
     let ok = 0;
@@ -68,7 +69,7 @@ export default function EnrichmentPage() {
                 <tr key={c.id}>
                   <td className="p-3 font-medium">{c.name}<div className="text-xs text-slate-400">{c.title || '—'}</div></td>
                   <td className="p-3">{c.company || '—'}</td>
-                  <td className="p-3"><Badge tone={statusTone(c.enrichment_status)}>{c.enrichment_status || 'none'}</Badge></td>
+                  <td className="p-3"><Badge tone={statusTone(c.enrichment_status)}>{statusLabel(c.enrichment_status)}</Badge></td>
                   <td className="p-3">{c.fit_verdict ? <Badge tone={verdictTone(c.fit_verdict)}>{c.fit_verdict}</Badge> : '—'}</td>
                   <td className="p-3 text-right"><Button variant="secondary" loading={busy === c.id} onClick={() => enrich(c)}>Enrich</Button></td>
                 </tr>

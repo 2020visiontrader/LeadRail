@@ -5,29 +5,50 @@ import { addSuppression } from '@/lib/suppressions';
 
 export const dynamic = 'force-dynamic';
 
-function page(msg: string, status = 200) {
+function shell(body: string, status = 200) {
   return new NextResponse(
-    `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unsubscribe</title></head><body style="font-family:system-ui,sans-serif;max-width:480px;margin:80px auto;padding:0 24px;text-align:center;color:#111"><h1 style="font-size:20px">${msg}</h1></body></html>`,
+    `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Unsubscribe</title></head><body style="font-family:system-ui,sans-serif;max-width:480px;margin:80px auto;padding:0 24px;text-align:center;color:#111">${body}</body></html>`,
     { status, headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' } },
   );
 }
 
-// Public one-click unsubscribe. The token is HMAC-signed (account + contact), so
-// no one can suppress an address they weren't sent a link for.
-export async function GET(_req: NextRequest, { params }: { params: { token: string } }) {
-  const ctx = await verifyTrack(params.token);
-  if (!ctx || !ctx.a) return page('This unsubscribe link is invalid or expired.', 400);
-
+async function resolveEmail(token: string): Promise<{ accountId: string; contactId?: string; email: string } | null> {
+  const ctx = await verifyTrack(token);
+  if (!ctx || !ctx.a) return null;
   let email = '';
   if (ctx.c) {
     const { data } = await supabase.from('contacts').select('email').eq('id', ctx.c).maybeSingle();
     email = data?.email || '';
   }
-  if (!email) return page('This unsubscribe link is invalid or expired.', 400);
+  if (!email) return null;
+  return { accountId: ctx.a, contactId: ctx.c, email };
+}
 
-  await addSuppression({ accountId: ctx.a, email, reason: 'unsubscribe', source: 'sequence' });
-  // Also flip the contact status so lists reflect it immediately.
-  if (ctx.c) await supabase.from('contacts').update({ status: 'unsubscribed' }).eq('id', ctx.c).eq('account_id', ctx.a);
+async function suppress(accountId: string, contactId: string | undefined, email: string) {
+  await addSuppression({ accountId, email, reason: 'unsubscribe', source: 'sequence' });
+  if (contactId) await supabase.from('contacts').update({ status: 'unsubscribed' }).eq('id', contactId).eq('account_id', accountId);
+}
 
-  return page('You have been unsubscribed. You won’t receive further emails.');
+// GET is SAFE: it only renders a confirm page. Email clients and antivirus
+// scanners prefetch links, so GET must never mutate state (was auto-unsubscribing
+// people who never clicked). The actual unsubscribe happens on POST below.
+export async function GET(_req: NextRequest, { params }: { params: { token: string } }) {
+  const resolved = await resolveEmail(params.token);
+  if (!resolved) return shell('<h1 style="font-size:20px">This unsubscribe link is invalid or expired.</h1>', 400);
+  return shell(
+    `<h1 style="font-size:20px">Unsubscribe ${resolved.email}?</h1>
+     <p style="color:#555">You'll stop receiving emails from us.</p>
+     <form method="POST" action="/api/unsubscribe/${encodeURIComponent(params.token)}">
+       <button type="submit" style="margin-top:16px;background:#111;color:#fff;border:0;border-radius:8px;padding:12px 20px;font-size:15px;cursor:pointer">Confirm unsubscribe</button>
+     </form>`,
+  );
+}
+
+// POST performs the unsubscribe. Supports RFC 8058 one-click (List-Unsubscribe-Post)
+// and the confirm-page form above.
+export async function POST(_req: NextRequest, { params }: { params: { token: string } }) {
+  const resolved = await resolveEmail(params.token);
+  if (!resolved) return shell('<h1 style="font-size:20px">This unsubscribe link is invalid or expired.</h1>', 400);
+  await suppress(resolved.accountId, resolved.contactId, resolved.email);
+  return shell('<h1 style="font-size:20px">You have been unsubscribed.</h1><p style="color:#555">You won’t receive further emails.</p>');
 }

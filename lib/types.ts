@@ -24,7 +24,7 @@ export interface Contact {
   source?: string;
   linkedin_url?: string | null;
   enriched?: Record<string, any> | null;
-  enrichment_status?: 'none' | 'pending' | 'enriched' | 'failed';
+  enrichment_status?: 'none' | 'pending' | 'done' | 'failed';
   fit_verdict?: 'good_fit' | 'maybe' | 'skip' | null;
   created_at: string;
   updated_at?: string;
