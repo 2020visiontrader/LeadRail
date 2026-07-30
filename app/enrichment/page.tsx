@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useState, useCallback } from 'react';
+import Link from 'next/link';
 import Button from '@/components/Button';
 import Dropdown from '@/components/Dropdown';
 import Badge from '@/components/Badge';
@@ -71,7 +72,12 @@ export default function EnrichmentPage() {
                   <td className="p-3">{c.company || '—'}</td>
                   <td className="p-3"><Badge tone={statusTone(c.enrichment_status)}>{statusLabel(c.enrichment_status)}</Badge></td>
                   <td className="p-3">{c.fit_verdict ? <Badge tone={verdictTone(c.fit_verdict)}>{c.fit_verdict}</Badge> : '—'}</td>
-                  <td className="p-3 text-right"><Button variant="secondary" loading={busy === c.id} onClick={() => enrich(c)}>Enrich</Button></td>
+                  <td className="p-3 text-right">
+                    <div className="flex justify-end gap-2">
+                      <Button variant="secondary" loading={busy === c.id} onClick={() => enrich(c)}>Enrich</Button>
+                      <Link href={`/outreach?contactId=${c.id}&brandId=${c.brand_id}`}><Button>✉️ Outreach</Button></Link>
+                    </div>
+                  </td>
                 </tr>
               ))}
             </tbody>

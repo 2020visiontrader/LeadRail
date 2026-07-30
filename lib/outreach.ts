@@ -27,6 +27,17 @@ export interface OutreachRequest {
   /** Enrollment + step ids: enable open/click attribution when present. */
   enrollmentId?: string;
   stepId?: string;
+  /** Pitch decks / images to ride along. Small files attach to the email; all
+   *  are also surfaced as links in the body so decks stay accessible. */
+  attachments?: Array<{ url: string; filename: string; mime?: string }>;
+}
+
+function attachmentsBlock(atts: NonNullable<OutreachRequest['attachments']>): string {
+  if (!atts.length) return '';
+  const items = atts
+    .map((a) => `<li><a href="${a.url}" style="color:#2563eb">${a.filename}</a></li>`)
+    .join('');
+  return `<div style="margin-top:16px;padding-top:12px;border-top:1px solid #e5e7eb"><p style="margin:0 0 6px;font-size:13px;color:#6b7280">Attachments</p><ul style="margin:0;padding-left:18px;font-size:14px">${items}</ul></div>`;
 }
 
 export async function sendOutreachEmail(req: OutreachRequest) {
@@ -44,14 +55,23 @@ export async function sendOutreachEmail(req: OutreachRequest) {
     throw new SuppressedError(contact.email);
   }
 
-  const trackedHtml = req.html
-    ? await injectTracking(req.html, {
+  const atts = req.attachments || [];
+  const bodyWithAtts = atts.length ? `${req.html || ''}${attachmentsBlock(atts)}` : req.html;
+
+  const trackedHtml = bodyWithAtts
+    ? await injectTracking(bodyWithAtts, {
         a: scopeAccountId,
         c: contact.id,
         e: req.enrollmentId,
         s: req.stepId,
       })
-    : req.html;
+    : bodyWithAtts;
+
+  // Attach smaller files (e.g. hero images) to the email; big decks stay as the
+  // in-body link only, to protect deliverability.
+  const resendAttachments = atts
+    .filter((a) => a.url)
+    .map((a) => ({ filename: a.filename, path: a.url }));
 
   const senderEmail = process.env.RESEND_SENDER_EMAIL
     || process.env.BREVO_SENDER_EMAIL
@@ -70,6 +90,7 @@ export async function sendOutreachEmail(req: OutreachRequest) {
           subject: req.subject,
           html: trackedHtml || `<p>Hi ${contact.name},</p>`,
           replyTo: process.env.REPLY_TO_EMAIL || undefined,
+          attachments: resendAttachments.length ? resendAttachments : undefined,
         },
         contact.id,
         req.templateId,

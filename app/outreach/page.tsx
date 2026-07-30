@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import Link from 'next/link';
 import Button from '@/components/Button';
 import Modal from '@/components/Modal';
@@ -27,10 +27,36 @@ export default function OutreachPage() {
   const [form, setForm] = useState({ contactId: '', subject: '', html: '' });
   const [goal, setGoal] = useState('');
   const [generating, setGenerating] = useState(false);
+  const [attachments, setAttachments] = useState<Array<{ url: string; filename: string; mime?: string }>>([]);
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const handoffRef = useRef(false);
+
+  const uploadFile = async (file: File) => {
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await fetch('/api/outreach/upload', { method: 'POST', body: fd, headers: { Accept: 'application/json' } });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data?.error || 'Upload failed');
+      setAttachments((a) => [...a, { url: data.url, filename: data.filename, mime: data.mime }]);
+      notify(`Attached ${data.filename}`);
+    } catch (e: any) { notify(e.message || 'Upload failed', 'error'); }
+    finally { setUploading(false); if (fileRef.current) fileRef.current.value = ''; }
+  };
+  const removeAttachment = (url: string) => setAttachments((a) => a.filter((x) => x.url !== url));
 
   useEffect(() => {
     apiGet<{ ventures: Venture[] }>('/api/ventures')
-      .then((d) => { const vs = d.ventures || []; setVentures(vs); setVenture((cur) => cur || vs[0] || null); })
+      .then((d) => {
+        const vs = d.ventures || [];
+        setVentures(vs);
+        // Handoff from Leads/Enrichment: /outreach?contactId=..&brandId=..
+        const qs = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
+        const brandId = qs.get('brandId');
+        setVenture((cur) => cur || (brandId && vs.find((v) => v.id === brandId)) || vs[0] || null);
+      })
       .catch(() => setVentures([]));
   }, []);
 
@@ -63,13 +89,26 @@ export default function OutreachPage() {
   }, [venture]);
   useEffect(() => { load(); }, [load]);
 
+  // Handoff: once contacts are loaded, if a contactId was passed in, select it
+  // and open the composer so "Outreach" from Leads/Enrichment lands ready-to-send.
+  useEffect(() => {
+    if (handoffRef.current || !contacts.length) return;
+    const qs = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
+    const cid = qs.get('contactId');
+    if (cid && contacts.some((c) => c.id === cid)) {
+      handoffRef.current = true;
+      setForm((f) => ({ ...f, contactId: cid }));
+      setOpen(true);
+    }
+  }, [contacts]);
+
   const send = async () => {
     if (!form.contactId || !form.subject) { notify('Pick a contact and subject', 'error'); return; }
     setSending(true);
     try {
-      await apiSend('/api/outreach/send', 'POST', form);
+      await apiSend('/api/outreach/send', 'POST', { ...form, attachments });
       notify('Email sent');
-      setOpen(false); setForm({ contactId: '', subject: '', html: '' });
+      setOpen(false); setForm({ contactId: '', subject: '', html: '' }); setAttachments([]); setGoal('');
       load();
     } catch (e: any) { notify(e.message || 'Send failed', 'error'); }
     finally { setSending(false); }
@@ -132,6 +171,28 @@ export default function OutreachPage() {
           </div>
           <Input label="Subject" value={form.subject} onChange={(e) => setForm({ ...form, subject: e.target.value })} />
           <Textarea label="Body (HTML)" rows={5} value={form.html} onChange={(e) => setForm({ ...form, html: e.target.value })} />
+
+          <div>
+            <div className="mb-1 flex items-center justify-between">
+              <span className="text-xs font-medium uppercase text-slate-500">Attachments (pitch deck, one-pager, image)</span>
+              <Button variant="secondary" loading={uploading} onClick={() => fileRef.current?.click()}>📎 Attach file</Button>
+            </div>
+            <input ref={fileRef} type="file" className="hidden"
+              accept=".pdf,.ppt,.pptx,.key,.doc,.docx,.png,.jpg,.jpeg,.gif,.webp"
+              onChange={(e) => { const f = e.target.files?.[0]; if (f) uploadFile(f); }} />
+            {attachments.length === 0 ? (
+              <p className="text-xs text-slate-400">No files attached. Decks are added as a link in the email; images ride along.</p>
+            ) : (
+              <ul className="space-y-1">
+                {attachments.map((a) => (
+                  <li key={a.url} className="flex items-center justify-between rounded border border-slate-200 bg-slate-50 px-2 py-1 text-sm">
+                    <a href={a.url} target="_blank" rel="noreferrer" className="truncate text-blue-600">{a.filename}</a>
+                    <button type="button" onClick={() => removeAttachment(a.url)} className="ml-2 text-slate-400 hover:text-red-600">✕</button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
       </Modal>
     </div>

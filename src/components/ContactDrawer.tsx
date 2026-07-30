@@ -94,9 +94,10 @@ export default function ContactDrawer({ contact, isOpen, onClose, onUpdate, onDe
               {contact.fit_verdict && (
                 <Row label="Fit" value={`${contact.fit_verdict}${contact.enrichment_status ? ` · ${contact.enrichment_status}` : ''}`} />
               )}
-              <div className="flex gap-2 pt-1">
+              <div className="flex flex-wrap gap-2 pt-1">
                 <Button onClick={() => setEditing(true)}>Edit</Button>
                 {onEnrich && <Button variant="secondary" onClick={() => onEnrich(contact)}>Enrich</Button>}
+                <Link href={`/outreach?contactId=${contact.id}&brandId=${contact.brand_id}`}><Button>✉️ Outreach</Button></Link>
                 <Link href={`/leads/${contact.id}`}><Button variant="secondary">Open full page</Button></Link>
               </div>
             </dl>

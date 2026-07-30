@@ -17,6 +17,7 @@ export async function POST(request: NextRequest) {
       html: body.html,
       templateId: body.templateId,
       accountId: session.accountId,
+      attachments: Array.isArray(body.attachments) ? body.attachments : undefined,
     });
     return NextResponse.json({ sent: true, result });
   } catch (error) {

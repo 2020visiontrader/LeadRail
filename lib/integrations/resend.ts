@@ -12,6 +12,8 @@ export interface ResendEmail {
   html: string;
   replyTo?: string;
   tags?: Array<{ name: string; value: string }>;
+  // Resend accepts hosted files via `path` (a URL) or inline base64 via `content`.
+  attachments?: Array<{ filename: string; path?: string; content?: string }>;
 }
 
 /**
