@@ -8,9 +8,10 @@ import LoadingSpinner from '@/components/LoadingSpinner';
 import { apiGet, apiSend } from '@/lib/api';
 
 interface Stats {
-  code: { code: string; reward_type: string; reward_amount: number } | null;
+  code: { code: string; reward_percent: number } | null;
+  balance: number;
   clicks: number; signups: number; qualified: number;
-  rewards: { held: number; payable: number; paid: number };
+  credits: { held: number; applied: number };
 }
 
 export default function Referrals() {
@@ -47,7 +48,8 @@ export default function Referrals() {
       <div>
         <h1 className="text-2xl font-bold">Ambassador program</h1>
         <p className="text-sm text-[var(--text-secondary)]">
-          Share your link or code. You earn on every referral that converts; your friend gets a reward too.
+          Share your link or code. You earn <strong>AI credits</strong> on every referral that converts — a percentage
+          of their plan’s credits, added to your balance. Your friend gets credits too.
         </p>
       </div>
 
@@ -91,22 +93,21 @@ export default function Referrals() {
             <KPICard label="Clicks" value={stats!.clicks} icon="👆" />
             <KPICard label="Signups" value={stats!.signups} icon="✍️" />
             <KPICard label="Qualified" value={stats!.qualified} icon="✅" />
-            <KPICard label="Earned" value={`${stats!.rewards.held + stats!.rewards.payable + stats!.rewards.paid}`}
-              sub={`${stats!.code?.reward_type || 'credit'}`} icon="💰" />
+            <KPICard label="Credit balance" value={stats!.balance} sub="AI credits" icon="⚡" />
           </div>
 
-          {/* Earnings breakdown */}
+          {/* Credit earnings */}
           <div className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-5">
-            <h2 className="font-semibold">Earnings</h2>
+            <h2 className="font-semibold">Referral credits</h2>
             <div className="mt-3 flex flex-wrap gap-6 text-sm">
-              <div><span className="text-[var(--text-muted)]">On hold </span><Badge tone="amber">{stats!.rewards.held}</Badge>
+              <div><span className="text-[var(--text-muted)]">On hold </span><Badge tone="amber">{stats!.credits.held}</Badge>
                 <span className="ml-1 text-xs text-[var(--text-muted)]">(clearing the fraud window)</span></div>
-              <div><span className="text-[var(--text-muted)]">Payable </span><Badge tone="green">{stats!.rewards.payable}</Badge></div>
-              <div><span className="text-[var(--text-muted)]">Paid </span><Badge tone="gray">{stats!.rewards.paid}</Badge></div>
+              <div><span className="text-[var(--text-muted)]">Applied to balance </span><Badge tone="green">{stats!.credits.applied}</Badge></div>
             </div>
             <p className="mt-4 text-xs text-[var(--text-muted)]">
-              You earn {stats!.code?.reward_amount} {stats!.code?.reward_type} per referral that reaches a qualifying
-              event (verified signup / first payment). Rewards hold for a claw-back window, then become payable.
+              You earn <strong>{stats!.code?.reward_percent}% of the referred plan’s monthly AI credits</strong> for
+              every referral that reaches a qualifying event (verified signup / first payment) — paid in AI credits,
+              added straight to your balance. Credits hold for a claw-back window, then apply automatically.
               Per FTC rules, disclose that you’re an ambassador when you share.
             </p>
           </div>

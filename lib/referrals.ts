@@ -7,6 +7,7 @@
 // a hold window before it is payable. Double-sided: ambassador + referred friend.
 import { createHash } from 'node:crypto';
 import { supabase } from '@/lib/db';
+import { planCredits, applyCredits, getBalance } from '@/lib/credits';
 
 export const REF_COOKIE = 'ma_ref';
 export const REF_WINDOW_DAYS = 60;
@@ -128,7 +129,7 @@ export async function attributeSignup(opts: {
  * conversion) and write the double-sided reward ledger with a hold window.
  * Idempotent: a referral already past pending is left alone.
  */
-export async function qualifyReferral(referredAccountId: string): Promise<{ qualified: boolean; reason?: string }> {
+export async function qualifyReferral(referredAccountId: string): Promise<{ qualified: boolean; reason?: string; credits?: number }> {
   const { data: ref } = await supabase
     .from('referrals').select('*').eq('referred_account_id', referredAccountId).maybeSingle();
   if (!ref) return { qualified: false, reason: 'no_referral' };
@@ -136,6 +137,13 @@ export async function qualifyReferral(referredAccountId: string): Promise<{ qual
 
   const { data: code } = await supabase.from('referral_codes').select('*').eq('id', ref.code_id).maybeSingle();
   if (!code) return { qualified: false, reason: 'no_code' };
+
+  // Reward = a PERCENTAGE of the referred plan's monthly AI-credit allocation,
+  // paid in credits only. Ambassador and referred friend each get their share.
+  const { data: referred } = await supabase.from('accounts').select('plan').eq('id', referredAccountId).maybeSingle();
+  const base = planCredits(referred?.plan);
+  const ambassadorCredits = Math.round((Number(code.reward_percent ?? 10) / 100) * base);
+  const friendCredits = Math.round((Number(code.friend_reward_percent ?? 10) / 100) * base);
 
   const now = new Date();
   const holdUntil = new Date(now.getTime() + (code.hold_days || 30) * 86400_000).toISOString();
@@ -145,25 +153,23 @@ export async function qualifyReferral(referredAccountId: string): Promise<{ qual
     .eq('id', ref.id).then(() => {}, () => {});
 
   const rewards = [
-    {
-      referral_id: ref.id, account_id: code.account_id, beneficiary: 'ambassador',
-      reward_type: code.reward_type, amount: code.reward_amount, status: 'held', hold_until: holdUntil,
-    },
-    {
-      referral_id: ref.id, account_id: ref.referred_account_id, beneficiary: 'friend',
-      reward_type: code.friend_reward_type || 'credit', amount: code.friend_reward_amount || 0,
-      status: 'held', hold_until: holdUntil,
-    },
+    { referral_id: ref.id, account_id: code.account_id, beneficiary: 'ambassador',
+      reward_type: 'credit', amount: ambassadorCredits, status: 'held', hold_until: holdUntil },
+    { referral_id: ref.id, account_id: ref.referred_account_id, beneficiary: 'friend',
+      reward_type: 'credit', amount: friendCredits, status: 'held', hold_until: holdUntil },
   ].filter((r) => Number(r.amount) > 0);
   if (rewards.length) await supabase.from('referral_rewards').insert(rewards).then(() => {}, () => {});
 
-  return { qualified: true };
+  return { qualified: true, credits: ambassadorCredits };
 }
 
-/** Ambassador funnel + earnings for the portal. */
+/** Ambassador funnel + credit earnings for the portal. Rewards are AI credits. */
 export async function getReferralStats(accountId: string) {
+  const balance = await getBalance(accountId);
   const code = await getMyCode(accountId);
-  if (!code) return { code: null, clicks: 0, signups: 0, qualified: 0, rewards: { held: 0, payable: 0, paid: 0 } };
+  if (!code) {
+    return { code: null, balance, clicks: 0, signups: 0, qualified: 0, credits: { held: 0, applied: 0 } };
+  }
 
   const [{ count: clicks }, { data: refs }, { data: rewards }] = await Promise.all([
     supabase.from('referral_clicks').select('id', { count: 'exact', head: true }).eq('code_id', code.id),
@@ -174,19 +180,39 @@ export async function getReferralStats(accountId: string) {
   const qualified = (refs || []).filter((r: any) => r.status === 'qualified' || r.status === 'rewarded').length;
   const sum = (s: string) => (rewards || []).filter((r: any) => r.status === s).reduce((a: number, r: any) => a + Number(r.amount || 0), 0);
   return {
-    code: { code: code.code, reward_type: code.reward_type, reward_amount: code.reward_amount },
+    code: { code: code.code, reward_percent: Number(code.reward_percent ?? 10) },
+    balance,
     clicks: clicks || 0, signups, qualified,
-    rewards: { held: sum('held'), payable: sum('payable'), paid: sum('paid') },
+    credits: { held: sum('held'), applied: sum('applied') },
   };
 }
 
-/** Held rewards past their hold window become payable. Returns count matured. */
+/**
+ * Held rewards past their hold window are APPLIED: the credits are added to the
+ * beneficiary's balance (atomically, with a ledger row) and the reward is marked
+ * 'applied'. Credits only — there is no cash payout. Returns count applied.
+ */
 export async function maturateRewards(): Promise<number> {
-  const { data } = await supabase
+  const { data: due } = await supabase
     .from('referral_rewards')
-    .update({ status: 'payable' })
+    .select('id, account_id, amount, beneficiary')
     .eq('status', 'held')
     .lte('hold_until', new Date().toISOString())
-    .select('id');
-  return (data || []).length;
+    .limit(200);
+  let applied = 0;
+  for (const r of due || []) {
+    if (!r.account_id || Number(r.amount) <= 0) {
+      await supabase.from('referral_rewards').update({ status: 'void' }).eq('id', r.id).then(() => {}, () => {});
+      continue;
+    }
+    const reason = r.beneficiary === 'ambassador' ? 'referral_reward' : 'referral_welcome';
+    const bal = await applyCredits(r.account_id, Number(r.amount), reason, r.id);
+    if (bal !== null) {
+      await supabase.from('referral_rewards')
+        .update({ status: 'applied', paid_at: new Date().toISOString() })
+        .eq('id', r.id).then(() => {}, () => {});
+      applied++;
+    }
+  }
+  return applied;
 }
