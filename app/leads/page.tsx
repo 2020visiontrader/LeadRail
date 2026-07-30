@@ -226,6 +226,8 @@ export default function LeadsPage() {
 
   const hasNext = contacts.length === LIMIT;
 
+  const isAll = venture?.id === 'all';
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -236,17 +238,25 @@ export default function LeadsPage() {
         <div className="flex items-center gap-2">
           <Dropdown
             value={venture?.id || ''}
-            onChange={(e) => { setVenture(ventures.find((v) => v.id === e.target.value) || null); setPage(0); }}
-            options={ventures.map((v) => ({ value: v.id, label: v.name }))}
+            onChange={(e) => {
+              const val = e.target.value;
+              if (val === 'all') {
+                setVenture({ id: 'all', name: 'All Ventures', account_id: ventures[0]?.account_id || '' } as Venture);
+              } else {
+                setVenture(ventures.find((v) => v.id === val) || null);
+              }
+              setPage(0);
+            }}
+            options={[{ value: 'all', label: '🌐 All Ventures' }, ...ventures.map((v) => ({ value: v.id, label: v.name }))]}
           />
-          <Button variant="secondary" onClick={() => setSourceOpen((o) => !o)}>Find Leads (Apollo)</Button>
-          <Button onClick={() => setAddOpen(true)}>+ Add Lead</Button>
+          <Button variant="secondary" disabled={isAll} title={isAll ? 'Pick a specific venture to source leads' : undefined} onClick={() => setSourceOpen((o) => !o)}>Find Leads (Apollo)</Button>
+          <Button disabled={isAll} title={isAll ? 'Pick a specific venture to add a lead' : undefined} onClick={() => setAddOpen(true)}>+ Add Lead</Button>
         </div>
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
-        <span className="text-xs text-slate-500">Bulk: import a CSV/Excel list, or export the current venture&apos;s leads.</span>
-        <ImportExport exportPath="/api/leads/export" importPath="/api/leads/import" brandId={venture?.id} accountId={venture?.account_id} onImported={load} />
+        <span className="text-xs text-slate-500">{isAll ? 'Viewing all ventures — pick a specific venture to import or export.' : 'Bulk: import a CSV/Excel list, or export the current venture’s leads.'}</span>
+        {!isAll && <ImportExport exportPath="/api/leads/export" importPath="/api/leads/import" brandId={venture?.id} accountId={venture?.account_id} onImported={load} />}
       </div>
 
       {sourceOpen && (

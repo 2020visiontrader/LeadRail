@@ -48,8 +48,10 @@ export async function getContacts(
     .from('contacts')
     .select('*')
     .eq('account_id', accountId)
-    .eq('brand_id', brandId)
     .is('deleted_at', null);
+  // brandId 'all' (or empty) pools every venture in the account cumulatively;
+  // otherwise scope to the one venture.
+  if (brandId && brandId !== 'all') q = q.eq('brand_id', brandId);
   // Server-side segment categorization + search so filtering covers the WHOLE
   // list, not just the current page of rows the client happens to hold.
   if (opts.segment) q = q.eq('segment', opts.segment);
@@ -170,7 +172,14 @@ export async function getVenture(brandId: string) {
  * derive a URL-safe slug from the name and disambiguate on collision. Scoped to
  * the caller's account_id (authoritative from session, never the client body).
  */
-export async function createVenture(accountId: string, name: string) {
+export interface VentureProfileInput {
+  description?: string;
+  lead_goal?: string;
+  sectors?: string[];
+  skills?: string[];
+}
+
+export async function createVenture(accountId: string, name: string, profile: VentureProfileInput = {}) {
   const clean = String(name || '').trim();
   if (!clean) throw new Error('name is required');
   const base = clean.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'venture';
@@ -180,13 +189,35 @@ export async function createVenture(accountId: string, name: string) {
     const { data: exists } = await supabase.from('brands').select('id').eq('id', candidate).maybeSingle();
     if (!exists) { slug = candidate; break; }
   }
+  const row: Record<string, any> = { id: slug, name: clean, active: true, account_id: accountId };
+  if (profile.description !== undefined) row.description = String(profile.description).slice(0, 4000);
+  if (profile.lead_goal) row.lead_goal = String(profile.lead_goal);
+  if (Array.isArray(profile.sectors)) row.sectors = profile.sectors.map(String);
+  if (Array.isArray(profile.skills)) row.skills = profile.skills.map(String);
+  const { data, error } = await supabase.from('brands').insert([row]).select().single();
+  if (error) throw error;
+  return { ...data, contact_count: 0 };
+}
+
+/**
+ * Update a venture's profile fields. Account-scoped: the WHERE clause pins both
+ * id and account_id so one tenant can never patch another's brand. Only a fixed
+ * allowlist of columns is writable.
+ */
+export async function updateVenture(brandId: string, accountId: string, patch: Record<string, any>) {
+  const allowed = ['name', 'description', 'lead_goal', 'sectors', 'skills', 'deck_url', 'deck_name', 'deck_summary', 'icp_profile', 'active'];
+  const row: Record<string, any> = {};
+  for (const k of allowed) if (patch[k] !== undefined) row[k] = patch[k];
+  if (!Object.keys(row).length) return getVenture(brandId);
   const { data, error } = await supabase
     .from('brands')
-    .insert([{ id: slug, name: clean, active: true, account_id: accountId }])
+    .update(row)
+    .eq('id', brandId)
+    .eq('account_id', accountId)
     .select()
     .single();
   if (error) throw error;
-  return { ...data, contact_count: 0 };
+  return data;
 }
 
 // ============================================================

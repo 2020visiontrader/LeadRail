@@ -16,7 +16,8 @@ export async function GET(request: NextRequest) {
   const segment = request.nextUrl.searchParams.get('segment') || undefined;
   const search = request.nextUrl.searchParams.get('q') || undefined;
   if (!brandId) return badRequest('brandId is required');
-  if (!(await assertBrandOwned(brandId, session.accountId))) return badRequest('unknown brandId');
+  // 'all' = cumulative across every venture the account owns (pooled in getContacts).
+  if (brandId !== 'all' && !(await assertBrandOwned(brandId, session.accountId))) return badRequest('unknown brandId');
   try {
     const data = await getContacts(session.accountId, brandId, limit, page * limit, { segment, search });
     return NextResponse.json(data);

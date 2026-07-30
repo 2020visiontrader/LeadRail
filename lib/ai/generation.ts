@@ -8,6 +8,9 @@ import { generateText, generateChat, type ChatMessage } from './opencode';
 import { buildPersona, improvePrompt } from './prompt-improver';
 import { marketingGuidance, whiteLabelGuard, COPY_FRAMEWORKS } from './marketing';
 import { HUMANIZE_RULES, stripAiMarkers } from './humanizer';
+import { pickModel } from './models';
+import { composeSkillGuidance } from '@/lib/skills/registry';
+import { getLeadGoal, sectorKeywords, type VentureIcp } from '@/lib/taxonomy';
 
 function parseJson<T>(raw: string, fallback: T): T {
   const m = raw.match(/```json\s*([\s\S]*?)```/) || raw.match(/\{[\s\S]*\}/);
@@ -329,5 +332,91 @@ export async function generateSequenceDraft(opts: {
       subject: stripAiMarkers(s.subject || ''),
       body: stripAiMarkers(s.body || ''),
     })),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Venture profiling — the onboarding brain. Given the uploaded deck text plus
+// the user's chosen lead goal + sectors, distil a stored venture profile:
+// a plain-language summary, a one-line value prop, and a concrete ICP that
+// seeds the Apollo lead search so results are tailored to this venture.
+// ---------------------------------------------------------------------------
+
+export interface VentureProfile {
+  summary: string; // plain-language "what this venture is + who it targets"
+  value_prop: string; // one crisp positioning line
+  icp: VentureIcp; // seeds the lead search form
+}
+
+export async function profileVentureFromDeck(opts: {
+  ventureName: string;
+  description?: string;
+  leadGoal?: string; // taxonomy key
+  sectors?: string[]; // taxonomy keys
+  deckText?: string; // extracted deck text (may be empty)
+}): Promise<VentureProfile> {
+  const goal = getLeadGoal(opts.leadGoal);
+  const secKeywords = sectorKeywords(opts.sectors);
+  const skillGuidance = composeSkillGuidance(['skill-deck-profiler', 'skill-value-prop', 'skill-icp-builder', 'skill-grounded-facts']);
+
+  const system = buildPersona({
+    role: 'a venture analyst who profiles a company and defines its ideal outreach targets',
+    domain: 'turning a pitch deck + stated lead goal into a tailored lead ICP',
+    methods:
+      skillGuidance +
+      '\nSeparate what the deck states from what you infer. Frame the ICP around the LEAD GOAL: ' +
+      'investors → the deck is what you pitch them, so target investors/VCs/angels; ' +
+      'customers → target the buyer/user described in the deck; ' +
+      'partners/marketing_agencies/enterprise → target that relationship. ' +
+      'Use the provided sector keywords in the ICP keywords.',
+    constraints:
+      'Do NOT fabricate metrics, customers, or funding. seniority uses Apollo tokens ' +
+      '{owner, founder, c_suite, partner, vp, head, director, manager, senior}; ' +
+      'company_size one of {startup, smb, mid, enterprise} or "". Keep summary under 80 words.',
+    format:
+      'JSON: {"summary": string, "value_prop": string, "icp": {"industry": string, "titles": string[], "seniority": string[], "keywords": string, "company_size": string, "segments": string[]}}',
+  });
+
+  const prompt = improvePrompt({
+    goal: `Profile the venture "${opts.ventureName}" and define its ideal outreach ICP.`,
+    inputs: {
+      description: opts.description,
+      lead_goal: goal ? `${goal.label} — ${goal.hint}` : opts.leadGoal,
+      goal_seniority_bias: goal?.seniority?.join(', '),
+      goal_title_cues: goal?.titleCues?.join(', '),
+      sectors: (opts.sectors || []).join(', '),
+      sector_keywords: secKeywords.join(', '),
+      deck_text: opts.deckText ? opts.deckText.slice(0, 40000) : '(no deck uploaded — infer from name/description/goal/sectors)',
+    },
+    deliverable: 'One venture profile as JSON {summary, value_prop, icp}. No preamble.',
+    rules: [
+      'Ground every claim in the deck/description; never invent facts',
+      'icp.keywords should blend the venture’s niche with the sector keywords',
+      'segments are 2-4 short labels for the kinds of leads this venture wants',
+    ],
+  });
+
+  const raw = await generateText({ system, prompt, temperature: 0.3, maxOutputTokens: 1200, model: pickModel('extract') });
+  const p = parseJson<Partial<VentureProfile>>(raw, {});
+  const arr = (v: any): string[] => (Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : []);
+  const icp = (p.icp || {}) as Partial<VentureIcp>;
+  // Always fold the goal's seniority + sector keywords in, even if the model missed them.
+  const seniority = Array.from(new Set([...arr(icp.seniority), ...(goal?.seniority || [])]));
+  const kwParts = [
+    ...String(icp.keywords || '').split(',').map((s) => s.trim()),
+    ...secKeywords,
+  ].filter(Boolean);
+  const kw = Array.from(new Set(kwParts.map((s) => s.toLowerCase()))).join(', ');
+  return {
+    summary: stripAiMarkers(String(p.summary || '').trim()),
+    value_prop: stripAiMarkers(String(p.value_prop || '').trim()),
+    icp: {
+      industry: String(icp.industry || '').trim(),
+      titles: arr(icp.titles),
+      seniority,
+      keywords: kw,
+      company_size: String(icp.company_size || '').trim(),
+      segments: arr(icp.segments),
+    },
   };
 }

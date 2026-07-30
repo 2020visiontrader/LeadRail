@@ -13,6 +13,7 @@ const KEY =
 // change. Defaults track the OpenCode Go DeepSeek V4 Pro endpoint.
 const BASE = (process.env.OPENCODE_BASE_URL || 'https://opencode.ai/zen/go/v1').replace(/\/$/, '');
 const TEXT_MODEL = process.env.OPENCODE_MODEL || 'deepseek-v4-pro';
+const RELIABLE_FALLBACK = 'deepseek-v4-pro';
 
 export function opencodeConfigured(): boolean {
   return KEY.length > 0;
@@ -69,7 +70,16 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
   // DeepSeek returns the answer in message.content; reasoning_content is separate
   // scratch and is deliberately ignored.
   const content = json?.choices?.[0]?.message?.content;
-  return typeof content === 'string' ? content.trim() : '';
+  const text = typeof content === 'string' ? content.trim() : '';
+
+  // Self-heal: some Go models (kimi/qwen/glm/...) reason uncontrollably on this
+  // endpoint and return EMPTY content. If that happens on a non-DeepSeek model,
+  // retry once on the reliable DeepSeek backbone (thinking disabled) so a caller
+  // never receives a blank. DeepSeek emptiness is a real failure — don't loop.
+  if (!text && !/deepseek/i.test(useModel)) {
+    return complete(messages, temperature, maxTokens, RELIABLE_FALLBACK);
+  }
+  return text;
 }
 
 /** Generate text. Returns the model's plain-text completion. Pass `model` to

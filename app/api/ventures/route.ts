@@ -26,7 +26,12 @@ export async function POST(request: NextRequest) {
     const body = await request.json().catch(() => ({}));
     const name = String(body?.name || '').trim();
     if (!name) return badRequest('name is required');
-    const venture = await createVenture(session.accountId, name);
+    const venture = await createVenture(session.accountId, name, {
+      description: body?.description ? String(body.description) : undefined,
+      lead_goal: body?.leadGoal ? String(body.leadGoal) : undefined,
+      sectors: Array.isArray(body?.sectors) ? body.sectors.map(String) : undefined,
+      skills: Array.isArray(body?.skills) ? body.skills.map(String) : undefined,
+    });
     return NextResponse.json({ venture }, { status: 201 });
   } catch (error) {
     return errorResponse(error);
