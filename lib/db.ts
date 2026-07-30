@@ -151,6 +151,30 @@ export async function getVenture(brandId: string) {
   return data;
 }
 
+/**
+ * Create a venture (brand) for an account. brands.id is a TEXT slug PK, so we
+ * derive a URL-safe slug from the name and disambiguate on collision. Scoped to
+ * the caller's account_id (authoritative from session, never the client body).
+ */
+export async function createVenture(accountId: string, name: string) {
+  const clean = String(name || '').trim();
+  if (!clean) throw new Error('name is required');
+  const base = clean.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'venture';
+  let slug = base;
+  for (let i = 0; i < 50; i++) {
+    const candidate = i === 0 ? base : `${base}-${i + 1}`;
+    const { data: exists } = await supabase.from('brands').select('id').eq('id', candidate).maybeSingle();
+    if (!exists) { slug = candidate; break; }
+  }
+  const { data, error } = await supabase
+    .from('brands')
+    .insert([{ id: slug, name: clean, active: true, account_id: accountId }])
+    .select()
+    .single();
+  if (error) throw error;
+  return { ...data, contact_count: 0 };
+}
+
 // ============================================================
 // Integration connections — account-scoped, one row per provider
 // ============================================================
