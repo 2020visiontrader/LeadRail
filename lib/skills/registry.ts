@@ -1,0 +1,195 @@
+// Curated skills registry.
+//
+// The user asked to "pull open-source GitHub repos" for Claude/marketing/
+// LinkedIn/outreach/lead-gen/humanizer skills. We deliberately do NOT vendor
+// arbitrary repo code into a production CRM that holds the service-role key and
+// customer lead data — that is a supply-chain liability. Instead each skill is
+// a bounded prompt-module: the distilled *pattern* those OSS repos encode
+// (role + method + guardrails), plus the Go model tier it runs best on. Hermes
+// selects skills from this catalog per request; adding a skill = adding a typed
+// entry here, reviewable in one diff.
+
+import type { TaskKind } from '@/lib/ai/models';
+
+export type SkillCategory =
+  | 'claude' // Anthropic "Agent Skills" style structured task modules
+  | 'marketing'
+  | 'linkedin'
+  | 'outreach'
+  | 'lead-gen'
+  | 'humanizer';
+
+export interface Skill {
+  id: string;
+  name: string;
+  category: SkillCategory;
+  // One-liner Hermes reads to decide relevance to a user request.
+  when: string;
+  // System-prompt fragment injected when the skill is active.
+  systemModule: string;
+  // Which task kind this skill's work is (drives model selection).
+  taskKind: TaskKind;
+  // Provenance note: the OSS pattern this module distills (for the audit trail).
+  inspiredBy: string;
+}
+
+export const SKILLS: Skill[] = [
+  // ---- claude / agent-skill format --------------------------------------
+  {
+    id: 'skill-structured-task',
+    name: 'Structured Task Runner',
+    category: 'claude',
+    when: 'the request is a multi-part task that benefits from a checklist + explicit output contract',
+    systemModule:
+      'Operate as an Agent-Skill: restate the goal in one line, work in explicit numbered steps, and end with the exact output format requested. No preamble, no meta-commentary.',
+    taskKind: 'reason',
+    inspiredBy: 'anthropics/skills agent-skill spec (SKILL.md role+method+format shape)',
+  },
+  {
+    id: 'skill-grounded-facts',
+    name: 'Grounded Claims Guard',
+    category: 'claude',
+    when: 'output must not invent stats, case studies, or company facts',
+    systemModule:
+      'Only state facts present in the provided context (deck summary, knowledge, contact fields). If a claim is not supported, omit it or use a neutral placeholder — never fabricate numbers, logos, or testimonials.',
+    taskKind: 'draft',
+    inspiredBy: 'RAG grounding / "no-hallucination" system-prompt patterns',
+  },
+
+  // ---- marketing ---------------------------------------------------------
+  {
+    id: 'skill-pas-copy',
+    name: 'PAS Copywriter',
+    category: 'marketing',
+    when: 'writing persuasive short copy where a pain point can anchor the message',
+    systemModule:
+      'Use Problem–Agitate–Solve: name the reader’s specific pain, sharpen the cost of inaction in one line, then present the offer as the resolution. One CTA. No hype adjectives.',
+    taskKind: 'draft',
+    inspiredBy: 'open copywriting-framework prompt collections (PAS/AIDA/BAB)',
+  },
+  {
+    id: 'skill-value-prop',
+    name: 'Value-Prop Distiller',
+    category: 'marketing',
+    when: 'a deck or description needs compressing into a crisp positioning line',
+    systemModule:
+      'Distill to: for [audience] who [need], [venture] is a [category] that [key benefit], unlike [alternative]. Concrete nouns, no buzzwords.',
+    taskKind: 'extract',
+    inspiredBy: 'Geoffrey Moore positioning template, widely mirrored in OSS prompt packs',
+  },
+
+  // ---- linkedin ----------------------------------------------------------
+  {
+    id: 'skill-linkedin-connect',
+    name: 'LinkedIn Connector',
+    category: 'linkedin',
+    when: 'writing a LinkedIn connection note or first touch (<300 chars)',
+    systemModule:
+      'Write a LinkedIn connection note under 300 characters: one specific reason for reaching out tied to the recipient, zero pitch, warm and human. No "I came across your profile" filler.',
+    taskKind: 'draft',
+    inspiredBy: 'open LinkedIn-outreach prompt repos (short-note connection patterns)',
+  },
+  {
+    id: 'skill-linkedin-dm',
+    name: 'LinkedIn Value DM',
+    category: 'linkedin',
+    when: 'following up in LinkedIn DMs after a connection is accepted',
+    systemModule:
+      'Lead with a useful observation or resource relevant to the recipient before any ask. Conversational, 2-4 short lines, one soft CTA (a question, not a demo push).',
+    taskKind: 'draft',
+    inspiredBy: 'value-first social-selling DM frameworks',
+  },
+
+  // ---- outreach ----------------------------------------------------------
+  {
+    id: 'skill-cold-email',
+    name: 'Cold Email Specialist',
+    category: 'outreach',
+    when: 'writing a cold outbound email to a business contact',
+    systemModule:
+      'Under 120 words. Personalized first line tied to the recipient/company, one insight, exactly one ask. Subject under 60 chars, lowercase-casual, no clickbait. Plain text, no emojis.',
+    taskKind: 'draft',
+    inspiredBy: 'open cold-email frameworks (3-sentence / "one clear ask" patterns)',
+  },
+  {
+    id: 'skill-breakup-email',
+    name: 'Breakup / Re-engage',
+    category: 'outreach',
+    when: 'last-step sequence email or reviving a cold thread',
+    systemModule:
+      'Write a short, low-pressure breakup email: acknowledge the silence, restate the single benefit, give an easy out. Never guilt-trip. 2-3 lines.',
+    taskKind: 'draft',
+    inspiredBy: 'sequence "breakup email" step conventions',
+  },
+  {
+    id: 'skill-intent-router',
+    name: 'Message Intent Router',
+    category: 'outreach',
+    when: 'the outreach has a specific intent (book_call, share_asset, reply_bait, reengage)',
+    systemModule:
+      'Shape the CTA and subject to the stated intent: book_call → propose a concrete low-friction time ask; share_asset → tease the asset’s payoff and link it; reply_bait → end on a single easy question; reengage → reference prior context lightly.',
+    taskKind: 'draft',
+    inspiredBy: 'intent-conditioned outreach prompt patterns',
+  },
+
+  // ---- lead-gen ----------------------------------------------------------
+  {
+    id: 'skill-icp-builder',
+    name: 'ICP Builder',
+    category: 'lead-gen',
+    when: 'translating a venture/goal/sector into concrete Apollo search filters',
+    systemModule:
+      'Map the venture goal + sectors to Apollo People-Search filters: pick titles + seniority tokens that match the buyer/investor/partner, expand sectors to industry keywords, keep the ICP tight enough to be high-signal. Never invent a location that was not implied.',
+    taskKind: 'extract',
+    inspiredBy: 'open lead-sourcing "ICP → boolean filter" prompt repos',
+  },
+  {
+    id: 'skill-deck-profiler',
+    name: 'Pitch-Deck Profiler',
+    category: 'lead-gen',
+    when: 'a pitch deck / doc has been uploaded and needs turning into a venture profile',
+    systemModule:
+      'From the deck text infer: what the venture does, who it sells to or raises from, the sector, and the ideal contact profile. Separate stated facts from inference. Output a tight profile, not a summary essay.',
+    taskKind: 'extract',
+    inspiredBy: 'document-to-structured-profile extraction patterns',
+  },
+
+  // ---- humanizer ---------------------------------------------------------
+  {
+    id: 'skill-humanizer',
+    name: 'AI-Tell Humanizer',
+    category: 'humanizer',
+    when: 'any generated copy that will be sent to a real person',
+    systemModule:
+      'Strip AI tells: no "I hope this finds you well", no em-dash-heavy cadence, no "delighted/thrilled/excited to", no tricolon padding. Vary sentence length, use plain words, sound like one busy human wrote it fast.',
+    taskKind: 'draft',
+    inspiredBy: 'open "humanize AI text" rule lists',
+  },
+];
+
+export const SKILL_CATEGORIES: { key: SkillCategory; label: string }[] = [
+  { key: 'claude', label: 'Claude skills' },
+  { key: 'marketing', label: 'Marketing' },
+  { key: 'linkedin', label: 'LinkedIn' },
+  { key: 'outreach', label: 'Outreach' },
+  { key: 'lead-gen', label: 'Lead generation' },
+  { key: 'humanizer', label: 'Humanizer' },
+];
+
+const skillById = new Map(SKILLS.map((s) => [s.id, s]));
+
+export function getSkill(id: string): Skill | undefined {
+  return skillById.get(id);
+}
+
+export function getSkills(ids: string[] | undefined | null): Skill[] {
+  if (!Array.isArray(ids)) return [];
+  return ids.map((id) => skillById.get(id)).filter(Boolean) as Skill[];
+}
+
+/** Concatenate the active skills' system modules into one guidance block. */
+export function composeSkillGuidance(ids: string[] | undefined | null): string {
+  const skills = getSkills(ids);
+  if (!skills.length) return '';
+  return skills.map((s) => `• ${s.name}: ${s.systemModule}`).join('\n');
+}

@@ -36,10 +36,11 @@ interface OpenAIMessage {
   content: string;
 }
 
-async function complete(messages: OpenAIMessage[], temperature: number, maxTokens: number): Promise<string> {
+async function complete(messages: OpenAIMessage[], temperature: number, maxTokens: number, model?: string): Promise<string> {
   requireKey();
+  const useModel = model || TEXT_MODEL;
   const body: Record<string, any> = {
-    model: TEXT_MODEL,
+    model: useModel,
     messages,
     temperature,
     max_tokens: maxTokens,
@@ -47,9 +48,9 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
   // DeepSeek V4 is a reasoning model: with thinking ON it burns the entire
   // max_tokens budget on hidden reasoning_content and returns empty content.
   // Disable thinking so the budget goes to the actual answer. The param is
-  // DeepSeek-specific, so only send it for DeepSeek models — a future
-  // OPENCODE_MODEL swap (GLM/Kimi/etc.) won't get an unknown field.
-  if (/deepseek/i.test(TEXT_MODEL)) body.thinking = { type: 'disabled' };
+  // DeepSeek-specific, so only send it for DeepSeek models — a GLM/Kimi/etc.
+  // override won't get an unknown field.
+  if (/deepseek/i.test(useModel)) body.thinking = { type: 'disabled' };
 
   const res = await fetch(`${BASE}/chat/completions`, {
     method: 'POST',
@@ -71,17 +72,19 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
   return typeof content === 'string' ? content.trim() : '';
 }
 
-/** Generate text. Returns the model's plain-text completion. */
+/** Generate text. Returns the model's plain-text completion. Pass `model` to
+ * override the default (Hermes routes different tasks to different Go models). */
 export async function generateText(opts: {
   system?: string;
   prompt: string;
   temperature?: number;
   maxOutputTokens?: number;
+  model?: string;
 }): Promise<string> {
   const messages: OpenAIMessage[] = [];
   if (opts.system) messages.push({ role: 'system', content: opts.system });
   messages.push({ role: 'user', content: opts.prompt });
-  return complete(messages, opts.temperature ?? 0.7, opts.maxOutputTokens ?? 2048);
+  return complete(messages, opts.temperature ?? 0.7, opts.maxOutputTokens ?? 2048, opts.model);
 }
 
 /**
@@ -93,13 +96,14 @@ export async function generateChat(opts: {
   messages: ChatMessage[];
   temperature?: number;
   maxOutputTokens?: number;
+  model?: string;
 }): Promise<string> {
   const messages: OpenAIMessage[] = [];
   if (opts.system) messages.push({ role: 'system', content: opts.system });
   for (const m of opts.messages) {
     if (m.content?.trim()) messages.push({ role: m.role, content: m.content });
   }
-  return complete(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? 2048);
+  return complete(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? 2048, opts.model);
 }
 
 export const opencodeModel = TEXT_MODEL;
