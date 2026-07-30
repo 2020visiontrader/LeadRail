@@ -30,7 +30,9 @@ export default function LeadsPage() {
   const [selected, setSelected] = useState<Contact | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [search, setSearch] = useState('');
+  const [query, setQuery] = useState(''); // debounced server-side search term
   const [segment, setSegment] = useState('');
+  const [counts, setCounts] = useState<Record<string, number>>({});
   const [addOpen, setAddOpen] = useState(false);
   const [form, setForm] = useState(emptyLead);
   const [saving, setSaving] = useState(false);
@@ -60,11 +62,21 @@ export default function LeadsPage() {
       .catch(() => setVentures([]));
   }, []);
 
+  // Debounce the search box, then run the search on the SERVER so it covers the
+  // whole list — not just the ~30 rows currently loaded.
+  useEffect(() => {
+    const t = setTimeout(() => { setQuery(search.trim()); setPage(0); }, 300);
+    return () => clearTimeout(t);
+  }, [search]);
+
   const load = useCallback(async () => {
     if (!venture) return;
     setLoading(true);
     try {
-      const data = await apiGet<Contact[]>(`/api/leads?brandId=${venture.id}&limit=${LIMIT}&page=${page}`);
+      const params = new URLSearchParams({ brandId: venture.id, limit: String(LIMIT), page: String(page) });
+      if (segment) params.set('segment', segment);
+      if (query) params.set('q', query);
+      const data = await apiGet<Contact[]>(`/api/leads?${params.toString()}`);
       setContacts(Array.isArray(data) ? data : []);
     } catch (e: any) {
       notify(e.message || 'Failed to load leads', 'error');
@@ -72,17 +84,22 @@ export default function LeadsPage() {
     } finally {
       setLoading(false);
     }
-  }, [venture, page, notify]);
+  }, [venture, page, segment, query, notify]);
 
   // Loads existing saved contacts for the venture — this reads the DB, it does
   // NOT source from Apollo. Apollo is only ever hit by handleApolloSearch below.
   useEffect(() => { load(); }, [load]);
 
-  const filtered = contacts.filter((c) => {
-    const s = search.toLowerCase();
-    const matchesSearch = c.name.toLowerCase().includes(s) || c.email.toLowerCase().includes(s) || (c.company?.toLowerCase() || '').includes(s);
-    return matchesSearch && (!segment || c.segment === segment);
-  });
+  // Per-segment counts for the filter chips (from the account-scoped overview).
+  useEffect(() => {
+    if (!venture) { setCounts({}); return; }
+    apiGet<{ segments?: Record<string, number> }>(`/api/overview?brandId=${venture.id}`)
+      .then((d) => setCounts(d.segments || {}))
+      .catch(() => setCounts({}));
+  }, [venture, contacts.length]);
+
+  const totalCount = Object.values(counts).reduce((a, b) => a + b, 0);
+  const onSegment = (s: string) => { setSegment(s); setPage(0); };
 
   const openContact = (c: Contact) => { setSelected(c); setDrawerOpen(true); };
 
@@ -189,7 +206,7 @@ export default function LeadsPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold">Leads</h1>
-          <p className="text-sm text-slate-500">{filtered.length} shown</p>
+          <p className="text-sm text-slate-500">{contacts.length} shown{segment ? ` · ${segment}` : ''}{query ? ` · “${query}”` : ''}</p>
         </div>
         <div className="flex items-center gap-2">
           <Dropdown
@@ -270,10 +287,10 @@ export default function LeadsPage() {
 
       <div className="space-y-3">
         <SearchInput placeholder="Search by name, email, or company…" value={search} onChange={setSearch} />
-        <FilterBar segments={[...SEGMENTS]} selectedSegment={segment} onSegmentChange={setSegment} />
+        <FilterBar segments={[...SEGMENTS]} selectedSegment={segment} onSegmentChange={onSegment} counts={counts} total={totalCount} />
       </div>
 
-      <DataTable contacts={filtered} isLoading={loading} onRowClick={openContact} onDelete={handleDelete} />
+      <DataTable contacts={contacts} isLoading={loading} onRowClick={openContact} onDelete={handleDelete} />
 
       <div className="flex items-center justify-between text-sm text-slate-600">
         <Button variant="secondary" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>Prev</Button>

@@ -13,10 +13,12 @@ export async function GET(request: NextRequest) {
   const brandId = request.nextUrl.searchParams.get('brandId');
   const page = parseInt(request.nextUrl.searchParams.get('page') || '0', 10);
   const limit = Math.min(parseInt(request.nextUrl.searchParams.get('limit') || '30', 10), 100);
+  const segment = request.nextUrl.searchParams.get('segment') || undefined;
+  const search = request.nextUrl.searchParams.get('q') || undefined;
   if (!brandId) return badRequest('brandId is required');
   if (!(await assertBrandOwned(brandId, session.accountId))) return badRequest('unknown brandId');
   try {
-    const data = await getContacts(session.accountId, brandId, limit, page * limit);
+    const data = await getContacts(session.accountId, brandId, limit, page * limit, { segment, search });
     return NextResponse.json(data);
   } catch (error) {
     return errorResponse(error);

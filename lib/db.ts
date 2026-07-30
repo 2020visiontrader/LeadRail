@@ -37,13 +37,27 @@ export async function assertBrandOwned(brandId: string, accountId: string): Prom
   return Boolean(data);
 }
 
-export async function getContacts(accountId: string, brandId: string, limit = 30, offset = 0) {
-  const { data, error } = await supabase
+export async function getContacts(
+  accountId: string,
+  brandId: string,
+  limit = 30,
+  offset = 0,
+  opts: { segment?: string; search?: string } = {},
+) {
+  let q = supabase
     .from('contacts')
     .select('*')
     .eq('account_id', accountId)
     .eq('brand_id', brandId)
-    .is('deleted_at', null)
+    .is('deleted_at', null);
+  // Server-side segment categorization + search so filtering covers the WHOLE
+  // list, not just the current page of rows the client happens to hold.
+  if (opts.segment) q = q.eq('segment', opts.segment);
+  if (opts.search) {
+    const s = opts.search.replace(/[%,]/g, ' ').trim();
+    if (s) q = q.or(`name.ilike.%${s}%,email.ilike.%${s}%,company.ilike.%${s}%`);
+  }
+  const { data, error } = await q
     .order('created_at', { ascending: false })
     .range(offset, offset + limit - 1);
   if (error) throw error;
