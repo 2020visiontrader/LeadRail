@@ -22,6 +22,91 @@ export interface OutreachDraft {
   body: string;
 }
 
+export interface ParsedIcp {
+  industry: string;
+  titles: string[];
+  seniority: string[];
+  location: string;
+  company_size: string;
+  keywords: string;
+  limit: number;
+  summary: string; // one-line plain-language recap of what will be searched
+}
+
+/**
+ * Turn a plain-language sourcing request ("Series A SaaS founders in the US")
+ * into a structured Apollo ICP the search form can run. Lets a user source
+ * leads conversationally instead of hand-tuning keyword/seniority fields.
+ */
+export async function parseIcpFromText(text: string): Promise<ParsedIcp> {
+  const system = buildPersona({
+    role: 'a B2B lead-sourcing analyst who maps requests to Apollo People Search filters',
+    domain: 'translating natural-language ICP descriptions into Apollo query fields',
+    methods: 'extract only what the user stated or clearly implied; never invent a location or industry that was not asked for',
+    constraints:
+      'seniority MUST use Apollo tokens from {owner, founder, c_suite, partner, vp, head, director, manager, senior, entry, intern}; ' +
+      'titles are concrete job titles; company_size one of {startup, smb, mid, enterprise} or ""; limit 1-100 (default 25)',
+    format:
+      'JSON: {"industry": string, "titles": string[], "seniority": string[], "location": string, "company_size": string, "keywords": string, "limit": number, "summary": string}',
+  });
+  const prompt = improvePrompt({
+    goal: `Parse this sourcing request into Apollo filters: "${text}"`,
+    inputs: {},
+    deliverable: 'One ICP object as JSON. Empty string/array for anything not specified. No preamble.',
+    rules: [
+      'Do NOT fabricate fields the user did not express',
+      'Map "founders/CEOs" → titles + seniority owner/founder/c_suite',
+      'summary is a single friendly sentence describing the search',
+    ],
+  });
+  const raw = await generateText({ system, prompt, temperature: 0.2 });
+  const p = parseJson<Partial<ParsedIcp>>(raw, {});
+  const arr = (v: any): string[] => (Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : []);
+  return {
+    industry: String(p.industry || '').trim(),
+    titles: arr(p.titles),
+    seniority: arr(p.seniority),
+    location: String(p.location || '').trim(),
+    company_size: String(p.company_size || '').trim(),
+    keywords: String(p.keywords || '').trim(),
+    limit: Math.min(100, Math.max(1, Number(p.limit) || 25)),
+    summary: String(p.summary || '').trim(),
+  };
+}
+
+/**
+ * Refine (or draft) a message template from a plain-language instruction.
+ * Returns updated subject + body. Used by the template editor's AI assist.
+ */
+export async function refineTemplate(opts: {
+  instruction: string;
+  current?: { subject?: string; body?: string; name?: string };
+  venture?: { name?: string };
+}): Promise<{ subject: string; body: string }> {
+  const system = buildPersona({
+    role: `a senior B2B outreach copywriter${opts.venture?.name ? ` for ${opts.venture.name}` : ''}`,
+    domain: 'reusable cold-email/message templates with {{merge_tokens}}',
+    methods: marketingGuidance({ framework: 'PAS' }),
+    constraints:
+      'preserve any {{tokens}} like {{name}}, {{company}}; keep it a reusable template (not a one-off); ' +
+      'direct, warm, professional; one clear CTA; no spammy phrasing; subject under 60 chars',
+    format: 'JSON: {"subject": string, "body": string}',
+  });
+  const prompt = improvePrompt({
+    goal: opts.instruction,
+    inputs: {
+      current_subject: opts.current?.subject,
+      current_body: opts.current?.body,
+      template_name: opts.current?.name,
+    },
+    deliverable: 'The revised template as JSON {subject, body}. No preamble.',
+    rules: ['Apply the instruction faithfully', 'Keep merge tokens intact', ...HUMANIZE_RULES],
+  });
+  const raw = await generateText({ system, prompt, temperature: 0.6 });
+  const d = parseJson<{ subject?: string; body?: string }>(raw, {});
+  return { subject: stripAiMarkers(d.subject || opts.current?.subject || ''), body: stripAiMarkers(d.body || raw) };
+}
+
 /** Generate a personalized outreach email. Does NOT send or persist. */
 export async function generateOutreach(opts: {
   contact: { name?: string; title?: string; company?: string; segment?: string };

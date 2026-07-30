@@ -45,6 +45,31 @@ export default function LeadsPage() {
   const [totalMatches, setTotalMatches] = useState(0);
   const [picked, setPicked] = useState<Record<string, boolean>>({});
   const [importing, setImporting] = useState(false);
+  // Conversational sourcing: describe the ICP in plain language, AI fills the form.
+  const [nlQuery, setNlQuery] = useState('');
+  const [parsing, setParsing] = useState(false);
+  const [nlSummary, setNlSummary] = useState('');
+
+  const buildFromText = async () => {
+    if (!nlQuery.trim()) { notify('Describe who you want to reach', 'error'); return; }
+    setParsing(true); setNlSummary('');
+    try {
+      const { icp: parsed } = await apiSend<{ icp: any }>('/api/leads/apollo/parse', 'POST', { text: nlQuery.trim() });
+      setIcp({
+        industry: parsed.industry || '',
+        titles: (parsed.titles || []).join(', '),
+        seniority: (parsed.seniority || []).join(', '),
+        location: parsed.location || '',
+        company_size: parsed.company_size || '',
+        keywords: parsed.keywords || '',
+        limit: parsed.limit || 25,
+      });
+      setNlSummary(parsed.summary || '');
+      notify('Search built — review and hit Search Apollo');
+    } catch (e: any) {
+      notify(e.message === 'not_configured' ? 'Connect Gemini to use plain-language search' : e.message || 'Could not parse', 'error');
+    } finally { setParsing(false); }
+  };
 
   // Load ventures once (for the scope selector). Does NOT touch Apollo.
   useEffect(() => {
@@ -230,6 +255,24 @@ export default function LeadsPage() {
             <h2 className="font-semibold">Source leads from Apollo</h2>
             <span className="text-xs text-slate-500">Nothing is pulled until you click Search</span>
           </div>
+
+          <div className="rounded-lg border border-indigo-200 bg-indigo-50/60 p-3 space-y-2">
+            <div className="flex items-end gap-2">
+              <div className="flex-1">
+                <Input
+                  label="✨ Describe who you want to reach (plain language)"
+                  placeholder="e.g. Series A SaaS founders and CEOs in the US"
+                  value={nlQuery}
+                  onChange={(e) => setNlQuery(e.target.value)}
+                  onKeyDown={(e: any) => { if (e.key === 'Enter') buildFromText(); }}
+                />
+              </div>
+              <Button variant="secondary" loading={parsing} onClick={buildFromText}>Build search</Button>
+            </div>
+            {nlSummary && <p className="text-xs text-indigo-700">→ {nlSummary}</p>}
+            <p className="text-[11px] text-slate-500">The AI fills the filters below — review, tweak, then Search Apollo.</p>
+          </div>
+
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
             <Input label="Industry" placeholder="e.g. marketing" value={icp.industry} onChange={(e) => setIcp({ ...icp, industry: e.target.value })} />
             <Input label="Titles (comma-sep)" placeholder="Founder, CEO" value={icp.titles} onChange={(e) => setIcp({ ...icp, titles: e.target.value })} />

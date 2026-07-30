@@ -294,6 +294,26 @@ export async function createTemplate(row: {
   return data;
 }
 
+export async function updateTemplate(
+  id: string,
+  accountId: string,
+  updates: { name?: string; category?: string | null; subject?: string | null; body?: string },
+) {
+  const patch: Record<string, any> = {};
+  for (const k of ['name', 'category', 'subject', 'body'] as const) {
+    if (updates[k] !== undefined) patch[k] = updates[k];
+  }
+  const { data, error } = await supabase
+    .from('message_templates')
+    .update(patch)
+    .eq('id', id)
+    .eq('account_id', accountId)
+    .select()
+    .single();
+  if (error) throw error;
+  return data;
+}
+
 export async function deleteTemplate(id: string, accountId: string) {
   const { data, error } = await supabase.from('message_templates').delete().eq('id', id).eq('account_id', accountId).select('id');
   if (error) throw error;

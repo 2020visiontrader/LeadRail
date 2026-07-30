@@ -89,6 +89,19 @@ export default function OutreachPage() {
   }, [venture]);
   useEffect(() => { load(); }, [load]);
 
+  // Template handoff: /outreach?templateId=.. prefills subject+body and opens compose.
+  useEffect(() => {
+    const qs = new URLSearchParams(typeof window !== 'undefined' ? window.location.search : '');
+    const tid = qs.get('templateId');
+    if (!tid) return;
+    apiGet<Array<{ id: string; subject?: string; body: string }>>('/api/templates')
+      .then((tpls) => {
+        const t = Array.isArray(tpls) ? tpls.find((x) => x.id === tid) : null;
+        if (t) { setForm((f) => ({ ...f, subject: t.subject || f.subject, html: t.body || f.html })); setOpen(true); }
+      })
+      .catch(() => {});
+  }, []);
+
   // Handoff: once contacts are loaded, if a contactId was passed in, select it
   // and open the composer so "Outreach" from Leads/Enrichment lands ready-to-send.
   useEffect(() => {
