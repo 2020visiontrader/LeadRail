@@ -18,8 +18,10 @@ export async function GET(request: NextRequest, { params }: { params: { code: st
   }
 
   // Forward to the app home (or signup, when one exists), preserving ?ref so the
-  // signup form can pre-fill it.
-  const dest = new URL('/', request.url);
+  // signup form can pre-fill it. Use the PUBLIC origin (APP_BASE_URL) — the
+  // internal request URL is localhost behind the proxy.
+  const base = process.env.APP_BASE_URL || request.nextUrl.origin;
+  const dest = new URL('/', base);
   if (code.length >= 3) dest.searchParams.set('ref', code);
   const res = NextResponse.redirect(dest);
   if (code.length >= 3) {
