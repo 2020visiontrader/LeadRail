@@ -58,6 +58,13 @@ export async function stopRepliedEnrollments(limit = 200): Promise<number> {
   });
   if (!replied.length) return 0;
 
+  // Account per replied contact — needed to fire account-scoped automations/webhooks.
+  const repliedContactIds = [...new Set(replied.map((e) => e.contact_id))];
+  const { data: rc } = await supabase.from('contacts').select('id, account_id, brand_id').in('id', repliedContactIds);
+  const acctOf = new Map<string, { account_id: string; brand_id: string | null }>(
+    (rc || []).map((c: any) => [c.id, { account_id: c.account_id, brand_id: c.brand_id }]),
+  );
+
   const nowIso = new Date().toISOString();
   await Promise.all(
     replied.map(async (e) => {
@@ -68,6 +75,15 @@ export async function stopRepliedEnrollments(limit = 200): Promise<number> {
         .eq('id', e.id);
       if (e.last_variant_id) {
         await supabase.rpc('increment_variant_counter', { p_variant: e.last_variant_id, p_col: 'reply_count' }).then(() => {}, () => {});
+      }
+      // Phase D: fire automations (trigger 'email.replied') + outbound webhooks.
+      const meta = acctOf.get(e.contact_id);
+      if (meta?.account_id) {
+        const ctx = { contactId: e.contact_id, brandId: meta.brand_id, outcome, enrollmentId: e.id };
+        import('@/lib/automations').then(({ evaluateAutomations }) =>
+          evaluateAutomations(meta.account_id, 'email.replied', ctx)).catch(() => {});
+        import('@/lib/webhooks-out').then(({ emitEvent }) =>
+          emitEvent(meta.account_id, 'sequence.replied', ctx)).catch(() => {});
       }
     }),
   );
@@ -364,9 +380,42 @@ export async function processDueEnrollments(limit = 25) {
       };
 
       // --- Non-email step types: no send, no cap consumption. ---
-      if (stepType === 'wait' || stepType === 'branch') {
-        // wait: pure delay before the next step. branch: reserved → treat as skip.
-        await advance({ last_event: stepType });
+      if (stepType === 'wait') {
+        // wait: pure delay before the next step.
+        await advance({ last_event: 'wait' });
+        processed++;
+        continue;
+      }
+      if (stepType === 'branch') {
+        // Phase D #19: evaluate the step's conditions against the contact and jump.
+        // config = { match, conditions[], jumpTo: <step_order>, else: 'continue'|'complete' }.
+        const cfg = step.config || {};
+        const { data: c } = await supabase
+          .from('contacts').select('*').eq('id', enr.contact_id).single();
+        const { evaluateConditions } = await import('@/lib/automations');
+        const matched = evaluateConditions(cfg, { contact: c, ...(c || {}) });
+        if (matched && cfg.jumpTo != null) {
+          const target = steps.findIndex((s: any) => s.step_order === cfg.jumpTo);
+          const idx = target >= 0 ? target : enr.current_step + 1;
+          const jumpStep = steps[idx];
+          if (jumpStep) {
+            await supabase.from('sequence_enrollments').update({
+              current_step: idx,
+              next_run_at: computeNextRun(jumpStep.delay_hours || 0, bh),
+              claim_id: null, locked_until: null, last_event: 'branch_jump',
+            }).eq('id', enr.id);
+          } else {
+            await supabase.from('sequence_enrollments')
+              .update({ status: 'completed', claim_id: null, locked_until: null, last_event: 'branch_end' })
+              .eq('id', enr.id);
+          }
+        } else if (!matched && cfg.else === 'complete') {
+          await supabase.from('sequence_enrollments')
+            .update({ status: 'completed', claim_id: null, locked_until: null, last_event: 'branch_complete' })
+            .eq('id', enr.id);
+        } else {
+          await advance({ last_event: 'branch_continue' });
+        }
         processed++;
         continue;
       }

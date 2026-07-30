@@ -42,6 +42,13 @@ export async function POST(request: NextRequest) {
     triggerSequencesByCondition(contact.brand_id, contact.id).catch((e) =>
       console.error('[hermes-trigger]', e?.message || e)
     );
+    // Phase D: data-driven automations + outbound webhook fan-out (best-effort).
+    import('@/lib/automations').then(({ evaluateAutomations }) =>
+      evaluateAutomations(session.accountId, 'contact.created', { contact })
+    ).catch(() => {});
+    import('@/lib/webhooks-out').then(({ emitEvent }) =>
+      emitEvent(session.accountId, 'contact.created', { contact })
+    ).catch(() => {});
     return NextResponse.json(contact, { status: 201 });
   } catch (error) {
     return errorResponse(error);

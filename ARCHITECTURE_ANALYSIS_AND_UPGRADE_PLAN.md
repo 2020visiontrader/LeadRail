@@ -262,3 +262,25 @@ Executed items 6, 7, 8, 16, 17. Typecheck + production build pass. Migration `01
 **Deploy:** apply `bun run migrations/push.ts` (011 is in `apply_all.sql`). All new columns default to today's behaviour (type='email', business_hours=null → 24/7), so existing sequences are unaffected until configured.
 
 **Next:** Phase D — unified conversations, GHL location-id fix, signed webhooks, data-driven automations engine (pgvector qualifier optional/deferred).
+
+---
+
+## 10. Phase D — SHIPPED (2026-07-30)
+
+Executed items 14, 15, 18, 19 (item 20 pgvector deferred as planned). Typecheck + production build pass. Migration `012_platform.sql` (idempotent; backfills conversations from `inbox_messages`).
+
+| # | Item | Status | Files |
+|---|------|--------|-------|
+| 14 | Unified conversations | ✅ | `conversations` + `conversation_messages` (backfilled from `inbox_messages`); `lib/conversations.ts` (list/get/mark-read/status + `recordConversationMessage` find-or-create w/ external-id dedup); outbound sends mirrored from `lib/outreach.ts`; `GET /api/conversations`, `GET/PATCH /api/conversations/[id]` |
+| 15 | GHL location id per account | ✅ | `resolveGhlLocationId(accountId)` in `lib/social/ghl.ts` (connection `meta.locationId` → `GHL_LOCATION_ID` env → null); all 4 GHL routes now default server-side, client override still allowed |
+| 18 | Signed outbound webhooks | ✅ | `webhook_endpoints` + `webhook_deliveries` (+ `claim_webhook_deliveries()` `FOR UPDATE SKIP LOCKED`); `lib/webhooks-out.ts` (`emitEvent` fan-out, `processDueWebhookDeliveries` HMAC-SHA256 `x-maos-signature`, exp backoff, 6-attempt cap); drained by `hermes/tick`; `GET/POST /api/webhook-endpoints` (secret shown once), `PATCH/DELETE /api/webhook-endpoints/[id]` |
+| 19 | Automations engine (trigger/filter/action) | ✅ | `automations` + `automation_runs`; `lib/automations.ts` (shared `evaluateConditions`, `evaluateAutomations`, actions: enroll_sequence/add_tag/update_score/set_status/create_task/suppress/send_webhook); fired on `contact.created` (leads route) + `email.replied` (reply-stop); `GET/POST /api/automations`, `GET/PATCH/DELETE /api/automations/[id]` |
+| 6 | Branch step now live | ✅ | Phase C left `branch` a no-op; `sequence_steps.config` + engine evaluates `{match,conditions[],jumpTo,else}` via the shared `evaluateConditions` to conditionally jump/complete within a sequence |
+
+**Scope honesty:**
+- **Inbound** messages are backfilled into conversations and outbound sends mirror going forward, but live inbound *ingest* still lands in `inbox_messages` (no code insert site exists yet — inbound arrives via provider webhook wiring not built here). `recordConversationMessage` is ready for that ingest to call.
+- Item 20 (pgvector qualifier) intentionally not built — deferred until enough labeled outcomes exist, per §6.2.
+
+**Deploy:** apply `bun run migrations/push.ts` (012 is in `apply_all.sql`). To use GHL without the client passing a location, set `GHL_LOCATION_ID` or store it in the account's `integration_connections.meta.locationId`. Outbound webhooks: create an endpoint (`POST /api/webhook-endpoints`), store the returned `whsec_…` secret, verify `x-maos-signature` on receipt.
+
+**All four phases (A–D) now shipped.** The full 20-item plan is complete except the two explicitly-deferred advanced items (per-mailbox cap binding → Phase C sending-identity note; pgvector qualifier → optional).

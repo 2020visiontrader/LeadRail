@@ -1,18 +1,19 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { listPosts, deletePost, getPostAnalytics } from '@/lib/social/ghl';
+import { listPosts, deletePost, getPostAnalytics, resolveGhlLocationId } from '@/lib/social/ghl';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 
 export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
-  const { error } = await requireSession(request);
+  const { session, error } = await requireSession(request);
   if (error) return error;
   try {
-    const locationId = request.nextUrl.searchParams.get('locationId');
+    const locationId = request.nextUrl.searchParams.get('locationId')
+      || (await resolveGhlLocationId(session.accountId));
     const accountId = request.nextUrl.searchParams.get('accountId') || undefined;
     const limit = parseInt(request.nextUrl.searchParams.get('limit') || '20', 10);
     const postId = request.nextUrl.searchParams.get('postId');
-    if (!locationId) return badRequest('locationId required');
+    if (!locationId) return badRequest('locationId required (none configured for this account)');
     if (postId) return NextResponse.json(await getPostAnalytics(locationId, postId));
     return NextResponse.json(await listPosts(locationId, accountId, limit));
   } catch (error: any) {
@@ -21,10 +22,11 @@ export async function GET(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  const { error } = await requireSession(request);
+  const { session, error } = await requireSession(request);
   if (error) return error;
   try {
-    const locationId = request.nextUrl.searchParams.get('locationId');
+    const locationId = request.nextUrl.searchParams.get('locationId')
+      || (await resolveGhlLocationId(session.accountId));
     const postId = request.nextUrl.searchParams.get('postId');
     if (!locationId || !postId) return badRequest('locationId and postId required');
     return NextResponse.json(await deletePost(locationId, postId));

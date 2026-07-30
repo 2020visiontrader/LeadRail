@@ -62,29 +62,45 @@ export async function sendOutreachEmail(req: OutreachRequest) {
   const from = `${senderName} <${senderEmail}>`;
 
   // Resend primary, Brevo fallback
-  if (process.env.RESEND_API_KEY) {
-    return sendResendEmail(
-      {
-        from,
-        to: [contact.email],
+  const result = process.env.RESEND_API_KEY
+    ? await sendResendEmail(
+        {
+          from,
+          to: [contact.email],
+          subject: req.subject,
+          html: trackedHtml || `<p>Hi ${contact.name},</p>`,
+          replyTo: process.env.REPLY_TO_EMAIL || undefined,
+        },
+        contact.id,
+        req.templateId,
+      )
+    : await sendBrevoEmail(
+        {
+          to: [{ email: contact.email, name: contact.name }],
+          subject: req.subject,
+          htmlContent: trackedHtml || `<p>Hi ${contact.name},</p>`,
+          sender: { name: senderName, email: senderEmail },
+        },
+        contact.id,
+        req.templateId,
+      );
+
+  // Phase D #14: mirror the outbound message into the unified conversation
+  // thread so a contact's two-sided history lives in one place. Best-effort.
+  if (scopeAccountId) {
+    import('@/lib/conversations').then(({ recordConversationMessage }) =>
+      recordConversationMessage({
+        accountId: scopeAccountId,
+        contactId: contact.id,
+        channel: 'email',
+        direction: 'outbound',
+        toAddr: contact.email,
+        fromAddr: senderEmail,
         subject: req.subject,
-        html: trackedHtml || `<p>Hi ${contact.name},</p>`,
-        replyTo: process.env.REPLY_TO_EMAIL || undefined,
-      },
-      contact.id,
-      req.templateId
-    );
+        body: trackedHtml || null,
+      }),
+    ).catch(() => {});
   }
 
-  // Fallback to Brevo
-  return sendBrevoEmail(
-    {
-      to: [{ email: contact.email, name: contact.name }],
-      subject: req.subject,
-      htmlContent: trackedHtml || `<p>Hi ${contact.name},</p>`,
-      sender: { name: senderName, email: senderEmail },
-    },
-    contact.id,
-    req.templateId
-  );
+  return result;
 }

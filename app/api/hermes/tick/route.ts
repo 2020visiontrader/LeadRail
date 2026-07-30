@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { processDueJobs } from '@/lib/hermes/agent';
 import { processDueEnrollments } from '@/lib/sequences';
 import { processEnrichmentJobs } from '@/lib/enrichment-jobs';
+import { processDueWebhookDeliveries } from '@/lib/webhooks-out';
 import { requireAuth, errorResponse } from '@/lib/http';
 import { supabase } from '@/lib/db';
 
@@ -16,15 +17,16 @@ export async function POST(request: NextRequest) {
     const limit = Math.min(parseInt(request.nextUrl.searchParams.get('limit') || '25', 10), 100);
     // Drain the engines: legacy hermes_jobs, the canonical sequence_enrollments,
     // and the async enrichment-job queue (Phase C #17).
-    const [legacy, sequences, enrichment] = await Promise.all([
+    const [legacy, sequences, enrichment, webhooks] = await Promise.all([
       processDueJobs(limit).catch((e) => ({ error: String(e?.message || e) })),
       processDueEnrollments(limit).catch((e) => ({ error: String(e?.message || e) })),
       processEnrichmentJobs(Math.min(limit, 10)).catch((e) => ({ error: String(e?.message || e) })),
+      processDueWebhookDeliveries(Math.min(limit, 20)).catch((e) => ({ error: String(e?.message || e) })),
     ]);
     // Trash cron: hard-purge rows soft-deleted past the retention window.
     // Best-effort; a purge failure (or 010 not yet applied) never fails the tick.
     const { data: purged } = await supabase.rpc('purge_soft_deleted', { p_days: 30 });
-    return NextResponse.json({ ok: true, legacy, sequences, enrichment, purged: purged ?? 0 });
+    return NextResponse.json({ ok: true, legacy, sequences, enrichment, webhooks, purged: purged ?? 0 });
   } catch (error) {
     return errorResponse(error);
   }

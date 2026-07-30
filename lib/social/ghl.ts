@@ -4,6 +4,29 @@
 
 const GHL_API = 'https://services.leadconnectorhq.com';
 
+/**
+ * Resolve the GHL location id server-side (Phase D #15). Our token is a
+ * location-scoped Private Integration Token, so the location id belongs on the
+ * server, not the client. Order: the account's stored connection meta →
+ * GHL_LOCATION_ID env → null. Routes accept a client override for flexibility
+ * but should default to this so the integration works without the frontend
+ * knowing the id.
+ */
+export async function resolveGhlLocationId(accountId?: string): Promise<string | null> {
+  if (accountId) {
+    try {
+      const { getConnections } = await import('@/lib/db');
+      const conns = await getConnections(accountId);
+      const ghl = conns.find((c: any) => c.provider === 'ghl' || c.provider === 'gohighlevel');
+      const stored = ghl?.meta?.locationId || ghl?.meta?.location_id;
+      if (stored) return String(stored);
+    } catch {
+      // connection table/row absent — fall through to env
+    }
+  }
+  return process.env.GHL_LOCATION_ID || null;
+}
+
 function headers() {
   const token = process.env.GOHIGHLEVEL_ACCESS_TOKEN;
   if (!token) throw new Error('GOHIGHLEVEL_ACCESS_TOKEN not set — connect GoHighLevel in Settings → Integrations');
