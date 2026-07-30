@@ -10,9 +10,12 @@ import Dropdown from '@/components/Dropdown';
 import Badge from '@/components/Badge';
 import EmptyState from '@/components/EmptyState';
 import LoadingSpinner from '@/components/LoadingSpinner';
+import ChatAssistant, { type ChatMsg } from '@/components/ChatAssistant';
 import { useToast } from '@/components/ToastProvider';
 import { apiGet, apiSend } from '@/lib/api';
 import { Sequence } from '@/lib/types';
+
+interface SeqDraft { name: string; steps: { step_order: number; delay_hours: number; subject: string; body: string }[] }
 
 interface Venture { id: string; name: string; account_id: string }
 
@@ -26,8 +29,11 @@ export default function SequencesPage() {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form, setForm] = useState({ name: '', channel: 'email', steps: 'Day 0 | Intro | Hi {{name}}, ...\nDay 3 | Follow-up | Just circling back ...' });
-  const [aiDescription, setAiDescription] = useState('');
-  const [generating, setGenerating] = useState(false);
+  // Multi-turn AI builder state
+  const [chat, setChat] = useState<ChatMsg[]>([]);
+  const [chatLoading, setChatLoading] = useState(false);
+  const [pendingSeq, setPendingSeq] = useState<SeqDraft | null>(null);
+  const [creatingDraft, setCreatingDraft] = useState(false);
 
   useEffect(() => { apiGet<{ ventures: Venture[] }>('/api/ventures').then((d) => { setVentures(d.ventures || []); setVenture((c) => c || d.ventures?.[0] || null); }).catch(() => {}); }, []);
   const load = useCallback(async () => {
@@ -63,24 +69,35 @@ export default function SequencesPage() {
     } catch (e: any) { notify(e.message || 'Failed', 'error'); }
   };
 
-  const generateWithAi = async () => {
-    if (!aiDescription.trim() || !venture) { notify('Describe the sequence you want', 'error'); return; }
-    setGenerating(true);
+  // Multi-turn AI builder: sends the whole transcript so the model can ask
+  // clarifying questions and refine the cadence across turns.
+  const sendChat = async (text: string) => {
+    if (!venture) { notify('Pick a venture first', 'error'); return; }
+    const next: ChatMsg[] = [...chat, { role: 'user', content: text }];
+    setChat(next); setChatLoading(true);
     try {
-      const draft = await apiSend<{ name: string; steps: { step_order: number; delay_hours: number; subject: string; body: string }[] }>(
-        '/api/sequences/generate',
-        'POST',
-        { accountId: venture.account_id, brandId: venture.id, ventureName: venture.name, description: aiDescription.trim() }
+      const res = await apiSend<{ reply: string; ready: boolean; sequence: SeqDraft | null }>(
+        '/api/sequences/chat', 'POST', { messages: next, ventureName: venture.name },
       );
-      const stepsText = (draft.steps || [])
-        .sort((a, b) => a.step_order - b.step_order)
-        .map((s) => `Day ${Math.round((s.delay_hours || 0) / 24)} | ${s.subject} | ${s.body}`)
-        .join('\n');
-      setForm({ name: draft.name || form.name, channel: form.channel, steps: stepsText || form.steps });
-      setOpen(true);
-      notify('Draft generated — review and create');
-    } catch (e: any) { notify(e.message || 'Generation failed', 'error'); }
-    finally { setGenerating(false); }
+      setChat([...next, { role: 'assistant', content: res.reply }]);
+      if (res.sequence) setPendingSeq(res.sequence);
+    } catch (e: any) {
+      const msg = e.message === 'not_configured' ? 'Connect Gemini in Settings to use the AI builder' : e.message || 'AI failed';
+      setChat([...next, { role: 'assistant', content: `⚠️ ${msg}` }]);
+    } finally { setChatLoading(false); }
+  };
+
+  const createFromDraft = async () => {
+    if (!pendingSeq || !venture) return;
+    setCreatingDraft(true);
+    try {
+      const created = await apiSend<Sequence>('/api/sequences', 'POST', {
+        accountId: venture.account_id, brandId: venture.id, name: pendingSeq.name, channel: 'email', steps: pendingSeq.steps,
+      });
+      notify('Sequence created — now enroll leads');
+      if (created?.id) router.push(`/sequences/${created.id}`);
+    } catch (e: any) { notify(e.message || 'Create failed', 'error'); }
+    finally { setCreatingDraft(false); }
   };
 
   return (
@@ -93,17 +110,34 @@ export default function SequencesPage() {
         </div>
       </div>
       <div className="rounded-xl border border-slate-200 bg-white p-4">
-        <h2 className="text-sm font-semibold">Generate a sequence with AI</h2>
-        <p className="mt-1 text-xs text-slate-500">Describe the cadence you want and the AI drafts the steps for you to review.</p>
-        <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
-          <Textarea
-            rows={2}
-            placeholder="e.g. 3-step cold outreach for enterprise MCNs: intro, case-study follow-up after 3 days, breakup after 7 days"
-            value={aiDescription}
-            onChange={(e) => setAiDescription(e.target.value)}
-          />
-          <Button onClick={generateWithAi} disabled={generating}>{generating ? 'Generating…' : 'Generate with AI'}</Button>
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-sm font-semibold">Build a sequence with AI</h2>
+            <p className="mt-1 text-xs text-slate-500">Chat it through — the AI asks about your audience, goal and timing, then drafts the cadence. Keep replying to refine it.</p>
+          </div>
+          {chat.length > 0 && <button onClick={() => { setChat([]); setPendingSeq(null); }} className="text-xs text-slate-400 hover:text-slate-600">Reset chat</button>}
         </div>
+        <div className="mt-3">
+          <ChatAssistant
+            messages={chat}
+            onSend={sendChat}
+            loading={chatLoading}
+            placeholder="e.g. I want to reach seed-stage founders to book intro calls"
+            emptyHint="Describe who you want to reach and what you want them to do. I'll ask a couple of questions, then draft the steps."
+          />
+        </div>
+        {pendingSeq && (
+          <div className="mt-3 rounded-lg border border-green-200 bg-green-50 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-sm">
+                <span className="font-semibold">Ready:</span> {pendingSeq.name} · {pendingSeq.steps.length} step{pendingSeq.steps.length === 1 ? '' : 's'}
+                <div className="mt-1 text-xs text-slate-500">{pendingSeq.steps.map((s) => `Day ${Math.round((s.delay_hours || 0) / 24)}: ${s.subject}`).join(' → ')}</div>
+              </div>
+              <Button onClick={createFromDraft} loading={creatingDraft}>Create &amp; enroll →</Button>
+            </div>
+            <p className="mt-2 text-xs text-slate-500">Not quite right? Keep chatting above to refine, then create.</p>
+          </div>
+        )}
       </div>
       {loading ? <LoadingSpinner /> : rows.length === 0 ? (
         <EmptyState icon="🔁" title="No sequences yet" hint="Create a cadence, then enroll leads from the Leads page." action={<Button onClick={() => setOpen(true)}>New Sequence</Button>} />

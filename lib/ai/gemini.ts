@@ -55,6 +55,52 @@ export async function generateText(opts: {
   return parts.map((p: any) => p.text || '').join('').trim();
 }
 
+export interface ChatMessage {
+  role: 'user' | 'assistant';
+  content: string;
+}
+
+/**
+ * Multi-turn chat completion. Passes the whole conversation to Gemini so the
+ * model can ask clarifying questions and refine across turns. Maps our
+ * user/assistant roles to Gemini's user/model roles.
+ */
+export async function generateChat(opts: {
+  system?: string;
+  messages: ChatMessage[];
+  temperature?: number;
+  maxOutputTokens?: number;
+}): Promise<string> {
+  requireKey();
+  const contents = opts.messages
+    .filter((m) => m.content?.trim())
+    .map((m) => ({ role: m.role === 'assistant' ? 'model' : 'user', parts: [{ text: m.content }] }));
+  const body: Record<string, any> = {
+    contents,
+    generationConfig: {
+      temperature: opts.temperature ?? 0.6,
+      maxOutputTokens: opts.maxOutputTokens ?? 2048,
+    },
+  };
+  if (opts.system) body.systemInstruction = { parts: [{ text: opts.system }] };
+
+  const res = await fetch(`${BASE}/models/${TEXT_MODEL}:generateContent?key=${KEY}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = (await res.text().catch(() => '')).slice(0, 300);
+    const err: any = new Error(`Gemini chat failed (${res.status})`);
+    err.code = res.status === 400 || res.status === 403 ? 'auth' : 'upstream';
+    err.detail = detail;
+    throw err;
+  }
+  const json = await res.json();
+  const parts = json?.candidates?.[0]?.content?.parts ?? [];
+  return parts.map((p: any) => p.text || '').join('').trim();
+}
+
 export interface GeneratedImage {
   mimeType: string;
   base64: string; // raw base64 image bytes

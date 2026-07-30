@@ -2,7 +2,7 @@
 // On-demand only (a route calls these on explicit request). Nothing here writes
 // to the database or posts anywhere; callers decide what to do with the output.
 
-import { generateText } from './gemini';
+import { generateText, generateChat, type ChatMessage } from './gemini';
 import { buildPersona, improvePrompt } from './prompt-improver';
 import { marketingGuidance, whiteLabelGuard, COPY_FRAMEWORKS } from './marketing';
 import { HUMANIZE_RULES, stripAiMarkers } from './humanizer';
@@ -180,6 +180,93 @@ export async function generateContentPost(opts: {
     hashtags: Array.isArray(p.hashtags) ? p.hashtags : [],
     image_prompt: stripAiMarkers(whiteLabelGuard(p.image_prompt || '')),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Multi-turn conversational builders. Both keep a JSON envelope: `reply` is the
+// message shown in the chat; the structured payload (sequence / draft) is only
+// present once the model has enough info, so the UI can offer an "apply" action.
+// ---------------------------------------------------------------------------
+
+export interface SequenceChatResult {
+  reply: string;
+  ready: boolean;
+  sequence: SequenceDraft | null;
+}
+
+/**
+ * Conversational sequence builder. Asks clarifying questions when the request
+ * is thin (audience, goal, step count, tone, timing), and only emits a
+ * structured sequence once it has enough to be useful. Refines across turns.
+ */
+export async function sequenceChat(messages: ChatMessage[], opts: { ventureName?: string }): Promise<SequenceChatResult> {
+  const system = buildPersona({
+    role: `a senior B2B outreach cadence strategist${opts.ventureName ? ` for ${opts.ventureName}` : ''}`,
+    domain: 'designing multi-step email sequences with a human collaborator, conversationally',
+    methods:
+      'If the user request is vague, ask ONE focused clarifying question at a time (target audience, the goal/CTA, how many steps, tone, timing between steps). ' +
+      'When you have enough — or the user says "just build it" — produce the full sequence. Refine it when they give feedback.',
+    constraints:
+      'reply is a short, friendly chat message (no JSON inside it). ' +
+      'Set ready=true and fill sequence ONLY when you are producing/updating a concrete cadence; otherwise ready=false and sequence=null. ' +
+      'steps: 2-5, delay_hours strictly increasing from 0, subjects under 60 chars, each body a complete sendable email with {{name}}/{{company}} tokens where useful.',
+    format:
+      'Return ONLY JSON: {"reply": string, "ready": boolean, "sequence": {"name": string, "steps": [{"step_order": number, "delay_hours": number, "subject": string, "body": string}]} | null}',
+  });
+  const raw = await generateChat({ system, messages, temperature: 0.6, maxOutputTokens: 2048 });
+  const parsed = parseJson<Partial<SequenceChatResult>>(raw, { reply: raw, ready: false, sequence: null });
+  const seq = parsed.sequence && Array.isArray(parsed.sequence.steps)
+    ? {
+        name: stripAiMarkers(parsed.sequence.name || 'New sequence'),
+        steps: parsed.sequence.steps.map((s: any, i: number) => ({
+          step_order: typeof s.step_order === 'number' ? s.step_order : i,
+          delay_hours: typeof s.delay_hours === 'number' ? s.delay_hours : 0,
+          subject: stripAiMarkers(s.subject || ''),
+          body: stripAiMarkers(s.body || ''),
+        })),
+      }
+    : null;
+  return {
+    reply: stripAiMarkers(parsed.reply || 'Tell me a bit more about who this sequence is for and the goal.'),
+    ready: Boolean(parsed.ready && seq),
+    sequence: seq,
+  };
+}
+
+export interface ReplyChatResult {
+  reply: string;
+  draft: { subject: string; body: string } | null;
+}
+
+/**
+ * Conversational inbox reply assistant. Given the inbound message + contact,
+ * helps the user craft a reply — asking about the angle/goal when useful, and
+ * emitting an editable draft (subject + body) once it has direction.
+ */
+export async function inboxReplyChat(
+  messages: ChatMessage[],
+  context: { incomingSubject?: string; incomingBody?: string; fromName?: string; ventureName?: string },
+): Promise<ReplyChatResult> {
+  const contextBlock =
+    `INCOMING MESSAGE\nFrom: ${context.fromName || 'the contact'}\nSubject: ${context.incomingSubject || '(none)'}\n\n${context.incomingBody || '(no body)'}`;
+  const system = buildPersona({
+    role: `a B2B inbox assistant that drafts replies${context.ventureName ? ` for ${context.ventureName}` : ''}`,
+    domain: 'reading an inbound email and drafting the outbound reply with a human in the loop',
+    methods:
+      'Understand what the contact is asking. If the intended outcome is unclear (book a call? send info? decline?), ask ONE short question. ' +
+      'Otherwise draft a reply. Revise it when the user gives feedback. Keep it concise, warm, and specific to their message.',
+    constraints:
+      'reply is a short chat message to the USER (not the email itself). ' +
+      'Put the actual email in draft {subject, body}; set draft=null when you are only asking a question. ' +
+      `Base everything on this context:\n${contextBlock}`,
+    format: 'Return ONLY JSON: {"reply": string, "draft": {"subject": string, "body": string} | null}',
+  });
+  const raw = await generateChat({ system, messages, temperature: 0.6, maxOutputTokens: 1536 });
+  const parsed = parseJson<Partial<ReplyChatResult>>(raw, { reply: raw, draft: null });
+  const draft = parsed.draft && (parsed.draft.subject || parsed.draft.body)
+    ? { subject: stripAiMarkers(parsed.draft.subject || `Re: ${context.incomingSubject || ''}`), body: stripAiMarkers(parsed.draft.body || '') }
+    : null;
+  return { reply: stripAiMarkers(parsed.reply || 'How would you like to respond?'), draft };
 }
 
 export interface SequenceStepDraft {

@@ -2,8 +2,12 @@
 import { useEffect, useState, useCallback } from 'react';
 import Dropdown from '@/components/Dropdown';
 import Badge from '@/components/Badge';
+import Button from '@/components/Button';
+import Input from '@/components/Input';
+import Textarea from '@/components/Textarea';
 import EmptyState from '@/components/EmptyState';
 import LoadingSpinner from '@/components/LoadingSpinner';
+import ChatAssistant, { type ChatMsg } from '@/components/ChatAssistant';
 import { useToast } from '@/components/ToastProvider';
 import { apiGet, apiSend } from '@/lib/api';
 import { InboxMessage } from '@/lib/types';
@@ -18,6 +22,12 @@ export default function InboxPage() {
   const [active, setActive] = useState<InboxMessage | null>(null);
   const [loading, setLoading] = useState(false);
 
+  // Reply assistant state (per active message).
+  const [replyChat, setReplyChat] = useState<ChatMsg[]>([]);
+  const [replyLoading, setReplyLoading] = useState(false);
+  const [draft, setDraft] = useState<{ subject: string; body: string } | null>(null);
+  const [sending, setSending] = useState(false);
+
   useEffect(() => { apiGet<{ ventures: Venture[] }>('/api/ventures').then((d) => { setVentures(d.ventures || []); setAccount((a) => a || d.ventures?.[0]?.account_id || ''); }).catch(() => {}); }, []);
   const load = useCallback(async () => {
     if (!account) return; setLoading(true);
@@ -28,7 +38,39 @@ export default function InboxPage() {
 
   const openMsg = async (m: InboxMessage) => {
     setActive(m);
+    setReplyChat([]); setDraft(null); // fresh reply thread per message
     if (!m.is_read) { try { await apiSend(`/api/inbox/${m.id}`, 'PATCH', { is_read: true }); setRows((r) => r.map((x) => x.id === m.id ? { ...x, is_read: true } : x)); } catch { /* noop */ } }
+  };
+
+  const ventureName = ventures.find((v) => v.account_id === account)?.name;
+
+  const sendReplyChat = async (text: string) => {
+    if (!active) return;
+    const next: ChatMsg[] = [...replyChat, { role: 'user', content: text }];
+    setReplyChat(next); setReplyLoading(true);
+    try {
+      const res = await apiSend<{ reply: string; draft: { subject: string; body: string } | null }>(
+        '/api/inbox/reply', 'POST',
+        { messages: next, context: { incomingSubject: active.subject, incomingBody: active.body, fromName: active.from_addr, ventureName } },
+      );
+      setReplyChat([...next, { role: 'assistant', content: res.reply }]);
+      if (res.draft) setDraft(res.draft);
+    } catch (e: any) {
+      const msg = e.message === 'not_configured' ? 'Connect Gemini in Settings to draft replies' : e.message || 'AI failed';
+      setReplyChat([...next, { role: 'assistant', content: `⚠️ ${msg}` }]);
+    } finally { setReplyLoading(false); }
+  };
+
+  const sendReply = async () => {
+    if (!active || !draft) return;
+    if (!active.contact_id) { notify('This message has no linked contact to reply to', 'error'); return; }
+    setSending(true);
+    try {
+      await apiSend('/api/outreach/send', 'POST', { contactId: active.contact_id, subject: draft.subject, html: draft.body });
+      notify('Reply sent');
+      setDraft(null); setReplyChat([]);
+    } catch (e: any) { notify(e.message || 'Send failed', 'error'); }
+    finally { setSending(false); }
   };
 
   const accounts = Array.from(new Map(ventures.map((v) => [v.account_id, v])).values());
@@ -58,10 +100,34 @@ export default function InboxPage() {
           </ul>
           <div className="lg:col-span-2">
             {active ? (
-              <div className="rounded-xl border border-slate-200 bg-white p-5">
-                <div className="mb-2 text-sm text-slate-500">{active.from_addr} → {active.to_addr}</div>
-                <h2 className="text-lg font-semibold">{active.subject || '(no subject)'}</h2>
-                <p className="mt-3 whitespace-pre-wrap text-sm text-slate-700">{active.body || '(no body)'}</p>
+              <div className="space-y-4">
+                <div className="rounded-xl border border-slate-200 bg-white p-5">
+                  <div className="mb-2 text-sm text-slate-500">{active.from_addr} → {active.to_addr}</div>
+                  <h2 className="text-lg font-semibold">{active.subject || '(no subject)'}</h2>
+                  <p className="mt-3 whitespace-pre-wrap text-sm text-slate-700">{active.body || '(no body)'}</p>
+                </div>
+
+                <div className="rounded-xl border border-slate-200 bg-white p-4">
+                  <h3 className="mb-2 text-sm font-semibold">Draft a reply with AI</h3>
+                  <ChatAssistant
+                    messages={replyChat}
+                    onSend={sendReplyChat}
+                    loading={replyLoading}
+                    minHeight={160}
+                    placeholder="e.g. Thank them and offer two times for a call"
+                    emptyHint="Tell me how you want to respond and I'll draft it. I'll ask if the goal isn't clear."
+                  />
+                  {draft && (
+                    <div className="mt-3 space-y-2 rounded-lg border border-green-200 bg-green-50 p-3">
+                      <Input label="Subject" value={draft.subject} onChange={(e) => setDraft({ ...draft, subject: e.target.value })} />
+                      <Textarea label="Reply body" rows={6} value={draft.body} onChange={(e) => setDraft({ ...draft, body: e.target.value })} />
+                      <div className="flex items-center gap-2">
+                        <Button onClick={sendReply} loading={sending} disabled={!active.contact_id}>Send reply</Button>
+                        {!active.contact_id && <span className="text-xs text-amber-600">No linked contact — can't send from here yet.</span>}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             ) : <div className="rounded-xl border border-dashed border-slate-200 p-10 text-center text-sm text-slate-400">Select a message</div>}
           </div>
