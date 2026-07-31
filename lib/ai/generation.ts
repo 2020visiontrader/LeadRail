@@ -4,7 +4,7 @@
 // calls these on explicit request). Nothing here writes to the database or posts
 // anywhere; callers decide what to do with the output.
 
-import { generateText, generateChat, type ChatMessage } from './opencode';
+import { generateText, generateChat, type ChatMessage } from './router';
 import { buildPersona, improvePrompt } from './prompt-improver';
 import { marketingGuidance, whiteLabelGuard, COPY_FRAMEWORKS } from './marketing';
 import { HUMANIZE_RULES, stripAiMarkers } from './humanizer';

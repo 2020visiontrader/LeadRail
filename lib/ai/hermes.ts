@@ -11,7 +11,7 @@
 // registry, and ALWAYS falls back to a deterministic keyword router so a
 // missing key / upstream error still yields a usable plan.
 
-import { generateText, opencodeConfigured } from './opencode';
+import { generateText, textConfigured } from './router';
 import { pickModel, getModel, type TaskKind } from './models';
 import { SKILLS, getSkill, type Skill } from '@/lib/skills/registry';
 
@@ -104,9 +104,7 @@ function finalize(
  */
 export async function hermesRoute(request: string, ctx: HermesContext = {}): Promise<HermesPlan> {
   const text = String(request || '').trim();
-  const base = deterministicPlan(text);
-
-  if (!opencodeConfigured() || !text) {
+  const base = deterministicPlan(text);  if (!textConfigured() || !text) {
     return finalize(base.intent, base.taskKind, base.skillIds, 'Routed by keyword rules (AI router unavailable).', 'fallback');
   }
 
