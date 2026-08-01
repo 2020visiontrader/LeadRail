@@ -129,27 +129,34 @@ export default function Overview() {
   const scopeName = scopeId === ALL ? 'All Ventures' : ventures.find((v) => v.id === scopeId)?.name || '—';
   const segEntries = stats?.segments ? Object.entries(stats.segments as Record<string, number>) : [];
 
+  const firstRun = !loading && ventures.length === 0;
+
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3 flex-wrap">
-          <h1 className="text-2xl font-bold">Dashboard</h1>
-          <select
-            value={scopeId}
-            onChange={(e) => setScopeId(e.target.value)}
-            className="rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface)] px-3 py-1.5 text-sm text-[var(--text-primary)]"
-          >
-            <option value={ALL}>🌐 All Ventures</option>
-            {ventures.map((v) => (
-              <option key={v.id} value={v.id}>{v.name}{v.contact_count ? ` (${v.contact_count})` : ''}</option>
-            ))}
-          </select>
+      {/* Header hidden on first run — the activation hero carries the title + CTA */}
+      {!firstRun && (
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-3 flex-wrap">
+            <h1 className="text-2xl font-bold">Dashboard</h1>
+            <select
+              value={scopeId}
+              onChange={(e) => setScopeId(e.target.value)}
+              className="rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface)] px-3 py-1.5 text-sm text-[var(--text-primary)]"
+            >
+              <option value={ALL}>🌐 All Ventures</option>
+              {ventures.map((v) => (
+                <option key={v.id} value={v.id}>{v.name}{v.contact_count ? ` (${v.contact_count})` : ''}</option>
+              ))}
+            </select>
+          </div>
+          <Button onClick={openWizard}>+ New venture</Button>
         </div>
-        <Button onClick={openWizard}>+ New venture</Button>
-      </div>
+      )}
 
       {loading ? (
         <LoadingSpinner label="Loading dashboard…" />
+      ) : firstRun ? (
+        <FirstRunHero onStart={openWizard} />
       ) : (
         <>
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
@@ -342,6 +349,52 @@ export default function Overview() {
           )}
         </div>
       </Modal>
+    </div>
+  );
+}
+
+// First-run activation hero — shown to a signed-in operator who has no ventures
+// yet, in place of a dead zeros dashboard. Its single job: launch the wizard.
+function FirstRunHero({ onStart }: { onStart: () => void }) {
+  const steps = [
+    { n: 1, t: 'Name your venture', d: 'A venture is a self-contained brand workspace — its own leads, sequences, inbox and outreach.' },
+    { n: 2, t: 'Set the target', d: 'Tell it who you sell to and which sectors — this shapes every lead search.' },
+    { n: 3, t: 'Drop a deck (optional)', d: 'The AI reads your pitch and auto-tailors the Apollo search to the right people.' },
+  ];
+  return (
+    <div className="animate-fade-in overflow-hidden rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] shadow-[var(--shadow-card)]">
+      {/* Banner */}
+      <div className="relative overflow-hidden border-b border-[var(--border-default)] bg-[var(--bg-raised)] px-8 py-10">
+        <div aria-hidden className="pointer-events-none absolute -right-16 -top-16 h-64 w-64 rounded-full bg-[var(--brand-soft)] blur-2xl" />
+        <div className="relative">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-strong)] bg-[var(--bg-surface)] px-3 py-1 text-xs font-medium text-[var(--text-secondary)]">
+            Welcome aboard
+          </span>
+          <h1 className="mt-3 text-3xl font-bold tracking-tight">Let's set up your first venture</h1>
+          <p className="mt-2 max-w-xl text-sm leading-relaxed text-[var(--text-secondary)]">
+            Your command center is empty until it has a venture to run. Spin one up in under a minute — then find leads, build sequences, and work the pipeline for it.
+          </p>
+          <div className="mt-5 flex flex-wrap gap-3">
+            <button
+              onClick={onStart}
+              className="inline-flex items-center gap-2 rounded-lg bg-[var(--ink)] px-5 py-2.5 text-sm font-semibold text-[var(--ink-fg)] shadow-[var(--shadow-card)] transition hover:bg-[var(--ink-hover)]"
+            >
+              Set up first venture →
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* What happens */}
+      <div className="grid gap-4 px-8 py-7 sm:grid-cols-3">
+        {steps.map((s) => (
+          <div key={s.n} className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-canvas)] p-4">
+            <div className="mb-2 flex h-7 w-7 items-center justify-center rounded-full bg-[var(--brand-soft)] text-sm font-bold text-[var(--brand)]">{s.n}</div>
+            <p className="text-sm font-semibold">{s.t}</p>
+            <p className="mt-1 text-xs leading-relaxed text-[var(--text-muted)]">{s.d}</p>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
