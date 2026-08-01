@@ -18,6 +18,8 @@ function LoginInner() {
   // phase: idle → verifying → entering (success, redirecting)
   const [phase, setPhase] = useState<'idle' | 'verifying' | 'entering'>('idle');
   const busy = phase !== 'idle';
+  // Set when an authed API 401'd mid-session and bounced the operator here.
+  const expired = params.get('expired') === '1';
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -59,6 +61,12 @@ function LoginInner() {
 
         <h1 className="text-lg font-semibold text-white">Operator sign in</h1>
         <p className="mb-6 text-sm text-slate-400">Multi-venture lead command center — BDB Productions.</p>
+
+        {expired && !error && (
+          <p className="mb-4 flex items-start gap-1.5 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+            <span aria-hidden>⏱</span><span>Your session expired — sign in again to pick up where you left off.</span>
+          </p>
+        )}
 
         <form onSubmit={submit} className="space-y-4">
           <label className="block">
