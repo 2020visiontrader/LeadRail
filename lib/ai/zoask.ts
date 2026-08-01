@@ -14,6 +14,12 @@ const KEY =
 // Haiku once the user sets it). Set ZOASK_MODEL to a `byok:` id to override.
 const MODEL = process.env.ZOASK_MODEL;
 
+// Hard timeout so a stalled subscription call fails over to OpenCode/NIM
+// instead of blocking the whole request. Haiku answers in ~2-3s, Opus in
+// ~15-20s; 40s covers the slow default while leaving room under the frontend
+// guard for the remaining tiers. Override with ZOASK_TIMEOUT_MS.
+const TIMEOUT_MS = Number(process.env.ZOASK_TIMEOUT_MS) || 40_000;
+
 export function zoAskConfigured(): boolean {
   // Model is optional (defaults to the account model), so token presence alone
   // means configured.
@@ -25,15 +31,30 @@ async function ask(input: string): Promise<string> {
   if (typeof MODEL === 'string' && MODEL.length > 0) {
     body.model_name = MODEL;
   }
-  const res = await fetch('https://api.zo.computer/zo/ask', {
-    method: 'POST',
-    headers: {
-      authorization: `Bearer ${KEY}`,
-      'content-type': 'application/json',
-      accept: 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch('https://api.zo.computer/zo/ask', {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${KEY}`,
+        'content-type': 'application/json',
+        accept: 'application/json',
+      },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } catch (e: any) {
+    const err: any = new Error(
+      e?.name === 'AbortError' ? `Zo Ask timed out after ${TIMEOUT_MS}ms` : `Zo Ask request failed`,
+    );
+    err.code = 'upstream';
+    err.detail = String(e?.message || e).slice(0, 300);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     const detail = (await res.text().catch(() => '')).slice(0, 300);
     const err: any = new Error(`Zo Ask failed (${res.status})`);
