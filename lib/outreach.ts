@@ -1,4 +1,4 @@
-import { getContact, getContactUnscoped } from '@/lib/db';
+import { getContact, getContactUnscoped, getVenture } from '@/lib/db';
 import { sendResendEmail } from '@/lib/integrations/resend';
 import { sendBrevoEmail } from '@/lib/integrations/brevo';
 import { isSuppressed } from '@/lib/suppressions';
@@ -32,6 +32,28 @@ export interface OutreachRequest {
   attachments?: Array<{ url: string; filename: string; mime?: string }>;
 }
 
+/**
+ * Ensure the body is real HTML before it goes out as htmlContent. AI drafts,
+ * pasted text, and simple templates arrive as PLAIN TEXT — email clients ignore
+ * newlines, so that collapses into one unreadable block and jams the sign-off.
+ * If the body already contains block-level HTML we leave it untouched; otherwise
+ * we escape it and turn blank-line-separated chunks into <p> and single
+ * newlines into <br>, so paragraphs and the signature render correctly.
+ */
+export function normalizeEmailHtml(input?: string): string {
+  const raw = (input || '').trim();
+  if (!raw) return '';
+  if (/<(p|div|br|table|ul|ol|h[1-6]|blockquote|a|img)\b/i.test(raw)) return raw;
+  const esc = (s: string) =>
+    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return raw
+    .split(/\n{2,}/)
+    .map((para) => para.trim())
+    .filter(Boolean)
+    .map((para) => `<p style="margin:0 0 14px">${esc(para).replace(/\n/g, '<br>')}</p>`)
+    .join('');
+}
+
 function attachmentsBlock(atts: NonNullable<OutreachRequest['attachments']>): string {
   if (!atts.length) return '';
   const items = atts
@@ -56,7 +78,8 @@ export async function sendOutreachEmail(req: OutreachRequest) {
   }
 
   const atts = req.attachments || [];
-  const bodyWithAtts = atts.length ? `${req.html || ''}${attachmentsBlock(atts)}` : req.html;
+  const bodyHtml = normalizeEmailHtml(req.html);
+  const bodyWithAtts = atts.length ? `${bodyHtml}${attachmentsBlock(atts)}` : bodyHtml;
 
   const trackedHtml = bodyWithAtts
     ? await injectTracking(bodyWithAtts, {
@@ -73,13 +96,26 @@ export async function sendOutreachEmail(req: OutreachRequest) {
     .filter((a) => a.url)
     .map((a) => ({ filename: a.filename, path: a.url }));
 
-  const senderEmail = process.env.RESEND_SENDER_EMAIL
+  // Per-venture sender identity takes precedence over the shared env sender, so
+  // each brand emails as itself. Falls back to env, then the platform default.
+  // Best-effort: a missing/misconfigured venture never blocks a send.
+  let ventureSender: { name?: string; email?: string } = {};
+  if (contact.brand_id) {
+    try {
+      const v = await getVenture(contact.brand_id);
+      ventureSender = { name: v?.sender_name || undefined, email: v?.sender_email || undefined };
+    } catch { /* fall back to env */ }
+  }
+  const senderEmail = ventureSender.email
+    || process.env.RESEND_SENDER_EMAIL
     || process.env.BREVO_SENDER_EMAIL
     || 'onboarding@resend.dev';
-  const senderName = process.env.RESEND_SENDER_NAME
+  const senderName = ventureSender.name
+    || process.env.RESEND_SENDER_NAME
     || process.env.BREVO_SENDER_NAME
     || 'LeadRail CRM';
   const from = `${senderName} <${senderEmail}>`;
+  const replyTo = ventureSender.email || process.env.REPLY_TO_EMAIL || undefined;
 
   // Resend primary, Brevo fallback
   const result = process.env.RESEND_API_KEY
@@ -89,7 +125,7 @@ export async function sendOutreachEmail(req: OutreachRequest) {
           to: [contact.email],
           subject: req.subject,
           html: trackedHtml || `<p>Hi ${contact.name},</p>`,
-          replyTo: process.env.REPLY_TO_EMAIL || undefined,
+          replyTo,
           attachments: resendAttachments.length ? resendAttachments : undefined,
         },
         contact.id,

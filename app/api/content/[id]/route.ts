@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/db';
 import { requireSession, errorResponse } from '@/lib/http';
@@ -5,7 +6,7 @@ import { requireSession, errorResponse } from '@/lib/http';
 export const dynamic = 'force-dynamic';
 
 // content_calendar carries account_id; scope every mutation by it.
-export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
+async function PATCH__impl(request: NextRequest, { params }: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -22,7 +23,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
   }
 }
 
-export async function DELETE(request: NextRequest, { params }: { params: { id: string } }) {
+async function DELETE__impl(request: NextRequest, { params }: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -34,3 +35,7 @@ export async function DELETE(request: NextRequest, { params }: { params: { id: s
     return errorResponse(error);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const PATCH = withApi(PATCH__impl as any, { route: "/api/content/[id]", method: "PATCH" });
+export const DELETE = withApi(DELETE__impl as any, { route: "/api/content/[id]", method: "DELETE" });

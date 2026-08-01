@@ -1,17 +1,18 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 import { parseIcpFromText } from '@/lib/ai/generation';
-import { opencodeConfigured } from '@/lib/ai/opencode';
+import { textConfigured } from '@/lib/ai/router';
 
 export const dynamic = 'force-dynamic';
 
 // Plain-language → structured Apollo ICP. The user describes who they want in
 // one sentence; the returned object fills the search form so they never have to
 // hand-tune keyword/seniority/company-size fields.
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { error } = await requireSession(request);
   if (error) return error;
-  if (!opencodeConfigured()) return NextResponse.json({ error: 'not_configured', provider: 'opencode' }, { status: 409 });
+  if (!textConfigured()) return NextResponse.json({ error: 'not_configured', provider: 'ai' }, { status: 409 });
   let body: any;
   try { body = await request.json(); } catch { return badRequest('invalid JSON body'); }
   const text = String(body?.text || '').trim();
@@ -24,3 +25,6 @@ export async function POST(request: NextRequest) {
     return errorResponse(e);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/leads/apollo/parse", method: "POST" });

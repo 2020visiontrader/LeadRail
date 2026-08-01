@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 import { generateContentPost } from '@/lib/ai/generation';
@@ -6,7 +7,7 @@ import { violatesWhiteLabel } from '@/lib/ai/marketing';
 
 export const dynamic = 'force-dynamic';
 
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { error: authErr } = await requireSession(request);
   if (authErr) return authErr;
   if (!opencodeConfigured()) return NextResponse.json({ error: 'not_configured', provider: 'opencode' }, { status: 409 });
@@ -33,3 +34,6 @@ export async function POST(request: NextRequest) {
     return errorResponse(error);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/generate/content", method: "POST" });

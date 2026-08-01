@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
@@ -12,6 +13,9 @@ const TEMPLATES = [
   { id: 'partner-collab', segment: 'partner', name: 'Partnership', subject: 'Partnership with {{company}}', body: '<p>Hi {{name}},</p><p>I see a clean partnership fit. Worth a quick exploratory call?</p>' },
 ];
 
-export async function GET() {
+async function GET__impl() {
   return NextResponse.json(TEMPLATES);
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/outreach/templates", method: "GET" });

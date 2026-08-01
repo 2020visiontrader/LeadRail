@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 import { attributeSignup, REF_COOKIE } from '@/lib/referrals';
@@ -8,7 +9,7 @@ export const runtime = 'nodejs';
 // POST { code? } — attribute the current account to a referral code (the
 // "typed a code" path). Falls back to the ma_ref cookie. Guards self-referral
 // and re-attribution in the library. This is the hook a real signup flow calls.
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   let typedCode: string | undefined;
@@ -25,3 +26,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(result);
   } catch (e) { return errorResponse(e); }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/referrals/apply", method: "POST" });

@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/db';
 import { verifyTrack } from '@/lib/tracking';
@@ -6,7 +7,7 @@ export const dynamic = 'force-dynamic';
 
 // Public: records a click, then 302-redirects to the original URL (?u=).
 // Only http(s) targets are honoured to avoid an open-redirect to javascript:/data:.
-export async function GET(req: NextRequest, { params }: { params: { token: string } }) {
+async function GET__impl(req: NextRequest, { params }: { params: { token: string } }) {
   const target = req.nextUrl.searchParams.get('u') || '';
   let safe = '';
   try {
@@ -37,3 +38,6 @@ export async function GET(req: NextRequest, { params }: { params: { token: strin
   if (safe) return NextResponse.redirect(safe, 302);
   return NextResponse.json({ error: 'Invalid link' }, { status: 400 });
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/track/click/[token]", method: "GET" });

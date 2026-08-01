@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 import { inboxReplyChat } from '@/lib/ai/generation';
@@ -7,7 +8,7 @@ export const dynamic = 'force-dynamic';
 
 // Multi-turn inbox reply assistant.
 // Body: { messages: [{role,content}], context: { incomingSubject, incomingBody, fromName, ventureName } }.
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { error } = await requireSession(request);
   if (error) return error;
   if (!opencodeConfigured()) return NextResponse.json({ error: 'not_configured', provider: 'opencode' }, { status: 409 });
@@ -23,3 +24,6 @@ export async function POST(request: NextRequest) {
     return errorResponse(e);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/inbox/reply", method: "POST" });

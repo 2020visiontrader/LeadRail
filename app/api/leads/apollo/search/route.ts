@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { searchPeople, apolloConfigured } from '@/lib/integrations/apollo';
 import { logApolloSearch, dbReady, assertBrandOwned } from '@/lib/db';
@@ -8,7 +9,7 @@ import type { ApolloQuery } from '@/lib/types';
 export const dynamic = 'force-dynamic';
 
 // POST /api/leads/apollo/search  body: { brandId, query: ApolloQuery }
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
 
@@ -51,3 +52,6 @@ export async function POST(request: NextRequest) {
     return errorResponse(error, 502, 'Apollo search failed');
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/leads/apollo/search", method: "POST" });

@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { writeFile, mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -8,7 +9,7 @@ import { insertCampaignAsset, dbReady } from '@/lib/db';
 
 export const dynamic = 'force-dynamic';
 
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { session, error: authErr } = await requireSession(request);
   if (authErr) return authErr;
   if (!geminiConfigured()) return NextResponse.json({ error: 'not_configured', provider: 'gemini' }, { status: 409 });
@@ -43,3 +44,6 @@ export async function POST(request: NextRequest) {
     return errorResponse(error);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/generate/image", method: "POST" });

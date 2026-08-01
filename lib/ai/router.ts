@@ -1,11 +1,15 @@
 // AI routing ladder — drop-in replacement for OpenCode's public text API.
 // Failover order for every text/chat generation:
-//   1. Ask Zo  (BYOK Claude — primary)
-//   2. OpenCode Go (deepseek-v4-pro — second)
-//   3. NVIDIA NIM (last resort)
-// Each tier is skipped when unconfigured; on any error/timeout we catch and
-// fall through to the next tier. If all configured tiers fail (or none are
-// configured), the last error is re-thrown. Image generation stays on Gemini.
+//   1. OpenCode Go (deepseek-v4-pro — fast + accurate, the app's designed model)
+//   2. Ask Zo  (BYOK Claude / account default — reliable but slow on Opus)
+//   3. NVIDIA NIM (last resort — free tier, weaker instruction-following)
+// OpenCode is first because it is both fast (~3s) AND accurate on structured
+// extraction. When its account is out of credits it fails fast (401) and we
+// fall straight through to Ask Zo, so restoring OpenCode credits instantly
+// speeds every generation back up with no code change. Each tier is skipped
+// when unconfigured; on any error/timeout we catch and fall through. If all
+// configured tiers fail (or none are configured), the last error is re-thrown.
+// Image generation stays on Gemini.
 
 import type { ChatMessage } from './opencode';
 import * as opencode from './opencode';
@@ -26,16 +30,16 @@ export async function generateText(opts: {
   model?: string;
 }): Promise<string> {
   let lastErr: any = null;
-  if (zoAskConfigured()) {
+  if (opencode.opencodeConfigured()) {
     try {
-      return await zoAskText({ system: opts.system, prompt: opts.prompt, maxOutputTokens: opts.maxOutputTokens });
+      return await opencode.generateText(opts);
     } catch (err: any) {
       lastErr = err;
     }
   }
-  if (opencode.opencodeConfigured()) {
+  if (zoAskConfigured()) {
     try {
-      return await opencode.generateText(opts);
+      return await zoAskText({ system: opts.system, prompt: opts.prompt, maxOutputTokens: opts.maxOutputTokens });
     } catch (err: any) {
       lastErr = err;
     }
@@ -58,16 +62,16 @@ export async function generateChat(opts: {
   model?: string;
 }): Promise<string> {
   let lastErr: any = null;
-  if (zoAskConfigured()) {
+  if (opencode.opencodeConfigured()) {
     try {
-      return await zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens });
+      return await opencode.generateChat(opts);
     } catch (err: any) {
       lastErr = err;
     }
   }
-  if (opencode.opencodeConfigured()) {
+  if (zoAskConfigured()) {
     try {
-      return await opencode.generateChat(opts);
+      return await zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens });
     } catch (err: any) {
       lastErr = err;
     }

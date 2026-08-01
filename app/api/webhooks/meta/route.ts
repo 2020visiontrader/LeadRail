@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import { handleMetaWebhook } from '@/lib/integrations/meta';
@@ -6,7 +7,7 @@ import { errorResponse } from '@/lib/http';
 export const dynamic = 'force-dynamic';
 
 // Meta subscription verification handshake.
-export async function GET(request: NextRequest) {
+async function GET__impl(request: NextRequest) {
   const mode = request.nextUrl.searchParams.get('hub.mode');
   const token = request.nextUrl.searchParams.get('hub.verify_token');
   const challenge = request.nextUrl.searchParams.get('hub.challenge');
@@ -18,7 +19,7 @@ export async function GET(request: NextRequest) {
 }
 
 // Verify X-Hub-Signature-256 (HMAC-SHA256 of raw body with the app secret).
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const appSecret = process.env.META_APP_SECRET;
   const raw = await request.text();
   if (!appSecret) {
@@ -42,3 +43,7 @@ export async function POST(request: NextRequest) {
     return errorResponse(error);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/webhooks/meta", method: "GET" });
+export const POST = withApi(POST__impl as any, { route: "/api/webhooks/meta", method: "POST" });

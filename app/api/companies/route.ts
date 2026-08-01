@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { getCompanies, createCompany } from '@/lib/crm';
 import { assertBrandOwned } from '@/lib/db';
@@ -8,7 +9,7 @@ export const dynamic = 'force-dynamic';
 const FIELDS = ['brand_id','name','domain','website','industry','size','linkedin_url','location','description'];
 const pick = (b: any) => Object.fromEntries(Object.entries(b).filter(([k]) => FIELDS.includes(k)));
 
-export async function GET(request: NextRequest) {
+async function GET__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   const brandId = request.nextUrl.searchParams.get('brandId');
@@ -19,7 +20,7 @@ export async function GET(request: NextRequest) {
   }
 }
 
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -32,3 +33,7 @@ export async function POST(request: NextRequest) {
     return errorResponse(error);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/companies", method: "GET" });
+export const POST = withApi(POST__impl as any, { route: "/api/companies", method: "POST" });

@@ -1,10 +1,11 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase, dbReady } from '@/lib/db';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 
 export const dynamic = 'force-dynamic';
 
-export async function PATCH(request: NextRequest, ctx: { params: { id: string } }) {
+async function PATCH__impl(request: NextRequest, ctx: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   if (!dbReady()) return badRequest('database not connected');
@@ -29,7 +30,7 @@ export async function PATCH(request: NextRequest, ctx: { params: { id: string } 
   }
 }
 
-export async function DELETE(request: NextRequest, ctx: { params: { id: string } }) {
+async function DELETE__impl(request: NextRequest, ctx: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   if (!dbReady()) return badRequest('database not connected');
@@ -44,3 +45,7 @@ export async function DELETE(request: NextRequest, ctx: { params: { id: string }
     return errorResponse(error);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const PATCH = withApi(PATCH__impl as any, { route: "/api/webhook-endpoints/[id]", method: "PATCH" });
+export const DELETE = withApi(DELETE__impl as any, { route: "/api/webhook-endpoints/[id]", method: "DELETE" });

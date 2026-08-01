@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 import { hermesRoute } from '@/lib/ai/hermes';
@@ -7,7 +8,7 @@ export const dynamic = 'force-dynamic';
 // POST /api/hermes/route  body: { request: string, ventureName?, leadGoal?, sectors? }
 // Returns Hermes' plan: the intent, chosen skills, and the Go model it picked.
 // Admin/account-scoped. Never throws — falls back to keyword routing.
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { error } = await requireSession(request);
   if (error) return error;
   let body: any;
@@ -25,3 +26,6 @@ export async function POST(request: NextRequest) {
     return errorResponse(e);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/hermes/route", method: "POST" });

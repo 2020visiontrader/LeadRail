@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { dbReady } from '@/lib/db';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
@@ -7,7 +8,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 // GET — current deletion status (so the UI can show the grace-window banner).
-export async function GET(request: NextRequest) {
+async function GET__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   const acct = await getAccount(session.accountId);
@@ -20,7 +21,7 @@ export async function GET(request: NextRequest) {
 
 // POST — owner requests account deletion. Soft: schedules a hard purge grace
 // days out; the account keeps working until then and can cancel.
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   if (!dbReady()) return badRequest('database not configured');
@@ -34,7 +35,7 @@ export async function POST(request: NextRequest) {
 }
 
 // DELETE — cancel a pending deletion during the grace window.
-export async function DELETE(request: NextRequest) {
+async function DELETE__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   if (session.role !== 'owner') return NextResponse.json({ error: 'Only the account owner can manage deletion' }, { status: 403 });
@@ -43,3 +44,8 @@ export async function DELETE(request: NextRequest) {
     return NextResponse.json({ ok: true, canceled: true });
   } catch (e) { return errorResponse(e); }
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/account/delete", method: "GET" });
+export const POST = withApi(POST__impl as any, { route: "/api/account/delete", method: "POST" });
+export const DELETE = withApi(DELETE__impl as any, { route: "/api/account/delete", method: "DELETE" });

@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase, findContactByEmail, assertBrandOwned } from '@/lib/db';
 import { parseUpload, fromCsv } from '@/lib/io';
@@ -7,7 +8,7 @@ import { requireSession, errorResponse, badRequest } from '@/lib/http';
 export const dynamic = 'force-dynamic';
 const MAP = ['name','email','company','title','segment','status','notes','phone','linkedin_url'];
 // Accepts multipart (file=) OR JSON { brand_id, csv | rows }. accountId comes from session. Dedupes by email.
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   const accountId = session.accountId;
@@ -48,3 +49,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ inserted, skipped, total: rows.length, errors: errors.slice(0, 10) });
   } catch (error) { return errorResponse(error); }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/leads/import", method: "POST" });

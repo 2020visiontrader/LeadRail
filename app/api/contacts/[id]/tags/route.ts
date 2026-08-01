@@ -1,10 +1,11 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { tagsForContact, addTagToContact, removeTagFromContact } from '@/lib/tags';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
+async function GET__impl(request: NextRequest, { params }: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -15,7 +16,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   }
 }
 
-export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
+async function POST__impl(request: NextRequest, { params }: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -29,7 +30,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
   }
 }
 
-export async function DELETE(request: NextRequest, { params }: { params: { id: string } }) {
+async function DELETE__impl(request: NextRequest, { params }: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -41,3 +42,8 @@ export async function DELETE(request: NextRequest, { params }: { params: { id: s
     return errorResponse(e);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/contacts/[id]/tags", method: "GET" });
+export const POST = withApi(POST__impl as any, { route: "/api/contacts/[id]/tags", method: "POST" });
+export const DELETE = withApi(DELETE__impl as any, { route: "/api/contacts/[id]/tags", method: "DELETE" });

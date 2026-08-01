@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { getContact, updateContact, deleteContact } from '@/lib/db';
 import { requireSession, errorResponse } from '@/lib/http';
@@ -5,7 +6,7 @@ import { validateContactPatch } from '@/lib/validation';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
+async function GET__impl(request: NextRequest, { params }: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -15,7 +16,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   }
 }
 
-export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
+async function PATCH__impl(request: NextRequest, { params }: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -29,7 +30,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
   }
 }
 
-export async function DELETE(request: NextRequest, { params }: { params: { id: string } }) {
+async function DELETE__impl(request: NextRequest, { params }: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -38,3 +39,8 @@ export async function DELETE(request: NextRequest, { params }: { params: { id: s
     return errorResponse(error);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/leads/[id]", method: "GET" });
+export const PATCH = withApi(PATCH__impl as any, { route: "/api/leads/[id]", method: "PATCH" });
+export const DELETE = withApi(DELETE__impl as any, { route: "/api/leads/[id]", method: "DELETE" });

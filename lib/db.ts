@@ -205,7 +205,8 @@ export async function createVenture(accountId: string, name: string, profile: Ve
  * allowlist of columns is writable.
  */
 export async function updateVenture(brandId: string, accountId: string, patch: Record<string, any>) {
-  const allowed = ['name', 'description', 'lead_goal', 'sectors', 'skills', 'deck_url', 'deck_name', 'deck_summary', 'icp_profile', 'active'];
+  const allowed = ['name', 'description', 'lead_goal', 'sectors', 'skills', 'deck_url', 'deck_name', 'deck_summary', 'icp_profile', 'active',
+    'sender_name', 'sender_role', 'sender_email', 'pitch', 'tone', 'signature', 'default_cta'];
   const row: Record<string, any> = {};
   for (const k of allowed) if (patch[k] !== undefined) row[k] = patch[k];
   if (!Object.keys(row).length) return getVenture(brandId);

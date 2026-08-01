@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase, assertBrandOwned, getVentures } from '@/lib/db';
 import { requireSession, errorResponse } from '@/lib/http';
@@ -7,7 +8,7 @@ export const dynamic = 'force-dynamic';
 // Aggregate dashboard stats for one venture, or for ALL ventures the account
 // owns when brandId is omitted / "all". Everything is account-scoped so one
 // tenant can never read another's numbers.
-export async function GET(request: NextRequest) {
+async function GET__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   const accountId = session.accountId;
@@ -74,7 +75,7 @@ export async function GET(request: NextRequest) {
 }
 
 // Kept for callers that need the venture list alongside stats (not required).
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -83,3 +84,7 @@ export async function POST(request: NextRequest) {
     return errorResponse(error);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/overview", method: "GET" });
+export const POST = withApi(POST__impl as any, { route: "/api/overview", method: "POST" });

@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession } from '@/lib/http';
 import { geminiConfigured, geminiModels } from '@/lib/ai/gemini';
@@ -5,7 +6,7 @@ import { opencodeConfigured, opencodeModel } from '@/lib/ai/opencode';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(request: NextRequest) {
+async function GET__impl(request: NextRequest) {
   const { error } = await requireSession(request);
   if (error) return error;
   return NextResponse.json({
@@ -24,3 +25,6 @@ export async function GET(request: NextRequest) {
     video: { enabled: false, note: 'static images only for now' },
   });
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/generate/status", method: "GET" });

@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { processDueJobs } from '@/lib/hermes/agent';
 import { processDueEnrollments } from '@/lib/sequences';
@@ -12,7 +13,7 @@ export const dynamic = 'force-dynamic';
 
 // Cron entrypoint. Schedule via Vercel Cron or Supabase scheduled function
 // to POST here every few minutes. Protected by APP_API_SECRET.
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const unauthorized = requireAuth(request);
   if (unauthorized) return unauthorized;
   try {
@@ -31,6 +32,10 @@ export async function POST(request: NextRequest) {
     const { data: purged } = await supabase.rpc('purge_soft_deleted', { p_days: 30 });
     const purgedAccounts = await purgeDueAccounts(25).catch(() => [] as string[]);
     const maturedRewards = await maturateRewards().catch(() => 0);
+    // App-log retention: bound table growth by dropping rows older than 90 days.
+    await supabase.from('app_logs').delete().lt('created_at', new Date(Date.now() - 90 * 864e5).toISOString()).then(
+      () => {}, () => {},
+    );
     return NextResponse.json({
       ok: true, legacy, sequences, enrichment, webhooks,
       purged: purged ?? 0, purgedAccounts: purgedAccounts.length, maturedRewards,
@@ -39,3 +44,6 @@ export async function POST(request: NextRequest) {
     return errorResponse(error);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/hermes/tick", method: "POST" });

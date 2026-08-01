@@ -1,10 +1,11 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/db';
 import { toCsv, toXlsx } from '@/lib/io';
 import { errorResponse, badRequest } from '@/lib/http';
 export const dynamic = 'force-dynamic';
 const COLS = ['platform','post_body','scheduled_for','status','media_urls','created_at'];
-export async function GET(request: NextRequest) {
+async function GET__impl(request: NextRequest) {
   const brandId = request.nextUrl.searchParams.get('brandId');
   const format = (request.nextUrl.searchParams.get('format') || 'csv').toLowerCase();
   if (!brandId) return badRequest('brandId is required');
@@ -20,3 +21,6 @@ export async function GET(request: NextRequest) {
     return new NextResponse(toCsv(rows, COLS), { headers: { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="${stamp}.csv"` } });
   } catch (error) { return errorResponse(error); }
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/content/export", method: "GET" });

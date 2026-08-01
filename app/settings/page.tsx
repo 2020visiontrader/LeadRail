@@ -5,6 +5,7 @@ import LoadingSpinner from '@/components/LoadingSpinner';
 import Button from '@/components/Button';
 import Input from '@/components/Input';
 import { apiGet, apiSend } from '@/lib/api';
+import SenderProfiles from '@/components/SenderProfiles';
 
 interface Connection {
   provider: string;
@@ -295,6 +296,8 @@ export default function Settings() {
             Per-account connections: {connections.filter((c) => c.status === 'connected').map((c) => PLATFORMS[c.provider]?.label || c.provider).join(', ') || 'none'}<br />
             Recommended: use <strong>Postiz</strong> for all social platforms (one key, 8 platforms). Tokens validated live against each platform's API.
           </p>
+
+          <SenderProfiles />
 
           <DataPrivacySection />
         </>

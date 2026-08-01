@@ -1,11 +1,13 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyState, exchangeCodeForToken, getLongLivedToken, getUserPages, publicBase } from '@/lib/social/meta-oauth';
 import { upsertConnection, dbReady } from '@/lib/db';
+export const dynamic = "force-dynamic";
 
 // Meta redirects the user's browser here after they approve. This route is listed
 // in PUBLIC_API (middleware) because identity comes from the signed `state`, not
 // the session cookie — standard OAuth callback pattern.
-export async function GET(req: NextRequest) {
+async function GET__impl(req: NextRequest) {
   const origin = publicBase();
   const settings = (q: string) => NextResponse.redirect(`${origin}/settings?${q}`);
 
@@ -55,3 +57,6 @@ export async function GET(req: NextRequest) {
     return settings(`error=meta_exchange&detail=${encodeURIComponent(e?.message || 'unknown')}`);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/social/meta/callback", method: "GET" });

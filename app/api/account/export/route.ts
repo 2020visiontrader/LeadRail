@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { dbReady } from '@/lib/db';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
@@ -8,7 +9,7 @@ export const runtime = 'nodejs';
 
 // GET /api/account/export — download every row this account owns as one JSON
 // bundle (GDPR/CCPA "right to access"). Account-scoped; secrets are scrubbed.
-export async function GET(request: NextRequest) {
+async function GET__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   if (!dbReady()) return badRequest('database not configured');
@@ -24,3 +25,6 @@ export async function GET(request: NextRequest) {
     });
   } catch (e) { return errorResponse(e); }
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/account/export", method: "GET" });

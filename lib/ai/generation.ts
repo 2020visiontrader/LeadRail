@@ -9,7 +9,7 @@ import { buildPersona, improvePrompt } from './prompt-improver';
 import { marketingGuidance, whiteLabelGuard, COPY_FRAMEWORKS } from './marketing';
 import { HUMANIZE_RULES, stripAiMarkers } from './humanizer';
 import { pickModel } from './models';
-import { composeSkillGuidance } from '@/lib/skills/registry';
+import { composeSkillGuidance, selectSkillsForGoal } from '@/lib/skills/registry';
 import { getLeadGoal, sectorKeywords, type VentureIcp } from '@/lib/taxonomy';
 
 function parseJson<T>(raw: string, fallback: T): T {
@@ -112,20 +112,54 @@ export async function refineTemplate(opts: {
   return { subject: stripAiMarkers(d.subject || opts.current?.subject || ''), body: stripAiMarkers(d.body || raw) };
 }
 
-/** Generate a personalized outreach email. Does NOT send or persist. */
+/**
+ * Generate a personalized outreach email. Does NOT send or persist.
+ *
+ * The venture carries a per-brand SENDER PERSONA (who you are under this brand:
+ * name, role, pitch, tone, signature, default ask) plus optional pinned skills.
+ * The GOAL box steers everything: it selects which skills attach (via
+ * selectSkillsForGoal) so a "book a call" goal gets the intent router while a
+ * "revive a dead thread" goal gets the breakup skill — no hardcoded pair.
+ */
 export async function generateOutreach(opts: {
   contact: { name?: string; title?: string; company?: string; segment?: string };
-  venture: { name: string; pitch?: string };
+  venture: {
+    name: string;
+    pitch?: string;
+    senderName?: string;
+    senderRole?: string;
+    signature?: string;
+    defaultCta?: string;
+    skills?: string[] | null;
+  };
   goal: string;
   tone?: string;
   framework?: keyof typeof COPY_FRAMEWORKS;
 }): Promise<OutreachDraft> {
+  const v = opts.venture;
+  // Goal-driven skill selection: the AI-goal box decides the skill set. Pinned
+  // venture skills win; otherwise the goal text routes them.
+  const skillIds = selectSkillsForGoal(opts.goal, v.skills);
+  const skillGuidance = composeSkillGuidance(skillIds);
+
+  // Map the plain-language sender profile into the internal persona role. The
+  // user never fills a raw "role" scaffolding box — we compose it from their
+  // name + role at the venture, falling back to a sane default.
+  const senderId = [v.senderName, v.senderRole && `(${v.senderRole})`].filter(Boolean).join(' ');
+  const role = senderId
+    ? `${senderId} at ${v.name}, writing B2B outreach in the first person`
+    : `a senior B2B outreach copywriter for ${v.name}`;
+
   const system =
     buildPersona({
-      role: `a senior B2B outreach copywriter for ${opts.venture.name}`,
+      role,
       domain: 'cold email to high-intent business contacts',
-      methods: `${marketingGuidance({ framework: opts.framework })}`,
-      constraints: `${opts.tone || 'direct, warm, professional'} tone; under 120 words; one CTA; no fake familiarity; no spammy phrasing`,
+      methods: `${skillGuidance}\n${marketingGuidance({ framework: opts.framework })}`,
+      constraints:
+        `${opts.tone || 'direct, warm, professional'} tone; under 120 words; one CTA; no fake familiarity; no spammy phrasing. ` +
+        'CRITICAL GROUNDING: never state a statistic, percentage, or metric that is not given in the inputs, and never imply you have already analyzed the recipient\'s own accounts, roster, or data. ' +
+        'If the product is early or unlaunched, frame insights as an industry pattern ("teams like yours usually see..."), not as results you already pulled for them. ' +
+        'Body: 2-3 short paragraphs separated by a blank line, with the sign-off on its own line after a blank line.',
       format: 'JSON: {"subject": string, "body": string}',
     });
   const prompt = improvePrompt({
@@ -133,11 +167,22 @@ export async function generateOutreach(opts: {
     inputs: {
       recipient: [opts.contact.name, opts.contact.title, opts.contact.company].filter(Boolean).join(', '),
       segment: opts.contact.segment,
-      venture: opts.venture.name,
-      value_prop: opts.venture.pitch,
+      venture: v.name,
+      value_prop: v.pitch,
+      sender: senderId || undefined,
+      default_ask: v.defaultCta,
+      signature: v.signature,
     },
     deliverable: 'One outreach email as JSON {subject, body}. No preamble.',
-    rules: ['Reference the recipient specifically', 'Lead with a useful insight', 'Exactly one clear ask', ...HUMANIZE_RULES],
+    rules: [
+      'Reference the recipient specifically using only the provided contact fields',
+      'Lead with a useful insight framed as an industry pattern, not as data you already have on them',
+      'Do NOT invent statistics, percentages, or claims of having analyzed their accounts',
+      'Separate the body into short paragraphs with blank lines; put the sign-off on its own line',
+      v.defaultCta ? `The single ask should serve the goal; if the goal implies no specific ask, default to: ${v.defaultCta}` : 'Exactly one clear ask',
+      v.signature ? `Sign off using this signature block exactly, on its own lines after a blank line:\n${v.signature}` : (senderId ? `Sign off as ${v.senderName || senderId}` : 'End with a simple sign-off'),
+      ...HUMANIZE_RULES,
+    ],
   });
   const raw = await generateText({ system, prompt, temperature: 0.7 });
   const draft = parseJson<OutreachDraft>(raw, { subject: '', body: raw });

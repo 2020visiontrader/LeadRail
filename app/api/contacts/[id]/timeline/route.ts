@@ -1,10 +1,11 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { getContactTimeline } from '@/lib/timeline';
 import { requireSession, errorResponse } from '@/lib/http';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
+async function GET__impl(request: NextRequest, { params }: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -14,3 +15,6 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
     return errorResponse(e);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/contacts/[id]/timeline", method: "GET" });

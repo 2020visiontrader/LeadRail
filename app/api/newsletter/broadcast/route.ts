@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase, dbReady, assertBrandOwned } from '@/lib/db';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
@@ -47,7 +48,7 @@ async function resolveRecipients(body: any, accountId: string): Promise<Recipien
   return filterSuppressed(accountId, eligible);
 }
 
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
 
@@ -127,3 +128,6 @@ export async function POST(request: NextRequest) {
     return errorResponse(error);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/newsletter/broadcast", method: "POST" });

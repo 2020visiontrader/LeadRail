@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { candidateToContact } from '@/lib/integrations/apollo';
 import { insertContacts, findContactByEmail, assertBrandOwned, dbReady } from '@/lib/db';
@@ -12,7 +13,7 @@ export const dynamic = 'force-dynamic';
 
 // POST /api/leads/apollo/import
 // body: { brandId, candidates: ApolloCandidate[] } — accountId comes from the session.
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   if (!dbReady()) return badRequest('database not connected');
@@ -70,3 +71,6 @@ export async function POST(request: NextRequest) {
     return errorResponse(error);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/leads/apollo/import", method: "POST" });

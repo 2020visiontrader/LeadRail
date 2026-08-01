@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase, getContact } from '@/lib/db';
 import { requireSession, errorResponse } from '@/lib/http';
@@ -6,7 +7,7 @@ export const dynamic = 'force-dynamic';
 
 // List email campaigns (optionally by contactId), scoped to the caller's account
 // via the owning contact (email_campaigns has no account_id of its own).
-export async function GET(request: NextRequest) {
+async function GET__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   const contactId = request.nextUrl.searchParams.get('contactId');
@@ -27,7 +28,7 @@ export async function GET(request: NextRequest) {
   }
 }
 
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -48,3 +49,7 @@ export async function POST(request: NextRequest) {
     return errorResponse(error);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/outreach", method: "GET" });
+export const POST = withApi(POST__impl as any, { route: "/api/outreach", method: "POST" });

@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { dbReady } from '@/lib/db';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
@@ -7,7 +8,7 @@ export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
 
 // GET — the caller's ambassador code (or null).
-export async function GET(request: NextRequest) {
+async function GET__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   const code = await getMyCode(session.accountId);
@@ -15,7 +16,7 @@ export async function GET(request: NextRequest) {
 }
 
 // POST { desired?: string } — create (or return) the caller's ambassador code.
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   if (!dbReady()) return badRequest('database not configured');
@@ -27,3 +28,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ code });
   } catch (e) { return errorResponse(e); }
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/referrals/code", method: "GET" });
+export const POST = withApi(POST__impl as any, { route: "/api/referrals/code", method: "POST" });

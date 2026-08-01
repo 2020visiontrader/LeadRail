@@ -3,78 +3,79 @@
 @tailwind utilities;
 
 /* =========================================================================
-   Brand: warm beige + white + near-black ink (primary). Blue + red tints are
-   SECONDARY accents only. Matte/flat, soft rounded, geometric headings (Poppins).
-   Light is the primary brand; .dark is the dark variant. Everything flows through
-   CSS vars so the same Tailwind classes flip between modes.
+   Excalix — design system: professional blue (PRIMARY) + deal-green (positive)
+   on cool slate neutrals. Red is a sparing destructive tint only. Clean,
+   high-contrast, generous whitespace (UI-UX-Pro-Max). Light is the primary
+   brand; .dark is the dark variant. Everything flows through CSS vars so the
+   same Tailwind classes flip between modes. Type: Plus Jakarta Sans.
    Status = 3 signals: active(blue) / positive(green) / negative(red) + neutral.
    ========================================================================= */
 :root {
-  --bg-canvas: #F4EFE6;          /* warm beige — the page */
+  --bg-canvas: #F8FAFC;          /* cool slate-50 — the page */
   --bg-surface: #FFFFFF;         /* cards, chrome */
-  --bg-raised: #EFE9DD;          /* nested tiles, hover rows */
+  --bg-raised: #F1F5F9;          /* nested tiles, hover rows */
 
-  --text-primary: #14110E;       /* near-black ink */
-  --text-secondary: #5B554C;
-  --text-muted: #9A9284;
+  --text-primary: #0F172A;       /* slate-900 ink */
+  --text-secondary: #475569;     /* slate-600 */
+  --text-muted: #94A3B8;         /* slate-400 */
 
-  --border-default: #E7E1D6;
-  --border-strong: #D8D1C4;
+  --border-default: #E2E8F0;     /* slate-200 */
+  --border-strong: #CBD5E1;      /* slate-300 */
 
-  --ink: #14110E;                /* PRIMARY action = black */
-  --ink-hover: #2A2620;
-  --ink-fg: #FFFFFF;             /* text on ink */
+  --ink: #2563EB;                /* PRIMARY action = blue */
+  --ink-hover: #1D4ED8;
+  --ink-fg: #FFFFFF;             /* text on primary */
 
-  --brand: #2563EB;              /* SECONDARY = blue */
+  --brand: #2563EB;              /* brand blue */
   --brand-hover: #1D4ED8;
   --brand-soft: rgba(37, 99, 235, 0.10);
 
-  --accent: #DC2626;             /* red tint — sparing */
+  --accent: #DC2626;             /* red tint — destructive only, sparing */
   --accent-soft: rgba(220, 38, 38, 0.10);
 
   --status-active: #2563EB;      /* new, outreaching */
-  --status-positive: #16A34A;    /* replied/responded, qualified */
+  --status-positive: #059669;    /* deal-green — replied, qualified, won */
   --status-negative: #DC2626;    /* not responded, unsubscribed, dead */
-  --status-neutral: #9A9284;
+  --status-neutral: #94A3B8;
 
-  --scrim: rgba(20, 17, 14, 0.35);
-  --shadow-card: 0 1px 2px rgba(20, 17, 14, 0.05), 0 4px 16px rgba(20, 17, 14, 0.04);
-  --shadow-pop: 0 12px 32px rgba(20, 17, 14, 0.14);
+  --scrim: rgba(15, 23, 42, 0.35);
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.05), 0 4px 16px rgba(15, 23, 42, 0.04);
+  --shadow-pop: 0 12px 32px rgba(15, 23, 42, 0.14);
   --focus-ring: 0 0 0 3px rgba(37, 99, 235, 0.18);
 
   --radius-sm: 6px; --radius-md: 10px; --radius-lg: 14px; --radius-full: 9999px;
 
-  --font-display: 'Poppins', system-ui, sans-serif;
-  --font-sans: 'Inter', system-ui, sans-serif;
+  --font-display: 'Plus Jakarta Sans', system-ui, sans-serif;
+  --font-sans: 'Plus Jakarta Sans', system-ui, sans-serif;
 }
 
 .dark {
-  --bg-canvas: #14120F;          /* warm near-black */
-  --bg-surface: #1D1A16;
-  --bg-raised: #26221C;
+  --bg-canvas: #020617;          /* slate-950 */
+  --bg-surface: #0F172A;         /* slate-900 */
+  --bg-raised: #1E293B;          /* slate-800 */
 
-  --text-primary: #F4EFE6;       /* beige white */
-  --text-secondary: #B4AC9E;
-  --text-muted: #7C7466;
+  --text-primary: #F1F5F9;       /* slate-100 */
+  --text-secondary: #94A3B8;     /* slate-400 */
+  --text-muted: #64748B;         /* slate-500 */
 
   --border-default: rgba(255, 255, 255, 0.09);
   --border-strong: rgba(255, 255, 255, 0.14);
 
-  --ink: #F4EFE6;                /* primary action inverts to light in dark mode */
-  --ink-hover: #E7E1D6;
-  --ink-fg: #14120F;
+  --ink: #3B82F6;                /* PRIMARY stays blue in dark */
+  --ink-hover: #2563EB;
+  --ink-fg: #FFFFFF;
 
-  --brand: #4B8BFF;
-  --brand-hover: #6BA1FF;
-  --brand-soft: rgba(75, 139, 255, 0.16);
+  --brand: #3B82F6;
+  --brand-hover: #60A5FA;
+  --brand-soft: rgba(59, 130, 246, 0.18);
 
   --accent: #F0574B;
   --accent-soft: rgba(240, 87, 75, 0.16);
 
-  --status-active: #4B8BFF;
-  --status-positive: #22C55E;
+  --status-active: #3B82F6;
+  --status-positive: #10B981;
   --status-negative: #F0574B;
-  --status-neutral: #7C7466;
+  --status-neutral: #64748B;
 
   --scrim: rgba(0, 0, 0, 0.60);
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);

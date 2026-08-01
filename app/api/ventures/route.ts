@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { getVentures, createVenture, dbReady } from '@/lib/db';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
@@ -5,7 +6,7 @@ import { requireSession, errorResponse, badRequest } from '@/lib/http';
 export const dynamic = 'force-dynamic';
 
 // GET /api/ventures — ventures (brands) for the caller's account only.
-export async function GET(request: NextRequest) {
+async function GET__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   if (!dbReady()) return NextResponse.json({ ventures: [], db_ready: false });
@@ -18,7 +19,7 @@ export async function GET(request: NextRequest) {
 }
 
 // POST /api/ventures — create a new venture (brand) for the caller's account.
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   if (!dbReady()) return badRequest('database not configured');
@@ -37,3 +38,7 @@ export async function POST(request: NextRequest) {
     return errorResponse(error);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/ventures", method: "GET" });
+export const POST = withApi(POST__impl as any, { route: "/api/ventures", method: "POST" });

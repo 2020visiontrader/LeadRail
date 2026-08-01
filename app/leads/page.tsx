@@ -312,7 +312,8 @@ export default function LeadsPage() {
               </div>
               <Button variant="secondary" loading={parsing} onClick={buildFromText}>Build search</Button>
             </div>
-            {nlSummary && <p className="text-xs text-indigo-700">→ {nlSummary}</p>}
+            {parsing && <p className="text-xs text-indigo-700">Analyzing your audience and filling the filters… this can take 15–20s.</p>}
+            {!parsing && nlSummary && <p className="text-xs text-indigo-700">→ {nlSummary}</p>}
             <p className="text-[11px] text-slate-500">The AI fills the filters below — review, tweak, then Search Apollo.</p>
           </div>
 

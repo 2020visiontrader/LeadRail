@@ -1,10 +1,11 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase, assertBrandOwned } from '@/lib/db';
 import { parseUpload, fromCsv } from '@/lib/io';
 import { writeAudit } from '@/lib/crm';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 export const dynamic = 'force-dynamic';
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   const accountId = session.accountId;
@@ -38,3 +39,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ inserted, skipped, total: rows.length });
   } catch (error) { return errorResponse(error); }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/content/import", method: "POST" });

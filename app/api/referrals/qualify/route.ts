@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireAuth, errorResponse, badRequest } from '@/lib/http';
 import { qualifyReferral } from '@/lib/referrals';
@@ -8,7 +9,7 @@ export const runtime = 'nodejs';
 // POST { referredAccountId } — the QUALIFYING-EVENT hook. Call this from the
 // billing/first-paid-conversion path (bearer-protected, machine-to-machine) to
 // unlock the double-sided reward ledger with its hold window.
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const unauthorized = requireAuth(request);
   if (unauthorized) return unauthorized;
   let referredAccountId: string | undefined;
@@ -18,3 +19,6 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(await qualifyReferral(referredAccountId));
   } catch (e) { return errorResponse(e); }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/referrals/qualify", method: "POST" });

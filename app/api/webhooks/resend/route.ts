@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { handleResendWebhook } from '@/lib/integrations/resend';
@@ -24,7 +25,7 @@ function verifySvix(secret: string, id: string, ts: string, body: string, sigHea
   return false;
 }
 
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const secret = process.env.RESEND_WEBHOOK_SECRET;
   const urlToken = request.nextUrl.searchParams.get('token');
   const body = await request.text();
@@ -51,3 +52,6 @@ export async function POST(request: NextRequest) {
     return errorResponse(error);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/webhooks/resend", method: "POST" });

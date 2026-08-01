@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 import { refineTemplate } from '@/lib/ai/generation';
@@ -6,7 +7,7 @@ import { opencodeConfigured } from '@/lib/ai/opencode';
 export const dynamic = 'force-dynamic';
 
 // AI-refine (or draft) a message template from a plain-language instruction.
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { error } = await requireSession(request);
   if (error) return error;
   if (!opencodeConfigured()) return NextResponse.json({ error: 'not_configured', provider: 'opencode' }, { status: 409 });
@@ -26,3 +27,6 @@ export async function POST(request: NextRequest) {
     return errorResponse(e);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/templates/refine", method: "POST" });

@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { getActivities, createActivity } from '@/lib/crm';
 import { assertBrandOwned } from '@/lib/db';
@@ -8,7 +9,7 @@ export const dynamic = 'force-dynamic';
 const FIELDS = ['brand_id','type','subject','body','status','due_at','contact_id','company_id','deal_id','owner_email'];
 const pick = (b: any) => Object.fromEntries(Object.entries(b).filter(([k]) => FIELDS.includes(k)));
 
-export async function GET(request: NextRequest) {
+async function GET__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   const p = request.nextUrl.searchParams;
@@ -21,7 +22,7 @@ export async function GET(request: NextRequest) {
   } catch (error) { return errorResponse(error); }
 }
 
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -32,3 +33,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(await createActivity(body), { status: 201 });
   } catch (error) { return errorResponse(error); }
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/activities", method: "GET" });
+export const POST = withApi(POST__impl as any, { route: "/api/activities", method: "POST" });

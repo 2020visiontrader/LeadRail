@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifySession, SESSION_COOKIE, type Session } from '@/lib/session';
+import { log, requestStore, enrichContext, currentContext, type RequestContext } from '@/lib/logger';
 
 /**
  * Session guard for user-facing API routes.
@@ -13,6 +14,8 @@ export async function requireSession(
   const token = request.cookies.get(SESSION_COOKIE)?.value;
   const session = await verifySession(token);
   if (!session) return { error: NextResponse.json({ error: 'Unauthorized' }, { status: 401 }) };
+  // Attribute all subsequent logs on this request to the authenticated caller.
+  enrichContext({ actorEmail: session.email, accountId: session.accountId });
   return { session };
 }
 
@@ -37,12 +40,54 @@ export function requireAuth(request: NextRequest): NextResponse | null {
   return null;
 }
 
-/** Sanitized error response: log the real error, return a generic message + code. */
+/**
+ * Sanitized error response: persist the real error (with stack + request
+ * context) to app_logs, return a generic message + a request_id the caller can
+ * quote so a user-reported failure maps to an exact log row.
+ */
 export function errorResponse(error: unknown, status = 500, publicMessage = 'Internal error') {
-  console.error('[api-error]', error instanceof Error ? error.message : error);
-  return NextResponse.json({ error: publicMessage }, { status });
+  const ctx = currentContext();
+  log.error(publicMessage, error, { httpStatus: status });
+  return NextResponse.json(
+    { error: publicMessage, ...(ctx?.requestId ? { request_id: ctx.requestId } : {}) },
+    { status },
+  );
 }
 
 export function badRequest(message: string) {
   return NextResponse.json({ error: message }, { status: 400 });
+}
+
+/**
+ * Wrap a Next.js route handler so EVERY invocation is logged: a request_id +
+ * route/method/actor context is established for the whole handler, the
+ * completion line (status + latency) is recorded, and any uncaught throw is
+ * captured and converted to a sanitized 500. Applied to all route exports.
+ */
+type RouteHandler = (request: NextRequest, ctx?: any) => Promise<Response> | Response;
+
+export function withApi(handler: RouteHandler, meta: { route: string; method: string }): RouteHandler {
+  return async (request: NextRequest, routeCtx?: any) => {
+    const store: RequestContext = {
+      requestId:
+        (globalThis.crypto?.randomUUID?.() as string) ||
+        `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      route: meta.route,
+      method: meta.method,
+    };
+    const start = Date.now();
+    return requestStore.run(store, async () => {
+      try {
+        const res = await handler(request, routeCtx);
+        store.status = res.status;
+        store.durationMs = Date.now() - start;
+        log.request({ message: `${meta.method} ${meta.route} → ${res.status}` });
+        return res;
+      } catch (err) {
+        // A handler without its own try/catch would otherwise 500 silently.
+        store.durationMs = Date.now() - start;
+        return errorResponse(err);
+      }
+    });
+  };
 }

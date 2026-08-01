@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { getVenture, updateVenture, assertBrandOwned, dbReady } from '@/lib/db';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
@@ -14,7 +15,7 @@ const MAX_BYTES = 25 * 1024 * 1024; // 25MB — decks can be image-heavy
 // Uploads the deck to durable storage, extracts its text, has the venture
 // profiler (OpenCode Go) distil a summary + ICP, and stores everything on the
 // brand. Returns the deck URL + the derived profile so the wizard can show it.
-export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
+async function POST__impl(request: NextRequest, { params }: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   if (!dbReady()) return badRequest('database not configured');
@@ -86,7 +87,7 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
 
 // GET /api/ventures/:id/deck — 302 to a fresh signed URL for the stored deck.
 // The bucket is private, so this is the only way to download it; account-scoped.
-export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
+async function GET__impl(request: NextRequest, { params }: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   if (!(await assertBrandOwned(params.id, session.accountId))) return badRequest('unknown venture');
@@ -97,3 +98,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   if (!signed) return errorResponse('sign failed', 502, 'could not sign deck url');
   return NextResponse.redirect(signed);
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/ventures/[id]/deck", method: "GET" });
+export const POST = withApi(POST__impl as any, { route: "/api/ventures/[id]/deck", method: "POST" });

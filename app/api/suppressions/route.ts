@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase, dbReady } from '@/lib/db';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
@@ -6,7 +7,7 @@ import { addSuppression } from '@/lib/suppressions';
 export const dynamic = 'force-dynamic';
 
 // Admin-facing suppression list management. Always scoped to the caller's account.
-export async function GET(request: NextRequest) {
+async function GET__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -24,7 +25,7 @@ export async function GET(request: NextRequest) {
   }
 }
 
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -39,7 +40,7 @@ export async function POST(request: NextRequest) {
   }
 }
 
-export async function DELETE(request: NextRequest) {
+async function DELETE__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -55,3 +56,8 @@ export async function DELETE(request: NextRequest) {
     return errorResponse(e);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/suppressions", method: "GET" });
+export const POST = withApi(POST__impl as any, { route: "/api/suppressions", method: "POST" });
+export const DELETE = withApi(DELETE__impl as any, { route: "/api/suppressions", method: "DELETE" });

@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase, dbReady, assertBrandOwned } from '@/lib/db';
 import { enqueuePersonEnrichment } from '@/lib/enrichment-jobs';
@@ -12,7 +13,7 @@ export const dynamic = 'force-dynamic';
 // contactIds, or a brandId to enqueue every not-yet-enriched contact in it.
 // Jobs are drained by the hermes tick; the unique live-job index dedupes so a
 // contact is never enriched twice concurrently (no double-spend).
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   if (!dbReady()) return badRequest('database not connected');
@@ -58,3 +59,6 @@ export async function POST(request: NextRequest) {
   }
   return NextResponse.json({ queued, skipped, requested: ids.length }, { status: 202 });
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/leads/enrich/bulk", method: "POST" });

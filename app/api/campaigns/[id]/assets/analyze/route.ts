@@ -1,10 +1,11 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { getCampaignAssets, updateCampaignAsset } from '@/lib/crm';
 import { generateText, opencodeConfigured } from '@/lib/ai/opencode';
 import { requireSession, errorResponse } from '@/lib/http';
 export const dynamic = 'force-dynamic';
 // Admin-only, on-demand. Analyzes each raw static image asset for ad-quality issues.
-export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
+async function POST__impl(request: NextRequest, { params }: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   if (!opencodeConfigured()) return NextResponse.json({ error: 'not_configured', message: 'Connect OpenCode to analyze assets' }, { status: 409 });
@@ -22,3 +23,6 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     return NextResponse.json({ analyzed: results.length, results });
   } catch (error) { return errorResponse(error); }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/campaigns/[id]/assets/analyze", method: "POST" });

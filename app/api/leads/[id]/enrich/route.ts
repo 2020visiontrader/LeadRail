@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { getContact, updateContact, dbReady } from '@/lib/db';
 import { matchPerson, apolloConfigured } from '@/lib/integrations/apollo';
@@ -7,7 +8,7 @@ import { requireSession, errorResponse, badRequest } from '@/lib/http';
 export const dynamic = 'force-dynamic';
 
 // POST /api/leads/:id/enrich
-export async function POST(request: NextRequest, ctx: { params: { id: string } }) {
+async function POST__impl(request: NextRequest, ctx: { params: { id: string } }) {
   const { session, error: authErr } = await requireSession(request);
   if (authErr) return authErr;
   if (!dbReady()) return badRequest('database not connected');
@@ -71,3 +72,6 @@ export async function POST(request: NextRequest, ctx: { params: { id: string } }
     return errorResponse(error, 502, 'Apollo enrichment failed');
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/leads/[id]/enrich", method: "POST" });

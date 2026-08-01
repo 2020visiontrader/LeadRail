@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase, assertBrandOwned } from '@/lib/db';
 import { requireSession, errorResponse } from '@/lib/http';
@@ -11,7 +12,7 @@ async function ownedCampaign(id: string, accountId: string) {
   return data;
 }
 
-export async function GET(request: NextRequest, { params }: { params: { id: string } }) {
+async function GET__impl(request: NextRequest, { params }: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -24,7 +25,7 @@ export async function GET(request: NextRequest, { params }: { params: { id: stri
   }
 }
 
-export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
+async function PATCH__impl(request: NextRequest, { params }: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -41,7 +42,7 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
   }
 }
 
-export async function DELETE(request: NextRequest, { params }: { params: { id: string } }) {
+async function DELETE__impl(request: NextRequest, { params }: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -53,3 +54,8 @@ export async function DELETE(request: NextRequest, { params }: { params: { id: s
     return errorResponse(error);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/campaigns/[id]", method: "GET" });
+export const PATCH = withApi(PATCH__impl as any, { route: "/api/campaigns/[id]", method: "PATCH" });
+export const DELETE = withApi(DELETE__impl as any, { route: "/api/campaigns/[id]", method: "DELETE" });

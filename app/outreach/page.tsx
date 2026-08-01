@@ -66,7 +66,7 @@ export default function OutreachPage() {
     try {
       const contact = contacts.find((c) => c.id === form.contactId);
       const r = await apiSend<{ draft: { subject: string; body: string } }>('/api/generate/outreach', 'POST', {
-        venture: { name: venture?.name || '' }, goal: goal.trim(),
+        ventureId: venture?.id, venture: { name: venture?.name || '' }, goal: goal.trim(),
         contact: contact ? { name: contact.name, title: contact.title, company: contact.company } : {},
       });
       setForm((f) => ({ ...f, subject: r.draft.subject || f.subject, html: r.draft.body || f.html }));

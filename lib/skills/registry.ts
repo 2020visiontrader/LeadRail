@@ -193,3 +193,68 @@ export function composeSkillGuidance(ids: string[] | undefined | null): string {
   if (!skills.length) return '';
   return skills.map((s) => `• ${s.name}: ${s.systemModule}`).join('\n');
 }
+
+/**
+ * Goal-driven skill selection for outreach generation.
+ *
+ * The compose "AI goal" box is the steering wheel: the plain-language goal tells
+ * us what kind of message this is, so we attach the right skills instead of the
+ * same two every time. Deterministic keyword routing (no extra LLM call) keeps
+ * it cheap and predictable.
+ *
+ * Precedence:
+ *   1. If the venture pinned explicit skills (skills !== ['auto']/empty), honor
+ *      them verbatim — the user chose.
+ *   2. Otherwise ('auto' or unset) infer from the goal text.
+ *
+ * Grounding + humanizing are ALWAYS on for anything sent to a real person.
+ */
+export function selectSkillsForGoal(goal: string, ventureSkills?: string[] | null): string[] {
+  const pinned = (ventureSkills || []).filter((s) => s && s !== 'auto');
+  const always = ['skill-grounded-facts', 'skill-humanizer'];
+  if (pinned.length) {
+    return Array.from(new Set([...pinned, ...always]));
+  }
+
+  const g = (goal || '').toLowerCase();
+  const has = (...tokens: string[]) => tokens.some((t) => g.includes(t));
+  const ids = new Set<string>(always);
+
+  // Channel: LinkedIn overrides the email defaults.
+  const isLinkedIn = has('linkedin', 'connection request', 'connect on', 'inmail');
+  if (isLinkedIn) {
+    ids.add(has('follow', 'dm', 'after connect', 'accepted') ? 'skill-linkedin-dm' : 'skill-linkedin-connect');
+  } else {
+    // Email is the default channel.
+    if (has('follow up', 'follow-up', 're-engage', 'reengage', 'revive', 'no reply', 'no response', 'gone quiet', 'breakup', 'last try', 'bump')) {
+      ids.add('skill-breakup-email');
+    } else {
+      ids.add('skill-cold-email');
+      // Pain-led asks lean on PAS; otherwise value-prop framing.
+      if (has('pain', 'problem', 'struggl', 'losing', 'waste', 'churn', 'drop-off', 'dropoff', 'bottleneck')) {
+        ids.add('skill-pas-copy');
+      } else {
+        ids.add('skill-value-prop');
+      }
+    }
+  }
+
+  // Intent shaping when the goal names a concrete outcome.
+  if (has('call', 'meeting', 'demo', 'intro', 'chat', 'book', 'calendar', 'time to talk', 'share', 'send', 'deck', 'one-pager', 'one pager', 'asset', 'resource', 'reply', 'question', 'thoughts')) {
+    ids.add('skill-intent-router');
+  }
+
+  return Array.from(ids);
+}
+
+/**
+ * Human-readable explanation of which skills a goal will activate, for the UI
+ * ("Auto will use: Cold Email Specialist, Value-Prop Distiller, …"). Reflects
+ * the same logic selectSkillsForGoal uses, so the preview never lies.
+ */
+export function explainSkillSelection(goal: string, ventureSkills?: string[] | null): { id: string; name: string }[] {
+  return selectSkillsForGoal(goal, ventureSkills)
+    .map((id) => skillById.get(id))
+    .filter(Boolean)
+    .map((s) => ({ id: (s as Skill).id, name: (s as Skill).name }));
+}

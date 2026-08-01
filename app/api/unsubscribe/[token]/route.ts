@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/db';
 import { verifyTrack } from '@/lib/tracking';
@@ -32,7 +33,7 @@ async function suppress(accountId: string, contactId: string | undefined, email:
 // GET is SAFE: it only renders a confirm page. Email clients and antivirus
 // scanners prefetch links, so GET must never mutate state (was auto-unsubscribing
 // people who never clicked). The actual unsubscribe happens on POST below.
-export async function GET(_req: NextRequest, { params }: { params: { token: string } }) {
+async function GET__impl(_req: NextRequest, { params }: { params: { token: string } }) {
   const resolved = await resolveEmail(params.token);
   if (!resolved) return shell('<h1 style="font-size:20px">This unsubscribe link is invalid or expired.</h1>', 400);
   return shell(
@@ -46,9 +47,13 @@ export async function GET(_req: NextRequest, { params }: { params: { token: stri
 
 // POST performs the unsubscribe. Supports RFC 8058 one-click (List-Unsubscribe-Post)
 // and the confirm-page form above.
-export async function POST(_req: NextRequest, { params }: { params: { token: string } }) {
+async function POST__impl(_req: NextRequest, { params }: { params: { token: string } }) {
   const resolved = await resolveEmail(params.token);
   if (!resolved) return shell('<h1 style="font-size:20px">This unsubscribe link is invalid or expired.</h1>', 400);
   await suppress(resolved.accountId, resolved.contactId, resolved.email);
   return shell('<h1 style="font-size:20px">You have been unsubscribed.</h1><p style="color:#555">You won’t receive further emails.</p>');
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/unsubscribe/[token]", method: "GET" });
+export const POST = withApi(POST__impl as any, { route: "/api/unsubscribe/[token]", method: "POST" });

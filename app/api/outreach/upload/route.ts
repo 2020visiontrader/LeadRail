@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/db';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
@@ -10,7 +11,7 @@ const MAX_BYTES = 15 * 1024 * 1024; // 15MB — keep decks reasonable for email
 // Upload a document/image (pitch deck, one-pager, hero image) to durable
 // Supabase Storage and return a public URL to attach to an outreach email.
 // Files live under <account_id>/ so tenants never collide.
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -49,3 +50,6 @@ export async function POST(request: NextRequest) {
     return errorResponse(e);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/outreach/upload", method: "POST" });

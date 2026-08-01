@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 import { sequenceChat } from '@/lib/ai/generation';
@@ -6,7 +7,7 @@ import { opencodeConfigured, type ChatMessage } from '@/lib/ai/opencode';
 export const dynamic = 'force-dynamic';
 
 // Multi-turn sequence builder. Body: { messages: [{role,content}], ventureName }.
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { error } = await requireSession(request);
   if (error) return error;
   if (!opencodeConfigured()) return NextResponse.json({ error: 'not_configured', provider: 'opencode' }, { status: 409 });
@@ -22,3 +23,6 @@ export async function POST(request: NextRequest) {
     return errorResponse(e);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/sequences/chat", method: "POST" });

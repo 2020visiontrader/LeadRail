@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase, getContact } from '@/lib/db';
 import { requireSession, errorResponse } from '@/lib/http';
@@ -6,7 +7,7 @@ export const dynamic = 'force-dynamic';
 
 // email_campaigns predates multitenancy (no account_id); scope through the
 // owning contact so a caller can only touch their own tenant's campaigns.
-export async function PATCH(request: NextRequest, { params }: { params: { id: string } }) {
+async function PATCH__impl(request: NextRequest, { params }: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
@@ -26,3 +27,6 @@ export async function PATCH(request: NextRequest, { params }: { params: { id: st
     return errorResponse(error, 404, 'Campaign not found');
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const PATCH = withApi(PATCH__impl as any, { route: "/api/outreach/[id]", method: "PATCH" });

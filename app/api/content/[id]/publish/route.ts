@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/db';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
@@ -6,7 +7,7 @@ import { publishToInstagramForAccount } from '@/lib/integrations/meta';
 
 export const dynamic = 'force-dynamic';
 
-export async function POST(request: NextRequest, { params }: { params: { id: string } }) {
+async function POST__impl(request: NextRequest, { params }: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
 
@@ -73,3 +74,6 @@ export async function POST(request: NextRequest, { params }: { params: { id: str
     return errorResponse(error);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/content/[id]/publish", method: "POST" });

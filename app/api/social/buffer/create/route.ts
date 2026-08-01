@@ -1,10 +1,11 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { createPost } from '@/lib/social/buffer';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 
 export const dynamic = 'force-dynamic';
 
-export async function POST(request: NextRequest) {
+async function POST__impl(request: NextRequest) {
   const { error } = await requireSession(request);
   if (error) return error;
   try {
@@ -17,3 +18,6 @@ export async function POST(request: NextRequest) {
     return errorResponse(error);
   }
 }
+
+// --- request logging (auto-wrapped) ---
+export const POST = withApi(POST__impl as any, { route: "/api/social/buffer/create", method: "POST" });

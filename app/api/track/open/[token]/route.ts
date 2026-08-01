@@ -1,3 +1,4 @@
+import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/db';
 import { verifyTrack } from '@/lib/tracking';
@@ -20,7 +21,7 @@ function pixelResponse() {
 
 // Public: called by the email client when the pixel loads. Records an open,
 // then always returns the pixel (never leaks whether the token was valid).
-export async function GET(req: NextRequest, { params }: { params: { token: string } }) {
+async function GET__impl(req: NextRequest, { params }: { params: { token: string } }) {
   try {
     const ctx = await verifyTrack(params.token);
     if (ctx) {
@@ -39,3 +40,6 @@ export async function GET(req: NextRequest, { params }: { params: { token: strin
   }
   return pixelResponse();
 }
+
+// --- request logging (auto-wrapped) ---
+export const GET = withApi(GET__impl as any, { route: "/api/track/open/[token]", method: "GET" });
