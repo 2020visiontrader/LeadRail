@@ -9,6 +9,8 @@ import Modal from '@/components/Modal';
 import Input from '@/components/Input';
 import Textarea from '@/components/Textarea';
 import Button from '@/components/Button';
+import CommandBar from '@/components/CommandBar';
+import ActivityFeed from '@/components/ActivityFeed';
 import { useToast } from '@/components/ToastProvider';
 import { apiGet, apiSend } from '@/lib/api';
 import { Contact } from '@/lib/types';
@@ -159,6 +161,9 @@ export default function Overview() {
         <FirstRunHero onStart={openWizard} />
       ) : (
         <>
+          <CommandBar ventureName={scopeName} />
+          <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+            <div className="min-w-0 space-y-6">
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
             <KPICard label="Total Contacts" value={stats?.contacts ?? 0} />
             <KPICard label="Active Deals" value={stats?.deals ?? 0} icon="💼" />
@@ -216,6 +221,11 @@ export default function Overview() {
             <Link href="/outreach" className="inline-flex items-center rounded-lg bg-[var(--bg-raised)] px-4 py-2 text-sm font-medium hover:brightness-95">✉️ Send outreach</Link>
             <Link href="/campaigns" className="inline-flex items-center rounded-lg bg-[var(--bg-raised)] px-4 py-2 text-sm font-medium hover:brightness-95">🎯 New campaign</Link>
           </div>
+            </div>{/* /left column */}
+            <div className="xl:sticky xl:top-6 xl:self-start xl:h-[calc(100vh-7rem)]">
+              <ActivityFeed />
+            </div>
+          </div>{/* /2-col command-center grid */}
         </>
       )}
 
