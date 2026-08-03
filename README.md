@@ -1,4 +1,4 @@
-# Marketing Agency OS
+# LeadRail
 
 Multi-tenant CRM + Email Outreach + Social Content + Campaign Management platform for marketing agencies.
 
