@@ -31,8 +31,8 @@ Multi-tenant CRM + Email Outreach + Social Content + Campaign Management platfor
 ### Installation
 
 ```bash
-git clone https://github.com/2020visiontrader/marketing-agency-os.git
-cd marketing-agency-os
+git clone https://github.com/2020visiontrader/LeadRail.git
+cd LeadRail
 npm install
 ```
 
