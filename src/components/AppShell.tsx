@@ -17,9 +17,11 @@ const NAV = [
   { href: '/deals', label: 'Pipeline' },
   { href: '/activities', label: 'Activities' },
   { href: '/referrals', label: 'Ambassador' },
-  { href: '/logs', label: 'Logs' },
   { href: '/settings', label: 'Settings' },
 ];
+
+// Platform-admin (owner) only — never shown to client accounts.
+const OWNER_NAV = [{ href: '/logs', label: 'Logs' }];
 
 function AccountFooter() {
   const [email, setEmail] = useState<string>('');
@@ -30,7 +32,7 @@ function AccountFooter() {
   };
   return (
     <div className="px-3">
-      <div className="truncate px-3 pb-1 text-[11px] text-[var(--text-muted)]">{email || 'Admin'} · BDB Productions</div>
+      <div className="truncate px-3 pb-1 text-[11px] text-[var(--text-muted)]">{email || 'Admin'} · LeadRail</div>
       <button onClick={logout} className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-[var(--text-secondary)] transition hover:bg-[var(--bg-raised)]">
         <span aria-hidden>⇥</span>Sign out
       </button>
@@ -65,15 +67,24 @@ function Wordmark() {
 
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const [isOwner, setIsOwner] = useState(false);
+  useEffect(() => {
+    fetch('/api/auth/me', { headers: { Accept: 'application/json' } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setIsOwner(d?.role === 'owner'))
+      .catch(() => {});
+  }, []);
   const isActive = (href: string) => (href === '/' ? pathname === '/' : pathname.startsWith(href));
   const bareRoutes = ['/login', '/privacy', '/terms', '/data-deletion'];
   if (bareRoutes.some((r) => pathname === r)) return <>{children}</>;
+  // Owner sees platform-admin items (Logs) appended; client accounts never do.
+  const nav = isOwner ? [...NAV, ...OWNER_NAV] : NAV;
   return (
     <div className="flex min-h-screen bg-[var(--bg-canvas)] text-[var(--text-primary)]">
       <aside className="hidden w-60 shrink-0 flex-col border-r border-[var(--border-default)] bg-[var(--bg-surface)] md:flex">
         <div className="px-4 py-5"><Wordmark /></div>
         <nav className="flex-1 space-y-0.5 px-3">
-          {NAV.map((n) => {
+          {nav.map((n) => {
             const active = isActive(n.href);
             return (
               <Link
@@ -97,7 +108,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center gap-4 overflow-x-auto border-b border-[var(--border-default)] bg-[var(--bg-surface)] px-4 py-3 md:hidden">
           <Wordmark />
-          {NAV.map((n) => (
+          {nav.map((n) => (
             <Link key={n.href} href={n.href} className={`whitespace-nowrap text-sm ${isActive(n.href) ? 'font-semibold text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
               {n.label}
             </Link>

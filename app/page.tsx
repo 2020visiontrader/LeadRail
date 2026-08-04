@@ -30,6 +30,7 @@ export default function Overview() {
   const [stats, setStats] = useState<any>(null);
   const [recent, setRecent] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isOwner, setIsOwner] = useState(false);
   // --- New-venture onboarding wizard ---
   const [addOpen, setAddOpen] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -54,6 +55,14 @@ export default function Overview() {
   // Load the skills catalog once so the wizard can offer real skills to enable.
   useEffect(() => {
     apiGet<{ skills: SkillMeta[] }>('/api/skills').then((d) => setSkillCatalog(d.skills || [])).catch(() => {});
+  }, []);
+
+  // Platform-admin gate: only the owner sees the ops ActivityFeed (request logs).
+  useEffect(() => {
+    fetch('/api/auth/me', { headers: { Accept: 'application/json' } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setIsOwner(d?.role === 'owner'))
+      .catch(() => {});
   }, []);
 
   const loadVentures = () =>
@@ -222,9 +231,11 @@ export default function Overview() {
             <Link href="/campaigns" className="inline-flex items-center rounded-lg bg-[var(--bg-raised)] px-4 py-2 text-sm font-medium hover:brightness-95">🎯 New campaign</Link>
           </div>
             </div>{/* /left column */}
-            <div className="xl:sticky xl:top-6 xl:self-start xl:h-[calc(100vh-7rem)]">
-              <ActivityFeed />
-            </div>
+            {isOwner && (
+              <div className="xl:sticky xl:top-6 xl:self-start xl:h-[calc(100vh-7rem)]">
+                <ActivityFeed />
+              </div>
+            )}
           </div>{/* /2-col command-center grid */}
         </>
       )}
