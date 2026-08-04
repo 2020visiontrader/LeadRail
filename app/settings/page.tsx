@@ -119,12 +119,98 @@ function DataPrivacySection() {
   );
 }
 
+// ---- Client-facing social connections ----
+// Users connect THEIR OWN accounts via OAuth into LeadRail's apps. No app IDs,
+// no env vars, no backend service names — that's the Postiz/Buffer model.
+interface SocialCard {
+  key: string;
+  label: string;
+  desc: string;
+  brand: string; // accent colour
+  oauth?: string; // present = live; absent = coming soon
+}
+const SOCIALS: SocialCard[] = [
+  { key: 'facebook', label: 'Facebook', desc: 'Connect your Facebook Page to publish and manage posts', brand: '#1877F2', oauth: '/api/social/meta/connect' },
+  { key: 'instagram', label: 'Instagram', desc: 'Connect your Instagram Business account (linked to your Page)', brand: '#E4405F', oauth: '/api/social/meta/connect' },
+  { key: 'threads', label: 'Threads', desc: 'Post and reply on Threads', brand: '#000000' },
+  { key: 'linkedin', label: 'LinkedIn', desc: 'Publish to your LinkedIn profile or company page', brand: '#0A66C2' },
+  { key: 'tiktok', label: 'TikTok', desc: 'Publish video content and read analytics', brand: '#000000' },
+  { key: 'x', label: 'X (Twitter)', desc: 'Post and engage on X', brand: '#000000' },
+];
+
+function ClientConnections({ connections }: { connections: Connection[] }) {
+  const meta = connections.find((c) => c.provider === 'meta' && c.status === 'connected');
+  const fbConnected = !!meta?.meta?.page_name;
+  const igConnected = !!meta?.meta?.ig_username;
+
+  function status(key: string): { on: boolean; detail?: string } {
+    if (key === 'facebook') return { on: fbConnected, detail: meta?.meta?.page_name };
+    if (key === 'instagram') return { on: igConnected, detail: meta?.meta?.ig_username ? `@${meta.meta.ig_username}` : undefined };
+    return { on: false };
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="grid gap-4 sm:grid-cols-2">
+        {SOCIALS.map((s) => {
+          const live = !!s.oauth;
+          const { on, detail } = status(s.key);
+          return (
+            <div key={s.key} className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex items-start justify-between">
+                <div className="flex items-center gap-3">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-lg text-sm font-bold text-white" style={{ backgroundColor: s.brand }}>
+                    {s.label.charAt(0)}
+                  </span>
+                  <div>
+                    <h3 className="font-semibold">{s.label}</h3>
+                    <p className="text-sm text-slate-500">{s.desc}</p>
+                    {on && detail && <p className="mt-1 text-xs text-slate-400">Connected — {detail}</p>}
+                  </div>
+                </div>
+                <Badge tone={on ? 'green' : live ? 'gray' : 'amber'}>{on ? 'connected' : live ? 'off' : 'soon'}</Badge>
+              </div>
+
+              {live ? (
+                <a href={s.oauth} className="w-full">
+                  <Button variant={on ? 'ghost' : 'secondary'} className="w-full text-xs">
+                    {on ? `Reconnect ${s.label}` : `Connect ${s.label}`}
+                  </Button>
+                </a>
+              ) : (
+                <Button variant="ghost" disabled className="w-full cursor-not-allowed text-xs opacity-60">
+                  Coming soon
+                </Button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-xs text-slate-400">
+        Connecting Facebook also links the Instagram Business account attached to your Page. Your login stays with the
+        platform — LeadRail only receives permission to manage the accounts you approve, and you can disconnect any time.
+      </p>
+    </div>
+  );
+}
+
 export default function Settings() {
   const [envStatus, setEnvStatus] = useState<Record<string, boolean>>({});
   const [connections, setConnections] = useState<Connection[]>([]);
   const [dbReady, setDbReady] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [isOwner, setIsOwner] = useState<boolean | null>(null);
   const accountId = '00000000-0000-0000-0000-0000000000b1';
+
+  // Role gate: only the platform owner sees the backend integration hub
+  // (Supabase, Apollo, AI providers, email, Postiz master key). Clients see
+  // per-account social connections only — never the platform's tech stack.
+  useEffect(() => {
+    fetch('/api/auth/me', { headers: { Accept: 'application/json' } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setIsOwner(d?.role === 'owner'))
+      .catch(() => setIsOwner(false));
+  }, []);
 
   const [showConnect, setShowConnect] = useState<string | null>(null);
   const [tokenValue, setTokenValue] = useState('');
@@ -202,27 +288,38 @@ export default function Settings() {
     }
   }
 
+  const ready = !loading && isOwner !== null;
+
   return (
     <div className="max-w-3xl space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Settings</h1>
-        <p className="text-sm text-slate-500">Integration hub — connect platforms per-account</p>
+        <h1 className="text-2xl font-bold">{isOwner ? 'Settings' : 'Connections'}</h1>
+        <p className="text-sm text-slate-500">
+          {isOwner ? 'Integration hub — platform backend + per-account connections' : 'Connect your social accounts'}
+        </p>
       </div>
 
-      {loading ? (
+      {!ready ? (
         <LoadingSpinner />
       ) : (
         <>
-          <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm">
-            Database: {dbReady ? <Badge tone="green">connected</Badge> : <Badge tone="amber">not configured</Badge>}
-          </div>
-
           {feedback && showConnect === null && (
             <div className={`rounded-lg border px-4 py-3 text-sm ${feedback.ok ? 'border-green-200 bg-green-50 text-green-700' : 'border-red-200 bg-red-50 text-red-700'}`}>
               {feedback.msg}
             </div>
           )}
 
+          {/* CLIENT VIEW — social connections only, no backend */}
+          {!isOwner && <ClientConnections connections={connections} />}
+
+          {/* OWNER VIEW — full backend integration hub */}
+          {isOwner && (
+          <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm">
+            Database: {dbReady ? <Badge tone="green">connected</Badge> : <Badge tone="amber">not configured</Badge>}
+          </div>
+          )}
+
+          {isOwner && (
           <div className="grid gap-4 sm:grid-cols-2">
             {Object.entries(PLATFORMS).map(([key, info]) => {
               const on = isConnected(key);
@@ -290,12 +387,15 @@ export default function Settings() {
               );
             })}
           </div>
+          )}
 
+          {isOwner && (
           <p className="text-xs text-slate-400">
             Env vars set: {Object.entries(envStatus).filter(([,v]) => v).map(([k]) => PLATFORMS[k]?.label || k).join(', ') || 'none'}<br />
             Per-account connections: {connections.filter((c) => c.status === 'connected').map((c) => PLATFORMS[c.provider]?.label || c.provider).join(', ') || 'none'}<br />
             Recommended: use <strong>Postiz</strong> for all social platforms (one key, 8 platforms). Tokens validated live against each platform's API.
           </p>
+          )}
 
           <SenderProfiles />
 
