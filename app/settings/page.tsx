@@ -6,10 +6,14 @@ import Button from '@/components/Button';
 import Input from '@/components/Input';
 import { apiGet, apiSend } from '@/lib/api';
 import SenderProfiles from '@/components/SenderProfiles';
+import { SOCIAL_PROVIDERS } from '@/lib/social/providers';
 
 interface Connection {
   provider: string;
   status: string;
+  external_id?: string;
+  display_name?: string | null;
+  username?: string | null;
   meta: Record<string, any>;
   updated_at: string;
 }
@@ -33,8 +37,6 @@ const PLATFORMS: Record<string, PlatformInfo> = {
   brevo: { label: 'Brevo', desc: 'Email delivery', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
   resend: { label: 'Resend', desc: 'Email + newsletters', requiresToken: true, tokenLabel: 'Resend API key', helpUrl: 'https://resend.com/api-keys', helpText: 'Create a Full access key at Resend → API Keys (send-only keys can send but cannot list/read emails). Paste it here.', validatorProvider: 'resend' },
   postiz: { label: 'Postiz', desc: 'Social publishing — 8 platforms unified', requiresToken: true, tokenLabel: 'Postiz API key', helpUrl: 'https://app.postiz.io/settings/api', helpText: 'Sign up at Postiz → Settings → API. One key covers Instagram, TikTok, LinkedIn, X, Facebook, Threads, Reddit, YouTube.', validatorProvider: 'postiz' },
-  meta: { label: 'Meta (Facebook + Instagram)', desc: 'Post to your Facebook Page + Instagram', requiresToken: false, tokenLabel: '', helpUrl: 'https://developers.facebook.com/apps/', helpText: 'Sign in with Facebook to connect your Page — no token to paste. Requires the LeadRail Meta app (META_APP_ID / META_APP_SECRET) to be set.', validatorProvider: 'meta', oauth: '/api/social/meta/connect' },
-  tiktok: { label: 'TikTok', desc: 'Content publishing & analytics', requiresToken: true, tokenLabel: 'TikTok access token', helpUrl: 'https://developers.tiktok.com/apps/', helpText: 'Create a TikTok Developer app → get access token with video.publish + user.info.basic scopes. Paste here.', validatorProvider: 'tiktok' },
   google_ads: { label: 'Google Ads', desc: 'Search & display campaigns', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
   nim: { label: 'NVIDIA NIM', desc: 'AI generation (alt)', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
 };
@@ -122,39 +124,30 @@ function DataPrivacySection() {
 // ---- Client-facing social connections ----
 // Users connect THEIR OWN accounts via OAuth into LeadRail's apps. No app IDs,
 // no env vars, no backend service names — that's the Postiz/Buffer model.
-interface SocialCard {
-  key: string;
-  label: string;
-  desc: string;
-  brand: string; // accent colour
-  oauth?: string; // present = live; absent = coming soon
-}
-const SOCIALS: SocialCard[] = [
-  { key: 'facebook', label: 'Facebook', desc: 'Connect your Facebook Page to publish and manage posts', brand: '#1877F2', oauth: '/api/social/meta/connect' },
-  { key: 'instagram', label: 'Instagram', desc: 'Connect your Instagram Business account (linked to your Page)', brand: '#E4405F', oauth: '/api/social/meta/connect' },
-  { key: 'threads', label: 'Threads', desc: 'Post and reply on Threads', brand: '#000000' },
-  { key: 'linkedin', label: 'LinkedIn', desc: 'Publish to your LinkedIn profile or company page', brand: '#0A66C2' },
-  { key: 'tiktok', label: 'TikTok', desc: 'Publish video content and read analytics', brand: '#000000' },
-  { key: 'x', label: 'X (Twitter)', desc: 'Post and engage on X', brand: '#000000' },
-];
+// Multi-account: each platform card lists every connected account + "Add another".
+function ClientConnections({ connections, onChange }: { connections: Connection[]; onChange: () => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
 
-function ClientConnections({ connections }: { connections: Connection[] }) {
-  const meta = connections.find((c) => c.provider === 'meta' && c.status === 'connected');
-  const fbConnected = !!meta?.meta?.page_name;
-  const igConnected = !!meta?.meta?.ig_username;
+  const accountsFor = (key: string) =>
+    connections.filter((c) => c.provider === key && c.status === 'connected');
 
-  function status(key: string): { on: boolean; detail?: string } {
-    if (key === 'facebook') return { on: fbConnected, detail: meta?.meta?.page_name };
-    if (key === 'instagram') return { on: igConnected, detail: meta?.meta?.ig_username ? `@${meta.meta.ig_username}` : undefined };
-    return { on: false };
+  async function disconnect(provider: string, externalId: string) {
+    setBusy(externalId);
+    try {
+      await apiSend('/api/social/disconnect', 'POST', { provider, externalId });
+      onChange();
+    } catch {
+      /* surfaced on next load */
+    } finally {
+      setBusy(null);
+    }
   }
 
   return (
     <div className="space-y-4">
       <div className="grid gap-4 sm:grid-cols-2">
-        {SOCIALS.map((s) => {
-          const live = !!s.oauth;
-          const { on, detail } = status(s.key);
+        {SOCIAL_PROVIDERS.map((s) => {
+          const accts = accountsFor(s.key);
           return (
             <div key={s.key} className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex items-start justify-between">
@@ -165,16 +158,34 @@ function ClientConnections({ connections }: { connections: Connection[] }) {
                   <div>
                     <h3 className="font-semibold">{s.label}</h3>
                     <p className="text-sm text-slate-500">{s.desc}</p>
-                    {on && detail && <p className="mt-1 text-xs text-slate-400">Connected — {detail}</p>}
                   </div>
                 </div>
-                <Badge tone={on ? 'green' : live ? 'gray' : 'amber'}>{on ? 'connected' : live ? 'off' : 'soon'}</Badge>
+                <Badge tone={accts.length ? 'green' : s.live ? 'gray' : 'amber'}>
+                  {accts.length ? `${accts.length} connected` : s.live ? 'off' : 'soon'}
+                </Badge>
               </div>
 
-              {live ? (
-                <a href={s.oauth} className="w-full">
-                  <Button variant={on ? 'ghost' : 'secondary'} className="w-full text-xs">
-                    {on ? `Reconnect ${s.label}` : `Connect ${s.label}`}
+              {accts.length > 0 && (
+                <ul className="space-y-1.5">
+                  {accts.map((c) => (
+                    <li key={c.external_id || c.provider} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
+                      <span className="truncate">{c.username ? `@${c.username}` : c.display_name || c.external_id}</span>
+                      <button
+                        onClick={() => disconnect(s.key, String(c.external_id))}
+                        disabled={busy === c.external_id}
+                        className="ml-2 shrink-0 text-xs text-slate-400 hover:text-red-600"
+                      >
+                        {busy === c.external_id ? '…' : 'Disconnect'}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+
+              {s.live ? (
+                <a href={s.connectPath} className="w-full">
+                  <Button variant={accts.length ? 'ghost' : 'secondary'} className="w-full text-xs">
+                    {accts.length ? `+ Add another ${s.label}` : `Connect ${s.label}`}
                   </Button>
                 </a>
               ) : (
@@ -187,8 +198,9 @@ function ClientConnections({ connections }: { connections: Connection[] }) {
         })}
       </div>
       <p className="text-xs text-slate-400">
-        Connecting Facebook also links the Instagram Business account attached to your Page. Your login stays with the
-        platform — LeadRail only receives permission to manage the accounts you approve, and you can disconnect any time.
+        Connect as many accounts as you manage — each appears here for posting. Your login stays with the platform;
+        LeadRail only receives permission to manage the accounts you approve, and you can disconnect any time. To add
+        a different account you may need to sign into that platform in this browser first.
       </p>
     </div>
   );
@@ -234,21 +246,32 @@ export default function Settings() {
   // Surface the Meta OAuth redirect result, then clean the URL.
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
-    if (q.get('connected') === 'meta') {
+    const connected = q.get('connected');
+    if (connected === 'facebook' || connected === 'meta') {
       const page = q.get('page') || 'your Page';
+      const pages = q.get('pages');
       const ig = q.get('ig');
-      setFeedback({ ok: true, msg: `Facebook connected — ${page}${ig ? ` (+ Instagram @${ig})` : ''}` });
-    } else if (q.get('error')?.startsWith('meta')) {
+      const extra = pages && Number(pages) > 1 ? ` (+${Number(pages) - 1} more Page${Number(pages) - 1 > 1 ? 's' : ''})` : '';
+      setFeedback({ ok: true, msg: `Facebook connected — ${page}${extra}${ig ? ` · ${ig} Instagram account${Number(ig) > 1 ? 's' : ''} linked` : ''}` });
+    } else if (connected === 'instagram') {
+      const ig = q.get('ig') || 'account';
+      setFeedback({ ok: true, msg: `Instagram connected — @${ig}` });
+    } else if (q.get('error')?.startsWith('meta') || q.get('error')?.startsWith('ig')) {
       const map: Record<string, string> = {
         meta_not_configured: 'Meta app not configured — set META_APP_ID and META_APP_SECRET first.',
         meta_denied: 'You declined the Facebook permission request.',
         meta_bad_state: 'Security check failed — please try connecting again.',
         meta_no_pages: 'No Facebook Page found on that account. Create/manage a Page, then reconnect.',
         meta_exchange: 'Could not complete the Facebook handshake.',
+        ig_not_configured: 'Instagram Login not configured yet — set INSTAGRAM_APP_ID / INSTAGRAM_APP_SECRET.',
+        ig_denied: 'You declined the Instagram permission request.',
+        ig_bad_state: 'Security check failed — please try connecting again.',
+        ig_no_account: 'No Instagram Business/Creator account found on that login.',
+        ig_exchange: 'Could not complete the Instagram handshake.',
       };
       const code = q.get('error')!;
       const detail = q.get('detail');
-      setFeedback({ ok: false, msg: `${map[code] || 'Facebook connect failed.'}${detail ? ` (${detail})` : ''}` });
+      setFeedback({ ok: false, msg: `${map[code] || 'Connection failed.'}${detail ? ` (${detail})` : ''}` });
     }
     if (q.has('connected') || q.has('error')) {
       window.history.replaceState({}, '', '/settings');
@@ -309,10 +332,17 @@ export default function Settings() {
             </div>
           )}
 
-          {/* CLIENT VIEW — social connections only, no backend */}
-          {!isOwner && <ClientConnections connections={connections} />}
+          {/* SOCIAL CONNECTIONS — shown to everyone (per-account OAuth, no backend) */}
+          <ClientConnections connections={connections} onChange={load} />
 
-          {/* OWNER VIEW — full backend integration hub */}
+          {/* OWNER-ONLY — backend integration hub */}
+          {isOwner && (
+            <div className="border-t border-slate-200 pt-6">
+              <h2 className="text-lg font-semibold">Platform backend</h2>
+              <p className="mb-4 text-sm text-slate-500">Admin only — never shown to client accounts.</p>
+            </div>
+          )}
+
           {isOwner && (
           <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm">
             Database: {dbReady ? <Badge tone="green">connected</Badge> : <Badge tone="amber">not configured</Badge>}

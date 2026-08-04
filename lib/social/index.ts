@@ -16,8 +16,10 @@ export async function getIntegrations(accountId?: string): Promise<IntegrationSt
     try {
       const { getConnections } = await import('@/lib/db');
       const conns = await getConnections(accountId);
-      const meta = conns.find((c: any) => c.provider === 'meta');
-      metaConnected = meta?.status === 'connected' && !!meta?.meta?.access_token;
+      const meta = conns.find(
+        (c: any) => ['facebook', 'instagram', 'meta'].includes(c.provider) && c.status === 'connected' && !!c.meta?.access_token,
+      );
+      metaConnected = !!meta;
     } catch {}
   }
   integrations.push({

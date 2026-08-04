@@ -1,5 +1,5 @@
 import { withRetry } from '@/lib/integrations/retry';
-import { getConnections } from '@/lib/db';
+import { getConnection } from '@/lib/db';
 
 // Instagram Content Publishing runs on the Facebook Graph host, NOT graph.instagram.com.
 const META_API_URL = 'https://graph.facebook.com/v18.0';
@@ -15,25 +15,35 @@ export interface MetaCreds {
   token: string;
   igUserId?: string;
   pageId?: string;
+  externalId?: string;
+  displayName?: string;
 }
 
 /**
- * Resolve Meta credentials for an account: prefer the account-scoped token
- * stored in integration_connections (meta.access_token / meta.ig_user_id),
- * fall back to the process-level env token for the demo/owner account.
+ * Resolve Meta credentials for an account. Multi-account aware: pass
+ * opts.externalId to target a specific Page/IG when the user has several, and
+ * opts.provider to pick the platform ('facebook' → page_id, 'instagram' → ig_user_id).
+ * Falls back to the process-level env token for the demo/owner account.
  */
-export async function getMetaCreds(accountId?: string): Promise<MetaCreds> {
+export async function getMetaCreds(
+  accountId?: string,
+  opts?: { externalId?: string; provider?: 'facebook' | 'instagram' }
+): Promise<MetaCreds> {
   if (accountId) {
     try {
-      const conns = await getConnections(accountId);
-      const metaConn = conns.find((c) => c.provider === 'meta' && c.status === 'connected');
-      const token = metaConn?.meta?.access_token;
-      if (token) {
-        return {
-          token: String(token),
-          igUserId: metaConn?.meta?.ig_user_id ? String(metaConn.meta.ig_user_id) : undefined,
-          pageId: metaConn?.meta?.page_id ? String(metaConn.meta.page_id) : undefined,
-        };
+      const candidates = opts?.provider ? [opts.provider] : (['facebook', 'instagram', 'meta'] as const);
+      for (const prov of candidates) {
+        const conn = await getConnection(accountId, prov, opts?.externalId);
+        const token = conn?.meta?.access_token;
+        if (token) {
+          return {
+            token: String(token),
+            igUserId: conn.meta?.ig_user_id ? String(conn.meta.ig_user_id) : undefined,
+            pageId: conn.meta?.page_id ? String(conn.meta.page_id) : undefined,
+            externalId: conn.external_id ? String(conn.external_id) : undefined,
+            displayName: conn.display_name ? String(conn.display_name) : undefined,
+          };
+        }
       }
     } catch {
       // fall through to env
@@ -90,11 +100,11 @@ export async function postToInstagram(igUserId: string, post: MetaPost, token?: 
   return withRetry(() => graph(`${igUserId}/media_publish`, { creation_id: media.id }, accessToken));
 }
 
-/** Account-aware publish: resolves the stored token + IG user id from the DB. */
-export async function publishToInstagramForAccount(accountId: string, post: MetaPost) {
-  const { token, igUserId } = await getMetaCreds(accountId);
+/** Account-aware publish. Pass externalId (ig_user_id) to target a specific IG account. */
+export async function publishToInstagramForAccount(accountId: string, post: MetaPost, externalId?: string) {
+  const { token, igUserId } = await getMetaCreds(accountId, { provider: 'instagram', externalId });
   if (!igUserId) {
-    throw new Error('No Instagram Business account linked — reconnect Meta in Settings so we can resolve your ig_user_id');
+    throw new Error('No Instagram Business account connected — connect Instagram in Settings first');
   }
   return postToInstagram(igUserId, post, token);
 }
@@ -105,11 +115,11 @@ export interface FacebookPagePost {
   imageUrl?: string;
 }
 
-/** Publish to a Facebook Page using the account-scoped Page token + page_id from the DB. */
-export async function publishToFacebookPage(accountId: string, post: FacebookPagePost) {
-  const { token, pageId } = await getMetaCreds(accountId);
+/** Publish to a Facebook Page. Pass externalId (page_id) to target a specific Page. */
+export async function publishToFacebookPage(accountId: string, post: FacebookPagePost, externalId?: string) {
+  const { token, pageId } = await getMetaCreds(accountId, { provider: 'facebook', externalId });
   if (!pageId) {
-    throw new Error('No Facebook Page linked — connect Facebook in Settings so we can resolve your page_id');
+    throw new Error('No Facebook Page connected — connect Facebook in Settings first');
   }
   if (post.imageUrl) {
     return withRetry(() =>
