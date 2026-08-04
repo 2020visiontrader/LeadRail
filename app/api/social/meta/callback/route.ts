@@ -1,6 +1,6 @@
 import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyState, exchangeCodeForToken, getLongLivedToken, getUserPages, publicBase } from '@/lib/social/meta-oauth';
+import { verifyState, exchangeCodeForToken, getLongLivedToken, getUserPages, getMeId, publicBase } from '@/lib/social/meta-oauth';
 import { upsertConnection, dbReady } from '@/lib/db';
 export const dynamic = "force-dynamic";
 
@@ -25,6 +25,7 @@ async function GET__impl(req: NextRequest) {
   try {
     const shortToken = await exchangeCodeForToken(code);
     const userToken = await getLongLivedToken(shortToken);
+    const fbUserId = await getMeId(userToken);
     const pages = await getUserPages(userToken);
 
     if (!pages.length) {
@@ -41,6 +42,7 @@ async function GET__impl(req: NextRequest) {
         meta: {
           access_token: active.access_token, // Page token — used for FB + IG publish
           user_token: userToken,
+          fb_user_id: fbUserId ?? null, // app-scoped user id → maps deauthorize/deletion callbacks
           page_id: active.id,
           page_name: active.name,
           ig_user_id: active.ig_user_id ?? null,

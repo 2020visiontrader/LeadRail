@@ -9,7 +9,7 @@ const PUBLIC_PAGES = ['/login', '/privacy', '/terms', '/data-deletion', '/r/'];
 // Only genuinely public endpoints: user login, provider webhooks (signature-verified),
 // the cron tick (bearer-protected), and the Meta OAuth callback. Everything else —
 // including all social read/write routes — now requires a session.
-const PUBLIC_API = ['/api/auth/login', '/api/webhooks', '/api/hermes/tick', '/api/social/meta/callback', '/api/track', '/api/unsubscribe'];
+const PUBLIC_API = ['/api/auth/login', '/api/webhooks', '/api/hermes/tick', '/api/social/meta/callback', '/api/social/meta/deauthorize', '/api/social/meta/data-deletion', '/api/track', '/api/unsubscribe'];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;

@@ -267,6 +267,19 @@ export async function deleteConnection(accountId: string, provider: string) {
   return { provider, deleted: true };
 }
 
+// Remove Meta connection(s) by app-scoped FB user id — used by the deauthorize
+// and data-deletion callbacks, which identify the user only via signed_request.
+export async function deleteMetaConnectionByUserId(fbUserId: string) {
+  const { data, error } = await supabase
+    .from('integration_connections')
+    .delete()
+    .eq('provider', 'meta')
+    .eq('meta->>fb_user_id', fbUserId)
+    .select('account_id');
+  if (error) throw error;
+  return { deleted: data?.length ?? 0, account_ids: (data ?? []).map((r: any) => r.account_id) };
+}
+
 // ============================================================
 // Apollo searches — audit log of ICP pulls
 // ============================================================

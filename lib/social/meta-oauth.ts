@@ -123,3 +123,48 @@ export async function getUserPages(userToken: string): Promise<MetaPage[]> {
     ig_username: p.instagram_business_account?.username,
   }));
 }
+
+// App-scoped Facebook user id for the authorizing user. Stored on the connection
+// so a later deauthorize/data-deletion signed_request (which carries only this id)
+// can be mapped back to the right LeadRail account.
+export async function getMeId(userToken: string): Promise<string | undefined> {
+  try {
+    const res = await fetch(`${GRAPH}/me?fields=id&access_token=${userToken}`);
+    const json = await res.json();
+    return res.ok ? (json.id as string) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Meta signs deauthorize + data-deletion callbacks with `signed_request`:
+//   `<base64url(sig)>.<base64url(payload)>`, sig = HMAC-SHA256(payload, APP_SECRET).
+// Returns the decoded payload only if the signature verifies with our app secret.
+export async function parseSignedRequest(
+  signed: string,
+): Promise<{ user_id?: string; issued_at?: number } | null> {
+  if (!signed || !signed.includes('.')) return null;
+  const secret = process.env.META_APP_SECRET;
+  if (!secret) return null;
+  const [sig, payload] = signed.split('.', 2);
+  try {
+    const key = await crypto.subtle.importKey(
+      'raw',
+      enc.encode(secret),
+      { name: 'HMAC', hash: 'SHA-256' },
+      false,
+      ['verify'],
+    );
+    const ok = await crypto.subtle.verify(
+      'HMAC',
+      key,
+      fromB64url(sig) as unknown as BufferSource,
+      enc.encode(payload),
+    );
+    if (!ok) return null;
+    const data = JSON.parse(new TextDecoder().decode(fromB64url(payload)));
+    return { user_id: data.user_id, issued_at: data.issued_at };
+  } catch {
+    return null;
+  }
+}
