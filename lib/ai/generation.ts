@@ -59,26 +59,38 @@ export async function parseIcpFromText(text: string): Promise<ParsedIcp> {
     inputs: {},
     deliverable: 'One ICP object as JSON. Empty string/array for anything not specified. No preamble.',
     rules: [
-      'Do NOT fabricate fields the user did not express',
+      'Never invent a LOCATION the user did not state — leave location empty unless a place is named (location over-constrains and zeroes results)',
+      'If the user names a company TYPE / industry but NO explicit person role (e.g. "find marketing agencies"), INFER decision-maker targeting so the search returns reachable leads, not everyone: titles ["Founder","CEO","Owner"] and seniority ["owner","founder","c_suite"]',
       'Map "founders/CEOs" → titles + seniority owner/founder/c_suite',
       'titles MUST be canonical singular job titles ("Founder", "Co-Founder", "CEO", "Owner"), never plural or lowercased',
       'keywords must add a DISTINCT signal from industry; never repeat the industry phrase verbatim in keywords — leave keywords empty if it would only duplicate industry',
       'industry must be a concise SINGULAR descriptor of the target company type ("marketing agency", not "marketing agencies")',
-      'summary is a single friendly sentence describing the search',
+      'summary is one friendly sentence; if you inferred decision-maker titles, say so (e.g. "Founders & CEOs at marketing agencies")',
     ],
   });
   const raw = await generateText({ system, prompt, temperature: 0.2 });
   const p = parseJson<Partial<ParsedIcp>>(raw, {});
   const arr = (v: any): string[] => (Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : []);
+  const industry = String(p.industry || '').trim();
+  let titles = arr(p.titles);
+  let seniority = arr(p.seniority);
+  // Deterministic decision-maker fallback: a company-type prompt with no role must
+  // still target reachable leaders (and never leave Titles/Seniority boxes empty).
+  if (industry && titles.length === 0 && seniority.length === 0) {
+    titles = ['Founder', 'CEO', 'Owner'];
+    seniority = ['owner', 'founder', 'c_suite'];
+  }
+  let summary = String(p.summary || '').trim();
+  if (!summary && industry) summary = `Founders & CEOs at ${industry} companies`;
   return {
-    industry: String(p.industry || '').trim(),
-    titles: arr(p.titles),
-    seniority: arr(p.seniority),
+    industry,
+    titles,
+    seniority,
     location: String(p.location || '').trim(),
     company_size: String(p.company_size || '').trim(),
     keywords: String(p.keywords || '').trim(),
     limit: Math.min(100, Math.max(1, Number(p.limit) || 25)),
-    summary: String(p.summary || '').trim(),
+    summary,
   };
 }
 
