@@ -36,11 +36,17 @@ function sizeToRange(size?: string): string[] {
     enterprise: '1001,10000',
     large: '1001,10000',
   };
-  const key = size.toLowerCase().replace(/[^a-z]/g, '');
-  if (map[key]) return [map[key]];
-  // Accept an explicit "min,max" or "min-max" passthrough.
-  const m = size.match(/(\d+)\D+(\d+)/);
-  return m ? [`${m[1]},${m[2]}`] : [];
+  const ranges: string[] = [];
+  for (const part of size.split(',')) {
+    const token = part.trim();
+    if (!token) continue;
+    const key = token.toLowerCase().replace(/[^a-z]/g, '');
+    if (map[key]) { ranges.push(map[key]); continue; }
+    // Accept an explicit "min-max" passthrough within a single token.
+    const m = token.match(/(\d+)\D+(\d+)/);
+    if (m) ranges.push(`${m[1]},${m[2]}`);
+  }
+  return Array.from(new Set(ranges));
 }
 
 /**
@@ -99,9 +105,9 @@ export async function searchPeople(
     per_page: perPage,
     person_titles: query.titles?.length ? query.titles : undefined,
     person_seniorities: query.seniority?.length ? query.seniority : undefined,
-    person_locations: query.location ? [query.location] : undefined,
+    person_locations: query.location ? query.location.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
     organization_num_employees_ranges: sizeToRange(query.company_size),
-    q_keywords: [query.industry, query.keywords].filter(Boolean).join(' ') || undefined,
+    q_keywords: Array.from(new Set([query.industry, query.keywords].filter(Boolean).map((s) => String(s).trim()).filter(Boolean))).join(' ') || undefined,
   };
   Object.keys(body).forEach((k) => {
     const v = body[k];
