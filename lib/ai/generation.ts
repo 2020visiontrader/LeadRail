@@ -63,6 +63,7 @@ export async function parseIcpFromText(text: string): Promise<ParsedIcp> {
       'Map "founders/CEOs" → titles + seniority owner/founder/c_suite',
       'titles MUST be canonical singular job titles ("Founder", "Co-Founder", "CEO", "Owner"), never plural or lowercased',
       'keywords must add a DISTINCT signal from industry; never repeat the industry phrase verbatim in keywords — leave keywords empty if it would only duplicate industry',
+      'industry must be a concise SINGULAR descriptor of the target company type ("marketing agency", not "marketing agencies")',
       'summary is a single friendly sentence describing the search',
     ],
   });

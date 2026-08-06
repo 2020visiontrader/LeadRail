@@ -107,7 +107,14 @@ export async function searchPeople(
     person_seniorities: query.seniority?.length ? query.seniority : undefined,
     person_locations: query.location ? query.location.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
     organization_num_employees_ranges: sizeToRange(query.company_size),
-    q_keywords: Array.from(new Set([query.industry, query.keywords].filter(Boolean).map((s) => String(s).trim()).filter(Boolean))).join(' ') || undefined,
+    q_organization_keyword_tags: query.industry?.trim() ? [query.industry.trim()] : undefined,
+    q_keywords: (() => {
+      const kw = (query.keywords || '').trim();
+      if (!kw) return undefined;
+      // A keyword that just echoes the industry becomes a brittle phrase gate that zeroes results — drop it.
+      if (query.industry && kw.toLowerCase() === query.industry.trim().toLowerCase()) return undefined;
+      return kw;
+    })(),
   };
   Object.keys(body).forEach((k) => {
     const v = body[k];
