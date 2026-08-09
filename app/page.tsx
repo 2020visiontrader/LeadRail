@@ -126,7 +126,23 @@ export default function Overview() {
           setProfileResult({ note: `Venture created. Deck couldn't be profiled: ${e.message || 'error'}` });
         }
       } else {
-        setProfileResult({ note: 'Venture created. Add a pitch deck later to auto-tailor its lead search.' });
+        // No deck — still profile from the basics (name + description + goal +
+        // sectors) so the venture has grounded context for the AI prompt boxes
+        // from day one. Best-effort: a profiling hiccup never blocks creation.
+        try {
+          const res = await fetch(`/api/ventures/${venture.id}/profile`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            await loadVentures();
+            setProfileResult({ summary: data?.profile?.summary, note: 'Profiled from your description — its lead search and AI boxes are now tailored. Add a pitch deck anytime for a deeper profile.' });
+          } else {
+            setProfileResult({ note: 'Venture created. Add a pitch deck later to auto-tailor its lead search.' });
+          }
+        } catch {
+          setProfileResult({ note: 'Venture created. Add a pitch deck later to auto-tailor its lead search.' });
+        }
       }
       notify(`Created “${venture.name}”`);
       setStep(4);

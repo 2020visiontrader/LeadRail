@@ -15,6 +15,12 @@ const BASE = (process.env.OPENCODE_BASE_URL || 'https://opencode.ai/zen/go/v1').
 const TEXT_MODEL = process.env.OPENCODE_MODEL || 'deepseek-v4-pro';
 const RELIABLE_FALLBACK = 'deepseek-v4-pro';
 
+// Hard timeout so a stalled OpenCode call aborts and the router fails over to
+// NIM instead of blocking the whole request. Without this a hung upstream hangs
+// unbounded (the Aug-1 outreach 502s were a stalled tier that never aborted).
+// Override with OPENCODE_TIMEOUT_MS.
+const TIMEOUT_MS = Number(process.env.OPENCODE_TIMEOUT_MS) || 35_000;
+
 export function opencodeConfigured(): boolean {
   return KEY.length > 0;
 }
@@ -53,11 +59,26 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
   // override won't get an unknown field.
   if (/deepseek/i.test(useModel)) body.thinking = { type: 'disabled' };
 
-  const res = await fetch(`${BASE}/chat/completions`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } catch (e: any) {
+    const err: any = new Error(
+      e?.name === 'AbortError' ? `OpenCode timed out after ${TIMEOUT_MS}ms` : `OpenCode request failed`,
+    );
+    err.code = 'upstream';
+    err.detail = String(e?.message || e).slice(0, 300);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     const detail = (await res.text().catch(() => '')).slice(0, 300);
     const err: any = new Error(`OpenCode failed (${res.status})`);
