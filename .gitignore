@@ -8,3 +8,7 @@ public/generated/
 .env*.local
 .env.production
 .env.production.local
+
+# runtime log exports + stray screenshot artifacts
+logs-export/
+--full-page

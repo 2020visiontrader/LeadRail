@@ -100,6 +100,22 @@ export async function searchPeople(
   }
 
   const perPage = Math.min(Math.max(query.limit ?? 25, 1), 100);
+
+  // Company-type targeting goes into q_organization_keyword_tags, which Apollo
+  // treats as an OR'd, high-recall org-tag match. We fold BOTH the industry and
+  // the free-text keyword into it (deduped). Apollo's q_keywords, by contrast,
+  // is a strict full-text AND across many fields: combined with title/industry
+  // filters it collapses results by 98-99% (verified live — "SaaS founders in
+  // Toronto" drops 1,621 → 3 the moment q_keywords is added). So q_keywords is
+  // only ever used as a last resort when there is no other targeting signal at
+  // all (no keyword-tags AND no titles).
+  const industry = query.industry?.trim();
+  const kw = (query.keywords || '').trim();
+  const kwTags: string[] = [];
+  if (industry) kwTags.push(industry);
+  if (kw && kw.toLowerCase() !== (industry || '').toLowerCase()) kwTags.push(kw);
+  const orgKeywordTags = Array.from(new Set(kwTags));
+
   const body: Record<string, any> = {
     page: 1,
     per_page: perPage,
@@ -107,14 +123,8 @@ export async function searchPeople(
     person_seniorities: query.seniority?.length ? query.seniority : undefined,
     person_locations: query.location ? query.location.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
     organization_num_employees_ranges: sizeToRange(query.company_size),
-    q_organization_keyword_tags: query.industry?.trim() ? [query.industry.trim()] : undefined,
-    q_keywords: (() => {
-      const kw = (query.keywords || '').trim();
-      if (!kw) return undefined;
-      // A keyword that just echoes the industry becomes a brittle phrase gate that zeroes results — drop it.
-      if (query.industry && kw.toLowerCase() === query.industry.trim().toLowerCase()) return undefined;
-      return kw;
-    })(),
+    q_organization_keyword_tags: orgKeywordTags.length ? orgKeywordTags : undefined,
+    q_keywords: !orgKeywordTags.length && !query.titles?.length && kw ? kw : undefined,
   };
   Object.keys(body).forEach((k) => {
     const v = body[k];
@@ -185,6 +195,7 @@ export interface ApolloEnrichment {
  * email, linkedin_url, name + company. Returns a deep profile or throws typed.
  */
 export async function matchPerson(keys: {
+  id?: string | null;
   email?: string | null;
   linkedin_url?: string | null;
   name?: string | null;
@@ -196,12 +207,18 @@ export async function matchPerson(keys: {
     err.code = 'not_configured';
     throw err;
   }
+  // Prefer the Apollo person id (captured at import). Matching by the exact id and
+  // asking Apollo to reveal is the ONLY reliable way to unlock a masked preview
+  // contact — matching by the obfuscated name ("Andrew Ja***n") returns a still-
+  // masked record (or the wrong person). Reveal is what consumes the credit.
+  const apolloId = keys.id && !/@locked\.apollo$/.test(keys.id) ? keys.id : undefined;
   const body: Record<string, any> = {
-    reveal_personal_emails: false,
+    reveal_personal_emails: true,
+    id: apolloId,
     email: keys.email && !/@locked\.apollo$/.test(keys.email) ? keys.email : undefined,
     linkedin_url: keys.linkedin_url || undefined,
-    name: keys.name || undefined,
-    organization_name: keys.company || undefined,
+    name: apolloId ? undefined : keys.name || undefined,
+    organization_name: apolloId ? undefined : keys.company || undefined,
   };
   Object.keys(body).forEach((k) => body[k] === undefined && delete body[k]);
 
