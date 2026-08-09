@@ -77,7 +77,7 @@ export default function SequencesPage() {
     setChat(next); setChatLoading(true);
     try {
       const res = await apiSend<{ reply: string; ready: boolean; sequence: SeqDraft | null }>(
-        '/api/sequences/chat', 'POST', { messages: next, ventureName: venture.name },
+        '/api/sequences/chat', 'POST', { messages: next, ventureName: venture.name, ventureId: venture.id },
       );
       setChat([...next, { role: 'assistant', content: res.reply }]);
       if (res.sequence) setPendingSeq(res.sequence);

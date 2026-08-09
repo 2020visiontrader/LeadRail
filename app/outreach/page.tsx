@@ -154,7 +154,7 @@ export default function OutreachPage() {
       </div>
 
       {loading ? <LoadingSpinner /> : campaigns.length === 0 ? (
-        <EmptyState icon="📧" title="No emails sent yet" hint="Compose your first outreach email. Requires Brevo + Supabase connected to actually send." action={<Button onClick={() => setOpen(true)}>Compose</Button>} />
+        <EmptyState icon="📧" title="No emails sent yet" hint="Compose your first outreach email. Sends from your verified sender (set it per venture in Settings)." action={<Button onClick={() => setOpen(true)}>Compose</Button>} />
       ) : (
         <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
           <table className="w-full text-sm">

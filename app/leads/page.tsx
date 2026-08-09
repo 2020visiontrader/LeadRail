@@ -49,12 +49,16 @@ export default function LeadsPage() {
   const [nlQuery, setNlQuery] = useState('');
   const [parsing, setParsing] = useState(false);
   const [nlSummary, setNlSummary] = useState('');
+  const [nlReason, setNlReason] = useState('');
 
   const buildFromText = async () => {
     if (!nlQuery.trim()) { notify('Describe who you want to reach', 'error'); return; }
-    setParsing(true); setNlSummary('');
+    setParsing(true); setNlSummary(''); setNlReason('');
     try {
-      const { icp: parsed } = await apiSend<{ icp: any }>('/api/leads/apollo/parse', 'POST', { text: nlQuery.trim() });
+      // Pass the active venture so the parse is grounded in this brand's profile
+      // (skip for the "all" scope, which has no single brand context).
+      const ventureId = venture && venture.id !== 'all' ? venture.id : undefined;
+      const { icp: parsed } = await apiSend<{ icp: any }>('/api/leads/apollo/parse', 'POST', { text: nlQuery.trim(), ventureId });
       setIcp({
         industry: parsed.industry || '',
         titles: (parsed.titles || []).join(', '),
@@ -65,6 +69,7 @@ export default function LeadsPage() {
         limit: parsed.limit || 25,
       });
       setNlSummary(parsed.summary || '');
+      setNlReason(parsed.reasoning || '');
       notify('Search built — review and hit Search Apollo');
     } catch (e: any) {
       notify(e.message === 'not_configured' ? 'Connect OpenCode to use plain-language search' : e.message || 'Could not parse', 'error');
@@ -313,6 +318,11 @@ export default function LeadsPage() {
               <Button variant="secondary" loading={parsing} onClick={buildFromText}>Build search</Button>
             </div>
             {parsing && <p className="text-xs text-indigo-700">Analyzing your audience and filling the filters… this can take 15–20s.</p>}
+            {!parsing && nlReason && (
+              <p className="flex items-start gap-1.5 text-xs italic text-[var(--text-secondary)]">
+                <span aria-hidden>💭</span><span>{nlReason}</span>
+              </p>
+            )}
             {!parsing && nlSummary && <p className="text-xs text-indigo-700">→ {nlSummary}</p>}
             <p className="text-[11px] text-slate-500">The AI fills the filters below — review, tweak, then Search Apollo.</p>
           </div>

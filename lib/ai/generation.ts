@@ -36,6 +36,47 @@ export interface ParsedIcp {
   keywords: string;
   limit: number;
   summary: string; // one-line plain-language recap of what will be searched
+  reasoning: string; // short "thinking" line: how the request was read given the venture
+}
+
+/**
+ * Compact context about the venture the user is working inside. Injected into
+ * the prompt boxes so each one reasons like an assistant that already knows the
+ * brand — its positioning, who it sells to, and its established ICP — instead of
+ * treating every request as context-free text. This is the "thinking layer with
+ * context": the box grounds its answer in the brand unless the user overrides.
+ */
+export interface VentureContext {
+  name?: string;
+  description?: string; // brand description / deck summary — what it is
+  leadGoal?: string; // who it wants to reach (investors, customers, partners…)
+  sectors?: string[]; // focus sectors
+  pitch?: string; // one-line value prop
+  icp?: { industry?: string; titles?: string[]; seniority?: string[]; keywords?: string; company_size?: string } | null;
+}
+
+/** Render venture context as a short grounding block, or '' when we know nothing. */
+export function ventureContextBlock(ctx?: VentureContext | null): string {
+  if (!ctx) return '';
+  const lines: string[] = [];
+  if (ctx.name) lines.push(`Brand: ${ctx.name}`);
+  if (ctx.description) lines.push(`What it is: ${ctx.description.slice(0, 600)}`);
+  if (ctx.pitch) lines.push(`Value prop: ${ctx.pitch}`);
+  if (ctx.leadGoal) lines.push(`Lead goal (who to reach): ${ctx.leadGoal}`);
+  if (ctx.sectors?.length) lines.push(`Focus sectors: ${ctx.sectors.join(', ')}`);
+  const icp = ctx.icp;
+  if (icp && (icp.industry || icp.titles?.length || icp.seniority?.length || icp.keywords)) {
+    lines.push(
+      `Established ICP: ${[
+        icp.industry && `industry=${icp.industry}`,
+        icp.titles?.length && `titles=${icp.titles.join('/')}`,
+        icp.seniority?.length && `seniority=${icp.seniority.join('/')}`,
+        icp.keywords && `keywords=${icp.keywords}`,
+        icp.company_size && `size=${icp.company_size}`,
+      ].filter(Boolean).join('; ')}`,
+    );
+  }
+  return lines.length ? `VENTURE CONTEXT (ground your answer in this brand; the user is working inside it)\n${lines.join('\n')}` : '';
 }
 
 /**
@@ -43,20 +84,25 @@ export interface ParsedIcp {
  * into a structured Apollo ICP the search form can run. Lets a user source
  * leads conversationally instead of hand-tuning keyword/seniority fields.
  */
-export async function parseIcpFromText(text: string): Promise<ParsedIcp> {
+export async function parseIcpFromText(text: string, context?: VentureContext): Promise<ParsedIcp> {
+  const ctxBlock = ventureContextBlock(context);
   const system = buildPersona({
     role: 'a B2B lead-sourcing analyst who maps requests to Apollo People Search filters',
     domain: 'translating natural-language ICP descriptions into Apollo query fields',
-    methods: 'extract only what the user stated or clearly implied; never invent a location or industry that was not asked for',
+    methods:
+      'extract only what the user stated or clearly implied; never invent a location or industry that was not asked for. ' +
+      (ctxBlock
+        ? 'You are sourcing for a specific brand (see VENTURE CONTEXT). When the user is vague ("find me some leads", "who should I reach"), GROUND the ICP in that brand\'s lead goal, sectors, and established ICP. When the user names a specific target, honor it and use the brand only to disambiguate. Never contradict an explicit user instruction.'
+        : ''),
     constraints:
       'seniority MUST use Apollo tokens from {owner, founder, c_suite, partner, vp, head, director, manager, senior, entry, intern}; ' +
       'titles are concrete job titles; company_size one of {startup, smb, mid, enterprise} or ""; limit 1-100 (default 25)',
     format:
-      'JSON: {"industry": string, "titles": string[], "seniority": string[], "location": string, "company_size": string, "keywords": string, "limit": number, "summary": string}',
+      'JSON: {"industry": string, "titles": string[], "seniority": string[], "location": string, "company_size": string, "keywords": string, "limit": number, "summary": string, "reasoning": string}',
   });
   const prompt = improvePrompt({
     goal: `Parse this sourcing request into Apollo filters: "${text}"`,
-    inputs: {},
+    inputs: ctxBlock ? { venture_context: ctxBlock } : {},
     deliverable: 'One ICP object as JSON. Empty string/array for anything not specified. No preamble.',
     rules: [
       'Never invent a LOCATION the user did not state — leave location empty unless a place is named (location over-constrains and zeroes results)',
@@ -65,7 +111,13 @@ export async function parseIcpFromText(text: string): Promise<ParsedIcp> {
       'titles MUST be canonical singular job titles ("Founder", "Co-Founder", "CEO", "Owner"), never plural or lowercased',
       'keywords must add a DISTINCT signal from industry; never repeat the industry phrase verbatim in keywords — leave keywords empty if it would only duplicate industry',
       'industry must be a concise SINGULAR descriptor of the target company type ("marketing agency", not "marketing agencies")',
-      'summary is one friendly sentence; if you inferred decision-maker titles, say so (e.g. "Founders & CEOs at marketing agencies")',
+      ctxBlock
+        ? 'When the request is thin, fill the ICP from the VENTURE CONTEXT (lead goal + sectors + established ICP); do NOT ask the user to repeat what the brand already implies'
+        : 'When the request is thin, make reasonable decision-maker assumptions rather than returning empty filters',
+      'summary is one friendly sentence describing exactly what will be searched',
+      ctxBlock
+        ? 'reasoning is one short sentence (first person, like a colleague thinking out loud) explaining how you read the request AND how the brand context shaped it — e.g. "You didn\'t name a target, so I used FilmOps\' investor goal + film-tech sectors to aim at fund partners."'
+        : 'reasoning is one short first-person sentence explaining how you interpreted the request and any assumption you made',
     ],
   });
   const raw = await generateText({ system, prompt, temperature: 0.2 });
@@ -91,6 +143,7 @@ export async function parseIcpFromText(text: string): Promise<ParsedIcp> {
     keywords: String(p.keywords || '').trim(),
     limit: Math.min(100, Math.max(1, Number(p.limit) || 25)),
     summary,
+    reasoning: stripAiMarkers(String(p.reasoning || '').trim()),
   };
 }
 
@@ -264,12 +317,16 @@ export interface SequenceChatResult {
  * is thin (audience, goal, step count, tone, timing), and only emits a
  * structured sequence once it has enough to be useful. Refines across turns.
  */
-export async function sequenceChat(messages: ChatMessage[], opts: { ventureName?: string }): Promise<SequenceChatResult> {
+export async function sequenceChat(messages: ChatMessage[], opts: { ventureName?: string; context?: VentureContext }): Promise<SequenceChatResult> {
+  const ctx = opts.context || (opts.ventureName ? { name: opts.ventureName } : undefined);
+  const ctxBlock = ventureContextBlock(ctx);
+  const brandName = ctx?.name || opts.ventureName;
   const system = buildPersona({
-    role: `a senior B2B outreach cadence strategist${opts.ventureName ? ` for ${opts.ventureName}` : ''}`,
+    role: `a senior B2B outreach cadence strategist${brandName ? ` for ${brandName}` : ''}`,
     domain: 'designing multi-step email sequences with a human collaborator, conversationally',
     methods:
-      'If the user request is vague, ask ONE focused clarifying question at a time (target audience, the goal/CTA, how many steps, tone, timing between steps). ' +
+      (ctxBlock ? `${ctxBlock}\n\nUse this brand context to make the cadence specific: pull the value prop, target audience and goal from it instead of asking the user to restate what the brand already implies. ` : '') +
+      'If the user request is still vague, ask ONE focused clarifying question at a time (target audience, the goal/CTA, how many steps, tone, timing between steps). ' +
       'When you have enough — or the user says "just build it" — produce the full sequence. Refine it when they give feedback.',
     constraints:
       'reply is a short, friendly chat message (no JSON inside it). ' +
