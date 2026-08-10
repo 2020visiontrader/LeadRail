@@ -19,8 +19,9 @@ export async function listConversations(accountId: string, limit = 50) {
 
 export async function getConversation(id: string, accountId: string) {
   const { data: conv, error } = await supabase
-    .from('conversations').select('*').eq('id', id).eq('account_id', accountId).single();
+    .from('conversations').select('*').eq('id', id).eq('account_id', accountId).maybeSingle();
   if (error) throw error;
+  if (!conv) return null;
   const { data: messages } = await supabase
     .from('conversation_messages')
     .select('*')

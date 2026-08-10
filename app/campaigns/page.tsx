@@ -14,20 +14,42 @@ import { AdCampaign } from '@/lib/types';
 
 interface Venture { id: string; name: string; account_id: string }
 const CHANNELS = ['meta', 'google', 'tiktok', 'linkedin', 'other'];
+const META_OBJECTIVES = ['OUTCOME_TRAFFIC', 'OUTCOME_ENGAGEMENT', 'OUTCOME_LEADS', 'OUTCOME_SALES', 'OUTCOME_AWARENESS'];
+
+// Extends AdCampaign with Meta-ads fields the backend now returns; kept local
+// since lib/types.ts is owned by another workstream.
+interface MetaAdCampaign extends AdCampaign {
+  meta_campaign_id?: string | null;
+  meta_ad_account_id?: string | null;
+  objective?: string | null;
+  meta_status?: 'PAUSED' | 'ACTIVE' | 'ARCHIVED' | null;
+  last_synced_at?: string | null;
+}
+
+interface MetaAdAccount { id: string; name: string; account_status?: number }
+
+function metaStatusTone(status?: string | null): 'green' | 'amber' | 'gray' {
+  if (status === 'ACTIVE') return 'green';
+  if (status === 'PAUSED') return 'amber';
+  return 'gray';
+}
 
 export default function CampaignsPage() {
   const { notify } = useToast();
   const [ventures, setVentures] = useState<Venture[]>([]);
   const [venture, setVenture] = useState<Venture | null>(null);
-  const [rows, setRows] = useState<AdCampaign[]>([]);
+  const [rows, setRows] = useState<MetaAdCampaign[]>([]);
   const [loading, setLoading] = useState(true);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [form, setForm] = useState({ name: '', channel: 'meta', budget: '', start_date: '', end_date: '' });
+  const [form, setForm] = useState({ name: '', channel: 'meta', budget: '', start_date: '', end_date: '', meta_ad_account_id: '', objective: 'OUTCOME_TRAFFIC' });
   const [assetCampaign, setAssetCampaign] = useState<AdCampaign | null>(null);
   const [assets, setAssets] = useState<any[]>([]);
   const [assetUrl, setAssetUrl] = useState('');
   const [assetBusy, setAssetBusy] = useState(false);
+  const [metaAccounts, setMetaAccounts] = useState<MetaAdAccount[]>([]);
+  const [metaAccountsLoaded, setMetaAccountsLoaded] = useState(false);
+  const [rowBusy, setRowBusy] = useState<string | null>(null);
 
   useEffect(() => {
     apiGet<{ ventures: Venture[] }>('/api/ventures')
@@ -61,19 +83,34 @@ export default function CampaignsPage() {
   const load = useCallback(async () => {
     if (!venture) return;
     setLoading(true);
-    const data = await apiGet<AdCampaign[]>(`/api/campaigns?brandId=${venture.id}`).catch(() => []);
+    const data = await apiGet<MetaAdCampaign[]>(`/api/campaigns?brandId=${venture.id}`).catch(() => []);
     setRows(Array.isArray(data) ? data : []);
     setLoading(false);
   }, [venture]);
   useEffect(() => { load(); }, [load]);
 
+  // Fetch connected Meta ad accounts once, the first time the create form's
+  // channel is set to 'meta' (covers both the mount-with-meta-default case
+  // and switching into it later).
+  useEffect(() => {
+    if (form.channel !== 'meta' || metaAccountsLoaded) return;
+    setMetaAccountsLoaded(true);
+    apiGet<{ accounts: MetaAdAccount[]; error?: string }>('/api/campaigns/meta/ad-accounts')
+      .then((d) => setMetaAccounts(d.accounts || []))
+      .catch(() => setMetaAccounts([]));
+  }, [form.channel, metaAccountsLoaded]);
+
   const create = async () => {
     if (!form.name) { notify('Name required', 'error'); return; }
     setSaving(true);
     try {
-      await apiSend('/api/campaigns', 'POST', { brand_id: venture?.id, ...form, budget: Number(form.budget) || 0, start_date: form.start_date || null, end_date: form.end_date || null });
+      const isMeta = form.channel === 'meta';
+      const { meta_ad_account_id, objective, ...rest } = form;
+      const body: Record<string, unknown> = { brand_id: venture?.id, ...rest, budget: Number(form.budget) || 0, start_date: form.start_date || null, end_date: form.end_date || null };
+      if (isMeta && meta_ad_account_id) { body.meta_ad_account_id = meta_ad_account_id; body.objective = objective; }
+      await apiSend('/api/campaigns', 'POST', body);
       notify('Campaign created');
-      setOpen(false); setForm({ name: '', channel: 'meta', budget: '', start_date: '', end_date: '' });
+      setOpen(false); setForm({ name: '', channel: 'meta', budget: '', start_date: '', end_date: '', meta_ad_account_id: '', objective: 'OUTCOME_TRAFFIC' });
       load();
     } catch (e: any) { notify(e.message || 'Create failed', 'error'); }
     finally { setSaving(false); }
@@ -83,6 +120,37 @@ export default function CampaignsPage() {
     if (!confirm(`Delete ${c.name}?`)) return;
     try { await apiSend(`/api/campaigns/${c.id}`, 'DELETE'); notify('Deleted'); load(); }
     catch (e: any) { notify(e.message || 'Delete failed', 'error'); }
+  };
+
+  const launchCampaign = async (c: MetaAdCampaign) => {
+    if (!confirm('This activates a REAL Meta ad and will spend budget. Continue?')) return;
+    setRowBusy(c.id);
+    try {
+      await apiSend(`/api/campaigns/${c.id}/launch`, 'POST', {});
+      notify('Campaign launched on Meta');
+      load();
+    } catch (e: any) { notify(e.message || 'Launch failed', 'error'); }
+    finally { setRowBusy(null); }
+  };
+
+  const pauseCampaign = async (c: MetaAdCampaign) => {
+    setRowBusy(c.id);
+    try {
+      await apiSend(`/api/campaigns/${c.id}/pause`, 'POST', {});
+      notify('Campaign paused');
+      load();
+    } catch (e: any) { notify(e.message || 'Pause failed', 'error'); }
+    finally { setRowBusy(null); }
+  };
+
+  const syncCampaign = async (c: MetaAdCampaign) => {
+    setRowBusy(c.id);
+    try {
+      const r = await apiGet<{ spend?: number }>(`/api/campaigns/${c.id}/sync`);
+      notify(r && typeof r.spend === 'number' ? `Synced — spend $${r.spend.toLocaleString()}` : 'Synced');
+      load();
+    } catch (e: any) { notify(e.message || 'Sync failed', 'error'); }
+    finally { setRowBusy(null); }
   };
 
   const totalBudget = rows.reduce((s, r) => s + (Number(r.budget) || 0), 0);
@@ -131,8 +199,33 @@ export default function CampaignsPage() {
                   <td className="p-3 font-medium">{c.name}</td>
                   <td className="p-3"><Badge tone="blue">{c.channel || '—'}</Badge></td>
                   <td className="p-3 text-right">${Number(c.budget).toLocaleString()}</td>
-                  <td className="p-3"><Badge tone={c.status === 'active' ? 'green' : 'gray'}>{c.status}</Badge></td>
+                  <td className="p-3">
+                    <Badge tone={c.status === 'active' ? 'green' : 'gray'}>{c.status}</Badge>
+                    {c.meta_campaign_id && (
+                      <span className="ml-1.5 inline-block">
+                        <Badge tone={metaStatusTone(c.meta_status)}>Meta: {c.meta_status || 'UNKNOWN'}</Badge>
+                      </span>
+                    )}
+                  </td>
                   <td className="p-3 text-right">
+                    {c.meta_campaign_id && c.meta_status !== 'ACTIVE' && (
+                      <button
+                        className="mr-3 text-emerald-600 hover:underline disabled:cursor-not-allowed disabled:text-slate-300 disabled:no-underline"
+                        disabled={!Number(c.budget) || rowBusy === c.id}
+                        title={!Number(c.budget) ? 'Set a budget first' : undefined}
+                        onClick={() => launchCampaign(c)}
+                      >
+                        Launch
+                      </button>
+                    )}
+                    {c.meta_status === 'ACTIVE' && (
+                      <button className="mr-3 text-amber-600 hover:underline disabled:text-slate-300" disabled={rowBusy === c.id} onClick={() => pauseCampaign(c)}>Pause</button>
+                    )}
+                    {c.meta_campaign_id && (
+                      <button className="mr-3 text-slate-600 hover:underline disabled:text-slate-300" disabled={rowBusy === c.id} onClick={() => syncCampaign(c)}>
+                        {rowBusy === c.id ? 'Syncing…' : 'Sync'}
+                      </button>
+                    )}
                     <button className="mr-3 text-indigo-600 hover:underline" onClick={() => openAssets(c)}>Assets</button>
                     <button className="text-red-600 hover:underline" onClick={() => remove(c)}>Delete</button>
                   </td>
@@ -148,6 +241,28 @@ export default function CampaignsPage() {
           <Input label="Name *" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
           <Dropdown label="Channel" value={form.channel} onChange={(e) => setForm({ ...form, channel: e.target.value })} options={CHANNELS.map((c) => ({ value: c, label: c }))} />
           <Input label="Budget ($)" type="number" value={form.budget} onChange={(e) => setForm({ ...form, budget: e.target.value })} />
+          {form.channel === 'meta' && (
+            metaAccounts.length > 0 ? (
+              <>
+                <Dropdown
+                  label="Meta Ad Account"
+                  value={form.meta_ad_account_id}
+                  onChange={(e) => setForm({ ...form, meta_ad_account_id: e.target.value })}
+                  options={[{ value: '', label: 'Local only (no live ad account)' }, ...metaAccounts.map((a) => ({ value: a.id, label: a.name }))]}
+                />
+                {form.meta_ad_account_id && (
+                  <Dropdown
+                    label="Objective"
+                    value={form.objective}
+                    onChange={(e) => setForm({ ...form, objective: e.target.value })}
+                    options={META_OBJECTIVES.map((o) => ({ value: o, label: o }))}
+                  />
+                )}
+              </>
+            ) : (
+              <p className="text-xs text-slate-500">Connect a Meta ad account to launch live ads.</p>
+            )
+          )}
           <div className="grid grid-cols-2 gap-3">
             <Input label="Start" type="date" value={form.start_date} onChange={(e) => setForm({ ...form, start_date: e.target.value })} />
             <Input label="End" type="date" value={form.end_date} onChange={(e) => setForm({ ...form, end_date: e.target.value })} />

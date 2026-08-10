@@ -39,14 +39,17 @@ export async function getComments(
   return json.data || [];
 }
 
-/** Reply to a comment. */
+/** Reply to a comment. Pass externalId (the specific connected IG/Page id) to
+ *  target the right connection when an account has more than one connected —
+ *  omit to fall back to the most-recently-connected one. */
 export async function replyToComment(
   accountId: string,
   commentId: string,
   message: string,
   platform: 'facebook' | 'instagram',
+  externalId?: string,
 ) {
-  const { token } = await getMetaCreds(accountId);
+  const { token } = await getMetaCreds(accountId, { provider: platform, externalId });
   return graphPost(`${commentId}/comments`, { message }, token);
 }
 
@@ -63,4 +66,13 @@ export async function deleteComment(accountId: string, commentId: string) {
 export async function hideComment(accountId: string, commentId: string, hide = true) {
   const { token } = await getMetaCreds(accountId);
   return graphPost(commentId, { is_hidden: hide }, token);
+}
+
+/** Send an Instagram DM reply via the Send API. Pass externalId (the specific
+ *  connected IG business account id) to target the right connection when an
+ *  account has more than one connected — omit to fall back to the
+ *  most-recently-connected one. */
+export async function sendInstagramMessage(accountId: string, recipientId: string, text: string, externalId?: string) {
+  const { token } = await getMetaCreds(accountId, { provider: 'instagram', externalId });
+  return graphPost('me/messages', { recipient: { id: recipientId }, message: { text } }, token);
 }

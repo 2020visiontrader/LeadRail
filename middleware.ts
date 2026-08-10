@@ -9,7 +9,12 @@ const PUBLIC_PAGES = ['/login', '/privacy', '/terms', '/data-deletion', '/r/'];
 // Only genuinely public endpoints: user login, provider webhooks (signature-verified),
 // the cron tick (bearer-protected), and the Meta OAuth callback. Everything else —
 // including all social read/write routes — now requires a session.
-const PUBLIC_API = ['/api/auth/login', '/api/webhooks', '/api/hermes/tick', '/api/social/meta/callback', '/api/social/meta/deauthorize', '/api/social/meta/data-deletion', '/api/social/instagram/callback', '/api/track', '/api/unsubscribe'];
+// '/api/social/meta/connect' is a browser-navigated OAuth kickoff (not fetch()),
+// and already redirects to /login itself when the session is missing/expired —
+// public here so that redirect fires instead of the middleware's raw JSON 401.
+// '/api/mcp' carries its own Bearer (APP_API_SECRET) auth inside the route, so
+// it is public to the cookie middleware — like the bearer-protected cron tick.
+const PUBLIC_API = ['/api/auth/login', '/api/webhooks', '/api/hermes/tick', '/api/mcp', '/api/social/meta/callback', '/api/social/meta/connect', '/api/social/meta/deauthorize', '/api/social/meta/data-deletion', '/api/social/instagram/callback', '/api/track', '/api/unsubscribe'];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;

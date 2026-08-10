@@ -1,5 +1,6 @@
 import { withRetry } from '@/lib/integrations/retry';
-import { getConnection } from '@/lib/db';
+import { getConnection, getConnectionByExternalId } from '@/lib/db';
+import { recordConversationMessage } from '@/lib/conversations';
 
 // Instagram Content Publishing runs on the Facebook Graph host, NOT graph.instagram.com.
 const META_API_URL = 'https://graph.facebook.com/v18.0';
@@ -144,10 +145,58 @@ export async function getInstagramInsights(mediaId: string, token?: string) {
 
 export async function handleMetaWebhook(event: any) {
   const { object, entry } = event;
-  if (object === 'instagram' && Array.isArray(entry)) {
-    for (const item of entry) {
-      if (item.messaging) console.log('Instagram message:', item.messaging);
-      if (item.changes) console.log('Instagram change:', item.changes);
+  if (object !== 'instagram' || !Array.isArray(entry)) return;
+
+  for (const item of entry) {
+    const connection = await getConnectionByExternalId('instagram', item.id).catch((e) => {
+      console.warn('handleMetaWebhook: connection lookup failed', e);
+      return null;
+    });
+    if (!connection) {
+      console.warn('handleMetaWebhook: no connected LeadRail account for IG id', item.id);
+      continue;
+    }
+    const accountId = connection.account_id;
+
+    if (Array.isArray(item.messaging)) {
+      for (const messaging of item.messaging) {
+        if (messaging?.message?.is_echo) continue; // our own outbound send, not new inbound content
+        try {
+          await recordConversationMessage({
+            accountId,
+            channel: 'instagram',
+            direction: 'inbound',
+            externalId: messaging?.message?.mid || `${item.id}:${messaging?.timestamp}`,
+            fromAddr: messaging?.sender?.id ?? null,
+            toAddr: messaging?.recipient?.id ?? null,
+            body: messaging?.message?.text ?? null,
+            threadKey: `ig:${messaging?.sender?.id}`,
+            meta: { raw: messaging, igAccountId: item.id },
+          });
+        } catch (e) {
+          console.warn('handleMetaWebhook: failed to record IG message', e);
+        }
+      }
+    }
+
+    if (Array.isArray(item.changes)) {
+      for (const change of item.changes) {
+        if (change?.field !== 'comments') continue;
+        try {
+          await recordConversationMessage({
+            accountId,
+            channel: 'instagram',
+            direction: 'inbound',
+            externalId: change.value?.id ?? null,
+            fromAddr: change.value?.from?.username ?? change.value?.from?.id ?? null,
+            body: change.value?.text ?? null,
+            threadKey: `ig-comment:${change.value?.media?.id ?? change.value?.id}`,
+            meta: { raw: change, kind: 'comment', igAccountId: item.id },
+          });
+        } catch (e) {
+          console.warn('handleMetaWebhook: failed to record IG comment', e);
+        }
+      }
     }
   }
 }

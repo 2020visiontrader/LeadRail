@@ -281,6 +281,22 @@ export async function getConnection(accountId: string, provider: string, externa
   return data?.[0] ?? null;
 }
 
+// Reverse lookup — used by inbound webhook handlers that only know the
+// provider-side id (IG business account id, Page id) and need to find
+// which LeadRail account owns it, with no accountId available yet.
+export async function getConnectionByExternalId(provider: string, externalId: string) {
+  const { data, error } = await supabase
+    .from('integration_connections')
+    .select('*')
+    .eq('provider', provider)
+    .eq('external_id', externalId)
+    .eq('status', 'connected')
+    .order('updated_at', { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  return data?.[0] ?? null;
+}
+
 export async function deleteConnection(accountId: string, provider: string, externalId?: string) {
   let query = supabase
     .from('integration_connections')
