@@ -109,12 +109,21 @@ export async function searchPeople(
   // Toronto" drops 1,621 → 3 the moment q_keywords is added). So q_keywords is
   // only ever used as a last resort when there is no other targeting signal at
   // all (no keyword-tags AND no titles).
-  const industry = query.industry?.trim();
+  // Industry and keywords arrive as free-text, frequently comma-separated
+  // multi-value ("creator economy, social media, entertainment"). Apollo matches
+  // keyword-tags as INDIVIDUAL, OR'd tokens — a single tag literal with embedded
+  // commas matches no org, which silently collapses the whole AND'd query to 0
+  // results. So split both fields on commas into discrete tags and dedupe.
   const kw = (query.keywords || '').trim();
-  const kwTags: string[] = [];
-  if (industry) kwTags.push(industry);
-  if (kw && kw.toLowerCase() !== (industry || '').toLowerCase()) kwTags.push(kw);
-  const orgKeywordTags = Array.from(new Set(kwTags));
+  const splitTags = (s?: string) => (s || '').split(',').map((t) => t.trim()).filter(Boolean);
+  const seen = new Set<string>();
+  const orgKeywordTags: string[] = [];
+  for (const tag of [...splitTags(query.industry), ...splitTags(query.keywords)]) {
+    const dedupeKey = tag.toLowerCase();
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    orgKeywordTags.push(tag);
+  }
 
   const body: Record<string, any> = {
     page: 1,
