@@ -190,11 +190,11 @@ export default function Overview() {
           <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
             <div className="min-w-0 space-y-6">
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-            <KPICard label="Total Contacts" value={stats?.contacts ?? 0} />
-            <KPICard label="Active Deals" value={stats?.deals ?? 0} icon="💼" />
-            <KPICard label="Won" value={stats?.won ?? 0} icon="✅" />
-            <KPICard label="CVR" value={`${stats?.conversion_rate ?? 0}%`} />
-            <KPICard label="Revenue" value={money(stats?.revenue ?? 0)} icon="💰" />
+            <KPICard label="Total Contacts" value={stats?.contacts ?? 0} icon="👥" sub={`${stats?.emails ?? 0} emails sent`} />
+            <KPICard label="Open Pipeline" value={money(stats?.pipeline_value ?? 0)} icon="💼" sub={`${stats?.deals ?? 0} open deals`} />
+            <KPICard label="Won" value={stats?.won ?? 0} icon="✅" sub={`${stats?.lost ?? 0} lost`} />
+            <KPICard label="Conversion" value={`${stats?.conversion_rate ?? 0}%`} icon="📈" sub="won ÷ contacts" />
+            <KPICard label="Revenue" value={money(stats?.revenue ?? 0)} icon="💰" sub="won deals" />
           </div>
 
           {(stats?.contacts ?? 0) === 0 && (stats?.deals ?? 0) === 0 && (
@@ -203,15 +203,28 @@ export default function Overview() {
             </div>
           )}
 
-          {segEntries.length > 0 && (
-            <div className="rounded-xl border border-[var(--border-strong)] bg-[var(--bg-surface)] p-4">
-              <h3 className="mb-3 text-sm font-semibold">Lead segments — {scopeName}</h3>
-              <Chart
-                data={segEntries.map(([seg, n]) => ({ label: seg, value: n as number }))}
-                height={180}
-              />
+          <div className="grid gap-4 lg:grid-cols-2">
+            <div className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-5 shadow-[var(--shadow-card)]">
+              <h3 className="mb-4 text-sm font-semibold text-[var(--text-primary)]">Lead segments — {scopeName}</h3>
+              {segEntries.length > 0 ? (
+                <Chart
+                  data={segEntries.map(([seg, n]) => ({ label: seg, value: n as number }))}
+                  height={200}
+                  showValues
+                />
+              ) : (
+                <p className="py-10 text-center text-sm text-[var(--text-muted)]">No segmented leads yet.</p>
+              )}
             </div>
-          )}
+            <PipelineHealth
+              open={stats?.deals ?? 0}
+              won={stats?.won ?? 0}
+              lost={stats?.lost ?? 0}
+              pipelineValue={stats?.pipeline_value ?? 0}
+              revenue={stats?.revenue ?? 0}
+              money={money}
+            />
+          </div>
 
           {scopeId !== ALL && recent.length > 0 && (
             <div>
@@ -226,7 +239,7 @@ export default function Overview() {
                       <th className="px-4 py-2 font-medium">Score</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-[var(--border-weak)]">
+                  <tbody className="divide-y divide-[var(--border-default)]">
                     {recent.map((c) => (
                       <tr key={c.id} className="hover:bg-[var(--bg-raised)]">
                         <td className="px-4 py-2">{c.name}</td>
@@ -432,6 +445,70 @@ function FirstRunHero({ onStart }: { onStart: () => void }) {
           </div>
         ))}
       </div>
+    </div>
+  );
+}
+
+// Pipeline-health panel — a token-driven proportion bar (open · won · lost)
+// plus the three deal counts and the two money figures. Theme-correct.
+function PipelineHealth({
+  open,
+  won,
+  lost,
+  pipelineValue,
+  revenue,
+  money,
+}: {
+  open: number;
+  won: number;
+  lost: number;
+  pipelineValue: number;
+  revenue: number;
+  money: (n: number) => string;
+}) {
+  const total = open + won + lost;
+  const rows = [
+    { label: 'Open', n: open, color: 'var(--status-active)' },
+    { label: 'Won', n: won, color: 'var(--status-positive)' },
+    { label: 'Lost', n: lost, color: 'var(--status-negative)' },
+  ];
+  return (
+    <div className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-5 shadow-[var(--shadow-card)]">
+      <h3 className="mb-4 text-sm font-semibold text-[var(--text-primary)]">Pipeline health</h3>
+      {total === 0 ? (
+        <p className="py-10 text-center text-sm text-[var(--text-muted)]">No deals yet.</p>
+      ) : (
+        <>
+          <div className="flex h-2.5 w-full overflow-hidden rounded-full bg-[var(--bg-raised)]">
+            {rows.map((r) =>
+              r.n > 0 ? (
+                <div key={r.label} style={{ width: `${(r.n / total) * 100}%`, background: r.color }} title={`${r.label}: ${r.n}`} />
+              ) : null,
+            )}
+          </div>
+          <div className="mt-4 grid grid-cols-3 gap-3">
+            {rows.map((r) => (
+              <div key={r.label} className="flex items-center gap-2">
+                <span className="h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: r.color }} />
+                <div className="min-w-0">
+                  <div className="text-lg font-bold leading-none text-[var(--text-primary)]">{r.n}</div>
+                  <div className="text-[11px] text-[var(--text-secondary)]">{r.label}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-3 border-t border-[var(--border-default)] pt-4">
+            <div>
+              <div className="text-[11px] uppercase tracking-wide text-[var(--text-secondary)]">Open value</div>
+              <div className="mt-0.5 text-base font-semibold text-[var(--text-primary)]">{money(pipelineValue)}</div>
+            </div>
+            <div>
+              <div className="text-[11px] uppercase tracking-wide text-[var(--text-secondary)]">Won revenue</div>
+              <div className="mt-0.5 text-base font-semibold" style={{ color: 'var(--status-positive)' }}>{money(revenue)}</div>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
