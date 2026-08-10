@@ -82,7 +82,7 @@ export default function SequencesPage() {
       setChat([...next, { role: 'assistant', content: res.reply }]);
       if (res.sequence) setPendingSeq(res.sequence);
     } catch (e: any) {
-      const msg = e.message === 'not_configured' ? 'Connect OpenCode in Settings to use the AI builder' : e.message || 'AI failed';
+      const msg = e.message === 'not_configured' ? 'LeadRail AI is temporarily unavailable' : e.message || 'AI failed';
       setChat([...next, { role: 'assistant', content: `⚠️ ${msg}` }]);
     } finally { setChatLoading(false); }
   };
@@ -103,7 +103,7 @@ export default function SequencesPage() {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div><h1 className="text-2xl font-bold">Sequences</h1><p className="text-sm text-slate-500">Multi-step outreach cadences. Steps drain on the Hermes cron once contacts are enrolled.</p></div>
+        <div><h1 className="text-2xl font-bold">Sequences</h1><p className="text-sm text-slate-500">Multi-step outreach cadences. Steps send automatically once contacts are enrolled.</p></div>
         <div className="flex items-center gap-2">
           <Dropdown value={venture?.id || ''} onChange={(e) => setVenture(ventures.find((v) => v.id === e.target.value) || null)} options={ventures.map((v) => ({ value: v.id, label: v.name }))} />
           <Button onClick={() => setOpen(true)}>+ New Sequence</Button>

@@ -76,7 +76,7 @@ export default function CampaignsPage() {
     try {
       const r = await apiSend<{ analyzed: number }>(`/api/campaigns/${assetCampaign.id}/assets/analyze`, 'POST');
       notify(`Analyzed ${r.analyzed} asset(s)`); openAssets(assetCampaign);
-    } catch (e: any) { notify(e.message === 'not_configured' ? 'Connect OpenCode to analyze' : e.message || 'Analyze failed', 'error'); }
+    } catch (e: any) { notify(e.message === 'not_configured' ? 'LeadRail AI is temporarily unavailable' : e.message || 'Analyze failed', 'error'); }
     finally { setAssetBusy(false); }
   };
 
@@ -186,7 +186,7 @@ export default function CampaignsPage() {
       </div>
 
       {loading ? <LoadingSpinner /> : rows.length === 0 ? (
-        <EmptyState icon="🎯" title="No campaigns yet" hint="Create your first ad campaign. Persists once Supabase is connected." action={<Button onClick={() => setOpen(true)}>New Campaign</Button>} />
+        <EmptyState icon="🎯" title="No campaigns yet" hint="Create your first ad campaign." action={<Button onClick={() => setOpen(true)}>New Campaign</Button>} />
       ) : (
         <div className="overflow-x-auto rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)]">
           <table className="w-full text-sm">

@@ -83,7 +83,7 @@ export default function CompaniesPage() {
           </thead>
           <tbody className="divide-y divide-slate-100">
             {loading ? <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-400">Loading…</td></tr>
-              : rows.length === 0 ? <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-400">No companies yet. Import Apollo leads or add one.</td></tr>
+              : rows.length === 0 ? <tr><td colSpan={5} className="px-4 py-10 text-center text-slate-400">No companies yet. Import leads or add one.</td></tr>
               : rows.map((c) => (
                 <tr key={c.id} className="cursor-pointer hover:bg-slate-50" onClick={() => openDetail(c)}>
                   <td className="px-4 py-3 font-medium text-slate-900">{c.name}</td>

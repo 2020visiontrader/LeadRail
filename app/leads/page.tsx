@@ -9,10 +9,20 @@ import Modal from '@/components/Modal';
 import Button from '@/components/Button';
 import Input from '@/components/Input';
 import Dropdown from '@/components/Dropdown';
+import ProgressStages from '@/components/ProgressStages';
 import { useToast } from '@/components/ToastProvider';
 import { apiGet, apiSend } from '@/lib/api';
 import { Contact, SEGMENTS } from '@/lib/types';
 import type { ApolloCandidate } from '@/lib/integrations/apollo';
+
+// Plain-language stages shown while a lead pull runs (no backend/vendor names).
+const LEAD_PULL_STAGES = [
+  'Reading your ideal customer profile…',
+  'Searching the LeadRail lead database…',
+  'Matching companies to your criteria…',
+  'Ranking the best-fit people…',
+  'Preparing your preview…',
+];
 
 const LIMIT = 30;
 const emptyLead = { name: '', email: '', company: '', title: '', segment: 'investor' };
@@ -70,9 +80,9 @@ export default function LeadsPage() {
       });
       setNlSummary(parsed.summary || '');
       setNlReason(parsed.reasoning || '');
-      notify('Search built — review and hit Search Apollo');
+      notify('Search built — review and hit Search');
     } catch (e: any) {
-      notify(e.message === 'not_configured' ? 'Connect OpenCode to use plain-language search' : e.message || 'Could not parse', 'error');
+      notify(e.message === 'not_configured' ? 'LeadRail AI is temporarily unavailable' : e.message || 'Could not parse', 'error');
     } finally { setParsing(false); }
   };
 
@@ -215,7 +225,7 @@ export default function LeadsPage() {
       setTotalMatches(data.total || 0);
       if (!data.candidates?.length) notify('No matches — widen the ICP', 'info');
     } catch (e: any) {
-      notify(e.message || 'Apollo search failed', 'error');
+      notify(e.message || 'Lead search failed', 'error');
       setResults([]);
     } finally { setSearching(false); }
   };
@@ -280,7 +290,7 @@ export default function LeadsPage() {
             }}
             options={[{ value: 'all', label: '🌐 All Ventures' }, ...ventures.map((v) => ({ value: v.id, label: v.name }))]}
           />
-          <Button variant="secondary" disabled={isAll} title={isAll ? 'Pick a specific venture to source leads' : undefined} onClick={() => setSourceOpen((o) => !o)}>Find Leads (Apollo)</Button>
+          <Button variant="secondary" disabled={isAll} title={isAll ? 'Pick a specific venture to source leads' : undefined} onClick={() => setSourceOpen((o) => !o)}>Find Leads</Button>
           <Button disabled={isAll} title={isAll ? 'Pick a specific venture to add a lead' : undefined} onClick={() => setAddOpen(true)}>+ Add Lead</Button>
         </div>
       </div>
@@ -293,7 +303,7 @@ export default function LeadsPage() {
       {sourceOpen && (
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-4">
           <div className="flex items-center justify-between gap-2">
-            <h2 className="font-semibold">Source leads from Apollo</h2>
+            <h2 className="font-semibold">Source leads from LeadRail</h2>
             <div className="flex items-center gap-2">
               {hasProfile && (
                 <Button variant="secondary" onClick={applyVentureProfile} title="Fill filters from this venture's pitch-deck profile">
@@ -324,7 +334,7 @@ export default function LeadsPage() {
               </p>
             )}
             {!parsing && nlSummary && <p className="text-xs text-indigo-700">→ {nlSummary}</p>}
-            <p className="text-[11px] text-slate-500">The AI fills the filters below — review, tweak, then Search Apollo.</p>
+            <p className="text-[11px] text-slate-500">The AI fills the filters below — review, tweak, then Search.</p>
           </div>
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -338,9 +348,11 @@ export default function LeadsPage() {
           <div className="flex items-center gap-3">
             <Input label="Limit" type="number" value={String(icp.limit)} onChange={(e) => setIcp({ ...icp, limit: Number(e.target.value) })} />
             <div className="pt-6">
-              <Button onClick={handleApolloSearch} loading={searching}>Search Apollo</Button>
+              <Button onClick={handleApolloSearch} loading={searching}>Search LeadRail</Button>
             </div>
           </div>
+
+          <ProgressStages active={searching} stages={LEAD_PULL_STAGES} />
 
           {results && (
             <div className="space-y-2">
@@ -375,7 +387,7 @@ export default function LeadsPage() {
                 })}
               </div>
               <p className="text-xs text-slate-500">
-                Previews show masked names and locked emails. Import, then Enrich a lead to unlock full contact data (uses Apollo credits).
+                Previews show masked names and locked emails. Import, then Enrich a lead to unlock full contact data (uses LeadRail credits).
               </p>
             </div>
           )}

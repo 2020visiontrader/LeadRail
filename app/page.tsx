@@ -150,7 +150,7 @@ export default function Overview() {
     finally { setCreating(false); }
   };
 
-  const stepLabel = step === 1 ? 'Next: targeting' : step === 2 ? 'Next: deck & skills'
+  const stepLabel = step === 1 ? 'Next: targeting' : step === 2 ? 'Next: deck & focus'
     : step === 3 ? (wDeck ? 'Create & profile deck' : 'Create venture') : 'Done';
 
   const scopeName = scopeId === ALL ? 'All Ventures' : ventures.find((v) => v.id === scopeId)?.name || '—';
@@ -341,19 +341,19 @@ export default function Overview() {
                   className="block w-full text-sm text-[var(--text-secondary)] file:mr-3 file:rounded-md file:border-0 file:bg-[var(--bg-raised)] file:px-3 file:py-1.5 file:text-sm"
                 />
                 <p className="mt-1 text-xs text-[var(--text-muted)]">
-                  PDF, PPTX, Word, or Excel. The AI reads it and, with your goal above, builds a tailored lead profile so the Apollo search targets the right people.
+                  PDF, PPTX, Word, or Excel. The AI reads it and, with your goal above, builds a tailored lead profile so LeadRail targets the right people.
                 </p>
                 {wDeck && <p className="mt-1 text-xs text-[var(--brand)]">Selected: {wDeck.name}</p>}
               </div>
               <div>
-                <span className="mb-1 block text-sm font-medium text-[var(--text-secondary)]">Skills</span>
+                <span className="mb-1 block text-sm font-medium text-[var(--text-secondary)]">Focus areas</span>
                 <div className="flex flex-wrap gap-2">
                   <button
                     type="button"
                     onClick={() => setWSkills([AUTO_SKILLS])}
                     className={`rounded-full border px-3 py-1 text-xs transition ${wSkills.includes(AUTO_SKILLS) ? 'border-[var(--brand)] bg-[var(--brand)] text-white' : 'border-[var(--border-strong)] bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:border-[var(--brand)]'}`}
                   >
-                    🤖 Let Hermes decide
+                    🤖 Automatic (recommended)
                   </button>
                   {skillCatalog.map((s) => {
                     const on = wSkills.includes(s.id);
@@ -370,7 +370,7 @@ export default function Overview() {
                     );
                   })}
                 </div>
-                <p className="mt-1 text-xs text-[var(--text-muted)]">Hermes routes each task to the right skill + OpenCode Go model automatically. Pick specific skills only to force them on.</p>
+                <p className="mt-1 text-xs text-[var(--text-muted)]">LeadRail AI automatically picks the best approach for each task. Choose specific focus areas only to force them on.</p>
               </div>
             </div>
           )}
@@ -389,7 +389,7 @@ export default function Overview() {
                 </div>
               )}
               {profileResult?.note && <p className="text-xs text-[var(--text-muted)]">{profileResult.note}</p>}
-              <p className="text-xs text-[var(--text-muted)]">Head to <b>Leads → Find Leads</b> — the Apollo search is pre-filled from this profile.</p>
+              <p className="text-xs text-[var(--text-muted)]">Head to <b>Leads → Find Leads</b> — your LeadRail search is pre-filled from this profile.</p>
             </div>
           )}
 
@@ -409,7 +409,7 @@ function FirstRunHero({ onStart }: { onStart: () => void }) {
   const steps = [
     { n: 1, t: 'Name your venture', d: 'A venture is a self-contained brand workspace — its own leads, sequences, inbox and outreach.' },
     { n: 2, t: 'Set the target', d: 'Tell it who you sell to and which sectors — this shapes every lead search.' },
-    { n: 3, t: 'Drop a deck (optional)', d: 'The AI reads your pitch and auto-tailors the Apollo search to the right people.' },
+    { n: 3, t: 'Drop a deck (optional)', d: 'The AI reads your pitch and auto-tailors your LeadRail search to the right people.' },
   ];
   return (
     <div className="animate-fade-in overflow-hidden rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] shadow-[var(--shadow-card)]">

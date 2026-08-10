@@ -56,7 +56,7 @@ export default function InboxPage() {
       setReplyChat([...next, { role: 'assistant', content: res.reply }]);
       if (res.draft) setDraft(res.draft);
     } catch (e: any) {
-      const msg = e.message === 'not_configured' ? 'Connect OpenCode in Settings to draft replies' : e.message || 'AI failed';
+      const msg = e.message === 'not_configured' ? 'LeadRail AI is temporarily unavailable' : e.message || 'AI failed';
       setReplyChat([...next, { role: 'assistant', content: `⚠️ ${msg}` }]);
     } finally { setReplyLoading(false); }
   };

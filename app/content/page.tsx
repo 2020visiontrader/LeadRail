@@ -51,7 +51,7 @@ export default function ContentPage() {
       setForm((f) => ({ ...f, post_body: body }));
       notify('Draft generated');
     } catch (e: any) {
-      notify(e.message === 'not_configured' ? 'Connect OpenCode to generate' : e.message || 'Generation failed', 'error');
+      notify(e.message === 'not_configured' ? 'LeadRail AI is temporarily unavailable' : e.message || 'Generation failed', 'error');
     } finally { setGenerating(false); }
   };
 
@@ -117,7 +117,7 @@ export default function ContentPage() {
       {!venture ? (
         <EmptyState icon="🏢" title="Select a venture" hint="Choose a brand above to manage its content." />
       ) : loading ? <LoadingSpinner /> : posts.length === 0 ? (
-        <EmptyState icon="📱" title="No content scheduled" hint="Schedule your first post. Publishing requires Postiz/Meta + Supabase connected." action={<Button onClick={() => setOpen(true)}>New Post</Button>} />
+        <EmptyState icon="📱" title="No content scheduled" hint="Schedule your first post." action={<Button onClick={() => setOpen(true)}>New Post</Button>} />
       ) : (
         <ContentCalendar posts={posts} onSelect={setSelected} />
       )}

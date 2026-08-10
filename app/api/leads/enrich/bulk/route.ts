@@ -18,7 +18,7 @@ async function POST__impl(request: NextRequest) {
   if (error) return error;
   if (!dbReady()) return badRequest('database not connected');
   if (!apolloConfigured()) {
-    return NextResponse.json({ error: 'Apollo is not connected', code: 'not_configured', connect: 'APOLLO_API_KEY' }, { status: 409 });
+    return NextResponse.json({ error: 'Enrichment is temporarily unavailable', code: 'not_configured', connect: 'APOLLO_API_KEY' }, { status: 409 });
   }
 
   let body: any;

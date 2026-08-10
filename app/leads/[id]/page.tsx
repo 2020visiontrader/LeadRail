@@ -41,7 +41,7 @@ export default function LeadDetail() {
   if (!contact) return (
     <div className="space-y-4">
       <Link href="/leads" className="text-sm text-indigo-600 hover:underline">← Back to leads</Link>
-      <p className="text-sm text-slate-500">Contact not found. This needs a live Supabase connection.</p>
+      <p className="text-sm text-slate-500">Contact not found.</p>
     </div>
   );
 

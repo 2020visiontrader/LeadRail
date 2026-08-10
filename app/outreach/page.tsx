@@ -72,7 +72,7 @@ export default function OutreachPage() {
       setForm((f) => ({ ...f, subject: r.draft.subject || f.subject, html: r.draft.body || f.html }));
       notify('Draft generated');
     } catch (e: any) {
-      notify(e.message === 'not_configured' ? 'Connect OpenCode to generate' : e.message || 'Generation failed', 'error');
+      notify(e.message === 'not_configured' ? 'LeadRail AI is temporarily unavailable' : e.message || 'Generation failed', 'error');
     } finally { setGenerating(false); }
   };
 
