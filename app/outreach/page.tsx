@@ -133,7 +133,7 @@ export default function OutreachPage() {
         <div className="flex items-center gap-4">
           <div>
             <h1 className="text-2xl font-bold">Outreach</h1>
-            <p className="text-sm text-slate-500">Email campaigns</p>
+            <p className="text-sm text-slate-500">One-off outreach emails, sent from your venture&apos;s verified sender.</p>
           </div>
           {ventures.length > 1 && (
             <select

@@ -99,7 +99,7 @@ export default function ContentPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold">Content</h1>
-          <p className="text-sm text-slate-500">Social content calendar</p>
+          <p className="text-sm text-slate-500">Plan and schedule social posts for each venture.</p>
         </div>
         <div className="flex items-center gap-2">
           {ventures.length > 1 && (

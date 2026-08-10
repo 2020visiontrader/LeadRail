@@ -6,7 +6,8 @@
 // agent's driveSearch tool.
 
 import { createSign } from 'node:crypto';
-import { getConnection } from '@/lib/db';
+import { getConnection, upsertConnection } from '@/lib/db';
+import { refreshGoogleToken } from '@/lib/social/google-oauth';
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -53,12 +54,35 @@ async function serviceAccountToken(): Promise<string | null> {
   return saTokenCache.token;
 }
 
+// Per-user OAuth connection wins; refresh the access token when it's expired
+// (or within 60s of it) using the stored refresh token, and persist the new one.
 export async function resolveDriveToken(accountId?: string): Promise<string | null> {
   if (accountId) {
     try {
       const conn = await getConnection(accountId, 'google_drive');
-      const t = conn?.meta?.access_token;
-      if (t) return String(t);
+      if (conn?.meta?.access_token) {
+        const expiry = Number(conn.meta.expiry_ms) || 0;
+        const refresh = conn.meta.refresh_token ? String(conn.meta.refresh_token) : null;
+        if (refresh && expiry && expiry - 60_000 < Date.now()) {
+          try {
+            const t = await refreshGoogleToken(refresh);
+            await upsertConnection({
+              account_id: conn.account_id,
+              provider: 'google_drive',
+              external_id: conn.external_id,
+              display_name: conn.display_name,
+              username: conn.username,
+              status: 'connected',
+              secret_ref: conn.secret_ref,
+              meta: { ...conn.meta, access_token: t.accessToken, expiry_ms: Date.now() + t.expiresIn * 1000 },
+            });
+            return t.accessToken;
+          } catch {
+            // refresh failed — fall through to the (possibly stale) stored token, then SA
+          }
+        }
+        return String(conn.meta.access_token);
+      }
     } catch { /* fall through */ }
   }
   return serviceAccountToken();

@@ -176,7 +176,7 @@ export default function CampaignsPage() {
         <div className="flex items-center gap-4">
           <div>
             <h1 className="text-2xl font-bold text-[var(--text-primary)]">Campaigns</h1>
-            <p className="text-sm text-[var(--text-secondary)]">Ad campaigns</p>
+            <p className="text-sm text-[var(--text-secondary)]">Paid ad campaigns — launch, track spend, and A/B test creative.</p>
           </div>
           {ventures.length > 1 && (
             <select

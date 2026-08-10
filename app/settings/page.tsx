@@ -123,11 +123,105 @@ function DataPrivacySection() {
   );
 }
 
+// ---- Client-facing knowledge-source connections ----
+// Same self-serve model as the socials: the user connects THEIR OWN Notion and
+// Google Drive. Notion uses a long-lived integration secret (paste); Google Drive
+// uses OAuth (click). Both store per-account, and the assistant reads from them.
+function KnowledgeSources({ connections, onChange, isOwner }: { connections: Connection[]; onChange: () => void; isOwner: boolean }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [notionOpen, setNotionOpen] = useState(false);
+  const [notionToken, setNotionToken] = useState('');
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const conn = (p: string) => connections.find((c) => c.provider === p && c.status === 'connected');
+  const driveConn = conn('google_drive');
+  const notionConn = conn('notion');
+
+  async function disconnect(provider: string) {
+    setBusy(provider);
+    try { await apiSend(`/api/integrations/${provider}`, 'DELETE'); onChange(); }
+    catch { /* surfaced on reload */ } finally { setBusy(null); }
+  }
+
+  async function connectNotion() {
+    if (!notionToken.trim()) return;
+    setBusy('notion'); setMsg(null);
+    try {
+      const r = await apiSend<{ external_name?: string }>('/api/integrations/validate', 'POST', { provider: 'notion', token: notionToken.trim() });
+      setMsg({ ok: true, text: `Notion connected — ${r.external_name || 'workspace'}` });
+      setNotionToken(''); setNotionOpen(false); onChange();
+    } catch (e: any) {
+      setMsg({ ok: false, text: e?.message?.includes('401') ? 'That token was rejected by Notion. Check you copied the full secret and shared a page with the integration.' : (e?.message || 'Could not connect Notion') });
+    } finally { setBusy(null); }
+  }
+
+  return (
+    <div className="space-y-4">
+      <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Knowledge sources</h3>
+      <div className="grid gap-4 sm:grid-cols-2">
+        {/* Google Drive — OAuth */}
+        <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-3">
+              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#1FA463] text-sm font-bold text-white">D</span>
+              <div><h3 className="font-semibold">Google Drive</h3><p className="text-sm text-slate-500">Let the assistant search your Drive files</p></div>
+            </div>
+            <Badge tone={driveConn ? 'green' : isOwner ? 'gray' : 'amber'}>{driveConn ? 'connected' : isOwner ? 'off' : 'soon'}</Badge>
+          </div>
+          {isOwner && driveConn && (
+            <div className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
+              <span className="truncate">{driveConn.username || driveConn.display_name || driveConn.external_id}</span>
+              <button onClick={() => disconnect('google_drive')} disabled={busy === 'google_drive'} className="ml-2 shrink-0 text-xs text-slate-400 hover:text-red-600">{busy === 'google_drive' ? '…' : 'Disconnect'}</button>
+            </div>
+          )}
+          {isOwner ? (
+            <a href="/api/social/google-drive/connect" className="w-full">
+              <Button variant={driveConn ? 'ghost' : 'secondary'} className="w-full text-xs">{driveConn ? 'Reconnect Google Drive' : 'Connect Google Drive'}</Button>
+            </a>
+          ) : (
+            <Button variant="ghost" disabled className="w-full cursor-not-allowed text-xs opacity-60">Coming soon</Button>
+          )}
+        </div>
+
+        {/* Notion — token paste */}
+        <div className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="flex items-start justify-between">
+            <div className="flex items-center gap-3">
+              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#111111] text-sm font-bold text-white">N</span>
+              <div><h3 className="font-semibold">Notion</h3><p className="text-sm text-slate-500">Let the assistant read your Notion pages</p></div>
+            </div>
+            <Badge tone={notionConn ? 'green' : 'gray'}>{notionConn ? 'connected' : 'off'}</Badge>
+          </div>
+          {notionConn && (
+            <div className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
+              <span className="truncate">{notionConn.display_name || notionConn.external_id}</span>
+              <button onClick={() => disconnect('notion')} disabled={busy === 'notion'} className="ml-2 shrink-0 text-xs text-slate-400 hover:text-red-600">{busy === 'notion' ? '…' : 'Disconnect'}</button>
+            </div>
+          )}
+          {notionOpen ? (
+            <div className="space-y-2 rounded-lg bg-slate-50 p-3">
+              <p className="text-xs text-slate-600">Create an internal integration at <a href="https://www.notion.so/my-integrations" target="_blank" rel="noopener" className="text-blue-600 underline">notion.so/my-integrations</a>, share your pages with it, then paste its secret.</p>
+              <Input type="password" label="Notion integration secret" placeholder="ntn_… or secret_…" value={notionToken} onChange={(e) => setNotionToken((e.target as HTMLInputElement).value)} />
+              <div className="flex gap-2">
+                <Button onClick={connectNotion} loading={busy === 'notion'} disabled={!notionToken.trim()} className="flex-1 text-xs">Connect</Button>
+                <Button variant="ghost" onClick={() => { setNotionOpen(false); setMsg(null); }} className="text-xs">Cancel</Button>
+              </div>
+            </div>
+          ) : (
+            <Button variant={notionConn ? 'ghost' : 'secondary'} className="w-full text-xs" onClick={() => { setNotionOpen(true); setMsg(null); }}>{notionConn ? 'Reconnect Notion' : 'Connect Notion'}</Button>
+          )}
+        </div>
+      </div>
+      {msg && <p className={`text-xs ${msg.ok ? 'text-green-600' : 'text-red-600'}`}>{msg.text}</p>}
+    </div>
+  );
+}
+
 // ---- Client-facing social connections ----
 // Users connect THEIR OWN accounts via OAuth into LeadRail's apps. No app IDs,
 // no env vars, no backend service names — that's the Postiz/Buffer model.
 // Multi-account: each platform card lists every connected account + "Add another".
-function ClientConnections({ connections, onChange }: { connections: Connection[]; onChange: () => void }) {
+function ClientConnections({ connections, onChange, isOwner }: { connections: Connection[]; onChange: () => void; isOwner: boolean }) {
   const [busy, setBusy] = useState<string | null>(null);
 
   const accountsFor = (key: string) =>
@@ -204,6 +298,10 @@ function ClientConnections({ connections, onChange }: { connections: Connection[
         LeadRail only receives permission to manage the accounts you approve, and you can disconnect any time. To add
         a different account you may need to sign into that platform in this browser first.
       </p>
+
+      <div className="border-t border-slate-200 pt-6">
+        <KnowledgeSources connections={connections} onChange={onChange} isOwner={isOwner} />
+      </div>
     </div>
   );
 }
@@ -258,6 +356,18 @@ export default function Settings() {
     } else if (connected === 'instagram') {
       const ig = q.get('ig') || 'account';
       setFeedback({ ok: true, msg: `Instagram connected — @${ig}` });
+    } else if (connected === 'google_drive') {
+      setFeedback({ ok: true, msg: `Google Drive connected — ${q.get('email') || 'your account'}` });
+    } else if (q.get('error')?.startsWith('gdrive')) {
+      const map: Record<string, string> = {
+        gdrive_not_configured: 'Google Drive sign-in is not configured yet (missing Google OAuth client).',
+        gdrive_denied: 'You declined the Google permission request.',
+        gdrive_bad_state: 'Security check failed — please try connecting again.',
+        gdrive_exchange: 'Could not complete the Google handshake.',
+      };
+      const code = q.get('error')!;
+      const detail = q.get('detail');
+      setFeedback({ ok: false, msg: `${map[code] || 'Google Drive connection failed.'}${detail ? ` (${detail})` : ''}` });
     } else if (q.get('error')?.startsWith('meta') || q.get('error')?.startsWith('ig')) {
       const map: Record<string, string> = {
         meta_not_configured: 'Meta app not configured — set META_APP_ID and META_APP_SECRET first.',
@@ -320,7 +430,7 @@ export default function Settings() {
       <div>
         <h1 className="text-2xl font-bold">{isOwner ? 'Settings' : 'Connections'}</h1>
         <p className="text-sm text-slate-500">
-          {isOwner ? 'Integration hub — platform backend + per-account connections' : 'Connect your social accounts'}
+          {isOwner ? 'Connect the accounts and data your ventures run on — publishing, email, and assistant sources.' : 'Connect the social accounts you post and reply from.'}
         </p>
       </div>
 
@@ -335,7 +445,7 @@ export default function Settings() {
           )}
 
           {/* SOCIAL CONNECTIONS — shown to everyone (per-account OAuth, no backend) */}
-          <ClientConnections connections={connections} onChange={load} />
+          <ClientConnections connections={connections} onChange={load} isOwner={!!isOwner} />
 
           {/* OWNER-ONLY — backend integration hub */}
           {isOwner && (
