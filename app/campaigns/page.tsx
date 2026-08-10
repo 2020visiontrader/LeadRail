@@ -161,8 +161,8 @@ export default function CampaignsPage() {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-4">
           <div>
-            <h1 className="text-2xl font-bold">Campaigns</h1>
-            <p className="text-sm text-slate-500">Ad campaigns</p>
+            <h1 className="text-2xl font-bold text-[var(--text-primary)]">Campaigns</h1>
+            <p className="text-sm text-[var(--text-secondary)]">Ad campaigns</p>
           </div>
           {ventures.length > 1 && (
             <select
@@ -188,14 +188,14 @@ export default function CampaignsPage() {
       {loading ? <LoadingSpinner /> : rows.length === 0 ? (
         <EmptyState icon="🎯" title="No campaigns yet" hint="Create your first ad campaign. Persists once Supabase is connected." action={<Button onClick={() => setOpen(true)}>New Campaign</Button>} />
       ) : (
-        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+        <div className="overflow-x-auto rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)]">
           <table className="w-full text-sm">
-            <thead className="border-b border-slate-200 bg-slate-50 text-slate-600">
+            <thead className="border-b border-[var(--border-default)] bg-[var(--bg-raised)] text-[var(--text-secondary)]">
               <tr><th className="p-3 text-left">Name</th><th className="p-3 text-left">Channel</th><th className="p-3 text-right">Budget</th><th className="p-3 text-left">Status</th><th className="p-3 text-right">Actions</th></tr>
             </thead>
-            <tbody className="divide-y divide-slate-100">
+            <tbody className="divide-y divide-[var(--border-default)] text-[var(--text-primary)]">
               {rows.map((c) => (
-                <tr key={c.id}>
+                <tr key={c.id} className="hover:bg-[var(--bg-raised)]">
                   <td className="p-3 font-medium">{c.name}</td>
                   <td className="p-3"><Badge tone="blue">{c.channel || '—'}</Badge></td>
                   <td className="p-3 text-right">${Number(c.budget).toLocaleString()}</td>
@@ -210,7 +210,7 @@ export default function CampaignsPage() {
                   <td className="p-3 text-right">
                     {c.meta_campaign_id && c.meta_status !== 'ACTIVE' && (
                       <button
-                        className="mr-3 text-emerald-600 hover:underline disabled:cursor-not-allowed disabled:text-slate-300 disabled:no-underline"
+                        className="mr-3 text-[var(--status-positive)] hover:underline disabled:cursor-not-allowed disabled:text-[var(--text-muted)] disabled:no-underline"
                         disabled={!Number(c.budget) || rowBusy === c.id}
                         title={!Number(c.budget) ? 'Set a budget first' : undefined}
                         onClick={() => launchCampaign(c)}
@@ -219,15 +219,15 @@ export default function CampaignsPage() {
                       </button>
                     )}
                     {c.meta_status === 'ACTIVE' && (
-                      <button className="mr-3 text-amber-600 hover:underline disabled:text-slate-300" disabled={rowBusy === c.id} onClick={() => pauseCampaign(c)}>Pause</button>
+                      <button className="mr-3 text-[#D97706] hover:underline disabled:text-[var(--text-muted)]" disabled={rowBusy === c.id} onClick={() => pauseCampaign(c)}>Pause</button>
                     )}
                     {c.meta_campaign_id && (
-                      <button className="mr-3 text-slate-600 hover:underline disabled:text-slate-300" disabled={rowBusy === c.id} onClick={() => syncCampaign(c)}>
+                      <button className="mr-3 text-[var(--text-secondary)] hover:underline disabled:text-[var(--text-muted)]" disabled={rowBusy === c.id} onClick={() => syncCampaign(c)}>
                         {rowBusy === c.id ? 'Syncing…' : 'Sync'}
                       </button>
                     )}
-                    <button className="mr-3 text-indigo-600 hover:underline" onClick={() => openAssets(c)}>Assets</button>
-                    <button className="text-red-600 hover:underline" onClick={() => remove(c)}>Delete</button>
+                    <button className="mr-3 text-[var(--brand)] hover:underline" onClick={() => openAssets(c)}>Assets</button>
+                    <button className="text-[var(--status-negative)] hover:underline" onClick={() => remove(c)}>Delete</button>
                   </td>
                 </tr>
               ))}
@@ -260,7 +260,7 @@ export default function CampaignsPage() {
                 )}
               </>
             ) : (
-              <p className="text-xs text-slate-500">Connect a Meta ad account to launch live ads.</p>
+              <p className="text-xs text-[var(--text-secondary)]">Connect a Meta ad account to launch live ads.</p>
             )
           )}
           <div className="grid grid-cols-2 gap-3">
@@ -272,18 +272,18 @@ export default function CampaignsPage() {
 
       <Modal isOpen={!!assetCampaign} title={`Assets — ${assetCampaign?.name || ''}`} onClose={() => setAssetCampaign(null)} submitLabel="Analyze with AI" onSubmit={analyzeAssets} loading={assetBusy}>
         <div className="space-y-4">
-          <p className="text-xs text-slate-500">Static ad images only (no video generation yet). Add image URLs, then run AI QA to score composition, legibility, and ad-policy fit.</p>
+          <p className="text-xs text-[var(--text-secondary)]">Static ad images only (no video generation yet). Add image URLs, then run AI QA to score composition, legibility, and ad-policy fit.</p>
           <div className="flex items-end gap-2">
             <div className="flex-1"><Input label="Image URL" placeholder="https://…" value={assetUrl} onChange={(e) => setAssetUrl(e.target.value)} /></div>
             <Button variant="secondary" loading={assetBusy} onClick={addAsset}>Add</Button>
           </div>
           <div className="max-h-64 space-y-2 overflow-auto">
-            {assets.length === 0 && <p className="text-sm text-slate-400">No assets yet.</p>}
+            {assets.length === 0 && <p className="text-sm text-[var(--text-muted)]">No assets yet.</p>}
             {assets.map((a) => (
-              <div key={a.id} className="flex items-center justify-between rounded border border-slate-200 bg-white p-2 text-sm">
+              <div key={a.id} className="flex items-center justify-between rounded border border-[var(--border-default)] bg-[var(--bg-surface)] p-2 text-sm">
                 <span className="truncate max-w-[60%]">{a.url}</span>
                 <div className="flex items-center gap-2">
-                  {a.ai_analysis?.score !== undefined && <span className="text-xs text-slate-500">score {a.ai_analysis.score}</span>}
+                  {a.ai_analysis?.score !== undefined && <span className="text-xs text-[var(--text-secondary)]">score {a.ai_analysis.score}</span>}
                   <Badge tone={a.status === 'approved' ? 'green' : a.status === 'rejected' ? 'red' : 'gray'}>{a.status}</Badge>
                 </div>
               </div>

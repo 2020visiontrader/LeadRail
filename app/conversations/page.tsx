@@ -124,27 +124,27 @@ export default function ConversationsPage() {
               <li key={conv.id}>
                 <button
                   onClick={() => loadConversation(conv.id)}
-                  className={`w-full rounded-lg border p-3 text-left text-sm ${
+                  className={`w-full rounded-lg border p-3 text-left text-sm transition ${
                     activeConversation?.id === conv.id
-                      ? 'border-indigo-400 bg-indigo-50'
-                      : 'border-slate-200 bg-white hover:bg-slate-50'
+                      ? 'border-[var(--brand)] bg-[var(--brand-soft)]'
+                      : 'border-[var(--border-default)] bg-[var(--bg-surface)] hover:bg-[var(--bg-raised)]'
                   }`}
                 >
                   <div className="flex items-center justify-between">
-                    <span className={conv.unread_count > 0 ? 'font-semibold' : 'text-slate-600'}>
+                    <span className={conv.unread_count > 0 ? 'font-semibold text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}>
                       <Badge>{conv.channel}</Badge>
                     </span>
                   </div>
-                  <div className="truncate text-xs text-slate-500">
+                  <div className="truncate text-xs text-[var(--text-secondary)]">
                     {conv.subject || '(no subject)'}
                   </div>
-                  <div className="text-xs text-slate-400">
+                  <div className="text-xs text-[var(--text-muted)]">
                     {formatTimestamp(conv.last_message_at)}
                   </div>
                   {conv.unread_count > 0 && (
                     <div className="flex items-center mt-1">
-                      <div className="w-2 h-2 bg-indigo-500 rounded-full mr-2" />
-                      <span className="text-xs text-indigo-600">{conv.unread_count} unread</span>
+                      <div className="w-2 h-2 bg-[var(--brand)] rounded-full mr-2" />
+                      <span className="text-xs text-[var(--brand)]">{conv.unread_count} unread</span>
                     </div>
                   )}
                 </button>
@@ -154,11 +154,11 @@ export default function ConversationsPage() {
           <div className="lg:col-span-2">
             {activeConversation ? (
               <div className="space-y-4">
-                <div className="rounded-xl border border-slate-200 bg-white p-5">
-                  <h2 className="text-lg font-semibold mb-2">
+                <div className="rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-5">
+                  <h2 className="text-lg font-semibold mb-2 text-[var(--text-primary)]">
                     {activeConversation.subject || '(no subject)'}
                   </h2>
-                  <div className="text-sm text-slate-500">
+                  <div className="text-sm text-[var(--text-secondary)]">
                     Channel: {activeConversation.channel}
                   </div>
                   <div className="mt-4 space-y-3">
@@ -167,12 +167,12 @@ export default function ConversationsPage() {
                         key={msg.id}
                         className={`p-4 border rounded-lg ${
                           msg.direction === 'inbound'
-                            ? 'border-blue-200 bg-blue-50'
-                            : 'border-gray-200 bg-gray-50'
+                            ? 'border-[var(--border-strong)] bg-[var(--bg-raised)]'
+                            : 'border-[var(--border-default)] bg-[var(--bg-surface)]'
                         }`}
                       >
                         <div className="flex items-center justify-between mb-2">
-                          <span className="font-semibold">{msg.from_addr || 'Unknown'}</span>
+                          <span className="font-semibold text-[var(--text-primary)]">{msg.from_addr || 'Unknown'}</span>
                           <Badge
                             tone={msg.direction === 'inbound' ? 'blue' : 'gray'}
                           >
@@ -180,19 +180,19 @@ export default function ConversationsPage() {
                           </Badge>
                         </div>
                         {msg.subject && (
-                          <div className="font-medium mb-1">{msg.subject}</div>
+                          <div className="font-medium mb-1 text-[var(--text-primary)]">{msg.subject}</div>
                         )}
-                        <p className="whitespace-pre-wrap text-sm text-slate-700">
+                        <p className="whitespace-pre-wrap text-sm text-[var(--text-secondary)]">
                           {msg.body || '(no body)'}
                         </p>
-                        <div className="mt-2 text-xs text-slate-500">
+                        <div className="mt-2 text-xs text-[var(--text-muted)]">
                           {formatTimestamp(msg.sent_at)}
                         </div>
                       </div>
                     ))}
                   </div>
                   {activeConversation.channel === 'instagram' && (
-                    <div className="mt-4 space-y-2 border-t border-slate-100 pt-4">
+                    <div className="mt-4 space-y-2 border-t border-[var(--border-default)] pt-4">
                       <Textarea
                         label="Reply"
                         rows={3}
@@ -207,7 +207,7 @@ export default function ConversationsPage() {
                 </div>
               </div>
             ) : (
-              <div className="rounded-xl border border-dashed border-slate-200 p-10 text-center text-sm text-slate-400">
+              <div className="rounded-xl border border-dashed border-[var(--border-strong)] p-10 text-center text-sm text-[var(--text-muted)]">
                 Select a conversation
               </div>
             )}
