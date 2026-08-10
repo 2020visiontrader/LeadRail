@@ -61,6 +61,8 @@ export function getIntegrationStatus() {
     meta: !!process.env.META_ACCESS_TOKEN,
     google_ads: !!process.env.GOOGLE_ADS_DEVELOPER_TOKEN,
     nim: !!process.env.NIM_API_KEY,
+    notion: !!(process.env.NOTION_API_KEY || process.env.NOTION_TOKEN),
+    google_drive: !!(process.env.GOOGLE_SERVICE_ACCOUNT_JSON || process.env.GOOGLE_DRIVE_ACCESS_TOKEN),
   };
 
   return status;

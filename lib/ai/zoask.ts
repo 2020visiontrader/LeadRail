@@ -26,10 +26,11 @@ export function zoAskConfigured(): boolean {
   return KEY.length > 0;
 }
 
-async function ask(input: string): Promise<string> {
+async function ask(input: string, modelOverride?: string): Promise<string> {
+  const model = modelOverride || MODEL;
   const body: { input: string; model_name?: string } = { input };
-  if (typeof MODEL === 'string' && MODEL.length > 0) {
-    body.model_name = MODEL;
+  if (typeof model === 'string' && model.length > 0) {
+    body.model_name = model;
   }
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
@@ -99,6 +100,7 @@ export async function zoAskChat(opts: {
   system?: string;
   messages: { role: 'user' | 'assistant'; content: string }[];
   maxOutputTokens?: number;
+  model?: string;
 }): Promise<string> {
   const lines: string[] = [];
   if (opts.system) lines.push(opts.system);
@@ -107,5 +109,5 @@ export async function zoAskChat(opts: {
     lines.push(`${m.role === 'assistant' ? 'Assistant' : 'User'}: ${m.content}`);
   }
   lines.push('Assistant:');
-  return ask(lines.join('\n'));
+  return ask(lines.join('\n'), opts.model);
 }

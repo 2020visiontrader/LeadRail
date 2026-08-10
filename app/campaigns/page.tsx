@@ -8,6 +8,7 @@ import Badge from '@/components/Badge';
 import KPICard from '@/components/KPICard';
 import EmptyState from '@/components/EmptyState';
 import LoadingSpinner from '@/components/LoadingSpinner';
+import ProgressStages from '@/components/ProgressStages';
 import { useToast } from '@/components/ToastProvider';
 import { apiGet, apiSend } from '@/lib/api';
 import { AdCampaign } from '@/lib/types';
@@ -50,6 +51,10 @@ export default function CampaignsPage() {
   const [metaAccounts, setMetaAccounts] = useState<MetaAdAccount[]>([]);
   const [metaAccountsLoaded, setMetaAccountsLoaded] = useState(false);
   const [rowBusy, setRowBusy] = useState<string | null>(null);
+  const [abCampaign, setAbCampaign] = useState<MetaAdCampaign | null>(null);
+  const [abReport, setAbReport] = useState<any>(null);
+  const [abLoading, setAbLoading] = useState(false);
+  const [abError, setAbError] = useState<string>('');
 
   useEffect(() => {
     apiGet<{ ventures: Venture[] }>('/api/ventures')
@@ -153,6 +158,15 @@ export default function CampaignsPage() {
     finally { setRowBusy(null); }
   };
 
+  const openAb = async (c: MetaAdCampaign) => {
+    setAbCampaign(c); setAbReport(null); setAbError(''); setAbLoading(true);
+    try {
+      setAbReport(await apiGet(`/api/campaigns/${c.id}/ab-test`));
+    } catch (e: any) {
+      setAbError(e?.message || 'Could not load analysis');
+    } finally { setAbLoading(false); }
+  };
+
   const totalBudget = rows.reduce((s, r) => s + (Number(r.budget) || 0), 0);
   const totalSpend = rows.reduce((s, r) => s + (Number(r.spend) || 0), 0);
 
@@ -226,6 +240,9 @@ export default function CampaignsPage() {
                         {rowBusy === c.id ? 'Syncing…' : 'Sync'}
                       </button>
                     )}
+                    {c.meta_campaign_id && (
+                      <button className="mr-3 text-[var(--brand)] hover:underline" onClick={() => openAb(c)}>Analyze</button>
+                    )}
                     <button className="mr-3 text-[var(--brand)] hover:underline" onClick={() => openAssets(c)}>Assets</button>
                     <button className="text-[var(--status-negative)] hover:underline" onClick={() => remove(c)}>Delete</button>
                   </td>
@@ -268,6 +285,64 @@ export default function CampaignsPage() {
             <Input label="End" type="date" value={form.end_date} onChange={(e) => setForm({ ...form, end_date: e.target.value })} />
           </div>
         </div>
+      </Modal>
+
+      <Modal isOpen={!!abCampaign} title={`A/B Analysis — ${abCampaign?.name || ''}`} onClose={() => setAbCampaign(null)} maxWidth="max-w-3xl">
+        {abLoading ? (
+          <ProgressStages active stages={['Pulling live ad performance…', 'Comparing creatives…', 'Finding the winner…', 'Writing your recommendation…']} />
+        ) : abError ? (
+          <p className="text-sm text-[var(--status-negative)]">{abError}</p>
+        ) : abReport ? (
+          <div className="space-y-4">
+            <div className="grid grid-cols-4 gap-3">
+              <KPICard label="Spend" value={`$${(abReport.totals.spend || 0).toFixed(2)}`} />
+              <KPICard label="Impressions" value={(abReport.totals.impressions || 0).toLocaleString()} />
+              <KPICard label="Avg CTR" value={`${(abReport.totals.ctr || 0).toFixed(2)}%`} />
+              <KPICard label="Results" value={abReport.totals.conversions || 0} />
+            </div>
+
+            <div className="rounded-xl border border-[var(--brand)] bg-[color-mix(in_srgb,var(--brand)_8%,transparent)] p-4">
+              <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--brand)]">Recommendation</div>
+              <p className="text-sm text-[var(--text-primary)]">{abReport.recommendation}</p>
+            </div>
+
+            {abReport.variants.length === 0 ? (
+              <p className="text-sm text-[var(--text-muted)]">No delivery data yet. Launch the campaign and check back once ads start spending.</p>
+            ) : (
+              <div className="overflow-x-auto rounded-xl border border-[var(--border-default)]">
+                <table className="w-full text-sm">
+                  <thead className="border-b border-[var(--border-default)] bg-[var(--bg-raised)] text-[var(--text-secondary)]">
+                    <tr>
+                      <th className="p-2.5 text-left">Creative</th>
+                      <th className="p-2.5 text-right">Spend</th>
+                      <th className="p-2.5 text-right">Impr.</th>
+                      <th className="p-2.5 text-right">CTR</th>
+                      <th className="p-2.5 text-right">CPC</th>
+                      <th className="p-2.5 text-right">Results</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--border-default)] text-[var(--text-primary)]">
+                    {abReport.variants.map((v: any) => {
+                      const isWinner = abReport.winner && v.objectId === abReport.winner.objectId;
+                      return (
+                        <tr key={v.objectId} className={isWinner ? 'bg-[color-mix(in_srgb,var(--status-positive)_10%,transparent)]' : ''}>
+                          <td className="p-2.5 font-medium">
+                            {v.name}{isWinner && <span className="ml-2"><Badge tone="green">Winner</Badge></span>}
+                          </td>
+                          <td className="p-2.5 text-right">${v.spend.toFixed(2)}</td>
+                          <td className="p-2.5 text-right">{v.impressions.toLocaleString()}</td>
+                          <td className="p-2.5 text-right">{v.ctr.toFixed(2)}%</td>
+                          <td className="p-2.5 text-right">${v.cpc.toFixed(2)}</td>
+                          <td className="p-2.5 text-right">{v.conversions}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        ) : null}
       </Modal>
 
       <Modal isOpen={!!assetCampaign} title={`Assets — ${assetCampaign?.name || ''}`} onClose={() => setAssetCampaign(null)} submitLabel="Analyze with AI" onSubmit={analyzeAssets} loading={assetBusy}>

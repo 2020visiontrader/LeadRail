@@ -44,6 +44,12 @@ async function POST__impl(request: NextRequest) {
       .select('name').eq('id', body.brandId).eq('account_id', session.accountId).maybeSingle();
     if (data?.name) brandName = data.name;
   }
+  // Fallback: a raw venture name from the client (context only — never used for
+  // scoping, so it's safe to pass into the prompt untrusted).
+  if (!brandName && typeof body?.brandName === 'string') {
+    const n = body.brandName.trim();
+    if (n && n.toLowerCase() !== 'all ventures') brandName = n;
+  }
 
   const result = await runAgent({
     accountId: session.accountId,

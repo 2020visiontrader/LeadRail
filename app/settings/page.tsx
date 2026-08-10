@@ -39,6 +39,8 @@ const PLATFORMS: Record<string, PlatformInfo> = {
   postiz: { label: 'Postiz', desc: 'Social publishing — 8 platforms unified', requiresToken: true, tokenLabel: 'Postiz API key', helpUrl: 'https://app.postiz.io/settings/api', helpText: 'Sign up at Postiz → Settings → API. One key covers Instagram, TikTok, LinkedIn, X, Facebook, Threads, Reddit, YouTube.', validatorProvider: 'postiz' },
   google_ads: { label: 'Google Ads', desc: 'Search & display campaigns', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
   nim: { label: 'NVIDIA NIM', desc: 'AI generation (alt)', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
+  notion: { label: 'Notion', desc: 'Read notes & docs into the assistant', requiresToken: false, tokenLabel: '', helpUrl: 'https://www.notion.so/my-integrations', helpText: 'Add a Notion internal integration secret (NOTION_API_KEY) to connect.', validatorProvider: '' },
+  google_drive: { label: 'Google Drive', desc: 'Search files & docs into the assistant', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
 };
 
 function DataPrivacySection() {

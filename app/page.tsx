@@ -187,7 +187,7 @@ export default function Overview() {
       ) : (
         <>
           <CommandBar ventureName={scopeName} />
-          <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_340px]">
+          <div className={`grid gap-6 ${isOwner ? 'xl:grid-cols-[minmax(0,1fr)_340px]' : ''}`}>
             <div className="min-w-0 space-y-6">
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
             <KPICard label="Total Contacts" value={stats?.contacts ?? 0} icon="👥" sub={`${stats?.emails ?? 0} emails sent`} />

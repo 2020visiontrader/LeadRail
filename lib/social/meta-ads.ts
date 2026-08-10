@@ -185,3 +185,51 @@ export async function getInsights(accountId: string, objectId: string): Promise<
     cpc: num(row.cpc), cpm: num(row.cpm), ctr: num(row.ctr),
   };
 }
+
+export interface AdLevelInsights extends AdInsights {
+  objectId: string;
+  name: string;
+  reach: number;
+  conversions: number;
+}
+
+// Meta returns conversions inside an `actions` array keyed by action_type.
+// We sum the outcome types that matter for A/B judging (purchases, leads,
+// completed registrations, link clicks as a floor).
+const CONVERSION_ACTION_TYPES = new Set([
+  'purchase', 'lead', 'complete_registration', 'onsite_conversion.lead_grouped',
+  'offsite_conversion.fb_pixel_purchase', 'offsite_conversion.fb_pixel_lead',
+]);
+
+function sumConversions(actions: any): number {
+  if (!Array.isArray(actions)) return 0;
+  return actions.reduce((s, a) => (CONVERSION_ACTION_TYPES.has(a?.action_type) ? s + (Number(a?.value) || 0) : s), 0);
+}
+
+/**
+ * Pull per-object insights for a campaign broken down by level ('ad' | 'adset').
+ * This is the data behind the A/B analysis view — one row per creative/ad set
+ * so the operator can compare CTR / CPC / conversions and iterate. Returns [] when empty.
+ */
+export async function getInsightsByLevel(
+  accountId: string,
+  campaignMetaId: string,
+  level: 'ad' | 'adset' = 'ad',
+): Promise<AdLevelInsights[]> {
+  const token = await tokenFor(accountId);
+  const nameField = level === 'ad' ? 'ad_name' : 'adset_name';
+  const idField = level === 'ad' ? 'ad_id' : 'adset_id';
+  const json = await graphGet(`${campaignMetaId}/insights`, token, {
+    level,
+    fields: `${idField},${nameField},spend,impressions,clicks,cpc,cpm,ctr,reach,actions`,
+    limit: '200',
+  });
+  const num = (v: any) => (v == null ? 0 : Number(v) || 0);
+  return (json.data || []).map((row: any) => ({
+    objectId: String(row[idField] || ''),
+    name: String(row[nameField] || 'Untitled'),
+    spend: num(row.spend), impressions: num(row.impressions), clicks: num(row.clicks),
+    cpc: num(row.cpc), cpm: num(row.cpm), ctr: num(row.ctr), reach: num(row.reach),
+    conversions: sumConversions(row.actions),
+  }));
+}

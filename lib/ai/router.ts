@@ -62,11 +62,14 @@ export async function generateChat(opts: {
   temperature?: number;
   maxOutputTokens?: number;
   model?: string;
+  /** Per-call Zo Ask model override (byok id). Lets latency-sensitive callers
+   *  (e.g. the agent loop) pin a fast tier without changing the global default. */
+  zoAskModel?: string;
 }): Promise<string> {
   let lastErr: any = null;
   if (zoAskConfigured()) {
     try {
-      return await zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens });
+      return await zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel });
     } catch (err: any) {
       lastErr = err;
     }

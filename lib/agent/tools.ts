@@ -23,6 +23,9 @@ import { listAdAccounts, getInsights } from '@/lib/social/meta-ads';
 import {
   createCampaignRecord, launchCampaign, pauseCampaign, syncCampaign,
 } from '@/lib/campaigns/actions';
+import { getCampaignAbReport } from '@/lib/campaigns/analytics';
+import { notionSearch } from '@/lib/integrations/notion';
+import { driveSearch } from '@/lib/integrations/gdrive';
 
 export interface AgentTool {
   /** Short human title shown in approval proposals. */
@@ -54,7 +57,9 @@ export const TOOLS: Record<string, AgentTool> = {
     description: 'List the ventures/brands in the account (id, name). Use to resolve a venture name the user typed into its id.',
     inputSchema: obj({}),
     zod: z.object({}),
-    run: (accountId) => getVentures(accountId),
+    // Compact projection: full rows carry large JSON columns that overflow the
+    // agent's observation cap and cause miscounts. id + name is all it needs.
+    run: async (accountId) => (await getVentures(accountId)).map((v: any) => ({ id: v.id, name: v.name })),
   },
   listAdAccounts: {
     title: 'List Meta ad accounts',
@@ -196,6 +201,28 @@ export const TOOLS: Record<string, AgentTool> = {
     zod: z.object({ id: z.string() }),
     sensitive: true,
     run: (accountId, { id }) => syncCampaign(accountId, id),
+  },
+  analyzeCampaign: {
+    title: 'Analyze campaign (A/B)',
+    description: 'Compare a campaign\'s creatives on click-through, cost, and results; returns the winner and a plain-language recommendation on what to scale, pause, and test next. Read-only.',
+    inputSchema: obj({ id: S.string }, ['id']),
+    zod: z.object({ id: z.string() }),
+    run: (accountId, { id }) => getCampaignAbReport(accountId, id),
+  },
+  // ---- read: external knowledge sources ----------------------------------
+  searchNotion: {
+    title: 'Search Notion',
+    description: 'Search connected Notion for pages/databases matching a query. Use when the user references notes, docs, or knowledge kept in Notion.',
+    inputSchema: obj({ query: S.string, limit: S.number }, ['query']),
+    zod: z.object({ query: z.string(), limit: z.number().optional() }),
+    run: (accountId, { query, limit }) => notionSearch(accountId, query, limit),
+  },
+  searchDrive: {
+    title: 'Search Google Drive',
+    description: 'Search connected Google Drive files by name. Use when the user references a document, sheet, or asset stored in Drive.',
+    inputSchema: obj({ query: S.string, limit: S.number }, ['query']),
+    zod: z.object({ query: z.string(), limit: z.number().optional() }),
+    run: (accountId, { query, limit }) => driveSearch(accountId, query, limit),
   },
 };
 

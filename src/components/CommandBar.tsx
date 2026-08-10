@@ -1,54 +1,90 @@
 'use client';
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { apiSend } from '@/lib/api';
 
-// Jarvis-style command bar. The operator types a task in natural language;
-// Hermes routes it — deciding the intent, which skills apply, and which model
-// tier handles it — and reports the plan. This is honest: it shows how the
-// request WOULD be handled (intent + skills + model), not a faked execution.
-interface HermesPlan {
-  intent: string;
-  taskKind: string;
-  skillIds: string[];
-  model: string;
-  modelLabel: string;
-  rationale: string;
-  source: 'ai' | 'fallback';
+// LeadRail AI — the in-app conversational executor. The operator types a task in
+// plain language; the agent loop (server-side) plans, calls LeadRail tools, and
+// either answers or asks for approval before anything that spends money or
+// changes live state. Internal tool/vendor names are never shown to the user.
+
+interface ChatMsg { role: 'user' | 'assistant'; content: string }
+interface Proposal { tool: string; title: string; args: Record<string, any>; summary: string }
+interface AgentResult {
+  status: 'done' | 'needs_approval' | 'error';
+  message: string;
+  proposal?: Proposal;
+  transcript: ChatMsg[];
 }
+interface Bubble { role: 'user' | 'ai'; text: string }
 
 const EXAMPLES = [
-  'Find 25 SaaS founders in Toronto',
-  'Draft a cold email for RetentionRail',
-  'Build a 4-step outreach sequence',
+  'How many leads do I have?',
+  'Create a lead-ad campaign for this venture',
+  'Show my active campaigns',
 ];
 
 export default function CommandBar({ ventureName }: { ventureName?: string }) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
-  const [plan, setPlan] = useState<HermesPlan | null>(null);
+  const [log, setLog] = useState<Bubble[]>([]);
+  const [convo, setConvo] = useState<ChatMsg[]>([]);
+  const [proposal, setProposal] = useState<Proposal | null>(null);
   const [error, setError] = useState('');
+  const logRef = useRef<HTMLDivElement>(null);
 
-  const run = async (q?: string) => {
-    const request = (q ?? text).trim();
-    if (!request || busy) return;
-    setBusy(true); setError(''); setPlan(null);
+  useEffect(() => { logRef.current?.scrollTo({ top: logRef.current.scrollHeight }); }, [log, busy, proposal]);
+
+  const brandName = ventureName && ventureName !== 'All Ventures' ? ventureName : undefined;
+
+  const handle = (res: AgentResult) => {
+    if (Array.isArray(res.transcript)) setConvo(res.transcript);
+    if (res.status === 'needs_approval' && res.proposal) {
+      setProposal(res.proposal);
+    } else {
+      setProposal(null);
+      setLog((l) => [...l, { role: 'ai', text: res.message || 'Done.' }]);
+    }
+  };
+
+  const send = async (q?: string) => {
+    const message = (q ?? text).trim();
+    if (!message || busy) return;
+    setText(''); setError(''); setProposal(null);
+    setLog((l) => [...l, { role: 'user', text: message }]);
+    setBusy(true);
     try {
-      const { plan } = await apiSend<{ plan: HermesPlan }>('/api/hermes/route', 'POST', {
-        request,
-        ventureName: ventureName && ventureName !== 'All Ventures' ? ventureName : undefined,
-      });
-      setPlan(plan);
+      const res = await apiSend<AgentResult>('/api/agent', 'POST', { message, transcript: convo, brandName }, { timeoutMs: 90_000 });
+      handle(res);
     } catch (e: any) {
       setError(e?.message || "LeadRail AI couldn't handle that — try rephrasing.");
     } finally { setBusy(false); }
   };
+
+  const approve = async () => {
+    if (!proposal || busy) return;
+    setBusy(true); setError('');
+    const p = proposal; setProposal(null);
+    try {
+      const res = await apiSend<AgentResult>('/api/agent', 'POST', { transcript: convo, approve: { tool: p.tool, args: p.args }, brandName }, { timeoutMs: 90_000 });
+      handle(res);
+    } catch (e: any) {
+      setError(e?.message || 'That action could not be completed.');
+    } finally { setBusy(false); }
+  };
+
+  const decline = () => {
+    setProposal(null);
+    setLog((l) => [...l, { role: 'ai', text: 'Okay — cancelled. Nothing was run.' }]);
+  };
+
+  const reset = () => { setLog([]); setConvo([]); setProposal(null); setError(''); setText(''); };
 
   return (
     <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-4 shadow-[var(--shadow-card)]">
       {/* Prompt row */}
       <div className="flex items-center gap-3">
         <span className="relative flex h-2.5 w-2.5 shrink-0">
-          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--brand)] opacity-60" />
+          <span className={`absolute inline-flex h-full w-full rounded-full bg-[var(--brand)] opacity-60 ${busy ? 'animate-ping' : ''}`} />
           <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[var(--brand)]" />
         </span>
         <span className="hidden shrink-0 text-xs font-semibold uppercase tracking-widest text-[var(--text-muted)] sm:block">
@@ -57,27 +93,33 @@ export default function CommandBar({ ventureName }: { ventureName?: string }) {
         <input
           value={text}
           onChange={(e) => setText(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter') run(); }}
+          onKeyDown={(e) => { if (e.key === 'Enter') send(); }}
           disabled={busy}
-          placeholder={busy ? 'Thinking…' : 'Ask LeadRail AI — e.g. “find 25 SaaS founders in Toronto”'}
+          placeholder={busy ? 'Working…' : 'Ask LeadRail AI — e.g. “create a lead-ad campaign for this venture”'}
           className="min-w-0 flex-1 bg-transparent text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none disabled:opacity-60"
         />
+        {log.length > 0 && !busy && (
+          <button onClick={reset} title="New conversation"
+            className="shrink-0 rounded-lg px-2 py-2 text-xs text-[var(--text-muted)] transition hover:text-[var(--text-primary)]">
+            New
+          </button>
+        )}
         <button
-          onClick={() => run()}
+          onClick={() => send()}
           disabled={busy || !text.trim()}
           className="shrink-0 rounded-lg bg-[var(--ink)] px-4 py-2 text-sm font-semibold text-[var(--ink-fg)] transition hover:bg-[var(--ink-hover)] disabled:cursor-not-allowed disabled:opacity-50"
         >
-          {busy ? 'Thinking…' : 'Ask ▸'}
+          {busy ? 'Working…' : 'Ask ▸'}
         </button>
       </div>
 
-      {/* Example chips (only before first run) */}
-      {!plan && !error && !busy && (
+      {/* Example chips (only before first interaction) */}
+      {log.length === 0 && !error && !busy && (
         <div className="mt-3 flex flex-wrap gap-2 pl-6">
           {EXAMPLES.map((ex) => (
             <button
               key={ex}
-              onClick={() => { setText(ex); run(ex); }}
+              onClick={() => send(ex)}
               className="rounded-full border border-[var(--border-strong)] bg-[var(--bg-raised)] px-3 py-1 text-xs text-[var(--text-secondary)] transition hover:border-[var(--brand)] hover:text-[var(--brand)]"
             >
               {ex}
@@ -86,29 +128,54 @@ export default function CommandBar({ ventureName }: { ventureName?: string }) {
         </div>
       )}
 
+      {/* Conversation */}
+      {(log.length > 0 || busy) && (
+        <div ref={logRef} className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
+          {log.map((m, i) => (
+            <div key={i} className={m.role === 'user' ? 'flex justify-end' : 'flex justify-start'}>
+              <div className={
+                m.role === 'user'
+                  ? 'max-w-[85%] rounded-2xl rounded-br-sm bg-[var(--ink)] px-3.5 py-2 text-sm text-[var(--ink-fg)]'
+                  : 'max-w-[85%] rounded-2xl rounded-bl-sm border border-[var(--border-default)] bg-[var(--bg-raised)] px-3.5 py-2 text-sm text-[var(--text-primary)] whitespace-pre-wrap'
+              }>
+                {m.text}
+              </div>
+            </div>
+          ))}
+          {busy && (
+            <div className="flex justify-start">
+              <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm border border-[var(--border-default)] bg-[var(--bg-raised)] px-3.5 py-2 text-sm text-[var(--text-muted)]">
+                <span className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--brand)] border-t-transparent" />
+                LeadRail AI is working…
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Approval gate */}
+      {proposal && !busy && (
+        <div className="mt-3 animate-fade-in rounded-xl border border-[var(--status-warning)]/40 bg-[var(--status-warning-soft,var(--bg-raised))] p-3.5">
+          <p className="text-xs font-semibold uppercase tracking-wide text-[var(--status-warning)]">Confirm before running</p>
+          <p className="mt-1 text-sm text-[var(--text-primary)]">{proposal.summary}</p>
+          <div className="mt-3 flex gap-2">
+            <button onClick={approve}
+              className="rounded-lg bg-[var(--ink)] px-4 py-2 text-sm font-semibold text-[var(--ink-fg)] transition hover:bg-[var(--ink-hover)]">
+              Approve &amp; run
+            </button>
+            <button onClick={decline}
+              className="rounded-lg border border-[var(--border-strong)] px-4 py-2 text-sm font-medium text-[var(--text-secondary)] transition hover:text-[var(--text-primary)]">
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+
       {error && (
         <p className="mt-3 rounded-md border border-[var(--accent)]/30 bg-[var(--accent-soft)] px-3 py-2 text-sm text-[var(--status-negative)]">
           {error}
         </p>
       )}
-
-      {/* The routing plan */}
-      {plan && (
-        <div className="mt-3 animate-fade-in rounded-xl border border-[var(--border-default)] bg-[var(--bg-raised)] p-3.5">
-          <div className="flex flex-wrap items-center gap-2">
-            <span className="rounded-full bg-[var(--brand-soft)] px-2.5 py-1 text-xs font-semibold text-[var(--brand)]">
-              {prettyIntent(plan.intent)}
-            </span>
-            <span className="text-sm text-[var(--text-secondary)]">
-              LeadRail AI will handle this for you.
-            </span>
-          </div>
-        </div>
-      )}
     </div>
   );
-}
-
-function prettyIntent(intent: string) {
-  return intent.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
