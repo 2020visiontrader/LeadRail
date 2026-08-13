@@ -2,6 +2,9 @@ import { withApi, requireSession, badRequest } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/db';
 import { runAgent, agentConfigured } from '@/lib/agent/loop';
+import { loadAgentContext } from '@/lib/agent/context';
+import { saveConversation, loadCarryover } from '@/lib/agent/memory';
+import { parseMentions } from '@/lib/agent/personas';
 import type { ChatMessage } from '@/lib/ai/router';
 
 export const dynamic = 'force-dynamic';
@@ -36,27 +39,52 @@ async function POST__impl(request: NextRequest) {
     ? body.transcript.filter((m: any) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
     : [];
 
-  // Resolve a venture name for prompt context (best-effort; ownership is still
-  // enforced per-tool). Only names for brands the session owns.
+  // Resolve a venture id/name for grounding (best-effort; ownership is still
+  // enforced per-tool). Only for brands the session owns.
+  let brandId: string | undefined;
   let brandName: string | undefined;
   if (typeof body?.brandId === 'string' && body.brandId) {
     const { data } = await supabase.from('brands')
-      .select('name').eq('id', body.brandId).eq('account_id', session.accountId).maybeSingle();
-    if (data?.name) brandName = data.name;
+      .select('id, name').eq('id', body.brandId).eq('account_id', session.accountId).maybeSingle();
+    if (data?.id) { brandId = data.id; brandName = data.name || undefined; }
   }
-  // Fallback: a raw venture name from the client (context only — never used for
-  // scoping, so it's safe to pass into the prompt untrusted).
   if (!brandName && typeof body?.brandName === 'string') {
     const n = body.brandName.trim();
     if (n && n.toLowerCase() !== 'all ventures') brandName = n;
   }
+
+  // Carryover reseed: when a fresh chat is opened from a prior one, load its memo.
+  const fromId = typeof body?.from === 'string' && body.from ? body.from : undefined;
+  const carryover = fromId ? await loadCarryover(fromId, session.accountId) : null;
+
+  // Full grounding block — platform + venture + account snapshot + durable memory.
+  const agentContext = await loadAgentContext({ accountId: session.accountId, brandId, brandName });
+
+  // Optional persona routing (migration 024). Both fields are optional/absent
+  // for every existing caller, so this is a no-op unless the client opts in.
+  const personaId: string | undefined = typeof body?.personaId === 'string' && body.personaId ? body.personaId : undefined;
+  const personaMentions = parseMentions(message);
+
+  // Persist the conversation (best-effort; never blocks the response).
+  const conversationId = typeof body?.conversationId === 'string' && body.conversationId ? body.conversationId : undefined;
 
   const result = await runAgent({
     accountId: session.accountId,
     message,
     approve,
     transcript,
+    agentContext,
+    carryover,
     brandContext: brandName ? { name: brandName } : undefined,
+    personaId,
+    personaMentions,
+    requestedBy: session.email,
+    conversationId,
+  });
+  const savedId = await saveConversation({
+    id: conversationId, accountId: session.accountId, brandId: brandId ?? null,
+    title: typeof message === 'string' ? message.slice(0, 80) : undefined,
+    transcript: result.transcript,
   });
 
   return NextResponse.json({
@@ -65,6 +93,9 @@ async function POST__impl(request: NextRequest) {
     proposal: result.proposal,
     steps: result.steps,
     transcript: result.transcript,
+    conversationId: savedId ?? conversationId,
+    tokenEstimate: result.tokenEstimate,
+    compaction: result.compaction ?? null,
   });
 }
 

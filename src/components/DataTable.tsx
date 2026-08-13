@@ -64,13 +64,13 @@ export default function DataTable({ contacts, isLoading, onRowClick, onDelete }:
       </div>
     );
 
-  const th = 'p-2.5 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--text-muted)]';
-  const thSort = `cursor-pointer select-none hover:text-[var(--text-secondary)] ${th}`;
+  const th = 'px-2.5 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)]';
+  const thSort = `cursor-pointer select-none hover:text-[var(--text-primary)] ${th}`;
 
   return (
     <div className="overflow-x-auto rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)]">
       <table className="w-full text-sm">
-        <thead className="border-b border-[var(--border-default)] bg-[var(--bg-raised)]">
+        <thead className="border-b border-[var(--border-default)]">
           <tr>
             <th className={thSort} onClick={() => toggleSort('name')}>Name{arrow('name')}</th>
             <th className={thSort} onClick={() => toggleSort('email')}>Email{arrow('email')}</th>

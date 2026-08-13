@@ -24,12 +24,12 @@ export default function SearchInput({ placeholder = 'Search...', value, onChange
         placeholder={placeholder}
         value={localValue}
         onChange={(e) => setLocalValue(e.target.value)}
-        className="w-full rounded-lg border border-[var(--border-strong)] bg-[var(--bg-surface)] px-4 py-2 text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:border-[var(--brand)] focus:outline-none focus:ring-2 focus:ring-[var(--brand-soft)]"
+        className="w-full rounded-md border border-[var(--border-strong)] bg-[var(--bg-canvas)] px-4 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none transition-[border-color,box-shadow] focus:border-[var(--ink)] focus:shadow-[var(--focus-ring)]"
       />
       {localValue && (
         <button
           onClick={() => setLocalValue('')}
-          className="absolute right-3 top-2.5 text-[var(--text-muted)] hover:text-[var(--text-primary)]"
+          className="absolute right-3 top-2.5 text-[var(--text-muted)] transition hover:text-[var(--text-primary)]"
         >
           ✕
         </button>

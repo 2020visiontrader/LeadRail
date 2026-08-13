@@ -20,7 +20,7 @@ export default function FilterChips({
       {chips.map((c) => (
         <span
           key={c.key}
-          className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-strong)] bg-[var(--brand-soft)] py-1 pl-3 pr-1.5 text-xs font-medium text-[var(--text-primary)]"
+          className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-strong)] bg-[var(--bg-raised)] py-1 pl-3 pr-1.5 text-xs font-medium text-[var(--text-primary)]"
         >
           {c.label}
           <button

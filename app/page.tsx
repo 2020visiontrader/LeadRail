@@ -10,7 +10,6 @@ import Input from '@/components/Input';
 import Textarea from '@/components/Textarea';
 import Button from '@/components/Button';
 import CommandBar from '@/components/CommandBar';
-import ActivityFeed from '@/components/ActivityFeed';
 import { useToast } from '@/components/ToastProvider';
 import { apiGet, apiSend } from '@/lib/api';
 import { Contact } from '@/lib/types';
@@ -30,7 +29,6 @@ export default function Overview() {
   const [stats, setStats] = useState<any>(null);
   const [recent, setRecent] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(true);
-  const [isOwner, setIsOwner] = useState(false);
   // --- New-venture onboarding wizard ---
   const [addOpen, setAddOpen] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -55,14 +53,6 @@ export default function Overview() {
   // Load the skills catalog once so the wizard can offer real skills to enable.
   useEffect(() => {
     apiGet<{ skills: SkillMeta[] }>('/api/skills').then((d) => setSkillCatalog(d.skills || [])).catch(() => {});
-  }, []);
-
-  // Platform-admin gate: only the owner sees the ops ActivityFeed (request logs).
-  useEffect(() => {
-    fetch('/api/auth/me', { headers: { Accept: 'application/json' } })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => setIsOwner(d?.role === 'owner'))
-      .catch(() => {});
   }, []);
 
   const loadVentures = () =>
@@ -187,8 +177,7 @@ export default function Overview() {
       ) : (
         <>
           <CommandBar ventureName={scopeName} />
-          <div className={`grid gap-6 ${isOwner ? 'xl:grid-cols-[minmax(0,1fr)_340px]' : ''}`}>
-            <div className="min-w-0 space-y-6">
+          <div className="space-y-6">
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
             <KPICard label="Total Contacts" value={stats?.contacts ?? 0} icon="👥" sub={`${stats?.emails ?? 0} emails sent`} />
             <KPICard label="Open Pipeline" value={money(stats?.pipeline_value ?? 0)} icon="💼" sub={`${stats?.deals ?? 0} open deals`} />
@@ -259,13 +248,7 @@ export default function Overview() {
             <Link href="/outreach" className="inline-flex items-center rounded-lg bg-[var(--bg-raised)] px-4 py-2 text-sm font-medium hover:brightness-95">✉️ Send outreach</Link>
             <Link href="/campaigns" className="inline-flex items-center rounded-lg bg-[var(--bg-raised)] px-4 py-2 text-sm font-medium hover:brightness-95">🎯 New campaign</Link>
           </div>
-            </div>{/* /left column */}
-            {isOwner && (
-              <div className="xl:sticky xl:top-6 xl:self-start xl:h-[calc(100vh-7rem)]">
-                <ActivityFeed />
-              </div>
-            )}
-          </div>{/* /2-col command-center grid */}
+          </div>
         </>
       )}
 

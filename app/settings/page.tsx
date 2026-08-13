@@ -6,6 +6,13 @@ import Button from '@/components/Button';
 import Input from '@/components/Input';
 import { apiGet, apiSend } from '@/lib/api';
 import SenderProfiles from '@/components/SenderProfiles';
+import Personas from '@/components/Personas';
+import Skills from '@/components/Skills';
+import AiUsage from '@/components/AiUsage';
+import McpClients from '@/components/McpClients';
+import ScheduledTasks from '@/components/ScheduledTasks';
+import Diagnostics from '@/components/Diagnostics';
+import Approvals from '@/components/Approvals';
 import { SOCIAL_PROVIDERS } from '@/lib/social/providers';
 
 interface Connection {
@@ -17,31 +24,6 @@ interface Connection {
   meta: Record<string, any>;
   updated_at: string;
 }
-
-interface PlatformInfo {
-  label: string;
-  desc: string;
-  requiresToken: boolean;
-  tokenLabel: string;
-  helpUrl: string;
-  helpText: string;
-  validatorProvider: string;
-  oauth?: string;
-}
-
-const PLATFORMS: Record<string, PlatformInfo> = {
-  supabase: { label: 'Supabase', desc: 'Database & auth', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
-  apollo: { label: 'Apollo', desc: 'Lead sourcing & enrichment', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
-  opencode: { label: 'OpenCode Go (DeepSeek V4 Pro)', desc: 'AI text + chat generation', requiresToken: false, tokenLabel: '', helpUrl: 'https://opencode.ai/auth', helpText: 'Set OPENCODE_API_KEY. Powers sequence/inbox chat, outreach, content, template refine, and plain-language lead search via DeepSeek V4 Pro on the OpenCode Go subscription.', validatorProvider: '' },
-  gemini: { label: 'Gemini (Nano Banana)', desc: 'AI image generation', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
-  brevo: { label: 'Brevo', desc: 'Email delivery', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
-  resend: { label: 'Resend', desc: 'Email + newsletters', requiresToken: true, tokenLabel: 'Resend API key', helpUrl: 'https://resend.com/api-keys', helpText: 'Create a Full access key at Resend → API Keys (send-only keys can send but cannot list/read emails). Paste it here.', validatorProvider: 'resend' },
-  postiz: { label: 'Postiz', desc: 'Social publishing — 8 platforms unified', requiresToken: true, tokenLabel: 'Postiz API key', helpUrl: 'https://app.postiz.io/settings/api', helpText: 'Sign up at Postiz → Settings → API. One key covers Instagram, TikTok, LinkedIn, X, Facebook, Threads, Reddit, YouTube.', validatorProvider: 'postiz' },
-  google_ads: { label: 'Google Ads', desc: 'Search & display campaigns', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
-  nim: { label: 'NVIDIA NIM', desc: 'AI generation (alt)', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
-  notion: { label: 'Notion', desc: 'Read notes & docs into the assistant', requiresToken: false, tokenLabel: '', helpUrl: 'https://www.notion.so/my-integrations', helpText: 'Add a Notion internal integration secret (NOTION_API_KEY) to connect.', validatorProvider: '' },
-  google_drive: { label: 'Google Drive', desc: 'Search files & docs into the assistant', requiresToken: false, tokenLabel: '', helpUrl: '', helpText: '', validatorProvider: '' },
-};
 
 function DataPrivacySection() {
   const [status, setStatus] = useState<{ scheduled_for: string | null; grace_days: number } | null>(null);
@@ -123,11 +105,51 @@ function DataPrivacySection() {
   );
 }
 
-// ---- Client-facing knowledge-source connections ----
-// Same self-serve model as the socials: the user connects THEIR OWN Notion and
-// Google Drive. Notion uses a long-lived integration secret (paste); Google Drive
-// uses OAuth (click). Both store per-account, and the assistant reads from them.
-function KnowledgeSources({ connections, onChange, isOwner }: { connections: Connection[]; onChange: () => void; isOwner: boolean }) {
+// ---- Advertising accounts ----
+// Paid-ad platforms the user connects for the Campaigns page. Google Ads OAuth
+// isn't wired yet, so it shows as "soon" — an honest placeholder, not a button
+// that hits nothing. When the OAuth route ships, flip `live` to true.
+const AD_PROVIDERS = [
+  { key: 'google_ads', label: 'Google Ads', desc: 'Connect your Google Ads account to launch and track paid campaigns', brand: '#4285F4', live: false, connectPath: '' },
+];
+
+function AdAccounts({ connections }: { connections: Connection[] }) {
+  const conn = (p: string) => connections.find((c) => c.provider === p && c.status === 'connected');
+  return (
+    <div className="space-y-4">
+      <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Advertising accounts</h3>
+      <div className="grid gap-4 sm:grid-cols-2">
+        {AD_PROVIDERS.map((s) => {
+          const c = conn(s.key);
+          return (
+            <div key={s.key} className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex items-start justify-between">
+                <div className="flex items-center gap-3">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-lg text-sm font-bold text-white" style={{ backgroundColor: s.brand }}>{s.label.charAt(0)}</span>
+                  <div><h3 className="font-semibold">{s.label}</h3><p className="text-sm text-slate-500">{s.desc}</p></div>
+                </div>
+                <Badge tone={c ? 'green' : s.live ? 'gray' : 'amber'}>{c ? 'connected' : s.live ? 'off' : 'soon'}</Badge>
+              </div>
+              {s.live && s.connectPath ? (
+                <a href={s.connectPath} className="w-full">
+                  <Button variant={c ? 'ghost' : 'secondary'} className="w-full text-xs">{c ? `Reconnect ${s.label}` : `Connect ${s.label}`}</Button>
+                </a>
+              ) : (
+                <Button variant="ghost" disabled className="w-full cursor-not-allowed text-xs opacity-60">Coming soon</Button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ---- Knowledge-source connections ----
+// The user connects THEIR OWN Notion and Google Drive. Notion uses a long-lived
+// integration secret (paste); Google Drive uses OAuth (click). Both store
+// per-account, and the assistant reads from them.
+function KnowledgeSources({ connections, onChange }: { connections: Connection[]; onChange: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [notionOpen, setNotionOpen] = useState(false);
   const [notionToken, setNotionToken] = useState('');
@@ -166,21 +188,17 @@ function KnowledgeSources({ connections, onChange, isOwner }: { connections: Con
               <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#1FA463] text-sm font-bold text-white">D</span>
               <div><h3 className="font-semibold">Google Drive</h3><p className="text-sm text-slate-500">Let the assistant search your Drive files</p></div>
             </div>
-            <Badge tone={driveConn ? 'green' : isOwner ? 'gray' : 'amber'}>{driveConn ? 'connected' : isOwner ? 'off' : 'soon'}</Badge>
+            <Badge tone={driveConn ? 'green' : 'gray'}>{driveConn ? 'connected' : 'off'}</Badge>
           </div>
-          {isOwner && driveConn && (
+          {driveConn && (
             <div className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
               <span className="truncate">{driveConn.username || driveConn.display_name || driveConn.external_id}</span>
               <button onClick={() => disconnect('google_drive')} disabled={busy === 'google_drive'} className="ml-2 shrink-0 text-xs text-slate-400 hover:text-red-600">{busy === 'google_drive' ? '…' : 'Disconnect'}</button>
             </div>
           )}
-          {isOwner ? (
-            <a href="/api/social/google-drive/connect" className="w-full">
-              <Button variant={driveConn ? 'ghost' : 'secondary'} className="w-full text-xs">{driveConn ? 'Reconnect Google Drive' : 'Connect Google Drive'}</Button>
-            </a>
-          ) : (
-            <Button variant="ghost" disabled className="w-full cursor-not-allowed text-xs opacity-60">Coming soon</Button>
-          )}
+          <a href="/api/social/google-drive/connect" className="w-full">
+            <Button variant={driveConn ? 'ghost' : 'secondary'} className="w-full text-xs">{driveConn ? 'Reconnect Google Drive' : 'Connect Google Drive'}</Button>
+          </a>
         </div>
 
         {/* Notion — token paste */}
@@ -217,11 +235,11 @@ function KnowledgeSources({ connections, onChange, isOwner }: { connections: Con
   );
 }
 
-// ---- Client-facing social connections ----
+// ---- Social connections ----
 // Users connect THEIR OWN accounts via OAuth into LeadRail's apps. No app IDs,
 // no env vars, no backend service names — that's the Postiz/Buffer model.
 // Multi-account: each platform card lists every connected account + "Add another".
-function ClientConnections({ connections, onChange, isOwner }: { connections: Connection[]; onChange: () => void; isOwner: boolean }) {
+function ClientConnections({ connections, onChange }: { connections: Connection[]; onChange: () => void }) {
   const [busy, setBusy] = useState<string | null>(null);
 
   const accountsFor = (key: string) =>
@@ -300,50 +318,33 @@ function ClientConnections({ connections, onChange, isOwner }: { connections: Co
       </p>
 
       <div className="border-t border-slate-200 pt-6">
-        <KnowledgeSources connections={connections} onChange={onChange} isOwner={isOwner} />
+        <AdAccounts connections={connections} />
+      </div>
+
+      <div className="border-t border-slate-200 pt-6">
+        <KnowledgeSources connections={connections} onChange={onChange} />
       </div>
     </div>
   );
 }
 
 export default function Settings() {
-  const [envStatus, setEnvStatus] = useState<Record<string, boolean>>({});
   const [connections, setConnections] = useState<Connection[]>([]);
-  const [dbReady, setDbReady] = useState(false);
   const [loading, setLoading] = useState(true);
-  const [isOwner, setIsOwner] = useState<boolean | null>(null);
-  const accountId = '00000000-0000-0000-0000-0000000000b1';
-
-  // Role gate: only the platform owner sees the backend integration hub
-  // (Supabase, Apollo, AI providers, email, Postiz master key). Clients see
-  // per-account social connections only — never the platform's tech stack.
-  useEffect(() => {
-    fetch('/api/auth/me', { headers: { Accept: 'application/json' } })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => setIsOwner(d?.role === 'owner'))
-      .catch(() => setIsOwner(false));
-  }, []);
-
-  const [showConnect, setShowConnect] = useState<string | null>(null);
-  const [tokenValue, setTokenValue] = useState('');
-  const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
+  const accountId = '00000000-0000-0000-0000-0000000000b1';
 
   const load = useCallback(() => {
     setLoading(true);
     apiGet(`/api/integrations?accountId=${accountId}`)
-      .then((r) => {
-        setEnvStatus(r.env || {});
-        setConnections(r.connections || []);
-        setDbReady(r.db_ready);
-      })
+      .then((r) => { setConnections(r.connections || []); })
       .catch(() => {})
       .finally(() => setLoading(false));
   }, [accountId]);
 
   useEffect(() => { load(); }, [load]);
 
-  // Surface the Meta OAuth redirect result, then clean the URL.
+  // Surface the OAuth redirect result, then clean the URL.
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
     const connected = q.get('connected');
@@ -390,156 +391,42 @@ export default function Settings() {
     }
   }, []);
 
-  function isConnected(platform: string): boolean {
-    const env = envStatus[platform] ?? false;
-    const conn = connections.find((c) => c.provider === platform && c.status === 'connected');
-    return env || !!conn;
-  }
-
-  function connectedVia(platform: string): string | null {
-    if (envStatus[platform]) return 'env var';
-    const conn = connections.find((c) => c.provider === platform && c.status === 'connected');
-    return conn ? `account token (${conn.meta?.platform_name || 'validated'})` : null;
-  }
-
-  async function handleConnect(platform: string) {
-    setBusy(true);
-    setFeedback(null);
-    const info = PLATFORMS[platform];
-    try {
-      const result = await apiSend('/api/integrations/validate', 'POST', {
-        provider: info.validatorProvider,
-        token: tokenValue,
-        accountId,
-      });
-      setFeedback({ ok: true, msg: `Connected to ${result.external_name} (${info.label})` });
-      setShowConnect(null);
-      setTokenValue('');
-      load();
-    } catch (e: any) {
-      setFeedback({ ok: false, msg: e?.message || 'Validation failed' });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  const ready = !loading && isOwner !== null;
-
   return (
     <div className="max-w-3xl space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">{isOwner ? 'Settings' : 'Connections'}</h1>
+        <h1 className="text-2xl font-bold">Connections</h1>
         <p className="text-sm text-slate-500">
-          {isOwner ? 'Connect the accounts and data your ventures run on — publishing, email, and assistant sources.' : 'Connect the social accounts you post and reply from.'}
+          Connect the social and ad accounts you post from, plus the sources your assistant reads.
         </p>
       </div>
 
-      {!ready ? (
+      {loading ? (
         <LoadingSpinner />
       ) : (
         <>
-          {feedback && showConnect === null && (
+          {feedback && (
             <div className={`rounded-lg border px-4 py-3 text-sm ${feedback.ok ? 'border-green-200 bg-green-50 text-green-700' : 'border-red-200 bg-red-50 text-red-700'}`}>
               {feedback.msg}
             </div>
           )}
 
-          {/* SOCIAL CONNECTIONS — shown to everyone (per-account OAuth, no backend) */}
-          <ClientConnections connections={connections} onChange={load} isOwner={!!isOwner} />
-
-          {/* OWNER-ONLY — backend integration hub */}
-          {isOwner && (
-            <div className="border-t border-slate-200 pt-6">
-              <h2 className="text-lg font-semibold">Platform backend</h2>
-              <p className="mb-4 text-sm text-slate-500">Admin only — never shown to client accounts.</p>
-            </div>
-          )}
-
-          {isOwner && (
-          <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm">
-            Database: {dbReady ? <Badge tone="green">connected</Badge> : <Badge tone="amber">not configured</Badge>}
-          </div>
-          )}
-
-          {isOwner && (
-          <div className="grid gap-4 sm:grid-cols-2">
-            {Object.entries(PLATFORMS).map(([key, info]) => {
-              const on = isConnected(key);
-              const via = connectedVia(key);
-              return (
-                <div key={key} className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <h3 className="font-semibold">{info.label}</h3>
-                      <p className="text-sm text-slate-500">{info.desc}</p>
-                      {via && <p className="mt-1 text-xs text-slate-400">{via}</p>}
-                    </div>
-                    <Badge tone={on ? 'green' : 'gray'}>{on ? 'connected' : 'off'}</Badge>
-                  </div>
-
-                  {info.oauth && (
-                    <a href={info.oauth} className="w-full">
-                      <Button variant={on ? 'ghost' : 'secondary'} className="w-full text-xs">
-                        {on ? 'Reconnect Facebook' : 'Connect with Facebook'}
-                      </Button>
-                    </a>
-                  )}
-
-                  {info.requiresToken && !on && showConnect !== key && (
-                    <Button variant="secondary" className="w-full text-xs" onClick={() => { setShowConnect(key); setTokenValue(''); setFeedback(null); }}>
-                      + Connect {info.label}
-                    </Button>
-                  )}
-
-                  {info.requiresToken && on && showConnect !== key && (
-                    <Button variant="ghost" className="w-full text-xs" onClick={() => { setShowConnect(key); setTokenValue(''); setFeedback(null); }}>
-                      Reconnect
-                    </Button>
-                  )}
-
-                  {showConnect === key && (
-                    <div className="space-y-3 rounded-lg bg-slate-50 p-3">
-                      <p className="text-xs text-slate-600">{info.helpText}</p>
-                      <a href={info.helpUrl} target="_blank" rel="noopener" className="text-xs text-blue-600 underline">
-                        Open setup guide →
-                      </a>
-                      <Input
-                        type="password"
-                        label={info.tokenLabel}
-                        placeholder="Paste your token or API key…"
-                        value={tokenValue}
-                        onChange={(e) => { setTokenValue((e.target as HTMLInputElement).value); setFeedback(null); }}
-                      />
-                      {feedback && (
-                        <p className={`text-xs ${feedback.ok ? 'text-green-600' : 'text-red-600'}`}>
-                          {feedback.msg}
-                        </p>
-                      )}
-                      <div className="flex gap-2">
-                        <Button onClick={() => handleConnect(key)} loading={busy} disabled={!tokenValue.trim()} className="flex-1 text-xs">
-                          Validate & Connect
-                        </Button>
-                        <Button variant="ghost" onClick={() => { setShowConnect(null); setFeedback(null); }} className="text-xs">
-                          Cancel
-                        </Button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-          )}
-
-          {isOwner && (
-          <p className="text-xs text-slate-400">
-            Env vars set: {Object.entries(envStatus).filter(([,v]) => v).map(([k]) => PLATFORMS[k]?.label || k).join(', ') || 'none'}<br />
-            Per-account connections: {connections.filter((c) => c.status === 'connected').map((c) => PLATFORMS[c.provider]?.label || c.provider).join(', ') || 'none'}<br />
-            Recommended: use <strong>Postiz</strong> for all social platforms (one key, 8 platforms). Tokens validated live against each platform's API.
-          </p>
-          )}
+          <ClientConnections connections={connections} onChange={load} />
 
           <SenderProfiles />
+
+          <Personas />
+
+          <Skills />
+
+          <AiUsage />
+
+          <McpClients />
+
+          <ScheduledTasks />
+
+          <Diagnostics />
+
+          <Approvals />
 
           <DataPrivacySection />
         </>

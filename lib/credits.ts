@@ -33,3 +33,78 @@ export async function getBalance(accountId: string): Promise<number> {
   const { data } = await supabase.from('accounts').select('credit_balance').eq('id', accountId).maybeSingle();
   return data?.credit_balance ?? 0;
 }
+
+/**
+ * Record one AI-registry call into the ai_usage ledger (migration 023).
+ * Separate from the credit_transactions balance ledger above — this is a
+ * technical/observability log of who answered a generateText/generateChat
+ * call and what it cost, not a billing mutation. Best-effort: a logging
+ * failure never breaks the caller's actual AI response. Callers that also
+ * want to spend AI credits still call applyCredits() themselves, keyed off
+ * the returned usage id, so nothing here double-bills.
+ */
+export async function recordAiUsage(entry: {
+  accountId: string;
+  providerId?: string | null;
+  modelId?: string | null;
+  modelLabel?: string | null;
+  kind: 'text' | 'chat';
+  tokensIn?: number | null;
+  tokensOut?: number | null;
+  latencyMs?: number | null;
+  ok: boolean;
+  error?: string | null;
+}): Promise<void> {
+  try {
+    await supabase.from('ai_usage').insert([{
+      account_id: entry.accountId,
+      provider_id: entry.providerId ?? null,
+      model_id: entry.modelId ?? null,
+      model_label: entry.modelLabel ?? null,
+      kind: entry.kind,
+      tokens_in: entry.tokensIn ?? null,
+      tokens_out: entry.tokensOut ?? null,
+      latency_ms: entry.latencyMs ?? null,
+      ok: entry.ok,
+      error: entry.error ?? null,
+    }]);
+  } catch {
+    // best-effort; never break the caller's AI response over a logging failure
+  }
+}
+
+export interface AiUsageSummaryRow {
+  provider_id: string | null;
+  model_id: string | null;
+  model_label: string | null;
+  calls: number;
+  ok_calls: number;
+  tokens_in: number;
+  tokens_out: number;
+}
+
+/** Aggregate ai_usage for an account, most-used first. Used by the Settings→Models usage view. */
+export async function getAiUsageSummary(accountId: string, sinceDays = 30): Promise<AiUsageSummaryRow[]> {
+  const since = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000).toISOString();
+  const { data, error } = await supabase
+    .from('ai_usage')
+    .select('provider_id, model_id, model_label, tokens_in, tokens_out, ok')
+    .eq('account_id', accountId)
+    .gte('created_at', since);
+  if (error) throw error;
+  const rows = data || [];
+  const byModel = new Map<string, AiUsageSummaryRow>();
+  for (const r of rows as any[]) {
+    const key = `${r.provider_id || 'none'}:${r.model_id || 'none'}`;
+    const row = byModel.get(key) || {
+      provider_id: r.provider_id, model_id: r.model_id, model_label: r.model_label,
+      calls: 0, ok_calls: 0, tokens_in: 0, tokens_out: 0,
+    };
+    row.calls += 1;
+    if (r.ok) row.ok_calls += 1;
+    row.tokens_in += r.tokens_in || 0;
+    row.tokens_out += r.tokens_out || 0;
+    byModel.set(key, row);
+  }
+  return Array.from(byModel.values()).sort((a, b) => b.calls - a.calls);
+}

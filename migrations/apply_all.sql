@@ -2075,3 +2075,185 @@ CREATE TABLE IF NOT EXISTS ads (
 
 CREATE INDEX IF NOT EXISTS idx_ad_sets_campaign ON ad_sets(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_ads_campaign ON ads(campaign_id);
+
+-- ============================================================================
+-- 022_agent_conversations.sql — Operator-copilot memory substrate.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS agent_conversations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  brand_id TEXT REFERENCES brands(id),
+  title TEXT,
+  transcript JSONB,
+  carryover JSONB,
+  token_estimate INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_conversations_account ON agent_conversations(account_id);
+
+CREATE TABLE IF NOT EXISTS agent_memory (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  subject TEXT,
+  predicate TEXT,
+  object TEXT,
+  fact TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_memory_account ON agent_memory(account_id);
+
+-- ============================================================================
+-- 024_personas.sql — Multi-persona agent roster, per account.
+-- NOTE: model_id FK requires ai_models (023_ai_providers.sql) to be applied
+-- first; append 023 to this file before 024 if regenerating from scratch.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS personas (
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id     UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  name           TEXT NOT NULL,
+  role           TEXT,
+  instructions   TEXT NOT NULL DEFAULT '',
+  model_id       UUID REFERENCES ai_models(id) ON DELETE SET NULL,
+  tone           TEXT,
+  avatar         TEXT,
+  is_coordinator BOOLEAN NOT NULL DEFAULT FALSE,
+  enabled        BOOLEAN NOT NULL DEFAULT TRUE,
+  sort_order     INT NOT NULL DEFAULT 0,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_personas_account ON personas(account_id, sort_order);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_personas_one_coordinator
+  ON personas(account_id)
+  WHERE is_coordinator = TRUE AND enabled = TRUE;
+
+ALTER TABLE personas ENABLE ROW LEVEL SECURITY;
+
+-- ============================================================================
+-- 025_skills.sql — Skills catalog (system + account-authored) + per-account
+-- enable state. Additive: the 12 built-ins in lib/skills/registry.ts are
+-- untouched; zero enabled account_skills rows = zero behavior change.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS skills (
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id     UUID REFERENCES accounts(id) ON DELETE CASCADE,
+  slug           TEXT NOT NULL,
+  name           TEXT NOT NULL,
+  description    TEXT,
+  category       TEXT,
+  instructions   TEXT NOT NULL DEFAULT '',
+  source         TEXT,
+  license        TEXT,
+  inspired_by    TEXT,
+  quality_flags  JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_global_slug
+  ON skills(slug) WHERE account_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_account_slug
+  ON skills(account_id, slug) WHERE account_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_skills_account ON skills(account_id);
+CREATE INDEX IF NOT EXISTS idx_skills_category ON skills(category);
+
+ALTER TABLE skills ENABLE ROW LEVEL SECURITY;
+
+CREATE TABLE IF NOT EXISTS account_skills (
+  account_id              UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  skill_id                UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+  enabled                 BOOLEAN NOT NULL DEFAULT TRUE,
+  overridden_instructions TEXT,
+  created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (account_id, skill_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_skills_account ON account_skills(account_id);
+
+ALTER TABLE account_skills ENABLE ROW LEVEL SECURITY;
+
+-- ============================================================================
+-- 026_mcp_clients.sql — External MCP server registry, per account. Inverse of
+-- the existing MCP server (app/api/mcp/route.ts). Registry only in this
+-- migration; wiring discovered tools into the agent loop is a later task.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS mcp_clients (
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id         UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  name               TEXT NOT NULL,
+  transport          TEXT NOT NULL,
+  url                TEXT NOT NULL,
+  auth_header_encrypted TEXT,
+  enabled            BOOLEAN NOT NULL DEFAULT TRUE,
+  last_status        TEXT,
+  last_checked_at    TIMESTAMPTZ,
+  discovered_tools   JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT mcp_clients_transport_check CHECK (transport IN ('http','sse')),
+  CONSTRAINT mcp_clients_account_name_unique UNIQUE (account_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_clients_account ON mcp_clients(account_id);
+
+ALTER TABLE mcp_clients ENABLE ROW LEVEL SECURITY;
+
+-- ============================================================================
+-- 027_scheduled_tasks.sql — Account-scoped recurring agent tasks. Named
+-- intervals only (hourly/daily/weekly) — no cron parsing.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id     UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  name           TEXT NOT NULL,
+  prompt         TEXT NOT NULL,
+  interval       TEXT NOT NULL,
+  enabled        BOOLEAN NOT NULL DEFAULT TRUE,
+  last_run_at    TIMESTAMPTZ,
+  next_run_at    TIMESTAMPTZ,
+  last_status    TEXT,
+  last_result    TEXT,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT scheduled_tasks_interval_check CHECK (interval IN ('hourly','daily','weekly'))
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_account ON scheduled_tasks(account_id);
+CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_due ON scheduled_tasks(next_run_at) WHERE enabled = TRUE;
+
+ALTER TABLE scheduled_tasks ENABLE ROW LEVEL SECURITY;
+
+-- ============================================================================
+-- 028_approvals.sql — Durable approvals workflow for the agent's approval
+-- gate. Additive alongside the existing in-memory needs_approval/resume flow
+-- (lib/agent/loop.ts) — a persisted audit trail with actor, comment,
+-- no-self-approval, and edit-invalidation, not a replacement execution path.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS approvals (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id      UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  conversation_id UUID,
+  tool            TEXT NOT NULL,
+  title           TEXT NOT NULL,
+  summary         TEXT NOT NULL,
+  args_encrypted  TEXT,
+  args_redacted   JSONB NOT NULL DEFAULT '{}'::jsonb,
+  args_hash       TEXT NOT NULL,
+  state           TEXT NOT NULL DEFAULT 'pending',
+  requested_by    TEXT,
+  decided_by      TEXT,
+  decided_at      TIMESTAMPTZ,
+  comment         TEXT,
+  expires_at      TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT approvals_state_check CHECK (state IN ('pending','approved','rejected','expired','invalidated'))
+);
+CREATE INDEX IF NOT EXISTS idx_approvals_account_state ON approvals(account_id, state);
+
+ALTER TABLE approvals ENABLE ROW LEVEL SECURITY;
