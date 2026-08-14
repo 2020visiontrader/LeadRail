@@ -3,7 +3,11 @@ import { withRetry } from '@/lib/integrations/retry';
 import { addSuppression } from '@/lib/suppressions';
 
 const RESEND_API_URL = 'https://api.resend.com';
-const ENV_RESEND_API_KEY = process.env.RESEND_API_KEY;
+// LeadRail's OWN Resend account (domain leadrail.xyz). Deliberately NOT the
+// FilmOps RESEND_API_KEY — LeadRail and FilmOps must never share a sending
+// account/domain. If this is unset, we error rather than borrow another
+// product's account.
+const ENV_RESEND_API_KEY = process.env.LEADRAIL_RESEND_API_KEY;
 
 export interface ResendEmail {
   from: string;
@@ -30,7 +34,7 @@ export async function getResendApiKey(accountId?: string): Promise<string> {
       // fall through to env
     }
   }
-  if (!ENV_RESEND_API_KEY) throw new Error('RESEND_API_KEY not set — connect Resend in Settings → Integrations');
+  if (!ENV_RESEND_API_KEY) throw new Error('LEADRAIL_RESEND_API_KEY not set — connect LeadRail\'s Resend (leadrail.xyz) in Settings → Integrations');
   return ENV_RESEND_API_KEY;
 }
 

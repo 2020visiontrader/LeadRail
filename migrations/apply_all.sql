@@ -485,8 +485,8 @@ INSERT INTO account_members (account_id, email, role)
 VALUES ('00000000-0000-0000-0000-0000000000b1', 'aifranckie101@gmail.com', 'owner')
 ON CONFLICT (account_id, email) DO NOTHING;
 
+-- FilmOps is a SEPARATE product and must never be seeded into LeadRail.
 INSERT INTO brands (id, name, active, account_id) VALUES
-  ('filmops',      'FilmOps',       TRUE, '00000000-0000-0000-0000-0000000000b1'),
   ('retentionrail','RetentionRail', TRUE, '00000000-0000-0000-0000-0000000000b1')
 ON CONFLICT (id) DO UPDATE SET account_id = EXCLUDED.account_id;
 

@@ -6,7 +6,7 @@ export interface RequiredEnv {
 export interface OptionalEnv {
   SUPABASE_SERVICE_ROLE_KEY?: string;
   APOLLO_API_KEY?: string;
-  RESEND_API_KEY?: string;
+  LEADRAIL_RESEND_API_KEY?: string;
   GOOGLE_ADS_DEVELOPER_TOKEN?: string;
   BREVO_API_KEY?: string;
   POSTIZ_API_KEY?: string;
@@ -56,7 +56,7 @@ export function getIntegrationStatus() {
     gemini: !!(process.env.GEMINI_API_KEY || process.env.Gemini_api_key || process.env.GOOGLE_API_KEY),
     opencode: !!(process.env.OPENCODE_API_KEY || process.env.OpenCode_Api_Key || process.env.OPENCODE_GO_API_KEY),
     brevo: !!process.env.BREVO_API_KEY,
-    resend: !!process.env.RESEND_API_KEY,
+    resend: !!process.env.LEADRAIL_RESEND_API_KEY,
     postiz: !!process.env.POSTIZ_API_KEY,
     meta: !!process.env.META_ACCESS_TOKEN,
     google_ads: !!process.env.GOOGLE_ADS_DEVELOPER_TOKEN,

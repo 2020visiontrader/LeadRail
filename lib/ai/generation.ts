@@ -116,7 +116,7 @@ export async function parseIcpFromText(text: string, context?: VentureContext): 
         : 'When the request is thin, make reasonable decision-maker assumptions rather than returning empty filters',
       'summary is one friendly sentence describing exactly what will be searched',
       ctxBlock
-        ? 'reasoning is one short sentence (first person, like a colleague thinking out loud) explaining how you read the request AND how the brand context shaped it — e.g. "You didn\'t name a target, so I used FilmOps\' investor goal + film-tech sectors to aim at fund partners."'
+        ? 'reasoning is one short sentence (first person, like a colleague thinking out loud) explaining how you read the request AND how the brand context shaped it — e.g. "You didn\'t name a target, so I used the venture\'s stated lead goal + sectors to aim at the right decision-makers."'
         : 'reasoning is one short first-person sentence explaining how you interpreted the request and any assumption you made',
     ],
   });
