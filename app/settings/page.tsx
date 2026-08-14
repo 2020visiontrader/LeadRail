@@ -8,6 +8,7 @@ import { apiGet, apiSend } from '@/lib/api';
 import SenderProfiles from '@/components/SenderProfiles';
 import Personas from '@/components/Personas';
 import Skills from '@/components/Skills';
+import ModelsProviders from '@/components/ModelsProviders';
 import AiUsage from '@/components/AiUsage';
 import McpClients from '@/components/McpClients';
 import ScheduledTasks from '@/components/ScheduledTasks';
@@ -417,6 +418,8 @@ export default function Settings() {
           <Personas />
 
           <Skills />
+
+          <ModelsProviders />
 
           <AiUsage />
 
