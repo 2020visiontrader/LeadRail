@@ -16,6 +16,8 @@ export interface NotificationRow {
 
 export async function createNotification(accountId: string, input: {
   type?: string; title: string; body?: string; link?: string;
+  /** Set false to suppress the best-effort email fan-out (e.g. bulk/noisy). Default: email. */
+  email?: boolean;
 }): Promise<NotificationRow> {
   const row = {
     account_id: accountId,
@@ -26,6 +28,12 @@ export async function createNotification(accountId: string, input: {
   };
   const { data, error } = await supabase.from('notifications').insert([row]).select().single();
   if (error) throw error;
+  // Best-effort email fan-out — never awaited on the critical path, never throws.
+  if (input.email !== false) {
+    import('@/lib/notifications/email')
+      .then((m) => m.emailNotification(accountId, data))
+      .catch(() => {});
+  }
   return data;
 }
 

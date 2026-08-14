@@ -38,6 +38,39 @@ export async function getResendApiKey(accountId?: string): Promise<string> {
   return ENV_RESEND_API_KEY;
 }
 
+/**
+ * Lightweight transactional send for PLATFORM email (notifications, system
+ * alerts) — NOT lead outreach. Unlike sendResendEmail it takes no contactId and
+ * does NOT write an email_campaigns row (these aren't campaign sends). Uses
+ * LeadRail's own leadrail.xyz Resend account. Throws on failure so callers can
+ * decide whether to swallow (notifications fan-out swallows).
+ */
+export async function sendPlatformEmail(email: ResendEmail, accountId?: string) {
+  const apiKey = await getResendApiKey(accountId);
+  const payload: Record<string, unknown> = {
+    from: email.from,
+    to: email.to,
+    subject: email.subject,
+    html: email.html,
+  };
+  if (email.replyTo) payload.reply_to = email.replyTo;
+  if (email.tags) payload.tags = email.tags;
+
+  return withRetry(() =>
+    fetch(`${RESEND_API_URL}/emails`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(async (r) => {
+      if (!r.ok) {
+        const body = await r.text();
+        throw new Error(`Resend platform email error: ${r.status} ${r.statusText} — ${body}`);
+      }
+      return r.json();
+    })
+  );
+}
+
 export async function sendResendEmail(
   email: ResendEmail,
   contactId: string,
