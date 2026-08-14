@@ -2487,3 +2487,105 @@ CREATE INDEX IF NOT EXISTS idx_events_account_created ON events(account_id, crea
 CREATE INDEX IF NOT EXISTS idx_events_account_type ON events(account_id, type);
 
 ALTER TABLE events ENABLE ROW LEVEL SECURITY;
+
+-- 033_budgets.sql
+-- 033_budgets.sql — Per-account spend budgets / credit caps.
+--
+-- One row per account: an optional monthly credit limit, an alert threshold
+-- (%), and an optional hard-stop switch. `enabled=false` by default so this
+-- is entirely opt-in — with no row (or enabled=false), spend is unaffected.
+-- lib/budgets/store.ts computes `spent` on the fly from credit_transactions
+-- (no running counter to keep in sync).
+--
+-- Scoping/RLS convention matches 030_segments.sql / 031_events.sql:
+-- account_id UUID NOT NULL, RLS enabled with no anon policies — service-role
+-- bypasses, the app scopes every read/write by account_id in code.
+-- Idempotent; safe to re-run.
+
+CREATE TABLE IF NOT EXISTS account_budgets (
+  id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id            UUID NOT NULL UNIQUE REFERENCES accounts(id) ON DELETE CASCADE,
+  monthly_limit_credits INTEGER,
+  alert_threshold_pct   INTEGER NOT NULL DEFAULT 80,
+  hard_stop             BOOLEAN NOT NULL DEFAULT FALSE,
+  enabled               BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at            TIMESTAMPTZ DEFAULT NOW(),
+  updated_at            TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_budgets_account ON account_budgets(account_id);
+
+ALTER TABLE account_budgets ENABLE ROW LEVEL SECURITY;
+
+-- 034_notifications.sql
+-- 034_notifications.sql — In-app notifications, per account.
+--
+-- Simple flat feed: type/title/body/link + read flag. No push/email fan-out
+-- here — this table is just the in-app bell/panel backing store.
+--
+-- Scoping/RLS convention matches 030_segments.sql / 031_events.sql /
+-- 033_budgets.sql: account_id UUID NOT NULL, RLS enabled with no anon
+-- policies — service-role bypasses, the app scopes every read/write by
+-- account_id in code (see lib/notifications/store.ts).
+-- Idempotent; safe to re-run.
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id   UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  type         TEXT,
+  title        TEXT NOT NULL,
+  body         TEXT,
+  link         TEXT,
+  read         BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_account_created ON notifications(account_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_account_read ON notifications(account_id, read);
+
+ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
+
+-- 035_forms.sql
+-- 035_forms.sql — Web forms (lead-capture), per account.
+--
+-- A `form` is a named, embeddable lead-capture form: `fields` is a JSONB
+-- array of {key, label, type, required} describing the input schema. Public
+-- visitors POST to /api/public/forms/:id/submit with NO session — that route
+-- derives account_id from the form row itself (see lib/forms/store.ts
+-- getPublicForm/submitForm), never from the caller, so a submission can never
+-- be attributed to the wrong tenant. Each submission is stored raw in
+-- `form_submissions.data` and best-effort linked to an upserted contact.
+--
+-- Scoping/RLS convention matches 025_skills.sql / 027_scheduled_tasks.sql /
+-- 029_journeys.sql / 030_segments.sql: account_id UUID NOT NULL, RLS enabled
+-- with no anon policies — service-role bypasses, the app scopes every
+-- read/write by account_id in code. Idempotent; safe to re-run.
+
+CREATE TABLE IF NOT EXISTS forms (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id   UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  name         TEXT NOT NULL,
+  fields       JSONB NOT NULL DEFAULT '[]'::jsonb,   -- [{key,label,type,required}]
+  redirect_url TEXT,
+  enabled      BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_forms_account ON forms(account_id);
+
+ALTER TABLE forms ENABLE ROW LEVEL SECURITY;
+
+CREATE TABLE IF NOT EXISTS form_submissions (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  form_id      UUID NOT NULL REFERENCES forms(id) ON DELETE CASCADE,
+  account_id   UUID NOT NULL,
+  data         JSONB NOT NULL DEFAULT '{}'::jsonb,
+  contact_id   UUID,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_form_submissions_form_created ON form_submissions(form_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_form_submissions_account ON form_submissions(account_id);
+
+ALTER TABLE form_submissions ENABLE ROW LEVEL SECURITY;

@@ -2,6 +2,7 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
+import NotificationsBell from '@/components/NotificationsBell';
 
 const NAV = [
   { href: '/', label: 'Dashboard' },
@@ -9,6 +10,7 @@ const NAV = [
   { href: '/leads', label: 'Leads' },
   { href: '/enrichment', label: 'Enrichment' },
   { href: '/segments', label: 'Segments' },
+  { href: '/forms', label: 'Forms' },
   { href: '/sequences', label: 'Sequences' },
   { href: '/journeys', label: 'Journeys' },
   { href: '/templates', label: 'Templates' },
@@ -110,6 +112,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           })}
         </nav>
         <div className="space-y-1 border-t border-[var(--border-default)] px-2 py-3">
+          <div className="px-1 pb-1"><NotificationsBell /></div>
           <ThemeToggle />
           <AccountFooter />
         </div>

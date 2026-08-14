@@ -14,7 +14,10 @@ const PUBLIC_PAGES = ['/login', '/privacy', '/terms', '/data-deletion', '/r/'];
 // public here so that redirect fires instead of the middleware's raw JSON 401.
 // '/api/mcp' carries its own Bearer (APP_API_SECRET) auth inside the route, so
 // it is public to the cookie middleware — like the bearer-protected cron tick.
-const PUBLIC_API = ['/api/auth/login', '/api/webhooks', '/api/hermes/tick', '/api/mcp', '/api/social/meta/callback', '/api/social/meta/connect', '/api/social/meta/deauthorize', '/api/social/meta/data-deletion', '/api/social/instagram/callback', '/api/track', '/api/unsubscribe'];
+// '/api/public/*' is the intentional public surface (e.g. embeddable web-form
+// submissions from any external site) — these routes derive tenant from the
+// resource row, never from a session, and are safe to expose unauthenticated.
+const PUBLIC_API = ['/api/auth/login', '/api/webhooks', '/api/hermes/tick', '/api/mcp', '/api/public', '/api/social/meta/callback', '/api/social/meta/connect', '/api/social/meta/deauthorize', '/api/social/meta/data-deletion', '/api/social/instagram/callback', '/api/track', '/api/unsubscribe'];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;

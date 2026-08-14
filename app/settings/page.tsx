@@ -9,6 +9,7 @@ import SenderProfiles from '@/components/SenderProfiles';
 import Personas from '@/components/Personas';
 import Skills from '@/components/Skills';
 import ModelsProviders from '@/components/ModelsProviders';
+import Budgets from '@/components/Budgets';
 import AiUsage from '@/components/AiUsage';
 import McpClients from '@/components/McpClients';
 import ScheduledTasks from '@/components/ScheduledTasks';
@@ -422,6 +423,8 @@ export default function Settings() {
           <ModelsProviders />
 
           <AiUsage />
+
+          <Budgets />
 
           <McpClients />
 
