@@ -45,7 +45,7 @@ export async function POST(request: NextRequest) {
   const fromId = typeof body?.from === 'string' && body.from ? body.from : undefined;
   const conversationId = typeof body?.conversationId === 'string' && body.conversationId ? body.conversationId : undefined;
   const carryover = fromId ? await loadCarryover(fromId, session.accountId) : null;
-  const agentContext = await loadAgentContext({ accountId: session.accountId, brandId, brandName });
+  const agentContext = await loadAgentContext({ accountId: session.accountId, brandId, brandName, query: message });
 
   // Optional persona routing (migration 024) — no-op unless the client opts in.
   const personaId: string | undefined = typeof body?.personaId === 'string' && body.personaId ? body.personaId : undefined;

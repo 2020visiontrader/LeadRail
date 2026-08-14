@@ -12,6 +12,7 @@
 
 import { supabase } from '@/lib/db';
 import type { ChatMessage } from '@/lib/ai/router';
+import { embedPassage, embedQuery, toPgVector } from './embeddings';
 
 /** Cheap token estimate (~4 chars/token) over a transcript. */
 export function estimateTokens(messages: ChatMessage[]): number {
@@ -112,32 +113,107 @@ export interface MemoryFact {
   object?: string;
 }
 
-/** Record a durable fact about the account. Best-effort. */
+/** Record a durable fact about the account. Best-effort.
+ *
+ * Embeds the fact (migration 036) so it's recallable by meaning. Embedding is
+ * best-effort and never blocks: if it fails, the row is still written and stays
+ * recall-able via the recency digest — it just won't match semantically until a
+ * backfill re-embeds it. */
 export async function recordFact(accountId: string, f: MemoryFact): Promise<void> {
   const fact = (f.fact || '').trim();
   if (!fact) return;
+  const row: Record<string, any> = {
+    account_id: accountId,
+    fact,
+    subject: f.subject ?? null,
+    predicate: f.predicate ?? null,
+    object: f.object ?? null,
+  };
   try {
-    await supabase.from('agent_memory').insert({
-      account_id: accountId,
-      fact,
-      subject: f.subject ?? null,
-      predicate: f.predicate ?? null,
-      object: f.object ?? null,
-    });
+    const vec = await embedPassage(fact);
+    if (vec) row.embedding = toPgVector(vec);
+  } catch { /* embedding optional — write the fact anyway */ }
+  try {
+    await supabase.from('agent_memory').insert(row);
   } catch { /* best-effort */ }
 }
 
 /**
- * Compact digest of recent durable facts for the account, newest first, capped
- * so it never bloats the prompt. Returns '' when there's nothing (or on error).
+ * Semantic recall: facts closest in MEANING to `query` for this account.
+ * Returns `[]` when embeddings are unavailable, the table lacks the vector
+ * column (migration 036 not applied), or nothing clears `minSimilarity`. Never
+ * throws. `minSimilarity` filters out weak matches so recall stays relevant.
  */
-export async function recallMemoryDigest(accountId: string, limit = 12): Promise<string> {
+export async function semanticRecall(
+  accountId: string,
+  query: string,
+  limit = 8,
+  // nv-embedqa-e5-v5 cosine scores are compressed: in the live retrieval eval,
+  // CORRECT top-1 matches ran 0.29–0.51 and clearly-unrelated facts ~0.22–0.26.
+  // A 0.25 floor keeps every true positive (dropping a real memory is worse than
+  // one stray line in a capped, recency-padded digest the model can ignore).
+  minSimilarity = 0.25,
+): Promise<string[]> {
+  const q = (query || '').trim();
+  if (!q) return [];
   try {
-    const { data } = await supabase.from('agent_memory')
-      .select('fact').eq('account_id', accountId)
-      .order('updated_at', { ascending: false }).limit(limit);
-    if (!data?.length) return '';
-    return data.map((r: any) => `- ${r.fact}`).join('\n');
+    const vec = await embedQuery(q);
+    if (!vec) return [];
+    const { data, error } = await supabase.rpc('match_agent_memory', {
+      p_account_id: accountId,
+      p_query: toPgVector(vec),
+      p_limit: limit,
+    });
+    if (error || !Array.isArray(data)) return [];
+    return data
+      .filter((r: any) => typeof r?.fact === 'string' && (r.similarity ?? 0) >= minSimilarity)
+      .map((r: any) => r.fact as string);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Compact digest of durable facts for the account, capped so it never bloats the
+ * prompt. Returns '' when there's nothing (or on error).
+ *
+ * Blended recall (B4): when `query` is supplied AND semantic recall is available,
+ * the most MEANING-relevant facts are surfaced first, then padded with the most
+ * recent facts (deduped). With no query — or when embeddings/migration 036 are
+ * unavailable — this is byte-for-byte the original recency-only digest.
+ */
+export async function recallMemoryDigest(
+  accountId: string,
+  limit = 12,
+  query?: string,
+): Promise<string> {
+  try {
+    const facts: string[] = [];
+    const seen = new Set<string>();
+    const add = (f: string) => {
+      const t = (f || '').trim();
+      if (!t || seen.has(t)) return;
+      seen.add(t);
+      facts.push(t);
+    };
+
+    // Semantic-first: only when a query is given (existing callers pass none, so
+    // their behavior is unchanged). semanticRecall returns [] if unavailable.
+    if (query && query.trim()) {
+      const relevant = await semanticRecall(accountId, query, Math.min(8, limit));
+      for (const f of relevant) add(f);
+    }
+
+    // Pad with the most recent facts up to the cap.
+    if (facts.length < limit) {
+      const { data } = await supabase.from('agent_memory')
+        .select('fact').eq('account_id', accountId)
+        .order('updated_at', { ascending: false }).limit(limit);
+      for (const r of (data || [])) add((r as any).fact);
+    }
+
+    if (!facts.length) return '';
+    return facts.slice(0, limit).map((f) => `- ${f}`).join('\n');
   } catch {
     return '';
   }

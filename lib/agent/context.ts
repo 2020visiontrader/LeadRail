@@ -33,6 +33,9 @@ export interface AgentContextInput {
   accountId: string;
   brandId?: string;
   brandName?: string;
+  /** Current user message — enables semantic (meaning-based) memory recall.
+   *  Omitted → durable memory falls back to recency-only (unchanged). */
+  query?: string;
 }
 
 /**
@@ -90,7 +93,7 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
 
   // --- Durable memory: facts learned across sessions -----------------------
   try {
-    const digest = await recallMemoryDigest(accountId);
+    const digest = await recallMemoryDigest(accountId, 12, input.query);
     if (digest) sections.push(`WHAT YOU'VE LEARNED (durable memory):\n${digest}`);
   } catch { /* memory omitted */ }
 

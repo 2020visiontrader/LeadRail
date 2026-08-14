@@ -58,7 +58,7 @@ async function POST__impl(request: NextRequest) {
   const carryover = fromId ? await loadCarryover(fromId, session.accountId) : null;
 
   // Full grounding block — platform + venture + account snapshot + durable memory.
-  const agentContext = await loadAgentContext({ accountId: session.accountId, brandId, brandName });
+  const agentContext = await loadAgentContext({ accountId: session.accountId, brandId, brandName, query: message });
 
   // Optional persona routing (migration 024). Both fields are optional/absent
   // for every existing caller, so this is a no-op unless the client opts in.
