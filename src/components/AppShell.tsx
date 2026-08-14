@@ -8,6 +8,7 @@ const NAV = [
   { href: '/assistant', label: 'Assistant' },
   { href: '/leads', label: 'Leads' },
   { href: '/enrichment', label: 'Enrichment' },
+  { href: '/segments', label: 'Segments' },
   { href: '/sequences', label: 'Sequences' },
   { href: '/journeys', label: 'Journeys' },
   { href: '/templates', label: 'Templates' },
@@ -19,6 +20,7 @@ const NAV = [
   { href: '/companies', label: 'Companies' },
   { href: '/deals', label: 'Pipeline' },
   { href: '/activities', label: 'Activities' },
+  { href: '/analytics', label: 'Analytics' },
   { href: '/referrals', label: 'Ambassador' },
   { href: '/settings', label: 'Settings' },
 ];

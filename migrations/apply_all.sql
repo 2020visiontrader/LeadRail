@@ -2431,3 +2431,59 @@ CREATE INDEX IF NOT EXISTS idx_content_pipeline_runs_account ON content_pipeline
 CREATE INDEX IF NOT EXISTS idx_content_pipeline_runs_created ON content_pipeline_runs(created_at DESC);
 
 ALTER TABLE content_pipeline_runs ENABLE ROW LEVEL SECURITY;
+
+-- 030_segments.sql
+-- 030_segments.sql — Dynamic contact segments, per account.
+--
+-- A segment is a saved, re-runnable filter over `contacts`: a name/description
+-- plus a `filters` JSONB array of {field, op, value} triples. The whitelist of
+-- allowed fields/ops lives in code (lib/segments/store.ts translateFilters) —
+-- this table just stores the definition; it never stores raw SQL.
+--
+-- Scoping/RLS convention matches 025_skills.sql / 027_scheduled_tasks.sql /
+-- 028_approvals.sql / 029_journeys.sql: account_id UUID NOT NULL, RLS enabled
+-- with no anon policies — service-role bypasses, the app scopes every
+-- read/write by account_id in code (see lib/segments/store.ts).
+-- Idempotent; safe to re-run.
+
+CREATE TABLE IF NOT EXISTS segments (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id   UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  name         TEXT NOT NULL,
+  description  TEXT,
+  filters      JSONB NOT NULL DEFAULT '[]'::jsonb,   -- [{field, op, value}]
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_segments_account ON segments(account_id);
+
+ALTER TABLE segments ENABLE ROW LEVEL SECURITY;
+
+-- 031_events.sql
+-- 031_events.sql — Lightweight event log, per account (Postgres-only CDP).
+--
+-- Every row is one tracked event (e.g. email_opened, page_viewed) optionally
+-- tied to a contact, with a free-form JSONB `props` bag. No ClickHouse/Kafka —
+-- this is deliberately simple; lib/analytics/store.ts aggregates with plain
+-- SQL over this table (counts, timeseries).
+--
+-- Scoping/RLS convention matches 025_skills.sql / 027_scheduled_tasks.sql /
+-- 028_approvals.sql / 029_journeys.sql / 030_segments.sql: account_id UUID
+-- NOT NULL, RLS enabled with no anon policies — service-role bypasses, the
+-- app scopes every read/write by account_id in code (see lib/analytics/store.ts).
+-- Idempotent; safe to re-run.
+
+CREATE TABLE IF NOT EXISTS events (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id   UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  contact_id   UUID,
+  type         TEXT NOT NULL,
+  props        JSONB DEFAULT '{}'::jsonb,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_account_created ON events(account_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_account_type ON events(account_id, type);
+
+ALTER TABLE events ENABLE ROW LEVEL SECURITY;
