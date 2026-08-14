@@ -19,9 +19,15 @@ const PUBLIC_API = ['/api/auth/login', '/api/webhooks', '/api/hermes/tick', '/ap
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
   const isApi = pathname.startsWith('/api');
-  const isPublic = isApi
-    ? PUBLIC_API.some((p) => pathname.startsWith(p))
-    : PUBLIC_PAGES.some((p) => pathname === p || pathname.startsWith(p));
+  // Boundary-aware prefix match: '/api/mcp' must NOT whitelist '/api/mcp-clients'.
+  // A bare startsWith let the '/api/mcp' public prefix swallow the mcp-clients
+  // management API (encrypted auth headers) — an auth bypass. Match the exact
+  // path or a real path segment boundary only.
+  const matchPrefix = (p: string) => {
+    const base = p.endsWith('/') ? p.slice(0, -1) : p;
+    return pathname === base || pathname.startsWith(base + '/');
+  };
+  const isPublic = isApi ? PUBLIC_API.some(matchPrefix) : PUBLIC_PAGES.some(matchPrefix);
   if (isPublic) return NextResponse.next();
 
   const session = await verifySession(req.cookies.get(SESSION_COOKIE)?.value);
