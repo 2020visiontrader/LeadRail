@@ -198,6 +198,29 @@ function observation(text: string): ChatMessage {
   return { role: 'user', content: `OBSERVATION: ${truncate(text)}` };
 }
 
+// Derive small, truthful per-run metrics from a tool's real result. Only counts
+// what actually happened; unknown shapes yield {} (nothing shown). Drives the
+// dock's "This run" domain KPIs — never fabricates.
+function deriveMetrics(tool: string, args: Record<string, any>, result: any): Record<string, number> {
+  const arrLen = (v: any): number | undefined =>
+    Array.isArray(v) ? v.length
+    : Array.isArray(v?.people) ? v.people.length
+    : Array.isArray(v?.leads) ? v.leads.length
+    : Array.isArray(v?.results) ? v.results.length
+    : undefined;
+  switch (tool) {
+    case 'sourceLeads': { const n = arrLen(result); return n != null ? { leadsFound: n } : {}; }
+    case 'enrichLead': return result ? { revealed: 1 } : {};
+    case 'draftOutreach': return result ? { drafts: 1 } : {};
+    case 'generateAdCopy': return result ? { copy: 1 } : {};
+    case 'sendEmail': return { emailsSent: 1 };
+    case 'enrollInSequence': { const n = Array.isArray(args?.contactIds) ? args.contactIds.length : 1; return { enrolled: n }; }
+    case 'updateLeadStatus': return args?.status === 'qualified' ? { qualified: 1 } : {};
+    case 'createDeal': return result ? { deals: 1 } : {};
+    default: return {};
+  }
+}
+
 // --- Persona resolution (migration 024) -------------------------------------
 // Resolves which persona (if any) should frame this turn, and the model_id to
 // pass through to generateChat. Every branch degrades to `{ persona: null,
@@ -391,7 +414,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
 export type AgentEvent =
   | { type: 'thought'; text: string }
   | { type: 'tool'; tool: string; title: string; args: Record<string, any> }
-  | { type: 'observation'; text: string; ok: boolean }
+  | { type: 'observation'; text: string; ok: boolean; tool?: string; metrics?: Record<string, number> }
   | { type: 'final'; message: string; transcript: ChatMessage[]; tokenEstimate?: number }
   | { type: 'needs_approval'; proposal: AgentProposal; message: string; transcript: ChatMessage[] }
   | { type: 'compaction_suggested'; level: 'soft' | 'hard'; tokenEstimate: number }
@@ -416,7 +439,7 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
     emit({ type: 'tool', tool, title: TOOLS[tool].title, args });
     const res = await runTool(tool, accountId, args);
     const obs = res.ok ? JSON.stringify(res.result) : `ERROR: ${res.error}`;
-    emit({ type: 'observation', text: truncate(obs), ok: res.ok });
+    emit({ type: 'observation', text: truncate(obs), ok: res.ok, tool, metrics: res.ok ? deriveMetrics(tool, args, res.result) : {} });
     messages.push(observation(obs));
   }
 
@@ -499,7 +522,7 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
     emit({ type: 'tool', tool, title: def.title, args });
     const res = await runTool(tool, accountId, args);
     const obs = res.ok ? JSON.stringify(res.result) : `ERROR: ${res.error}`;
-    emit({ type: 'observation', text: truncate(obs), ok: res.ok });
+    emit({ type: 'observation', text: truncate(obs), ok: res.ok, tool, metrics: res.ok ? deriveMetrics(tool, args, res.result) : {} });
     messages.push(observation(obs));
   }
 

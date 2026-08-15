@@ -3,6 +3,7 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import NotificationsBell from '@/components/NotificationsBell';
+import AssistantDock, { DOCK_EVENT, readDockMode, toggleDockMode } from '@/components/AssistantDock';
 
 const NAV = [
   { href: '/', label: 'Dashboard' },
@@ -75,11 +76,19 @@ function Wordmark() {
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [isOwner, setIsOwner] = useState(false);
+  const [docked, setDocked] = useState(false);
   useEffect(() => {
     fetch('/api/auth/me', { headers: { Accept: 'application/json' } })
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => setIsOwner(d?.role === 'owner'))
       .catch(() => {});
+  }, []);
+  // Mirror the dock's mode for the rail launcher's active styling.
+  useEffect(() => {
+    setDocked(readDockMode() === 'docked');
+    const onDock = (e: Event) => setDocked((e as CustomEvent<string>).detail === 'docked');
+    window.addEventListener(DOCK_EVENT, onDock);
+    return () => window.removeEventListener(DOCK_EVENT, onDock);
   }, []);
   const isActive = (href: string) => (href === '/' ? pathname === '/' : pathname.startsWith(href));
   const bareRoutes = ['/login', '/privacy', '/terms', '/data-deletion'];
@@ -88,9 +97,23 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const nav = isOwner ? [...NAV, ...OWNER_NAV] : NAV;
   return (
     <div className="flex min-h-screen bg-[var(--bg-canvas)] text-[var(--text-primary)]">
-      <aside className="hidden w-52 shrink-0 flex-col border-r border-[var(--border-default)] bg-[var(--bg-surface)] md:flex">
+      <aside className={`hidden w-52 shrink-0 flex-col border-r border-[var(--border-default)] bg-[var(--bg-surface)] ${docked ? '' : 'md:flex'}`}>
         <div className="flex h-16 shrink-0 items-center px-4">
           <Wordmark />
+        </div>
+        <div className="px-3 pb-1">
+          <button
+            onClick={toggleDockMode}
+            aria-pressed={docked}
+            className={`flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-[13px] transition ${
+              docked ? 'bg-[var(--ink)] font-semibold text-[var(--ink-fg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-raised)] hover:text-[var(--text-primary)]'
+            }`}
+            style={!docked ? { background: 'color-mix(in srgb, var(--ink) 12%, transparent)' } : undefined}
+          >
+            <span aria-hidden className="text-[13px] leading-none">✦</span>
+            <span className="truncate">Assistant</span>
+            <kbd className="ml-auto rounded border border-[var(--border-default)] px-1 text-[11px] text-[var(--text-muted)]">⌘J</kbd>
+          </button>
         </div>
         <nav className="console-rail-scroll flex-1 space-y-0.5 overflow-y-auto px-3 py-2">
           {nav.map((n) => {
@@ -117,6 +140,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <AccountFooter />
         </div>
       </aside>
+      <AssistantDock />
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 items-center gap-4 overflow-x-auto border-b border-[var(--border-default)] bg-[var(--bg-surface)] px-4 md:hidden">
           <Wordmark />
