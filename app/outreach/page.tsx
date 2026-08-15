@@ -72,7 +72,7 @@ export default function OutreachPage() {
       setForm((f) => ({ ...f, subject: r.draft.subject || f.subject, html: r.draft.body || f.html }));
       notify('Draft generated');
     } catch (e: any) {
-      notify(e.message === 'not_configured' ? 'Connect OpenCode to generate' : e.message || 'Generation failed', 'error');
+      notify(e.message === 'not_configured' ? 'LeadRail AI is temporarily unavailable' : e.message || 'Generation failed', 'error');
     } finally { setGenerating(false); }
   };
 
@@ -133,7 +133,7 @@ export default function OutreachPage() {
         <div className="flex items-center gap-4">
           <div>
             <h1 className="text-2xl font-bold">Outreach</h1>
-            <p className="text-sm text-slate-500">Email campaigns</p>
+            <p className="text-sm text-slate-500">One-off outreach emails, sent from your venture&apos;s verified sender.</p>
           </div>
           {ventures.length > 1 && (
             <select
@@ -154,7 +154,7 @@ export default function OutreachPage() {
       </div>
 
       {loading ? <LoadingSpinner /> : campaigns.length === 0 ? (
-        <EmptyState icon="📧" title="No emails sent yet" hint="Compose your first outreach email. Requires Brevo + Supabase connected to actually send." action={<Button onClick={() => setOpen(true)}>Compose</Button>} />
+        <EmptyState icon="📧" title="No emails sent yet" hint="Compose your first outreach email. Sends from your verified sender (set it per venture in Settings)." action={<Button onClick={() => setOpen(true)}>Compose</Button>} />
       ) : (
         <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
           <table className="w-full text-sm">

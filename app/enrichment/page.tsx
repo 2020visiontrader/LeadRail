@@ -6,11 +6,21 @@ import Dropdown from '@/components/Dropdown';
 import Badge from '@/components/Badge';
 import EmptyState from '@/components/EmptyState';
 import LoadingSpinner from '@/components/LoadingSpinner';
+import ProgressStages from '@/components/ProgressStages';
 import { useToast } from '@/components/ToastProvider';
 import { apiGet, apiSend } from '@/lib/api';
 import { Contact } from '@/lib/types';
 
 interface Venture { id: string; name: string; account_id: string }
+
+// Plain-language stages shown while enrichment runs (no backend/vendor names).
+const ENRICH_STAGES = [
+  'Finding verified contact details…',
+  'Matching work emails…',
+  'Checking deliverability…',
+  'Scoring fit for your venture…',
+  'Updating your leads…',
+];
 const verdictTone = (v?: string) => (v === 'good_fit' ? 'green' : v === 'maybe' ? 'amber' : v === 'skip' ? 'red' : 'gray');
 const statusTone = (s?: string) => (s === 'done' ? 'green' : s === 'pending' ? 'amber' : s === 'failed' ? 'red' : 'gray');
 const statusLabel = (s?: string) => (s === 'done' ? 'enriched' : s || 'none');
@@ -36,7 +46,7 @@ export default function EnrichmentPage() {
   const enrich = async (c: Contact) => {
     setBusy(c.id);
     try { await apiSend(`/api/leads/${c.id}/enrich`, 'POST', { accountId: venture?.account_id }); notify(`Enriched ${c.name}`); load(); }
-    catch (e: any) { notify(e.message === 'not_configured' ? 'Connect Apollo to enrich' : e.message || 'Enrich failed', 'error'); }
+    catch (e: any) { notify(e.message === 'not_configured' ? 'Enrichment is temporarily unavailable' : e.message || 'Enrich failed', 'error'); }
     finally { setBusy(null); }
   };
   const enrichPending = async () => {
@@ -57,6 +67,9 @@ export default function EnrichmentPage() {
           <Button loading={busy === 'all'} onClick={enrichPending}>Enrich all pending</Button>
         </div>
       </div>
+
+      <ProgressStages active={busy === 'all'} stages={ENRICH_STAGES} />
+
       {loading ? <LoadingSpinner /> : rows.length === 0 ? (
         <EmptyState icon="🔎" title="No leads to enrich" hint="Import or source leads first, then enrich them here." />
       ) : (

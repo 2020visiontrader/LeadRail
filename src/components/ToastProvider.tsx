@@ -9,10 +9,10 @@ const ToastContext = createContext<Ctx>({ notify: () => {} });
 export const useToast = () => useContext(ToastContext);
 
 let seq = 0;
-const colors: Record<ToastType, string> = {
-  success: 'bg-green-600',
-  error: 'bg-red-600',
-  info: 'bg-slate-800',
+const colors: Record<ToastType, { bg: string; fg: string }> = {
+  success: { bg: 'var(--status-positive)', fg: '#FFFFFF' },
+  error: { bg: 'var(--status-negative)', fg: '#FFFFFF' },
+  info: { bg: 'var(--ink)', fg: 'var(--ink-fg)' },
 };
 
 export default function ToastProvider({ children }: { children: React.ReactNode }) {
@@ -27,7 +27,13 @@ export default function ToastProvider({ children }: { children: React.ReactNode 
       {children}
       <div className="fixed bottom-4 right-4 z-[60] flex flex-col gap-2">
         {toasts.map((t) => (
-          <div key={t.id} className={`${colors[t.type]} rounded-lg px-4 py-3 text-sm text-white shadow-lg`}>{t.message}</div>
+          <div
+            key={t.id}
+            className="rounded-lg px-4 py-3 text-sm font-medium shadow-op-3"
+            style={{ background: colors[t.type].bg, color: colors[t.type].fg }}
+          >
+            {t.message}
+          </div>
         ))}
       </div>
     </ToastContext.Provider>

@@ -1,27 +1,83 @@
 // AI routing ladder — drop-in replacement for OpenCode's public text API.
-// Failover order for every text/chat generation:
-//   1. Ask Zo  (user's Claude subscription — Haiku when set as the Zo account
-//      default model; billed to the user's own Anthropic subscription)
-//   2. OpenCode Go (deepseek-v4-pro — fast + accurate; used when Ask Zo fails)
-//   3. NVIDIA NIM (last resort — free tier, weaker instruction-following)
-// Ask Zo is first because it runs on the user's Claude subscription: with the
-// Zo default model set to Haiku it is fast AND accurate on structured
-// extraction. If the subscription tier errors/times out we fall through to
-// OpenCode Go, then to NIM. To pin a specific model for this app regardless of
-// the Zo account default, set ZOASK_MODEL to a `byok:` id. Each tier is skipped
-// when unconfigured; on any error/timeout we catch and fall through. If all
-// configured tiers fail (or none are configured), the last error is re-thrown.
+//
+// Two layers, tried in order:
+//   0. Configurable registry (lib/ai/providers.ts) — ONLY consulted when the
+//      caller passes `accountId` AND that account has rows in ai_routing
+//      (migration 023). Per-account providers + active/fallback chain,
+//      configured from Settings -> Models. Every call is logged to ai_usage.
+//   1. Hardcoded ladder (unchanged from before this file existed):
+//      1. Ask Zo  (user's Claude subscription — Haiku when set as the Zo account
+//         default model; billed to the user's own Anthropic subscription)
+//      2. OpenCode Go (deepseek-v4-pro — fast + accurate; used when Ask Zo fails)
+//      3. NVIDIA NIM (last resort — free tier, weaker instruction-following)
+//
+// This makes the registry ADDITIVE and backward-compatible: an account with
+// zero providers configured (i.e. every account today) skips step 0 entirely
+// and behaves EXACTLY as before. Ask Zo is first in the hardcoded ladder
+// because it runs on the user's Claude subscription: with the Zo default
+// model set to Haiku it is fast AND accurate on structured extraction. If the
+// subscription tier errors/times out we fall through to OpenCode Go, then to
+// NIM. To pin a specific model for this app regardless of the Zo account
+// default, set ZOASK_MODEL to a `byok:` id. Each tier is skipped when
+// unconfigured; on any error/timeout we catch and fall through. If every tier
+// fails (or none are configured), the last error is re-thrown.
 // Image generation stays on Gemini.
 
 import type { ChatMessage } from './opencode';
 import * as opencode from './opencode';
 import { zoAskConfigured, zoAskText, zoAskChat } from './zoask';
 import { nimConfigured, nimText, nimChat } from './nim';
+import { registryConfigured, resolveChain, callModel, type ResolvedModel } from './providers';
 
 export type { ChatMessage };
 
 export function textConfigured(): boolean {
   return zoAskConfigured() || opencode.opencodeConfigured() || nimConfigured();
+}
+
+// Best-effort usage logging; imported lazily inside the try so a circular
+// import or a credits.ts failure can never break AI generation itself.
+async function logUsage(entry: {
+  accountId: string; resolved: ResolvedModel; kind: 'text' | 'chat'; ok: boolean; error?: string; latencyMs: number;
+}): Promise<void> {
+  try {
+    const { recordAiUsage } = await import('@/lib/credits');
+    await recordAiUsage({
+      accountId: entry.accountId,
+      providerId: entry.resolved.provider.id,
+      modelId: entry.resolved.model.id,
+      modelLabel: entry.resolved.model.label || entry.resolved.model.model_id,
+      kind: entry.kind,
+      ok: entry.ok,
+      error: entry.error,
+      latencyMs: entry.latencyMs,
+    });
+  } catch { /* logging must never break the caller */ }
+}
+
+/** Try the account's configured registry chain; returns null (never throws)
+ * when unconfigured or when every configured tier fails, so callers fall
+ * through to the hardcoded ladder unchanged. */
+async function tryRegistry(
+  accountId: string | undefined,
+  modelId: string | undefined,
+  kind: 'text' | 'chat',
+  call: (resolved: ResolvedModel) => Promise<string>,
+): Promise<string | null> {
+  if (!accountId) return null;
+  if (!(await registryConfigured(accountId).catch(() => false))) return null;
+  const chain = await resolveChain(accountId, { modelId }).catch(() => []);
+  for (const resolved of chain) {
+    const start = Date.now();
+    try {
+      const text = await call(resolved);
+      void logUsage({ accountId, resolved, kind, ok: true, latencyMs: Date.now() - start });
+      if (text) return text;
+    } catch (err: any) {
+      void logUsage({ accountId, resolved, kind, ok: false, error: String(err?.message || err).slice(0, 300), latencyMs: Date.now() - start });
+    }
+  }
+  return null;
 }
 
 export async function generateText(opts: {
@@ -30,7 +86,17 @@ export async function generateText(opts: {
   temperature?: number;
   maxOutputTokens?: number;
   model?: string;
+  /** Server-derived account id (never client-supplied). When set AND the
+   *  account has a configured provider registry, that chain is tried first. */
+  accountId?: string;
+  /** Specific ai_models.id to try before the account's active/fallback chain. */
+  modelId?: string;
 }): Promise<string> {
+  const registryResult = await tryRegistry(opts.accountId, opts.modelId, 'text', (resolved) =>
+    callModel(resolved, { system: opts.system, prompt: opts.prompt, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens }),
+  );
+  if (registryResult) return registryResult;
+
   let lastErr: any = null;
   if (zoAskConfigured()) {
     try {
@@ -62,11 +128,24 @@ export async function generateChat(opts: {
   temperature?: number;
   maxOutputTokens?: number;
   model?: string;
+  /** Per-call Zo Ask model override (byok id). Lets latency-sensitive callers
+   *  (e.g. the agent loop) pin a fast tier without changing the global default. */
+  zoAskModel?: string;
+  /** Server-derived account id (never client-supplied). When set AND the
+   *  account has a configured provider registry, that chain is tried first. */
+  accountId?: string;
+  /** Specific ai_models.id to try before the account's active/fallback chain. */
+  modelId?: string;
 }): Promise<string> {
+  const registryResult = await tryRegistry(opts.accountId, opts.modelId, 'chat', (resolved) =>
+    callModel(resolved, { system: opts.system, messages: opts.messages, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens }),
+  );
+  if (registryResult) return registryResult;
+
   let lastErr: any = null;
   if (zoAskConfigured()) {
     try {
-      return await zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens });
+      return await zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel });
     } catch (err: any) {
       lastErr = err;
     }

@@ -10,6 +10,7 @@
 // entry here, reviewable in one diff.
 
 import type { TaskKind } from '@/lib/ai/models';
+import { HARVESTED_SKILLS, type HarvestedSkill } from './harvested';
 
 export type SkillCategory =
   | 'claude' // Anthropic "Agent Skills" style structured task modules
@@ -258,3 +259,68 @@ export function explainSkillSelection(goal: string, ventureSkills?: string[] | n
     .filter(Boolean)
     .map((s) => ({ id: (s as Skill).id, name: (s as Skill).name }));
 }
+
+// ---------------------------------------------------------------------------
+// Combined catalog accessor (migration 025_skills.sql).
+//
+// The original 12 built-ins above (SKILLS) are UNCHANGED and keep powering
+// outreach generation exactly as before (selectSkillsForGoal/composeSkillGuidance
+// only ever look at SKILLS). This section adds a read-only, static view of the
+// harvested OSS catalog (lib/skills/harvested.ts, ~121 skills from adclaw,
+// Apache-2.0) in the same shape the DB `skills` table rows take, so API
+// routes/UI can present "built-in + harvested + custom" as one browsable list
+// without a DB round-trip for the static portion. The DB `skills`/`account_skills`
+// tables are the source of truth for what's actually enabled per account; this
+// export is just a convenient static fallback/seed list.
+// ---------------------------------------------------------------------------
+
+export interface CatalogSkill {
+  /** Stable identifier. For built-ins this is the Skill.id; for harvested it's `harvested:<slug>`. */
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  instructions: string;
+  source: 'built-in' | string;
+  license?: string;
+  inspiredBy?: string;
+}
+
+function builtInToCatalog(s: Skill): CatalogSkill {
+  return {
+    id: s.id,
+    name: s.name,
+    description: s.when,
+    category: s.category,
+    instructions: s.systemModule,
+    source: 'built-in',
+    inspiredBy: s.inspiredBy,
+  };
+}
+
+function harvestedToCatalog(s: HarvestedSkill): CatalogSkill {
+  return {
+    id: `harvested:${s.slug}`,
+    name: s.name,
+    description: s.description,
+    category: s.category,
+    instructions: s.instructions,
+    source: s.source,
+    license: s.license,
+    inspiredBy: s.inspiredBy,
+  };
+}
+
+/**
+ * The full static catalog: the 12 built-ins first (unchanged, still the ones
+ * consumed by selectSkillsForGoal/composeSkillGuidance), then the harvested
+ * OSS skills. Does NOT include per-account custom skills — those live only in
+ * the `skills` DB table (account_id NOT NULL) and are merged in by the API
+ * route, not here.
+ */
+export function getCombinedCatalog(): CatalogSkill[] {
+  return [...SKILLS.map(builtInToCatalog), ...HARVESTED_SKILLS.map(harvestedToCatalog)];
+}
+
+export { HARVESTED_SKILLS };
+export type { HarvestedSkill };

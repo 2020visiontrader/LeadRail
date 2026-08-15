@@ -50,26 +50,32 @@
 }
 
 .dark {
-  --bg-canvas: #020617;          /* slate-950 */
-  --bg-surface: #0F172A;         /* slate-900 */
-  --bg-raised: #1E293B;          /* slate-800 */
+  /* Dark operator console (DESIGN.md): near-black navy canvas, teal-leaning
+     blue as the working "ink"/brand color, disciplined surfaces stepped by
+     one perceptual level each. Values pulled toward DESIGN.md's
+     --bg-canvas/#0A0F1F, --bg-surface/#0F1A2E, --bg-raised/#16233D family
+     while keeping these token *names* (--bg-canvas etc.) so existing
+     consumers keep compiling unchanged. */
+  --bg-canvas: #0A0F1F;          /* near-black navy — the only full-page bg */
+  --bg-surface: #0F1A2E;         /* cards, chrome — one level above canvas */
+  --bg-raised: #16233D;          /* nested tiles, hover rows */
 
-  --text-primary: #F1F5F9;       /* slate-100 */
-  --text-secondary: #94A3B8;     /* slate-400 */
-  --text-muted: #64748B;         /* slate-500 */
+  --text-primary: #F5F7FA;       /* near-white, slightly warmer than pure white */
+  --text-secondary: #A0AEC0;     /* labels, meta, inactive nav */
+  --text-muted: #6B7B93;         /* timestamps, hints only */
 
-  --border-default: rgba(255, 255, 255, 0.09);
+  --border-default: rgba(255, 255, 255, 0.08);
   --border-strong: rgba(255, 255, 255, 0.14);
 
-  --ink: #3B82F6;                /* PRIMARY stays blue in dark */
-  --ink-hover: #2563EB;
-  --ink-fg: #FFFFFF;
+  --ink: #2DD4BF;                /* PRIMARY = operator teal, not generic blue */
+  --ink-hover: #5EEAD4;
+  --ink-fg: #06111F;             /* dark text on the bright teal primary */
 
-  --brand: #3B82F6;
+  --brand: #3B82F6;              /* links / secondary focus accent stays blue */
   --brand-hover: #60A5FA;
-  --brand-soft: rgba(59, 130, 246, 0.18);
+  --brand-soft: rgba(59, 130, 246, 0.16);
 
-  --accent: #F0574B;
+  --accent: #F0574B;             /* destructive-only red */
   --accent-soft: rgba(240, 87, 75, 0.16);
 
   --status-active: #3B82F6;
@@ -77,10 +83,22 @@
   --status-negative: #F0574B;
   --status-neutral: #64748B;
 
-  --scrim: rgba(0, 0, 0, 0.60);
-  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.5);
-  --focus-ring: 0 0 0 3px rgba(75, 139, 255, 0.25);
+  --scrim: rgba(6, 10, 20, 0.72);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35), 0 4px 12px rgba(0, 0, 0, 0.15);
+  --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.35), 0 16px 48px rgba(0, 0, 0, 0.25);
+  --focus-ring: 0 0 0 3px rgba(45, 212, 191, 0.22);
+
+  /* 4px spacing scale (operator console rhythm) */
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --space-6: 24px; --space-8: 32px; --space-12: 48px; --space-16: 64px; --space-24: 96px;
+
+  /* radius per element, per DESIGN.md */
+  --radius-sm: 4px; --radius-md: 6px; --radius-card-sm: 10px; --radius-lg: 12px; --radius-full: 9999px;
+
+  /* tiered elevation for popovers/dropdowns/modals */
+  --shadow-1: 0 2px 8px rgba(0, 0, 0, 0.20);
+  --shadow-2: 0 4px 12px rgba(0, 0, 0, 0.24);
+  --shadow-3: 0 8px 24px rgba(0, 0, 0, 0.30);
 }
 
 @layer base {
@@ -107,3 +125,10 @@
 .animate-fade-in { animation: fadeIn 0.25s ease-in-out; }
 
 @media (max-width: 768px) { table { font-size: 12px; } }
+
+/* Operator-console settings rail (SettingsConsole primitive): thin, unobtrusive
+   scrollbar so a dense left-rail list doesn't fight the console aesthetic. */
+.console-rail-scroll { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+.console-rail-scroll::-webkit-scrollbar { width: 6px; }
+.console-rail-scroll::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 9999px; }
+.console-rail-scroll::-webkit-scrollbar-track { background: transparent; }

@@ -51,7 +51,7 @@ export default function ContentPage() {
       setForm((f) => ({ ...f, post_body: body }));
       notify('Draft generated');
     } catch (e: any) {
-      notify(e.message === 'not_configured' ? 'Connect OpenCode to generate' : e.message || 'Generation failed', 'error');
+      notify(e.message === 'not_configured' ? 'LeadRail AI is temporarily unavailable' : e.message || 'Generation failed', 'error');
     } finally { setGenerating(false); }
   };
 
@@ -99,7 +99,7 @@ export default function ContentPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold">Content</h1>
-          <p className="text-sm text-slate-500">Social content calendar</p>
+          <p className="text-sm text-slate-500">Plan and schedule social posts for each venture.</p>
         </div>
         <div className="flex items-center gap-2">
           {ventures.length > 1 && (
@@ -117,7 +117,7 @@ export default function ContentPage() {
       {!venture ? (
         <EmptyState icon="🏢" title="Select a venture" hint="Choose a brand above to manage its content." />
       ) : loading ? <LoadingSpinner /> : posts.length === 0 ? (
-        <EmptyState icon="📱" title="No content scheduled" hint="Schedule your first post. Publishing requires Postiz/Meta + Supabase connected." action={<Button onClick={() => setOpen(true)}>New Post</Button>} />
+        <EmptyState icon="📱" title="No content scheduled" hint="Schedule your first post." action={<Button onClick={() => setOpen(true)}>New Post</Button>} />
       ) : (
         <ContentCalendar posts={posts} onSelect={setSelected} />
       )}

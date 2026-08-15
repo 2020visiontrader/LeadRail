@@ -56,11 +56,11 @@ function LoginInner() {
             className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#2563EB] text-lg text-white shadow-[0_0_20px_rgba(37,99,235,0.55)]"
             style={{ fontFamily: 'var(--font-display)' }}
           >↝</span>
-          <span className="text-xl font-bold tracking-tight" style={{ fontFamily: 'var(--font-display)' }}>LeadRail</span>
+          <span className="text-xl font-bold tracking-tight" style={{ fontFamily: 'var(--font-display)' }}>LeadRail OS</span>
         </div>
 
         <h1 className="text-lg font-semibold text-white">Operator sign in</h1>
-        <p className="mb-6 text-sm text-slate-400">Multi-venture lead command center — BDB Productions.</p>
+        <p className="mb-6 text-sm text-slate-400">Multi-venture lead command center.</p>
 
         {expired && !error && (
           <p className="mb-4 flex items-start gap-1.5 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">

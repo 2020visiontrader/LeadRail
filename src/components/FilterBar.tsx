@@ -15,9 +15,9 @@ export default function FilterBar({ segments, selectedSegment, onSegmentChange, 
     <button
       key={seg || 'all'}
       onClick={() => onSegmentChange(seg)}
-      className={`inline-flex items-center gap-2 rounded-lg border px-3.5 py-2 text-sm font-medium capitalize transition ${
+      className={`inline-flex items-center gap-2 rounded-md border px-3.5 py-2 text-sm font-medium capitalize transition ${
         active
-          ? 'border-[var(--brand)] bg-[var(--brand)] text-white shadow-sm'
+          ? 'border-[var(--ink)] bg-[var(--ink)] text-[var(--ink-fg)]'
           : 'border-[var(--border-strong)] bg-[var(--bg-raised)] text-[var(--text-secondary)] hover:border-[var(--text-secondary)] hover:text-[var(--text-primary)]'
       }`}
     >
@@ -25,7 +25,7 @@ export default function FilterBar({ segments, selectedSegment, onSegmentChange, 
       {typeof count === 'number' && (
         <span
           className={`rounded-full px-1.5 py-0.5 text-[11px] font-semibold ${
-            active ? 'bg-white/25 text-white' : 'bg-[var(--bg-surface)] text-[var(--text-secondary)]'
+            active ? 'bg-black/15 text-[var(--ink-fg)]' : 'bg-[var(--bg-surface)] text-[var(--text-secondary)]'
           }`}
         >
           {count}

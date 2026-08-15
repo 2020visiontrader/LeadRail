@@ -12,8 +12,8 @@ export default function Badge({ children, tone = 'gray' }: { children: React.Rea
   const c = color[tone];
   return (
     <span
-      className="inline-block rounded-full px-2.5 py-0.5 text-[11px] font-semibold"
-      style={{ background: `color-mix(in srgb, ${c} 15%, transparent)`, color: c }}
+      className="inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-semibold leading-[1.3] tracking-wide"
+      style={{ background: `color-mix(in srgb, ${c} 18%, transparent)`, color: c }}
     >
       {children}
     </span>

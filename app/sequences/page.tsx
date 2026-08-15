@@ -10,7 +10,7 @@ import Dropdown from '@/components/Dropdown';
 import Badge from '@/components/Badge';
 import EmptyState from '@/components/EmptyState';
 import LoadingSpinner from '@/components/LoadingSpinner';
-import ChatAssistant, { type ChatMsg } from '@/components/ChatAssistant';
+import { type ChatMsg } from '@/components/ChatAssistant';
 import { useToast } from '@/components/ToastProvider';
 import { apiGet, apiSend } from '@/lib/api';
 import { Sequence } from '@/lib/types';
@@ -77,12 +77,12 @@ export default function SequencesPage() {
     setChat(next); setChatLoading(true);
     try {
       const res = await apiSend<{ reply: string; ready: boolean; sequence: SeqDraft | null }>(
-        '/api/sequences/chat', 'POST', { messages: next, ventureName: venture.name },
+        '/api/sequences/chat', 'POST', { messages: next, ventureName: venture.name, ventureId: venture.id },
       );
       setChat([...next, { role: 'assistant', content: res.reply }]);
       if (res.sequence) setPendingSeq(res.sequence);
     } catch (e: any) {
-      const msg = e.message === 'not_configured' ? 'Connect OpenCode in Settings to use the AI builder' : e.message || 'AI failed';
+      const msg = e.message === 'not_configured' ? 'LeadRail AI is temporarily unavailable' : e.message || 'AI failed';
       setChat([...next, { role: 'assistant', content: `⚠️ ${msg}` }]);
     } finally { setChatLoading(false); }
   };
@@ -103,7 +103,7 @@ export default function SequencesPage() {
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div><h1 className="text-2xl font-bold">Sequences</h1><p className="text-sm text-slate-500">Multi-step outreach cadences. Steps drain on the Hermes cron once contacts are enrolled.</p></div>
+        <div><h1 className="text-2xl font-bold">Sequences</h1><p className="text-sm text-slate-500">Multi-step outreach cadences. Steps send automatically once contacts are enrolled.</p></div>
         <div className="flex items-center gap-2">
           <Dropdown value={venture?.id || ''} onChange={(e) => setVenture(ventures.find((v) => v.id === e.target.value) || null)} options={ventures.map((v) => ({ value: v.id, label: v.name }))} />
           <Button onClick={() => setOpen(true)}>+ New Sequence</Button>
@@ -116,15 +116,6 @@ export default function SequencesPage() {
             <p className="mt-1 text-xs text-slate-500">Chat it through — the AI asks about your audience, goal and timing, then drafts the cadence. Keep replying to refine it.</p>
           </div>
           {chat.length > 0 && <button onClick={() => { setChat([]); setPendingSeq(null); }} className="text-xs text-slate-400 hover:text-slate-600">Reset chat</button>}
-        </div>
-        <div className="mt-3">
-          <ChatAssistant
-            messages={chat}
-            onSend={sendChat}
-            loading={chatLoading}
-            placeholder="e.g. I want to reach seed-stage founders to book intro calls"
-            emptyHint="Describe who you want to reach and what you want them to do. I'll ask a couple of questions, then draft the steps."
-          />
         </div>
         {pendingSeq && (
           <div className="mt-3 rounded-lg border border-green-200 bg-green-50 p-3">

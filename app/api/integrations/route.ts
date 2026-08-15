@@ -10,7 +10,10 @@ async function GET__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
-    const env = getIntegrationStatus();
+    // Backend env status (which platform services are configured) is owner-only —
+    // clients must never learn the tech stack. Per-account connections stay visible.
+    const isOwner = session.role === 'owner';
+    const env = isOwner ? getIntegrationStatus() : {};
     let connections: any[] = [];
     if (dbReady()) connections = await getConnections(session.accountId);
     return NextResponse.json({

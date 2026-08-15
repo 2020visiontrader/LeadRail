@@ -7,7 +7,7 @@ import Input from '@/components/Input';
 import Textarea from '@/components/Textarea';
 import EmptyState from '@/components/EmptyState';
 import LoadingSpinner from '@/components/LoadingSpinner';
-import ChatAssistant, { type ChatMsg } from '@/components/ChatAssistant';
+import { type ChatMsg } from '@/components/ChatAssistant';
 import { useToast } from '@/components/ToastProvider';
 import { apiGet, apiSend } from '@/lib/api';
 import { InboxMessage } from '@/lib/types';
@@ -56,17 +56,16 @@ export default function InboxPage() {
       setReplyChat([...next, { role: 'assistant', content: res.reply }]);
       if (res.draft) setDraft(res.draft);
     } catch (e: any) {
-      const msg = e.message === 'not_configured' ? 'Connect OpenCode in Settings to draft replies' : e.message || 'AI failed';
+      const msg = e.message === 'not_configured' ? 'LeadRail AI is temporarily unavailable' : e.message || 'AI failed';
       setReplyChat([...next, { role: 'assistant', content: `⚠️ ${msg}` }]);
     } finally { setReplyLoading(false); }
   };
 
   const sendReply = async () => {
     if (!active || !draft) return;
-    if (!active.contact_id) { notify('This message has no linked contact to reply to', 'error'); return; }
     setSending(true);
     try {
-      await apiSend('/api/outreach/send', 'POST', { contactId: active.contact_id, subject: draft.subject, html: draft.body });
+      await apiSend(`/api/inbox/${active.id}/send`, 'POST', { subject: draft.subject, body: draft.body });
       notify('Reply sent');
       setDraft(null); setReplyChat([]);
     } catch (e: any) { notify(e.message || 'Send failed', 'error'); }
@@ -109,21 +108,12 @@ export default function InboxPage() {
 
                 <div className="rounded-xl border border-slate-200 bg-white p-4">
                   <h3 className="mb-2 text-sm font-semibold">Draft a reply with AI</h3>
-                  <ChatAssistant
-                    messages={replyChat}
-                    onSend={sendReplyChat}
-                    loading={replyLoading}
-                    minHeight={160}
-                    placeholder="e.g. Thank them and offer two times for a call"
-                    emptyHint="Tell me how you want to respond and I'll draft it. I'll ask if the goal isn't clear."
-                  />
                   {draft && (
                     <div className="mt-3 space-y-2 rounded-lg border border-green-200 bg-green-50 p-3">
                       <Input label="Subject" value={draft.subject} onChange={(e) => setDraft({ ...draft, subject: e.target.value })} />
                       <Textarea label="Reply body" rows={6} value={draft.body} onChange={(e) => setDraft({ ...draft, body: e.target.value })} />
                       <div className="flex items-center gap-2">
-                        <Button onClick={sendReply} loading={sending} disabled={!active.contact_id}>Send reply</Button>
-                        {!active.contact_id && <span className="text-xs text-amber-600">No linked contact — can't send from here yet.</span>}
+                        <Button onClick={sendReply} loading={sending}>Send reply</Button>
                       </div>
                     </div>
                   )}

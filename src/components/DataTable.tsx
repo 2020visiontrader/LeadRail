@@ -9,6 +9,35 @@ interface DataTableProps {
   onDelete?: (contact: Contact) => void;
 }
 
+// Deterministic avatar hue from a name — stable per person, no rainbow status
+// remap (status pills still route through statusTone). Twenty-style record row.
+function avatarHue(seed: string): number {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) % 360;
+  return h;
+}
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  return (parts[0][0] + (parts[1]?.[0] || '')).toUpperCase();
+}
+
+function Avatar({ name }: { name: string }) {
+  const hue = avatarHue(name || '?');
+  return (
+    <span
+      className="flex size-7 shrink-0 items-center justify-center rounded-full text-[10px] font-bold"
+      style={{
+        background: `hsl(${hue} 55% 50% / 0.18)`,
+        color: `hsl(${hue} 60% 62%)`,
+      }}
+      aria-hidden
+    >
+      {initials(name)}
+    </span>
+  );
+}
+
 export default function DataTable({ contacts, isLoading, onRowClick, onDelete }: DataTableProps) {
   const [sortKey, setSortKey] = useState<keyof Contact>('created_at');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
@@ -26,35 +55,66 @@ export default function DataTable({ contacts, isLoading, onRowClick, onDelete }:
   };
   const arrow = (key: keyof Contact) => (sortKey === key ? (sortDir === 'asc' ? ' ↑' : ' ↓') : '');
 
-  if (isLoading) return <div className="p-8 text-center text-sm text-slate-500">Loading contacts…</div>;
-  if (!sorted.length) return <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-10 text-center text-sm text-slate-500">No contacts match.</div>;
+  if (isLoading)
+    return <div className="p-8 text-center text-sm text-[var(--text-muted)]">Loading contacts…</div>;
+  if (!sorted.length)
+    return (
+      <div className="rounded-xl border border-dashed border-[var(--border-strong)] bg-[var(--bg-raised)] p-10 text-center text-sm text-[var(--text-muted)]">
+        No contacts match.
+      </div>
+    );
+
+  const th = 'px-2.5 py-2 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)]';
+  const thSort = `cursor-pointer select-none hover:text-[var(--text-primary)] ${th}`;
 
   return (
-    <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+    <div className="overflow-x-auto rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)]">
       <table className="w-full text-sm">
-        <thead className="border-b border-slate-200 bg-slate-50 text-slate-600">
+        <thead className="border-b border-[var(--border-default)]">
           <tr>
-            <th className="cursor-pointer p-3 text-left hover:bg-slate-100" onClick={() => toggleSort('name')}>Name{arrow('name')}</th>
-            <th className="cursor-pointer p-3 text-left hover:bg-slate-100" onClick={() => toggleSort('email')}>Email{arrow('email')}</th>
-            <th className="p-3 text-left">Company</th>
-            <th className="cursor-pointer p-3 text-left hover:bg-slate-100" onClick={() => toggleSort('segment')}>Segment{arrow('segment')}</th>
-            <th className="cursor-pointer p-3 text-center hover:bg-slate-100" onClick={() => toggleSort('score')}>Score{arrow('score')}</th>
-            <th className="p-3 text-left">Status</th>
-            <th className="p-3 text-right">Actions</th>
+            <th className={thSort} onClick={() => toggleSort('name')}>Name{arrow('name')}</th>
+            <th className={thSort} onClick={() => toggleSort('email')}>Email{arrow('email')}</th>
+            <th className={th}>Company</th>
+            <th className={thSort} onClick={() => toggleSort('segment')}>Segment{arrow('segment')}</th>
+            <th className={`${thSort} text-center`} onClick={() => toggleSort('score')}>Score{arrow('score')}</th>
+            <th className={th}>Status</th>
+            <th className={`${th} text-right`}>Actions</th>
           </tr>
         </thead>
-        <tbody className="divide-y divide-slate-100">
+        <tbody>
           {sorted.map((c) => (
-            <tr key={c.id} className="cursor-pointer hover:bg-slate-50" onClick={() => onRowClick?.(c)}>
-              <td className="p-3 font-medium">{c.name}</td>
-              <td className="p-3 text-indigo-600">{c.email}</td>
-              <td className="p-3 text-slate-600">{c.company || '—'}</td>
-              <td className="p-3"><Badge tone="indigo">{c.segment}</Badge></td>
-              <td className="p-3 text-center font-semibold text-green-600">{c.score}</td>
-              <td className="p-3"><Badge tone={statusTone(c.status)}>{c.status}</Badge></td>
-              <td className="p-3 text-right">
-                <button className="mr-3 text-indigo-600 hover:underline" onClick={(e) => { e.stopPropagation(); onRowClick?.(c); }}>Edit</button>
-                <button className="text-red-600 hover:underline" onClick={(e) => { e.stopPropagation(); onDelete?.(c); }}>Delete</button>
+            <tr
+              key={c.id}
+              className="cursor-pointer border-b border-[var(--border-default)] transition-colors last:border-0 hover:bg-[var(--bg-raised)]"
+              onClick={() => onRowClick?.(c)}
+            >
+              <td className="p-2.5">
+                <div className="flex items-center gap-2.5">
+                  <Avatar name={c.name} />
+                  <div className="min-w-0">
+                    <div className="truncate font-medium text-[var(--text-primary)]">{c.name}</div>
+                    {c.title && <div className="truncate text-[11px] text-[var(--text-muted)]">{c.title}</div>}
+                  </div>
+                </div>
+              </td>
+              <td className="max-w-[16rem] truncate p-2.5 text-[var(--brand)]">{c.email}</td>
+              <td className="p-2.5 text-[var(--text-secondary)]">{c.company || '—'}</td>
+              <td className="p-2.5"><Badge tone="indigo">{c.segment}</Badge></td>
+              <td className="p-2.5 text-center font-semibold text-[var(--status-positive)]">{c.score}</td>
+              <td className="p-2.5"><Badge tone={statusTone(c.status)}>{c.status}</Badge></td>
+              <td className="p-2.5 text-right whitespace-nowrap">
+                <button
+                  className="mr-3 text-xs font-medium text-[var(--brand)] hover:underline"
+                  onClick={(e) => { e.stopPropagation(); onRowClick?.(c); }}
+                >
+                  Edit
+                </button>
+                <button
+                  className="text-xs font-medium text-[var(--status-negative)] hover:underline"
+                  onClick={(e) => { e.stopPropagation(); onDelete?.(c); }}
+                >
+                  Delete
+                </button>
               </td>
             </tr>
           ))}

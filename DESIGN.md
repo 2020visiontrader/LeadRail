@@ -3,9 +3,23 @@
 > Dark operator console — a dense, high-signal command surface where teal data glows against near-black navy and a single hot accent marks the one action that matters.
 
 **Theme:** dark
-**Applies to:** Outreach Dashboard and all Phase 1+ screens across RetentionRail, FilmOps, RENTAHUB.
+**Applies to:** Outreach Dashboard, the operator Settings console, and all Phase 1+ screens across RetentionRail, FilmOps, RENTAHUB.
 
-The CRM is one product with three venture skins. Structure, spacing, type and component anatomy are **identical** across ventures; only `--brand-primary`, `--brand-secondary`, `--brand-accent` change. Never fork layout per venture.
+The CRM is one product with three venture skins. Structure, spacing, type and component anatomy are **identical** across ventures; only the brand tokens change. Never fork layout per venture.
+
+> **Implementation note (2026-08):** the shipped `app/globals.css` carries these
+> roles under a different, pre-existing variable *naming* convention that many
+> components already depend on — `--ink` / `--ink-hover` / `--ink-fg` (= this
+> doc's `--brand-accent` primary-action role), `--brand` / `--brand-hover` /
+> `--brand-soft` (= this doc's `--brand-secondary` data/focus role), `--accent`
+> (destructive/error only, not a primary-action color), plus `--bg-canvas` /
+/`--bg-surface` / `--bg-raised` / `--text-primary` / `--text-secondary` /
+> `--text-muted` / `--border-default` / `--border-strong` which map 1:1 to the
+> names below. This refresh pass **kept those names** (renaming would break
+> every consuming page) and pulled their dark-mode **values** to match the
+> palette in this document. Treat the mapping table as authoritative for
+> "what token do I reach for," and the CSS variable names above as "what it's
+> actually called in code."
 
 ---
 
@@ -271,6 +285,21 @@ Example prompts:
 }
 ```
 
+**Shipped token mapping** — `app/globals.css` implements this spec under its own pre-existing variable names (`.dark` scope; `:root` is the separate light "Excalix" brand and is out of scope for the operator console):
+
+| This doc | Shipped name | Shipped dark value |
+|---|---|---|
+| `--brand-accent` (primary action) | `--ink` / `--ink-hover` / `--ink-fg` | `#2DD4BF` / `#5EEAD4` / `#06111F` |
+| `--brand-secondary` (data/focus) | `--brand` / `--brand-hover` / `--brand-soft` | `#3B82F6` / `#60A5FA` / `rgba(59,130,246,.16)` |
+| Error (destructive only) | `--accent` / `--accent-soft` | `#F0574B` / `rgba(240,87,75,.16)` |
+| `--bg-canvas` / `--bg-surface` / `--bg-raised` | *(same names)* | `#0A0F1F` / `#0F1A2E` / `#16233D` |
+| `--text-primary/secondary/muted` | *(same names)* | `#F5F7FA` / `#A0AEC0` / `#6B7B93` |
+| `--border-default` / `--border-strong` | *(same names)* | `rgba(255,255,255,.08)` / `.14` |
+| `--shadow-1/2/3` | *(same names, added)* | tiered dropdown/popover/modal elevation |
+| `--space-*`, `--radius-*` | *(same names, added to `.dark`)* | 4px scale; `sm4/md6/card-sm10/lg12/full` |
+
+Component files never hardcode hex — always reach for the shipped variable name via `var(--token)` or a Tailwind class that resolves to one (see `tailwind.config.js`, which remaps `slate`/`indigo` onto these vars).
+
 ---
 
 ## Notes where brand and good practice conflict
@@ -278,3 +307,76 @@ Example prompts:
 - **FilmOps accent (`#FFBF47`) vs secondary (`#FF9500`)** are both warm yellows and read as the same color at badge size. Recommend keeping accent for actions only and never placing the two adjacent; if FilmOps needs stronger separation, darken secondary to `#E07A00`.
 - **RENTAHUB accent `#FF6B4A` on `#0A0F1F`** passes for large text and fills but not for 11–12px body text — use it as a background with `--bg-canvas` text, never as small text.
 - `--text-muted` (`#6B7B93`) on canvas is ~4.0:1 — acceptable for timestamps and hex captions, not for anything a user must read to act.
+
+---
+
+## Settings Console IA
+
+An operator-settings surface (providers, models, personas, skills, MCP
+connections, cron/scheduled jobs, environment) needs denser information
+architecture than the rest of the app: many sibling sections, each fairly
+narrow in content, that benefit from a persistent left-rail rather than the
+top-level sidebar's flat route list. This section documents the pattern —
+adapted from the open-source **adclaw** operator console's grouped sidebar
+(Chat / Control / Agent / Settings groups, each with its own icon + item
+list) — expressed entirely through this doc's existing tokens and a new
+primitive, `SettingsConsole`. No adclaw code, no Ant Design, no second
+component library: the pattern is layout/IA only.
+
+**Shell anatomy** — two panes inside one card-level container (`--bg-surface`,
+1px `--border-default`, `--radius-lg`):
+
+1. **Left rail** (224px / `w-56`) — `--bg-canvas` (one step darker than the
+   content pane, so the rail reads as chrome, not content), grouped nav tree.
+   Each group is a collapsible header (11px/600 uppercase `--text-muted`,
+   chevron) over a stack of item buttons (13px, 14px icon slot + label).
+   Active item: `<ink>15` fill, `--ink` text, 600 weight — the same "accent
+   marks the one thing that matters" rule as the top nav, just scoped to
+   this rail instead of a leading dot (the rail has no room for a gutter
+   dot at this density).
+2. **Content pane** — fluid width, optional header row (title 15px/600 +
+   description ≤640px + right-aligned actions) over 24px-padded content.
+
+**Suggested groups** (mirrors adclaw's Control/Agent/Settings split, remapped
+to this app's operator surface):
+
+```
+Agent
+  Providers   — connected AI/model providers, keys, health
+  Models      — per-provider model catalogue, defaults
+  Personas    — persona library (see Skills/Personas.tsx, out of this pass's scope)
+  Skills      — skill/tool catalogue available to the agent
+  MCP         — connected MCP servers
+Operations
+  Cron        — scheduled jobs / automations
+  Env         — environment variables / secrets
+```
+
+Section ids are caller-defined strings; `SettingsConsole` does no routing
+itself — callers wire `activeId`/`onSelect` to local state, a query param, or
+a route, whichever the page already uses.
+
+**Provider/model cards** (pattern, not a new component in this pass) — reuse
+the existing nested-card recipe: `--bg-raised`, `--radius-card-sm` (10px),
+16px padding, 15px/600 title + 12px `--text-secondary` meta row, a status
+`Badge` top-right (`statusTone`), and at most one `--brand-accent`/`--ink`
+action per card. A provider/model *table* (when list density matters more
+than card scannability) reuses the existing `DataTable`/table recipe: 12px
+type, `--text-secondary` header row, `rgba(255,255,255,.06)` row separators,
+`--bg-raised` row hover — do not invent a second table style for settings.
+
+**Agent-console shell** (pattern reference for `AgentConsole.tsx`, out of
+this pass's file scope) — adclaw's three-pane pattern (roster left /
+conversation center / activity+approvals right) maps onto this app's
+existing surfaces as: roster = same rail treatment as the settings left
+rail; conversation = `--bg-canvas` content pane with message bubbles as
+nested cards; activity/approvals = a third `--bg-surface` column, 280–320px,
+using `KPICard`/`Badge`/`EmptyState` for its content. Documented here for
+whichever pass next touches `AgentConsole.tsx` — not implemented in this
+pass, since that file is out of scope.
+
+**Do** reuse `Button`, `Badge`, `DataTable`, `EmptyState`, `KPICard`,
+`Input`/`Dropdown`, `Modal`/`Drawer` inside `SettingsConsole` panes exactly as
+elsewhere in the app. **Don't** give the settings console its own button/badge/
+input styling — it is the same design system at higher information density,
+not a different product surface.

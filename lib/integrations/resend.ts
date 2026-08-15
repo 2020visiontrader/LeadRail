@@ -3,7 +3,11 @@ import { withRetry } from '@/lib/integrations/retry';
 import { addSuppression } from '@/lib/suppressions';
 
 const RESEND_API_URL = 'https://api.resend.com';
-const ENV_RESEND_API_KEY = process.env.RESEND_API_KEY;
+// LeadRail's OWN Resend account (domain leadrail.xyz). Deliberately NOT the
+// FilmOps RESEND_API_KEY — LeadRail and FilmOps must never share a sending
+// account/domain. If this is unset, we error rather than borrow another
+// product's account.
+const ENV_RESEND_API_KEY = process.env.LEADRAIL_RESEND_API_KEY;
 
 export interface ResendEmail {
   from: string;
@@ -30,8 +34,41 @@ export async function getResendApiKey(accountId?: string): Promise<string> {
       // fall through to env
     }
   }
-  if (!ENV_RESEND_API_KEY) throw new Error('RESEND_API_KEY not set — connect Resend in Settings → Integrations');
+  if (!ENV_RESEND_API_KEY) throw new Error('LEADRAIL_RESEND_API_KEY not set — connect LeadRail\'s Resend (leadrail.xyz) in Settings → Integrations');
   return ENV_RESEND_API_KEY;
+}
+
+/**
+ * Lightweight transactional send for PLATFORM email (notifications, system
+ * alerts) — NOT lead outreach. Unlike sendResendEmail it takes no contactId and
+ * does NOT write an email_campaigns row (these aren't campaign sends). Uses
+ * LeadRail's own leadrail.xyz Resend account. Throws on failure so callers can
+ * decide whether to swallow (notifications fan-out swallows).
+ */
+export async function sendPlatformEmail(email: ResendEmail, accountId?: string) {
+  const apiKey = await getResendApiKey(accountId);
+  const payload: Record<string, unknown> = {
+    from: email.from,
+    to: email.to,
+    subject: email.subject,
+    html: email.html,
+  };
+  if (email.replyTo) payload.reply_to = email.replyTo;
+  if (email.tags) payload.tags = email.tags;
+
+  return withRetry(() =>
+    fetch(`${RESEND_API_URL}/emails`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(async (r) => {
+      if (!r.ok) {
+        const body = await r.text();
+        throw new Error(`Resend platform email error: ${r.status} ${r.statusText} — ${body}`);
+      }
+      return r.json();
+    })
+  );
 }
 
 export async function sendResendEmail(

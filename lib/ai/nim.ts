@@ -6,6 +6,11 @@ const KEY = process.env.NVIDIA_API_KEY || process.env.NIM_API_KEY || '';
 const BASE = 'https://integrate.api.nvidia.com/v1';
 const MODEL = process.env.NIM_MODEL || 'meta/llama-3.1-8b-instruct';
 
+// Hard timeout on the last-resort tier so a stalled NIM call aborts and the
+// caller gets a fast, honest failure instead of a request that hangs until the
+// platform kills it. Override with NIM_TIMEOUT_MS.
+const TIMEOUT_MS = Number(process.env.NIM_TIMEOUT_MS) || 30_000;
+
 export function nimConfigured(): boolean {
   return KEY.length > 0;
 }
@@ -16,11 +21,26 @@ interface OpenAIMessage {
 }
 
 async function complete(messages: OpenAIMessage[], temperature: number, maxTokens: number): Promise<string> {
-  const res = await fetch(`${BASE}/chat/completions`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: MODEL, messages, temperature, max_tokens: maxTokens }),
-  });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: MODEL, messages, temperature, max_tokens: maxTokens }),
+      signal: ctrl.signal,
+    });
+  } catch (e: any) {
+    const err: any = new Error(
+      e?.name === 'AbortError' ? `NIM timed out after ${TIMEOUT_MS}ms` : `NIM request failed`,
+    );
+    err.code = 'upstream';
+    err.detail = String(e?.message || e).slice(0, 300);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     const detail = (await res.text().catch(() => '')).slice(0, 300);
     const err: any = new Error(`NIM failed (${res.status})`);

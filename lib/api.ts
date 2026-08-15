@@ -26,7 +26,7 @@ export async function apiGet<T = any>(path: string): Promise<T> {
 
 export async function apiSend<T = any>(
   path: string,
-  method: 'POST' | 'PATCH' | 'DELETE',
+  method: 'POST' | 'PATCH' | 'DELETE' | 'PUT',
   body?: any,
   opts?: { timeoutMs?: number },
 ): Promise<T> {

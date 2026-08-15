@@ -41,7 +41,16 @@ async function POST__impl(request: NextRequest, ctx: { params: { id: string } })
   }
 
   try {
+    // Apollo person id is captured at import (enriched.apollo_id) and also embedded
+    // in the locked-email localpart (`<id>@locked.apollo`). Passing it lets Apollo
+    // reveal the exact person; without it, a masked preview never unlocks.
+    const lockedLocalPart =
+      typeof contact.email === 'string' && /@locked\.apollo$/.test(contact.email)
+        ? contact.email.split('@')[0]
+        : null;
+    const apolloId = contact?.enriched?.apollo_id || lockedLocalPart || null;
     const enr = await matchPerson({
+      id: apolloId,
       email: contact.email,
       linkedin_url: contact.linkedin_url,
       name: contact.name,
@@ -63,6 +72,9 @@ async function POST__impl(request: NextRequest, ctx: { params: { id: string } })
     if (enr.organization?.name && !contact.company) updates.company = enr.organization.name;
     if (enr.linkedin_url && !contact.linkedin_url) updates.linkedin_url = enr.linkedin_url;
     if (enr.email && /@locked\.apollo$/.test(contact.email || '')) updates.email = enr.email;
+    // Un-mask the name once revealed: preview names are obfuscated ("Andrew Ja***n").
+    const revealedName = (enr as any)?.raw?.name as string | undefined;
+    if (revealedName && /\*/.test(contact.name || '')) updates.name = revealedName;
 
     const updated = await updateContact(id, accountId, updates);
     return NextResponse.json({ contact: updated, fit });

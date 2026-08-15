@@ -1,6 +1,6 @@
 import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
-import { verifyState, exchangeCodeForToken, getLongLivedToken, getUserPages, publicBase } from '@/lib/social/meta-oauth';
+import { verifyState, exchangeCodeForToken, getLongLivedToken, getUserPages, getMeId, publicBase } from '@/lib/social/meta-oauth';
 import { upsertConnection, dbReady } from '@/lib/db';
 export const dynamic = "force-dynamic";
 
@@ -25,34 +25,64 @@ async function GET__impl(req: NextRequest) {
   try {
     const shortToken = await exchangeCodeForToken(code);
     const userToken = await getLongLivedToken(shortToken);
+    const fbUserId = await getMeId(userToken);
     const pages = await getUserPages(userToken);
 
     if (!pages.length) {
       return settings('error=meta_no_pages');
     }
-    // Active page = first returned. Full list kept so we can add a page picker later.
-    const active = pages[0];
 
+    // Store EVERY Page the user admins as its own `facebook` row, and each linked
+    // Instagram Business account as its own `instagram` row. Multi-account: a user
+    // can manage several Pages/IGs — no overwrite (keyed by external_id).
+    let igCount = 0;
     if (dbReady()) {
-      await upsertConnection({
-        account_id: verified.accountId,
-        provider: 'meta',
-        status: 'connected',
-        meta: {
-          access_token: active.access_token, // Page token — used for FB + IG publish
-          user_token: userToken,
-          page_id: active.id,
-          page_name: active.name,
-          ig_user_id: active.ig_user_id ?? null,
-          ig_username: active.ig_username ?? null,
-          pages: pages.map((p) => ({ id: p.id, name: p.name, ig_user_id: p.ig_user_id ?? null })),
-          connected_at: new Date().toISOString(),
-        },
-      });
+      for (const p of pages) {
+        await upsertConnection({
+          account_id: verified.accountId,
+          provider: 'facebook',
+          external_id: p.id,
+          display_name: p.name,
+          status: 'connected',
+          meta: {
+            access_token: p.access_token, // Page token — used for FB publish + linked-IG publish
+            user_token: userToken,
+            fb_user_id: fbUserId ?? null,
+            page_id: p.id,
+            page_name: p.name,
+            ig_user_id: p.ig_user_id ?? null,
+            ig_username: p.ig_username ?? null,
+            connected_at: new Date().toISOString(),
+          },
+        });
+        if (p.ig_user_id) {
+          igCount++;
+          await upsertConnection({
+            account_id: verified.accountId,
+            provider: 'instagram',
+            external_id: p.ig_user_id,
+            display_name: p.ig_username || 'Instagram',
+            username: p.ig_username ?? null,
+            status: 'connected',
+            meta: {
+              access_token: p.access_token, // Page token publishes to the linked IG
+              user_token: userToken,
+              fb_user_id: fbUserId ?? null,
+              ig_user_id: p.ig_user_id,
+              ig_username: p.ig_username ?? null,
+              via_page_id: p.id,
+              via_page_name: p.name,
+              source: 'facebook_login',
+              connected_at: new Date().toISOString(),
+            },
+          });
+        }
+      }
     }
 
-    const ig = active.ig_user_id ? `&ig=${encodeURIComponent(active.ig_username || 'linked')}` : '';
-    return settings(`connected=meta&page=${encodeURIComponent(active.name)}${ig}`);
+    const first = pages[0];
+    const ig = igCount ? `&ig=${igCount}` : '';
+    return settings(`connected=facebook&page=${encodeURIComponent(first.name)}&pages=${pages.length}${ig}`);
   } catch (e: any) {
     return settings(`error=meta_exchange&detail=${encodeURIComponent(e?.message || 'unknown')}`);
   }

@@ -2,6 +2,7 @@ import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase, assertBrandOwned } from '@/lib/db';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
+import { createCampaignRecord, GuardError } from '@/lib/campaigns/actions';
 
 export const dynamic = 'force-dynamic';
 
@@ -31,19 +32,20 @@ async function POST__impl(request: NextRequest) {
     if (!body?.brand_id || !body?.name) {
       return NextResponse.json({ error: 'brand_id and name are required' }, { status: 400 });
     }
-    if (!(await assertBrandOwned(body.brand_id, session.accountId))) return badRequest('unknown brand_id');
-    const { data, error } = await supabase.from('ad_campaigns').insert([{
-      brand_id: body.brand_id,
+    const row = await createCampaignRecord(session.accountId, {
+      brandId: body.brand_id,
       name: body.name,
-      channel: body.channel ?? null,
-      budget: Number(body.budget) || 0,
-      start_date: body.start_date ?? null,
-      end_date: body.end_date ?? null,
-      status: body.status || 'draft',
-    }]).select();
-    if (error) throw error;
-    return NextResponse.json(data[0], { status: 201 });
+      channel: body.channel ?? undefined,
+      budget: body.budget,
+      objective: body.objective,
+      metaAdAccountId: body.meta_ad_account_id,
+      startDate: body.start_date ?? undefined,
+      endDate: body.end_date ?? undefined,
+      status: body.status,
+    });
+    return NextResponse.json(row, { status: 201 });
   } catch (error) {
+    if (error instanceof GuardError) return NextResponse.json({ error: error.message }, { status: error.status });
     return errorResponse(error);
   }
 }

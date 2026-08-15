@@ -82,6 +82,17 @@ async function validateResend(token: string) {
   return { id: 'connected', name: 'Resend account (send-only key)', platform: 'resend' };
 }
 
+async function validateNotion(token: string) {
+  // A Notion internal-integration secret (ntn_… / secret_…) is long-lived, so
+  // pasting it is a real "connect your own account" — no OAuth app needed.
+  const data = await fetchJson('https://api.notion.com/v1/users/me', {
+    Authorization: `Bearer ${token}`,
+    'Notion-Version': '2022-06-28',
+  });
+  const name = data?.name || data?.bot?.owner?.user?.name || 'Notion workspace';
+  return { id: data?.id || 'connected', name, platform: 'notion' };
+}
+
 type ValidatorResult = { id: string; name: string; platform: string; igUserId?: string; pageId?: string };
 
 const VALIDATORS: Record<string, (token: string) => Promise<ValidatorResult>> = {
@@ -89,6 +100,7 @@ const VALIDATORS: Record<string, (token: string) => Promise<ValidatorResult>> = 
   postiz: validatePostiz,
   tiktok: validateTiktok,
   resend: validateResend,
+  notion: validateNotion,
 };
 
 async function POST__impl(request: NextRequest) {

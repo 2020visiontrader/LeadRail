@@ -5,14 +5,25 @@ import ImportExport from '@/components/ImportExport';
 import ContactDrawer from '@/components/ContactDrawer';
 import SearchInput from '@/components/SearchInput';
 import FilterBar from '@/components/FilterBar';
+import FilterChips, { type FilterChip } from '@/components/FilterChips';
 import Modal from '@/components/Modal';
 import Button from '@/components/Button';
 import Input from '@/components/Input';
 import Dropdown from '@/components/Dropdown';
+import ProgressStages from '@/components/ProgressStages';
 import { useToast } from '@/components/ToastProvider';
 import { apiGet, apiSend } from '@/lib/api';
 import { Contact, SEGMENTS } from '@/lib/types';
 import type { ApolloCandidate } from '@/lib/integrations/apollo';
+
+// Plain-language stages shown while a lead pull runs (no backend/vendor names).
+const LEAD_PULL_STAGES = [
+  'Reading your ideal customer profile…',
+  'Searching the LeadRail lead database…',
+  'Matching companies to your criteria…',
+  'Ranking the best-fit people…',
+  'Preparing your preview…',
+];
 
 const LIMIT = 30;
 const emptyLead = { name: '', email: '', company: '', title: '', segment: 'investor' };
@@ -49,12 +60,16 @@ export default function LeadsPage() {
   const [nlQuery, setNlQuery] = useState('');
   const [parsing, setParsing] = useState(false);
   const [nlSummary, setNlSummary] = useState('');
+  const [nlReason, setNlReason] = useState('');
 
   const buildFromText = async () => {
     if (!nlQuery.trim()) { notify('Describe who you want to reach', 'error'); return; }
-    setParsing(true); setNlSummary('');
+    setParsing(true); setNlSummary(''); setNlReason('');
     try {
-      const { icp: parsed } = await apiSend<{ icp: any }>('/api/leads/apollo/parse', 'POST', { text: nlQuery.trim() });
+      // Pass the active venture so the parse is grounded in this brand's profile
+      // (skip for the "all" scope, which has no single brand context).
+      const ventureId = venture && venture.id !== 'all' ? venture.id : undefined;
+      const { icp: parsed } = await apiSend<{ icp: any }>('/api/leads/apollo/parse', 'POST', { text: nlQuery.trim(), ventureId });
       setIcp({
         industry: parsed.industry || '',
         titles: (parsed.titles || []).join(', '),
@@ -65,9 +80,10 @@ export default function LeadsPage() {
         limit: parsed.limit || 25,
       });
       setNlSummary(parsed.summary || '');
-      notify('Search built — review and hit Search Apollo');
+      setNlReason(parsed.reasoning || '');
+      notify('Search built — review and hit Search');
     } catch (e: any) {
-      notify(e.message === 'not_configured' ? 'Connect OpenCode to use plain-language search' : e.message || 'Could not parse', 'error');
+      notify(e.message === 'not_configured' ? 'LeadRail AI is temporarily unavailable' : e.message || 'Could not parse', 'error');
     } finally { setParsing(false); }
   };
 
@@ -210,7 +226,7 @@ export default function LeadsPage() {
       setTotalMatches(data.total || 0);
       if (!data.candidates?.length) notify('No matches — widen the ICP', 'info');
     } catch (e: any) {
-      notify(e.message || 'Apollo search failed', 'error');
+      notify(e.message || 'Lead search failed', 'error');
       setResults([]);
     } finally { setSearching(false); }
   };
@@ -258,8 +274,8 @@ export default function LeadsPage() {
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold">Leads</h1>
-          <p className="text-sm text-slate-500">{contacts.length} shown{segment ? ` · ${segment}` : ''}{query ? ` · “${query}”` : ''}</p>
+          <h1 className="text-2xl font-bold text-[var(--text-primary)]">Leads</h1>
+          <p className="text-sm text-[var(--text-muted)]">{contacts.length} shown{segment ? ` · ${segment}` : ''}{query ? ` · “${query}”` : ''}</p>
         </div>
         <div className="flex items-center gap-2">
           <Dropdown
@@ -275,31 +291,31 @@ export default function LeadsPage() {
             }}
             options={[{ value: 'all', label: '🌐 All Ventures' }, ...ventures.map((v) => ({ value: v.id, label: v.name }))]}
           />
-          <Button variant="secondary" disabled={isAll} title={isAll ? 'Pick a specific venture to source leads' : undefined} onClick={() => setSourceOpen((o) => !o)}>Find Leads (Apollo)</Button>
+          <Button variant="secondary" disabled={isAll} title={isAll ? 'Pick a specific venture to source leads' : undefined} onClick={() => setSourceOpen((o) => !o)}>Find Leads</Button>
           <Button disabled={isAll} title={isAll ? 'Pick a specific venture to add a lead' : undefined} onClick={() => setAddOpen(true)}>+ Add Lead</Button>
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
-        <span className="text-xs text-slate-500">{isAll ? 'Viewing all ventures — pick a specific venture to import or export.' : 'Bulk: import a CSV/Excel list, or export the current venture’s leads.'}</span>
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2">
+        <span className="text-xs text-[var(--text-muted)]">{isAll ? 'Viewing all ventures — pick a specific venture to import or export.' : 'Bulk: import a CSV/Excel list, or export the current venture’s leads.'}</span>
         {!isAll && <ImportExport exportPath="/api/leads/export" importPath="/api/leads/import" brandId={venture?.id} accountId={venture?.account_id} onImported={load} />}
       </div>
 
       {sourceOpen && (
-        <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-4">
+        <div className="rounded-lg border border-[var(--border-default)] bg-[var(--bg-raised)] p-4 space-y-4">
           <div className="flex items-center justify-between gap-2">
-            <h2 className="font-semibold">Source leads from Apollo</h2>
+            <h2 className="font-semibold">Source leads from LeadRail</h2>
             <div className="flex items-center gap-2">
               {hasProfile && (
                 <Button variant="secondary" onClick={applyVentureProfile} title="Fill filters from this venture's pitch-deck profile">
                   ✨ Use {venture?.name} profile
                 </Button>
               )}
-              <span className="text-xs text-slate-500">Nothing is pulled until you click Search</span>
+              <span className="text-xs text-[var(--text-muted)]">Nothing is pulled until you click Search</span>
             </div>
           </div>
 
-          <div className="rounded-lg border border-indigo-200 bg-indigo-50/60 p-3 space-y-2">
+          <div className="rounded-lg border border-[var(--border-strong)] bg-[var(--brand-soft)] p-3 space-y-2">
             <div className="flex items-end gap-2">
               <div className="flex-1">
                 <Input
@@ -312,9 +328,14 @@ export default function LeadsPage() {
               </div>
               <Button variant="secondary" loading={parsing} onClick={buildFromText}>Build search</Button>
             </div>
-            {parsing && <p className="text-xs text-indigo-700">Analyzing your audience and filling the filters… this can take 15–20s.</p>}
-            {!parsing && nlSummary && <p className="text-xs text-indigo-700">→ {nlSummary}</p>}
-            <p className="text-[11px] text-slate-500">The AI fills the filters below — review, tweak, then Search Apollo.</p>
+            {parsing && <p className="text-xs text-[var(--brand)]">Analyzing your audience and filling the filters… this can take 15–20s.</p>}
+            {!parsing && nlReason && (
+              <p className="flex items-start gap-1.5 text-xs italic text-[var(--text-secondary)]">
+                <span aria-hidden>💭</span><span>{nlReason}</span>
+              </p>
+            )}
+            {!parsing && nlSummary && <p className="text-xs text-[var(--brand)]">→ {nlSummary}</p>}
+            <p className="text-[11px] text-[var(--text-muted)]">The AI fills the filters below — review, tweak, then Search.</p>
           </div>
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
@@ -328,44 +349,46 @@ export default function LeadsPage() {
           <div className="flex items-center gap-3">
             <Input label="Limit" type="number" value={String(icp.limit)} onChange={(e) => setIcp({ ...icp, limit: Number(e.target.value) })} />
             <div className="pt-6">
-              <Button onClick={handleApolloSearch} loading={searching}>Search Apollo</Button>
+              <Button onClick={handleApolloSearch} loading={searching}>Search LeadRail</Button>
             </div>
           </div>
+
+          <ProgressStages active={searching} stages={LEAD_PULL_STAGES} />
 
           {results && (
             <div className="space-y-2">
               <div className="flex items-center justify-between text-sm">
-                <span className="text-slate-600">
+                <span className="text-[var(--text-secondary)]">
                   {results.length} preview{results.length === 1 ? '' : 's'}
                   {totalMatches > results.length ? ` of ~${totalMatches.toLocaleString()} matches` : ''}
                 </span>
                 <div className="flex items-center gap-2">
-                  <button type="button" className="text-slate-600 underline" onClick={toggleAll}>
+                  <button type="button" className="text-[var(--text-secondary)] underline" onClick={toggleAll}>
                     {allPicked ? 'Clear all' : 'Select all'}
                   </button>
                   <Button onClick={handleImport} loading={importing}>Import selected</Button>
                 </div>
               </div>
-              <div className="max-h-72 overflow-auto rounded border border-slate-200 bg-white divide-y divide-slate-100">
-                {results.length === 0 && <div className="p-3 text-sm text-slate-500">No matches. Widen the ICP.</div>}
+              <div className="max-h-72 overflow-auto rounded border border-[var(--border-default)] bg-[var(--bg-surface)] divide-y divide-[var(--border-default)]">
+                {results.length === 0 && <div className="p-3 text-sm text-[var(--text-muted)]">No matches. Widen the ICP.</div>}
                 {results.map((c) => {
                   const key = c.external_id || c.name;
                   return (
-                    <label key={key} className="flex items-center gap-3 p-2 text-sm hover:bg-slate-50 cursor-pointer">
+                    <label key={key} className="flex items-center gap-3 p-2 text-sm hover:bg-[var(--bg-raised)] cursor-pointer">
                       <input type="checkbox" checked={!!picked[key]} onChange={(e) => setPicked((p) => ({ ...p, [key]: e.target.checked }))} />
                       <span className="flex-1">
-                        <span className="font-medium">{c.name}</span>
-                        <span className="text-slate-500"> — {c.title || '—'} @ {c.company || '—'}</span>
+                        <span className="font-medium text-[var(--text-primary)]">{c.name}</span>
+                        <span className="text-[var(--text-muted)]"> — {c.title || '—'} @ {c.company || '—'}</span>
                       </span>
-                      <span className={`text-xs ${c.email_status === 'verified' ? 'text-green-600' : c.email_status === 'locked' ? 'text-amber-600' : 'text-slate-400'}`}>
+                      <span className={`text-xs ${c.email_status === 'verified' ? 'text-[var(--status-positive)]' : c.email_status === 'locked' ? 'text-[#D97706]' : 'text-[var(--text-muted)]'}`}>
                         {c.email_status === 'verified' ? 'email ✓' : c.email_status === 'locked' ? 'email locked' : 'no email'}
                       </span>
                     </label>
                   );
                 })}
               </div>
-              <p className="text-xs text-slate-500">
-                Previews show masked names and locked emails. Import, then Enrich a lead to unlock full contact data (uses Apollo credits).
+              <p className="text-xs text-[var(--text-muted)]">
+                Previews show masked names and locked emails. Import, then Enrich a lead to unlock full contact data (uses LeadRail credits).
               </p>
             </div>
           )}
@@ -375,11 +398,18 @@ export default function LeadsPage() {
       <div className="space-y-3">
         <SearchInput placeholder="Search by name, email, or company…" value={search} onChange={setSearch} />
         <FilterBar segments={[...SEGMENTS]} selectedSegment={segment} onSegmentChange={onSegment} counts={counts} total={totalCount} />
+        <FilterChips
+          chips={[
+            ...(segment ? [{ key: 'segment', label: `Segment is ${segment}`, onRemove: () => onSegment('') } as FilterChip] : []),
+            ...(query ? [{ key: 'search', label: `Search: “${query}”`, onRemove: () => setSearch('') } as FilterChip] : []),
+          ]}
+          onClearAll={() => { onSegment(''); setSearch(''); }}
+        />
       </div>
 
       <DataTable contacts={contacts} isLoading={loading} onRowClick={openContact} onDelete={handleDelete} />
 
-      <div className="flex items-center justify-between text-sm text-slate-600">
+      <div className="flex items-center justify-between text-sm text-[var(--text-secondary)]">
         <Button variant="secondary" disabled={page <= 0} onClick={() => setPage((p) => Math.max(0, p - 1))}>Prev</Button>
         <span>Page {page + 1}</span>
         <Button variant="secondary" disabled={!hasNext} onClick={() => setPage((p) => p + 1)}>Next</Button>

@@ -109,7 +109,7 @@ export async function sendOutreachEmail(req: OutreachRequest) {
   const senderEmail = ventureSender.email
     || process.env.RESEND_SENDER_EMAIL
     || process.env.BREVO_SENDER_EMAIL
-    || 'onboarding@resend.dev';
+    || 'no-reply@leadrail.xyz';
   const senderName = ventureSender.name
     || process.env.RESEND_SENDER_NAME
     || process.env.BREVO_SENDER_NAME
@@ -117,8 +117,8 @@ export async function sendOutreachEmail(req: OutreachRequest) {
   const from = `${senderName} <${senderEmail}>`;
   const replyTo = ventureSender.email || process.env.REPLY_TO_EMAIL || undefined;
 
-  // Resend primary, Brevo fallback
-  const result = process.env.RESEND_API_KEY
+  // Resend primary (LeadRail's own leadrail.xyz account), Brevo fallback.
+  const result = process.env.LEADRAIL_RESEND_API_KEY
     ? await sendResendEmail(
         {
           from,

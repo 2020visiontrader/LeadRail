@@ -234,9 +234,15 @@ export async function getConnections(accountId: string) {
   return data;
 }
 
+// Multi-account aware: one row per connected account, keyed by
+// (account_id, provider, external_id). external_id defaults to the provider name
+// for single-instance token providers (resend, postiz), so they still upsert to one row.
 export async function upsertConnection(row: {
   account_id: string;
   provider: string;
+  external_id?: string;
+  display_name?: string | null;
+  username?: string | null;
   status?: string;
   secret_ref?: string | null;
   meta?: Record<string, any>;
@@ -244,6 +250,9 @@ export async function upsertConnection(row: {
   const payload = {
     account_id: row.account_id,
     provider: row.provider,
+    external_id: row.external_id ?? row.provider,
+    display_name: row.display_name ?? null,
+    username: row.username ?? null,
     status: row.status ?? 'connected',
     secret_ref: row.secret_ref ?? null,
     meta: row.meta ?? {},
@@ -251,20 +260,66 @@ export async function upsertConnection(row: {
   };
   const { data, error } = await supabase
     .from('integration_connections')
-    .upsert(payload, { onConflict: 'account_id,provider' })
+    .upsert(payload, { onConflict: 'account_id,provider,external_id' })
     .select();
   if (error) throw error;
   return data[0];
 }
 
-export async function deleteConnection(accountId: string, provider: string) {
-  const { error } = await supabase
+// Resolve a single connected account. Pass externalId to target a specific
+// account when a user has several on the same platform; omit for the most-recent.
+export async function getConnection(accountId: string, provider: string, externalId?: string) {
+  let query = supabase
+    .from('integration_connections')
+    .select('*')
+    .eq('account_id', accountId)
+    .eq('provider', provider)
+    .eq('status', 'connected');
+  if (externalId) query = query.eq('external_id', externalId);
+  const { data, error } = await query.order('updated_at', { ascending: false }).limit(1);
+  if (error) throw error;
+  return data?.[0] ?? null;
+}
+
+// Reverse lookup — used by inbound webhook handlers that only know the
+// provider-side id (IG business account id, Page id) and need to find
+// which LeadRail account owns it, with no accountId available yet.
+export async function getConnectionByExternalId(provider: string, externalId: string) {
+  const { data, error } = await supabase
+    .from('integration_connections')
+    .select('*')
+    .eq('provider', provider)
+    .eq('external_id', externalId)
+    .eq('status', 'connected')
+    .order('updated_at', { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  return data?.[0] ?? null;
+}
+
+export async function deleteConnection(accountId: string, provider: string, externalId?: string) {
+  let query = supabase
     .from('integration_connections')
     .delete()
     .eq('account_id', accountId)
     .eq('provider', provider);
+  if (externalId) query = query.eq('external_id', externalId);
+  const { error } = await query;
   if (error) throw error;
-  return { provider, deleted: true };
+  return { provider, external_id: externalId ?? null, deleted: true };
+}
+
+// Remove Meta-family connection(s) by app-scoped FB user id — used by the deauthorize
+// and data-deletion callbacks, which identify the user only via signed_request.
+export async function deleteMetaConnectionByUserId(fbUserId: string) {
+  const { data, error } = await supabase
+    .from('integration_connections')
+    .delete()
+    .in('provider', ['facebook', 'instagram', 'meta'])
+    .eq('meta->>fb_user_id', fbUserId)
+    .select('account_id');
+  if (error) throw error;
+  return { deleted: data?.length ?? 0, account_ids: (data ?? []).map((r: any) => r.account_id) };
 }
 
 // ============================================================

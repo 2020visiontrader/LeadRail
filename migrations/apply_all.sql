@@ -485,8 +485,8 @@ INSERT INTO account_members (account_id, email, role)
 VALUES ('00000000-0000-0000-0000-0000000000b1', 'aifranckie101@gmail.com', 'owner')
 ON CONFLICT (account_id, email) DO NOTHING;
 
+-- FilmOps is a SEPARATE product and must never be seeded into LeadRail.
 INSERT INTO brands (id, name, active, account_id) VALUES
-  ('filmops',      'FilmOps',       TRUE, '00000000-0000-0000-0000-0000000000b1'),
   ('retentionrail','RetentionRail', TRUE, '00000000-0000-0000-0000-0000000000b1')
 ON CONFLICT (id) DO UPDATE SET account_id = EXCLUDED.account_id;
 
@@ -2037,3 +2037,594 @@ BEGIN
   END LOOP;
 END $$;
 -- <<<<<<<<<< migrations/012_platform.sql <<<<<<<<<<
+
+
+-- ===== 021_meta_ads.sql =====
+-- 021_meta_ads.sql — Live Meta Marketing API hierarchy on top of ad_campaigns.
+-- Campaign row stays the source of truth for the UI; Meta is source of truth for spend.
+ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS meta_campaign_id   TEXT;
+ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS meta_ad_account_id TEXT;
+ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS objective          TEXT;
+ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS meta_status        TEXT;   -- PAUSED | ACTIVE | ARCHIVED (mirror of Meta)
+ALTER TABLE ad_campaigns ADD COLUMN IF NOT EXISTS last_synced_at     TIMESTAMPTZ;
+
+CREATE TABLE IF NOT EXISTS ad_sets (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  campaign_id UUID NOT NULL REFERENCES ad_campaigns(id) ON DELETE CASCADE,
+  meta_adset_id TEXT,
+  name TEXT NOT NULL,
+  daily_budget NUMERIC,
+  optimization_goal TEXT,
+  billing_event TEXT,
+  targeting JSONB,
+  meta_status TEXT DEFAULT 'PAUSED',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS ads (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  ad_set_id UUID NOT NULL REFERENCES ad_sets(id) ON DELETE CASCADE,
+  campaign_id UUID NOT NULL REFERENCES ad_campaigns(id) ON DELETE CASCADE,
+  meta_ad_id TEXT,
+  meta_creative_id TEXT,
+  asset_id UUID,
+  name TEXT NOT NULL,
+  meta_status TEXT DEFAULT 'PAUSED',
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ad_sets_campaign ON ad_sets(campaign_id);
+CREATE INDEX IF NOT EXISTS idx_ads_campaign ON ads(campaign_id);
+
+-- ============================================================================
+-- 022_agent_conversations.sql — Operator-copilot memory substrate.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS agent_conversations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  brand_id TEXT REFERENCES brands(id),
+  title TEXT,
+  transcript JSONB,
+  carryover JSONB,
+  token_estimate INT NOT NULL DEFAULT 0,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_conversations_account ON agent_conversations(account_id);
+
+CREATE TABLE IF NOT EXISTS agent_memory (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  subject TEXT,
+  predicate TEXT,
+  object TEXT,
+  fact TEXT NOT NULL,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_memory_account ON agent_memory(account_id);
+
+-- ============================================================================
+-- 023_ai_providers.sql — Provider/model registry + routing + usage (A0).
+-- Must precede 024 (personas.model_id FK -> ai_models).
+-- ============================================================================
+-- 023_ai_providers.sql — Configurable AI provider/model registry, per account.
+--
+-- Replaces (additively — the hardcoded ladder in lib/ai/router.ts stays as the
+-- zero-config fallback) the fixed Zo Ask -> OpenCode -> NIM chain with an
+-- account-owned registry: providers (credentials + endpoint), models (per
+-- provider, tiered + tagged), and routing (which model is active + the ordered
+-- fallback chain). API keys are stored encrypted (see lib/ai/crypto.ts) — this
+-- migration only defines the column; encryption happens in application code
+-- with AES-256-GCM under AI_VAULT_KEY, never in SQL.
+--
+-- Scoping convention matches 004/005: account_id UUID NOT NULL. brand_id is
+-- intentionally omitted from ai_providers/ai_models — provider credentials are
+-- an account-level resource (like integration_connections), not per-venture.
+-- ai_routing is account-wide too, since "which model answers" is an account
+-- setting; a future per-persona override can layer on top (see brands TODO
+-- below) without changing this shape.
+--
+-- Idempotent; safe to re-run. RLS enabled with no anon policies, consistent
+-- with every other table in this schema — the app (service-role client) scopes
+-- all reads/writes by account_id; RLS just guarantees the anon/browser key can
+-- never see or touch these rows directly.
+
+CREATE TABLE IF NOT EXISTS ai_providers (
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id         UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  name               TEXT NOT NULL,                 -- operator-facing label, e.g. "Team OpenAI"
+  kind               TEXT NOT NULL,                  -- openai-compatible | anthropic | zoask | opencode | nim | gemini | custom
+  base_url           TEXT,                           -- override endpoint; NULL uses the kind's default
+  api_key_encrypted  TEXT,                           -- AES-256-GCM ciphertext (lib/ai/crypto.ts); NULL for zoask/opencode/nim/gemini when they ride the platform's own env key
+  enabled            BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT ai_providers_kind_check CHECK (kind IN ('openai-compatible','anthropic','zoask','opencode','nim','gemini','custom'))
+);
+CREATE INDEX IF NOT EXISTS idx_ai_providers_account ON ai_providers(account_id);
+
+CREATE TABLE IF NOT EXISTS ai_models (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  provider_id UUID NOT NULL REFERENCES ai_providers(id) ON DELETE CASCADE,
+  model_id    TEXT NOT NULL,                         -- upstream model identifier, e.g. "gpt-4.1" / "claude-sonnet-4-5"
+  label       TEXT,                                  -- operator-facing display name; defaults to model_id in the UI
+  tier        TEXT NOT NULL DEFAULT 'balanced',       -- fast | balanced | heavy
+  good        TEXT[] NOT NULL DEFAULT '{}',           -- task tags this model is routed for, e.g. {classify,draft}
+  reliable    BOOLEAN NOT NULL DEFAULT TRUE,          -- false = catalogued but not auto-routed (mirrors lib/ai/models.ts GoModel.reliable)
+  enabled     BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT ai_models_tier_check CHECK (tier IN ('fast','balanced','heavy'))
+);
+CREATE INDEX IF NOT EXISTS idx_ai_models_provider ON ai_models(provider_id);
+
+-- One routing row per account: the active model + an ordered fallback chain of
+-- ai_models.id values (jsonb array, not a FK array, so the chain can be
+-- reordered/pruned without a join table). Application code validates each id
+-- still resolves to an enabled model belonging to this account at call time.
+CREATE TABLE IF NOT EXISTS ai_routing (
+  account_id       UUID PRIMARY KEY REFERENCES accounts(id) ON DELETE CASCADE,
+  active_model_id  UUID REFERENCES ai_models(id) ON DELETE SET NULL,
+  fallback_chain   JSONB NOT NULL DEFAULT '[]'::jsonb,  -- ordered [ai_models.id, ...], tried after active_model_id
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Optional per-persona/venture model override. Trivial add (mirrors 019's
+-- ALTER-COLUMN style); NULL means "use the account's ai_routing default".
+ALTER TABLE brands ADD COLUMN IF NOT EXISTS preferred_model_id UUID REFERENCES ai_models(id) ON DELETE SET NULL;
+
+-- Per-call usage ledger — every generateText/generateChat call through the
+-- registry path records who answered + what it cost, extending (not
+-- replacing) the credits.ts ledger in credit_transactions. Kept separate from
+-- credit_transactions because this is a technical/observability log (raw
+-- tokens + latency + which tier), not a billing-balance mutation; a caller
+-- that also wants to spend credits still calls applyCredits() itself, keyed
+-- off ref_id = ai_usage.id, so nothing double-bills.
+CREATE TABLE IF NOT EXISTS ai_usage (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id    UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  provider_id   UUID REFERENCES ai_providers(id) ON DELETE SET NULL,
+  model_id      UUID REFERENCES ai_models(id) ON DELETE SET NULL,
+  model_label   TEXT,                                 -- denormalized snapshot; survives provider/model deletion
+  kind          TEXT NOT NULL DEFAULT 'text',          -- text | chat
+  tokens_in     INT,
+  tokens_out    INT,
+  latency_ms    INT,
+  ok            BOOLEAN NOT NULL DEFAULT TRUE,
+  error         TEXT,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_account ON ai_usage(account_id, created_at DESC);
+
+-- RLS parity with the rest of the schema (service-role bypasses; app scopes by
+-- account_id in every query — see lib/ai/providers.ts).
+DO $$
+DECLARE t TEXT;
+BEGIN
+  FOREACH t IN ARRAY ARRAY['ai_providers','ai_models','ai_routing','ai_usage'] LOOP
+    EXECUTE format('ALTER TABLE %I ENABLE ROW LEVEL SECURITY;', t);
+  END LOOP;
+END $$;
+
+-- ============================================================================
+-- 024_personas.sql — Multi-persona agent roster, per account.
+-- NOTE: model_id FK requires ai_models (023_ai_providers.sql) to be applied
+-- first; append 023 to this file before 024 if regenerating from scratch.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS personas (
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id     UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  name           TEXT NOT NULL,
+  role           TEXT,
+  instructions   TEXT NOT NULL DEFAULT '',
+  model_id       UUID REFERENCES ai_models(id) ON DELETE SET NULL,
+  tone           TEXT,
+  avatar         TEXT,
+  is_coordinator BOOLEAN NOT NULL DEFAULT FALSE,
+  enabled        BOOLEAN NOT NULL DEFAULT TRUE,
+  sort_order     INT NOT NULL DEFAULT 0,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_personas_account ON personas(account_id, sort_order);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_personas_one_coordinator
+  ON personas(account_id)
+  WHERE is_coordinator = TRUE AND enabled = TRUE;
+
+ALTER TABLE personas ENABLE ROW LEVEL SECURITY;
+
+-- ============================================================================
+-- 025_skills.sql — Skills catalog (system + account-authored) + per-account
+-- enable state. Additive: the 12 built-ins in lib/skills/registry.ts are
+-- untouched; zero enabled account_skills rows = zero behavior change.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS skills (
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id     UUID REFERENCES accounts(id) ON DELETE CASCADE,
+  slug           TEXT NOT NULL,
+  name           TEXT NOT NULL,
+  description    TEXT,
+  category       TEXT,
+  instructions   TEXT NOT NULL DEFAULT '',
+  source         TEXT,
+  license        TEXT,
+  inspired_by    TEXT,
+  quality_flags  JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_global_slug
+  ON skills(slug) WHERE account_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_skills_account_slug
+  ON skills(account_id, slug) WHERE account_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_skills_account ON skills(account_id);
+CREATE INDEX IF NOT EXISTS idx_skills_category ON skills(category);
+
+ALTER TABLE skills ENABLE ROW LEVEL SECURITY;
+
+CREATE TABLE IF NOT EXISTS account_skills (
+  account_id              UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  skill_id                UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+  enabled                 BOOLEAN NOT NULL DEFAULT TRUE,
+  overridden_instructions TEXT,
+  created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (account_id, skill_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_skills_account ON account_skills(account_id);
+
+ALTER TABLE account_skills ENABLE ROW LEVEL SECURITY;
+
+-- ============================================================================
+-- 026_mcp_clients.sql — External MCP server registry, per account. Inverse of
+-- the existing MCP server (app/api/mcp/route.ts). Registry only in this
+-- migration; wiring discovered tools into the agent loop is a later task.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS mcp_clients (
+  id                 UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id         UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  name               TEXT NOT NULL,
+  transport          TEXT NOT NULL,
+  url                TEXT NOT NULL,
+  auth_header_encrypted TEXT,
+  enabled            BOOLEAN NOT NULL DEFAULT TRUE,
+  last_status        TEXT,
+  last_checked_at    TIMESTAMPTZ,
+  discovered_tools   JSONB NOT NULL DEFAULT '[]'::jsonb,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT mcp_clients_transport_check CHECK (transport IN ('http','sse')),
+  CONSTRAINT mcp_clients_account_name_unique UNIQUE (account_id, name)
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_clients_account ON mcp_clients(account_id);
+
+ALTER TABLE mcp_clients ENABLE ROW LEVEL SECURITY;
+
+-- ============================================================================
+-- 027_scheduled_tasks.sql — Account-scoped recurring agent tasks. Named
+-- intervals only (hourly/daily/weekly) — no cron parsing.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS scheduled_tasks (
+  id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id     UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  name           TEXT NOT NULL,
+  prompt         TEXT NOT NULL,
+  interval       TEXT NOT NULL,
+  enabled        BOOLEAN NOT NULL DEFAULT TRUE,
+  last_run_at    TIMESTAMPTZ,
+  next_run_at    TIMESTAMPTZ,
+  last_status    TEXT,
+  last_result    TEXT,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT scheduled_tasks_interval_check CHECK (interval IN ('hourly','daily','weekly'))
+);
+CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_account ON scheduled_tasks(account_id);
+CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_due ON scheduled_tasks(next_run_at) WHERE enabled = TRUE;
+
+ALTER TABLE scheduled_tasks ENABLE ROW LEVEL SECURITY;
+
+-- ============================================================================
+-- 028_approvals.sql — Durable approvals workflow for the agent's approval
+-- gate. Additive alongside the existing in-memory needs_approval/resume flow
+-- (lib/agent/loop.ts) — a persisted audit trail with actor, comment,
+-- no-self-approval, and edit-invalidation, not a replacement execution path.
+-- ============================================================================
+CREATE TABLE IF NOT EXISTS approvals (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id      UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  conversation_id UUID,
+  tool            TEXT NOT NULL,
+  title           TEXT NOT NULL,
+  summary         TEXT NOT NULL,
+  args_encrypted  TEXT,
+  args_redacted   JSONB NOT NULL DEFAULT '{}'::jsonb,
+  args_hash       TEXT NOT NULL,
+  state           TEXT NOT NULL DEFAULT 'pending',
+  requested_by    TEXT,
+  decided_by      TEXT,
+  decided_at      TIMESTAMPTZ,
+  comment         TEXT,
+  expires_at      TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT approvals_state_check CHECK (state IN ('pending','approved','rejected','expired','invalidated'))
+);
+CREATE INDEX IF NOT EXISTS idx_approvals_account_state ON approvals(account_id, state);
+
+ALTER TABLE approvals ENABLE ROW LEVEL SECURITY;
+
+-- ============================================================================
+-- 029_journeys.sql — Visual journey / automation graph (C1).
+-- ============================================================================
+-- 029_journeys.sql — Visual journey / automation graph, per account.
+--
+-- The evolution of lib/sequences.ts (linear) into a branching DAG: a journey
+-- is a named graph of nodes (trigger | send_email | wait | condition | goal |
+-- exit) connected by edges. Nodes + edges live in the `graph` JSONB
+-- (shape: { nodes: [{ id, type, config, next: [{ to, when? }] }] }).
+-- `trigger` and `status` are denormalized for listing/activation.
+--
+-- Scoping/RLS convention matches 025/027/028/032: account_id UUID NOT NULL,
+-- RLS enabled with no anon policies — service-role bypasses; the app scopes
+-- every read/write by account_id in code (see lib/journeys/store.ts).
+-- Idempotent; safe to re-run.
+
+CREATE TABLE IF NOT EXISTS journeys (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id   UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  name         TEXT NOT NULL,
+  description  TEXT,
+  status       TEXT NOT NULL DEFAULT 'draft',              -- draft | active | paused | archived
+  trigger      TEXT NOT NULL DEFAULT 'manual',             -- manual | lead_created | tag_added | stage_changed
+  graph        JSONB NOT NULL DEFAULT '{"nodes":[]}'::jsonb,
+  stats        JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT journeys_status_check CHECK (status IN ('draft','active','paused','archived'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_journeys_account ON journeys(account_id);
+CREATE INDEX IF NOT EXISTS idx_journeys_account_status ON journeys(account_id, status);
+
+ALTER TABLE journeys ENABLE ROW LEVEL SECURITY;
+
+-- ============================================================================
+-- 032_content_pipeline.sql — Scout→Planner→Creator→Reviewer→Publisher→Analyst (A1b).
+-- ============================================================================
+-- 032_content_pipeline.sql — Account-scoped content-creation pipeline runs.
+--
+-- Implements the "Scout -> Planner -> Creator -> Reviewer -> Publisher ->
+-- Analyst" content pipeline (socialflow-style). Each row is ONE run of the
+-- pipeline for a given topic. The six stages are stored as an ordered JSONB
+-- array in `stages` (each entry: key, status, output, error, timestamps);
+-- `status`/`current_stage` are denormalized for fast listing, and `output`
+-- holds the final assembled result (analyst summary) or a failure record.
+-- The orchestrator that walks the stages lives in lib/pipeline/store.ts.
+--
+-- Scoping/RLS convention matches 025_skills.sql / 027_scheduled_tasks.sql /
+-- 028_approvals.sql: account_id UUID NOT NULL, RLS enabled with no anon
+-- policies — service-role bypasses, the app scopes every read/write by
+-- account_id in code (see lib/pipeline/store.ts, app/api/pipeline/*).
+-- Idempotent; safe to re-run.
+
+CREATE TABLE IF NOT EXISTS content_pipeline_runs (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id    UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  topic         TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'running',          -- running | completed | failed
+  current_stage TEXT,                                     -- scout | planner | creator | reviewer | publisher | analyst
+  stages        JSONB NOT NULL DEFAULT '[]'::jsonb,       -- ordered array of stage results
+  output        JSONB,                                    -- final assembled result, or failure record
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT content_pipeline_runs_status_check CHECK (status IN ('running','completed','failed'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_content_pipeline_runs_account ON content_pipeline_runs(account_id);
+CREATE INDEX IF NOT EXISTS idx_content_pipeline_runs_created ON content_pipeline_runs(created_at DESC);
+
+ALTER TABLE content_pipeline_runs ENABLE ROW LEVEL SECURITY;
+
+-- 030_segments.sql
+-- 030_segments.sql — Dynamic contact segments, per account.
+--
+-- A segment is a saved, re-runnable filter over `contacts`: a name/description
+-- plus a `filters` JSONB array of {field, op, value} triples. The whitelist of
+-- allowed fields/ops lives in code (lib/segments/store.ts translateFilters) —
+-- this table just stores the definition; it never stores raw SQL.
+--
+-- Scoping/RLS convention matches 025_skills.sql / 027_scheduled_tasks.sql /
+-- 028_approvals.sql / 029_journeys.sql: account_id UUID NOT NULL, RLS enabled
+-- with no anon policies — service-role bypasses, the app scopes every
+-- read/write by account_id in code (see lib/segments/store.ts).
+-- Idempotent; safe to re-run.
+
+CREATE TABLE IF NOT EXISTS segments (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id   UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  name         TEXT NOT NULL,
+  description  TEXT,
+  filters      JSONB NOT NULL DEFAULT '[]'::jsonb,   -- [{field, op, value}]
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_segments_account ON segments(account_id);
+
+ALTER TABLE segments ENABLE ROW LEVEL SECURITY;
+
+-- 031_events.sql
+-- 031_events.sql — Lightweight event log, per account (Postgres-only CDP).
+--
+-- Every row is one tracked event (e.g. email_opened, page_viewed) optionally
+-- tied to a contact, with a free-form JSONB `props` bag. No ClickHouse/Kafka —
+-- this is deliberately simple; lib/analytics/store.ts aggregates with plain
+-- SQL over this table (counts, timeseries).
+--
+-- Scoping/RLS convention matches 025_skills.sql / 027_scheduled_tasks.sql /
+-- 028_approvals.sql / 029_journeys.sql / 030_segments.sql: account_id UUID
+-- NOT NULL, RLS enabled with no anon policies — service-role bypasses, the
+-- app scopes every read/write by account_id in code (see lib/analytics/store.ts).
+-- Idempotent; safe to re-run.
+
+CREATE TABLE IF NOT EXISTS events (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id   UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  contact_id   UUID,
+  type         TEXT NOT NULL,
+  props        JSONB DEFAULT '{}'::jsonb,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_events_account_created ON events(account_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_events_account_type ON events(account_id, type);
+
+ALTER TABLE events ENABLE ROW LEVEL SECURITY;
+
+-- 033_budgets.sql
+-- 033_budgets.sql — Per-account spend budgets / credit caps.
+--
+-- One row per account: an optional monthly credit limit, an alert threshold
+-- (%), and an optional hard-stop switch. `enabled=false` by default so this
+-- is entirely opt-in — with no row (or enabled=false), spend is unaffected.
+-- lib/budgets/store.ts computes `spent` on the fly from credit_transactions
+-- (no running counter to keep in sync).
+--
+-- Scoping/RLS convention matches 030_segments.sql / 031_events.sql:
+-- account_id UUID NOT NULL, RLS enabled with no anon policies — service-role
+-- bypasses, the app scopes every read/write by account_id in code.
+-- Idempotent; safe to re-run.
+
+CREATE TABLE IF NOT EXISTS account_budgets (
+  id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id            UUID NOT NULL UNIQUE REFERENCES accounts(id) ON DELETE CASCADE,
+  monthly_limit_credits INTEGER,
+  alert_threshold_pct   INTEGER NOT NULL DEFAULT 80,
+  hard_stop             BOOLEAN NOT NULL DEFAULT FALSE,
+  enabled               BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at            TIMESTAMPTZ DEFAULT NOW(),
+  updated_at            TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_account_budgets_account ON account_budgets(account_id);
+
+ALTER TABLE account_budgets ENABLE ROW LEVEL SECURITY;
+
+-- 034_notifications.sql
+-- 034_notifications.sql — In-app notifications, per account.
+--
+-- Simple flat feed: type/title/body/link + read flag. No push/email fan-out
+-- here — this table is just the in-app bell/panel backing store.
+--
+-- Scoping/RLS convention matches 030_segments.sql / 031_events.sql /
+-- 033_budgets.sql: account_id UUID NOT NULL, RLS enabled with no anon
+-- policies — service-role bypasses, the app scopes every read/write by
+-- account_id in code (see lib/notifications/store.ts).
+-- Idempotent; safe to re-run.
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id   UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  type         TEXT,
+  title        TEXT NOT NULL,
+  body         TEXT,
+  link         TEXT,
+  read         BOOLEAN NOT NULL DEFAULT FALSE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_account_created ON notifications(account_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notifications_account_read ON notifications(account_id, read);
+
+ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
+
+-- 035_forms.sql
+-- 035_forms.sql — Web forms (lead-capture), per account.
+--
+-- A `form` is a named, embeddable lead-capture form: `fields` is a JSONB
+-- array of {key, label, type, required} describing the input schema. Public
+-- visitors POST to /api/public/forms/:id/submit with NO session — that route
+-- derives account_id from the form row itself (see lib/forms/store.ts
+-- getPublicForm/submitForm), never from the caller, so a submission can never
+-- be attributed to the wrong tenant. Each submission is stored raw in
+-- `form_submissions.data` and best-effort linked to an upserted contact.
+--
+-- Scoping/RLS convention matches 025_skills.sql / 027_scheduled_tasks.sql /
+-- 029_journeys.sql / 030_segments.sql: account_id UUID NOT NULL, RLS enabled
+-- with no anon policies — service-role bypasses, the app scopes every
+-- read/write by account_id in code. Idempotent; safe to re-run.
+
+CREATE TABLE IF NOT EXISTS forms (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id   UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  name         TEXT NOT NULL,
+  fields       JSONB NOT NULL DEFAULT '[]'::jsonb,   -- [{key,label,type,required}]
+  redirect_url TEXT,
+  enabled      BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_forms_account ON forms(account_id);
+
+ALTER TABLE forms ENABLE ROW LEVEL SECURITY;
+
+CREATE TABLE IF NOT EXISTS form_submissions (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  form_id      UUID NOT NULL REFERENCES forms(id) ON DELETE CASCADE,
+  account_id   UUID NOT NULL,
+  data         JSONB NOT NULL DEFAULT '{}'::jsonb,
+  contact_id   UUID,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_form_submissions_form_created ON form_submissions(form_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_form_submissions_account ON form_submissions(account_id);
+
+ALTER TABLE form_submissions ENABLE ROW LEVEL SECURITY;
+
+-- ===== 036_agent_memory_embeddings.sql =====
+-- 036_agent_memory_embeddings.sql — Semantic recall for durable memory (B4).
+--
+-- Adds a pgvector embedding to agent_memory so the copilot can recall facts by
+-- MEANING (nv-embedqa-e5-v5, 1024-dim), not just recency/keyword. Blended with
+-- the existing recency digest in lib/agent/memory.ts; recall degrades to recency
+-- when embeddings are absent, so this is a pure additive upgrade.
+--
+-- Tenancy: match_agent_memory() takes p_account_id and filters on it — the app
+-- always passes the session accountId, never a client value. agent_memory has no
+-- RLS (service-role + in-code account scoping), matching migration 022.
+-- Idempotent; safe to re-run.
+
+CREATE EXTENSION IF NOT EXISTS vector;
+
+ALTER TABLE agent_memory ADD COLUMN IF NOT EXISTS embedding vector(1024);
+
+-- Approximate nearest-neighbor over cosine distance. HNSW needs no training step
+-- (unlike ivfflat) and stays correct as rows are added incrementally.
+CREATE INDEX IF NOT EXISTS idx_agent_memory_embedding
+  ON agent_memory USING hnsw (embedding vector_cosine_ops);
+
+-- Account-scoped semantic search. Returns the closest facts to p_query for one
+-- account, nearest first, with a cosine similarity score in [0,1]. Rows without
+-- an embedding are excluded (they still surface via the recency digest).
+CREATE OR REPLACE FUNCTION match_agent_memory(
+  p_account_id UUID,
+  p_query      vector(1024),
+  p_limit      INT DEFAULT 8
+)
+RETURNS TABLE (id UUID, fact TEXT, similarity REAL) AS $$
+  SELECT m.id, m.fact, (1 - (m.embedding <=> p_query))::real AS similarity
+  FROM agent_memory m
+  WHERE m.account_id = p_account_id
+    AND m.embedding IS NOT NULL
+  ORDER BY m.embedding <=> p_query
+  LIMIT GREATEST(p_limit, 1);
+$$ LANGUAGE sql STABLE;

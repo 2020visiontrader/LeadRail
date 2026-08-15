@@ -15,7 +15,7 @@ async function POST__impl(request: NextRequest) {
 
   if (!apolloConfigured()) {
     return NextResponse.json(
-      { error: 'Apollo is not connected', code: 'not_configured', connect: 'APOLLO_API_KEY' },
+      { error: 'Lead search is temporarily unavailable', code: 'not_configured', connect: 'APOLLO_API_KEY' },
       { status: 409 }
     );
   }
@@ -47,7 +47,7 @@ async function POST__impl(request: NextRequest) {
   } catch (error: any) {
     if (error?.code === 'auth') return errorResponse(error, 401, 'Apollo rejected the API key');
     if (error?.code === 'not_configured') {
-      return NextResponse.json({ error: 'Apollo is not connected', code: 'not_configured' }, { status: 409 });
+      return NextResponse.json({ error: 'Lead search is temporarily unavailable', code: 'not_configured' }, { status: 409 });
     }
     return errorResponse(error, 502, 'Apollo search failed');
   }

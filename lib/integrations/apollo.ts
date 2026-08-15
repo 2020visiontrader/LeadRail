@@ -36,11 +36,17 @@ function sizeToRange(size?: string): string[] {
     enterprise: '1001,10000',
     large: '1001,10000',
   };
-  const key = size.toLowerCase().replace(/[^a-z]/g, '');
-  if (map[key]) return [map[key]];
-  // Accept an explicit "min,max" or "min-max" passthrough.
-  const m = size.match(/(\d+)\D+(\d+)/);
-  return m ? [`${m[1]},${m[2]}`] : [];
+  const ranges: string[] = [];
+  for (const part of size.split(',')) {
+    const token = part.trim();
+    if (!token) continue;
+    const key = token.toLowerCase().replace(/[^a-z]/g, '');
+    if (map[key]) { ranges.push(map[key]); continue; }
+    // Accept an explicit "min-max" passthrough within a single token.
+    const m = token.match(/(\d+)\D+(\d+)/);
+    if (m) ranges.push(`${m[1]},${m[2]}`);
+  }
+  return Array.from(new Set(ranges));
 }
 
 /**
@@ -94,14 +100,40 @@ export async function searchPeople(
   }
 
   const perPage = Math.min(Math.max(query.limit ?? 25, 1), 100);
+
+  // Company-type targeting goes into q_organization_keyword_tags, which Apollo
+  // treats as an OR'd, high-recall org-tag match. We fold BOTH the industry and
+  // the free-text keyword into it (deduped). Apollo's q_keywords, by contrast,
+  // is a strict full-text AND across many fields: combined with title/industry
+  // filters it collapses results by 98-99% (verified live — "SaaS founders in
+  // Toronto" drops 1,621 → 3 the moment q_keywords is added). So q_keywords is
+  // only ever used as a last resort when there is no other targeting signal at
+  // all (no keyword-tags AND no titles).
+  // Industry and keywords arrive as free-text, frequently comma-separated
+  // multi-value ("creator economy, social media, entertainment"). Apollo matches
+  // keyword-tags as INDIVIDUAL, OR'd tokens — a single tag literal with embedded
+  // commas matches no org, which silently collapses the whole AND'd query to 0
+  // results. So split both fields on commas into discrete tags and dedupe.
+  const kw = (query.keywords || '').trim();
+  const splitTags = (s?: string) => (s || '').split(',').map((t) => t.trim()).filter(Boolean);
+  const seen = new Set<string>();
+  const orgKeywordTags: string[] = [];
+  for (const tag of [...splitTags(query.industry), ...splitTags(query.keywords)]) {
+    const dedupeKey = tag.toLowerCase();
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    orgKeywordTags.push(tag);
+  }
+
   const body: Record<string, any> = {
     page: 1,
     per_page: perPage,
     person_titles: query.titles?.length ? query.titles : undefined,
     person_seniorities: query.seniority?.length ? query.seniority : undefined,
-    person_locations: query.location ? [query.location] : undefined,
+    person_locations: query.location ? query.location.split(',').map((s) => s.trim()).filter(Boolean) : undefined,
     organization_num_employees_ranges: sizeToRange(query.company_size),
-    q_keywords: [query.industry, query.keywords].filter(Boolean).join(' ') || undefined,
+    q_organization_keyword_tags: orgKeywordTags.length ? orgKeywordTags : undefined,
+    q_keywords: !orgKeywordTags.length && !query.titles?.length && kw ? kw : undefined,
   };
   Object.keys(body).forEach((k) => {
     const v = body[k];
@@ -172,6 +204,7 @@ export interface ApolloEnrichment {
  * email, linkedin_url, name + company. Returns a deep profile or throws typed.
  */
 export async function matchPerson(keys: {
+  id?: string | null;
   email?: string | null;
   linkedin_url?: string | null;
   name?: string | null;
@@ -183,12 +216,18 @@ export async function matchPerson(keys: {
     err.code = 'not_configured';
     throw err;
   }
+  // Prefer the Apollo person id (captured at import). Matching by the exact id and
+  // asking Apollo to reveal is the ONLY reliable way to unlock a masked preview
+  // contact — matching by the obfuscated name ("Andrew Ja***n") returns a still-
+  // masked record (or the wrong person). Reveal is what consumes the credit.
+  const apolloId = keys.id && !/@locked\.apollo$/.test(keys.id) ? keys.id : undefined;
   const body: Record<string, any> = {
-    reveal_personal_emails: false,
+    reveal_personal_emails: true,
+    id: apolloId,
     email: keys.email && !/@locked\.apollo$/.test(keys.email) ? keys.email : undefined,
     linkedin_url: keys.linkedin_url || undefined,
-    name: keys.name || undefined,
-    organization_name: keys.company || undefined,
+    name: apolloId ? undefined : keys.name || undefined,
+    organization_name: apolloId ? undefined : keys.company || undefined,
   };
   Object.keys(body).forEach((k) => body[k] === undefined && delete body[k]);
 
