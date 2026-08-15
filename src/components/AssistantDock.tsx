@@ -125,12 +125,11 @@ export default function AssistantDock() {
     return acc;
   }, {} as Record<string, number>);
   const domainTiles = Object.entries(metrics).filter(([, v]) => v > 0);
-  const showContext = width >= 820;
+  const showContext = true;
 
   return (
     <aside
-      style={{ width }}
-      className="relative hidden h-screen shrink-0 flex-col border-r border-[var(--border-default)] bg-[var(--bg-canvas)] md:flex"
+      className="relative hidden h-screen flex-1 flex-col bg-[var(--bg-canvas)] md:flex"
     >
       <div className="flex h-[52px] shrink-0 items-center gap-3 border-b border-[var(--border-default)] px-4">
         <span className="text-[15px] font-bold tracking-tight text-[var(--text-primary)]" style={{ fontFamily: 'var(--font-display)' }}>Assistant</span>
@@ -193,11 +192,6 @@ export default function AssistantDock() {
         )}
       </div>
 
-      {/* 4px drag handle on the right edge */}
-      <div
-        onPointerDown={startDrag}
-        className="absolute right-0 top-0 z-10 h-full w-1 cursor-col-resize bg-transparent hover:bg-[var(--border-strong)]"
-      />
     </aside>
   );
 }
