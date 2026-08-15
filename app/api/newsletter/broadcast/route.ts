@@ -62,10 +62,11 @@ async function POST__impl(request: NextRequest) {
 
     if (!subject) return badRequest('subject is required');
     if (!html) return badRequest('html is required');
-    if (body?.brandId && !(await assertBrandOwned(String(body.brandId), accountId))) return badRequest('unknown brandId');
+    const brandId = body?.brandId ? String(body.brandId) : undefined;
+    if (brandId && !(await assertBrandOwned(brandId, accountId))) return badRequest('unknown brandId');
 
     try {
-      await getResendApiKey(accountId);
+      await getResendApiKey(accountId, brandId);
     } catch {
       return NextResponse.json({ error: 'No Resend key — connect Resend in Settings → Integrations' }, { status: 409 });
     }
@@ -110,7 +111,8 @@ async function POST__impl(request: NextRequest) {
               },
               r.id,
               undefined,
-              accountId
+              accountId,
+              brandId
             );
             results.sent += 1;
           } catch (e: any) {

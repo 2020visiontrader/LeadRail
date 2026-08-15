@@ -130,6 +130,8 @@ export async function sendOutreachEmail(req: OutreachRequest) {
         },
         contact.id,
         req.templateId,
+        undefined,
+        contact.brand_id,
       )
     : await sendBrevoEmail(
         {
