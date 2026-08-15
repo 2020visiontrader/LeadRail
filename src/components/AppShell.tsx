@@ -97,7 +97,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const nav = isOwner ? [...NAV, ...OWNER_NAV] : NAV;
   return (
     <div className="flex min-h-screen bg-[var(--bg-canvas)] text-[var(--text-primary)]">
-      <aside className="hidden w-52 shrink-0 flex-col border-r border-[var(--border-default)] bg-[var(--bg-surface)] md:flex">
+      <aside className={`hidden w-52 shrink-0 flex-col border-r border-[var(--border-default)] bg-[var(--bg-surface)] ${docked ? '' : 'md:flex'}`}>
         <div className="flex h-16 shrink-0 items-center px-4">
           <Wordmark />
         </div>
