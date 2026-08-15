@@ -8,9 +8,9 @@ import Button from '@/components/Button';
 // and a clean approval card for actions that spend money. No fake timers —
 // every line is a real step the agent actually took.
 
-type Step =
+export type Step =
   | { kind: 'thought'; text: string; done: boolean }
-  | { kind: 'tool'; label: string; done: boolean; ok?: boolean }
+  | { kind: 'tool'; label: string; done: boolean; ok?: boolean; metrics?: Record<string, number> }
   | { kind: 'error'; text: string };
 
 interface Proposal { tool: string; title: string; args: Record<string, any>; summary: string }
@@ -33,7 +33,7 @@ const TOOL_VERB: Record<string, string> = {
 };
 const verbFor = (tool: string, title: string) => TOOL_VERB[tool] || title || 'Working';
 
-export default function AgentConsole({ brandId }: { brandId?: string }) {
+export default function AgentConsole({ brandId, onSteps }: { brandId?: string; onSteps?: (steps: Step[], busy: boolean, pendingApproval: boolean) => void }) {
   const [turns, setTurns] = useState<Array<any>>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -41,6 +41,16 @@ export default function AgentConsole({ brandId }: { brandId?: string }) {
   const transcriptRef = useRef<any[]>([]);
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [turns, busy]);
+
+  // Additive, non-breaking: surface the latest assistant turn's real steps to an
+  // optional parent (the dock's context column). No effect on this component's UI.
+  useEffect(() => {
+    const lastAssistant = [...turns].reverse().find((t: any) => t.role === 'assistant');
+    onSteps?.((lastAssistant?.steps as Step[]) ?? [], busy, !!proposal);
+    // onSteps intentionally omitted from deps: parent passes a fresh closure each
+    // render; re-firing only on real step/busy/approval changes avoids an update loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [turns, busy, proposal]);
 
   // Append/patch the trailing assistant turn as events stream in.
   const patchAssistant = (fn: (t: any) => void) =>
@@ -104,7 +114,7 @@ export default function AgentConsole({ brandId }: { brandId?: string }) {
       else if (e.type === 'tool') t.steps.push({ kind: 'tool', label: verbFor(e.tool, e.title), done: false });
       else if (e.type === 'observation') {
         const last = [...t.steps].reverse().find((s: Step) => s.kind === 'tool') as any;
-        if (last) { last.done = true; last.ok = e.ok; }
+        if (last) { last.done = true; last.ok = e.ok; if (e.metrics && Object.keys(e.metrics).length) last.metrics = e.metrics; }
       } else if (e.type === 'final') { t.text = e.message; transcriptRef.current = e.transcript || []; }
       else if (e.type === 'needs_approval') { transcriptRef.current = e.transcript || []; setProposal(e.proposal); }
       else if (e.type === 'error') t.steps.push({ kind: 'error', text: e.message });

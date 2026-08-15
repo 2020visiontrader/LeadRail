@@ -10,7 +10,7 @@ import Dropdown from '@/components/Dropdown';
 import Badge from '@/components/Badge';
 import EmptyState from '@/components/EmptyState';
 import LoadingSpinner from '@/components/LoadingSpinner';
-import ChatAssistant, { type ChatMsg } from '@/components/ChatAssistant';
+import { type ChatMsg } from '@/components/ChatAssistant';
 import { useToast } from '@/components/ToastProvider';
 import { apiGet, apiSend } from '@/lib/api';
 import { Sequence } from '@/lib/types';
@@ -116,15 +116,6 @@ export default function SequencesPage() {
             <p className="mt-1 text-xs text-slate-500">Chat it through — the AI asks about your audience, goal and timing, then drafts the cadence. Keep replying to refine it.</p>
           </div>
           {chat.length > 0 && <button onClick={() => { setChat([]); setPendingSeq(null); }} className="text-xs text-slate-400 hover:text-slate-600">Reset chat</button>}
-        </div>
-        <div className="mt-3">
-          <ChatAssistant
-            messages={chat}
-            onSend={sendChat}
-            loading={chatLoading}
-            placeholder="e.g. I want to reach seed-stage founders to book intro calls"
-            emptyHint="Describe who you want to reach and what you want them to do. I'll ask a couple of questions, then draft the steps."
-          />
         </div>
         {pendingSeq && (
           <div className="mt-3 rounded-lg border border-green-200 bg-green-50 p-3">
