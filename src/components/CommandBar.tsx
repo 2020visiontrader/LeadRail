@@ -1,6 +1,7 @@
 'use client';
 import { useState, useRef, useEffect } from 'react';
 import { apiSend } from '@/lib/api';
+import Markdown from '@/components/Markdown';
 
 // LeadRail AI — the in-app conversational executor. The operator types a task in
 // plain language; the agent loop (server-side) plans, calls LeadRail tools, and
@@ -160,9 +161,9 @@ export default function CommandBar({ ventureName }: { ventureName?: string }) {
               <div className={
                 m.role === 'user'
                   ? 'max-w-[85%] rounded-2xl rounded-br-sm bg-[var(--ink)] px-3.5 py-2 text-sm text-[var(--ink-fg)]'
-                  : 'max-w-[85%] rounded-2xl rounded-bl-sm border border-[var(--border-default)] bg-[var(--bg-raised)] px-3.5 py-2 text-sm text-[var(--text-primary)] whitespace-pre-wrap'
+                  : 'max-w-[85%] overflow-hidden rounded-2xl rounded-bl-sm border border-[var(--border-default)] bg-[var(--bg-raised)] px-3.5 py-2 text-sm text-[var(--text-primary)]'
               }>
-                {m.text}
+                {m.role === 'user' ? m.text : <Markdown>{m.text}</Markdown>}
               </div>
             </div>
           ))}

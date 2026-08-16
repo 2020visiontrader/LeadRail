@@ -1,6 +1,7 @@
 'use client';
 import { useRef, useState, useEffect } from 'react';
 import Button from '@/components/Button';
+import Markdown from '@/components/Markdown';
 
 // Live agentic console. Streams the assistant's real reasoning from
 // /api/agent/stream and renders it Claude-desktop style: one plain-language
@@ -184,8 +185,8 @@ export default function AgentConsole({ brandId, onSteps }: { brandId?: string; o
                 </div>
               )}
               {t.text && (
-                <div className="max-w-[85%] animate-fade-in whitespace-pre-wrap rounded-2xl bg-[var(--bg-canvas)] px-4 py-2.5 text-sm text-[var(--text-primary)]">
-                  {t.text}
+                <div className="max-w-[85%] animate-fade-in overflow-hidden rounded-2xl bg-[var(--bg-canvas)] px-4 py-2.5 text-sm text-[var(--text-primary)]">
+                  <Markdown>{t.text}</Markdown>
                 </div>
               )}
             </div>
