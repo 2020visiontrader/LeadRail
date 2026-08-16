@@ -36,7 +36,7 @@ Route by *failure cost*, not size. Anything touching `account_id`, approval stat
 | 0.2 | Stop trusting the client transcript | A | ☑ merged |
 | 0.2b | CommandBar → 0.1 + 0.2 contracts | B | ☑ merged |
 | 0.3 | Close the MCP server bypass | A | ☐ |
-| 1.1 | Memory ingestion path (`rememberFact`) | B | ☐ |
+| 1.1 | Memory ingestion path (`rememberFact`) | B | ☑ merged |
 | 1.2 | Conversation persistence + compaction | B | ☐ |
 | 1.3 | Small correctness fixes | C | ☐ |
 | 2.1 | Capability Registry core | A | ☑ merged |
@@ -45,7 +45,7 @@ Route by *failure cost*, not size. Anything touching `account_id`, approval stat
 | 2.3 | API=MCP parity test | B | ☐ |
 | 3.1 | Ground the background agents | A | ☐ |
 | 4 | External MCP client bridge | A | ☐ |
-| 5.1 | Re-clone + finish skills harvest | C | ☐ blocked: clones missing |
+| 5.1 | Re-clone + finish skills harvest | C | ☐ spec ready (unblocked 2026-08-16) |
 | 5.2 | Agent roles → persona templates | C | ☐ |
 | 6.1 | Persona picker UI | C | ☐ |
 | 6.2 | Coordinator fan-out | A | ☐ |
@@ -56,6 +56,8 @@ Route by *failure cost*, not size. Anything touching `account_id`, approval stat
 | 8.1 | Split the loop: route ≠ compose | A | ☑ merged |
 | 8.1b | Output budget follows the model | B | ☑ merged |
 | 8.2 | Stream the compose pass | B | ☑ merged |
+| 9.1 | Render the assistant's markdown | B | ☑ merged |
+| 9.2 | Sanitize the email template preview | A | ☐ spec ready |
 
 ## Order to actually run
 
