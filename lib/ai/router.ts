@@ -148,9 +148,12 @@ export async function generateChat(opts: {
   task?: string;
   /** Preferred tier for the task, e.g. 'heavy' for user-facing prose. */
   preferTier?: 'fast' | 'balanced' | 'heavy';
+  /** Omit maxOutputTokens and set this to say "use the selected model's own
+   *  output capability, but no more than this" (migration 038). */
+  maxOutputCeiling?: number;
 }): Promise<string> {
   const registryResult = await tryRegistry(opts.accountId, opts.modelId, 'chat', (resolved) =>
-    callModel(resolved, { system: opts.system, messages: opts.messages, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens }),
+    callModel(resolved, { system: opts.system, messages: opts.messages, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, maxOutputCeiling: opts.maxOutputCeiling }),
     opts.task, opts.preferTier,
   );
   if (registryResult) return registryResult;

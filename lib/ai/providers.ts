@@ -48,6 +48,9 @@ export interface AiModelRow {
   good: string[];
   reliable: boolean;
   enabled: boolean;
+  /** The model's real output-token ceiling (migration 038). NULL = unknown,
+   *  in which case KIND_MAX_OUTPUT_TOKENS supplies a per-kind fallback. */
+  max_output_tokens: number | null;
   created_at: string;
 }
 
@@ -189,6 +192,7 @@ export async function listModels(accountId: string, providerId?: string): Promis
 }
 
 export async function addModel(accountId: string, providerId: string, input: {
+  max_output_tokens?: number | null;
   model_id: string; label?: string | null; tier?: ModelTier; good?: string[]; reliable?: boolean; enabled?: boolean;
 }): Promise<AiModelRow> {
   await assertProviderOwned(providerId, accountId);
@@ -198,6 +202,7 @@ export async function addModel(accountId: string, providerId: string, input: {
     label: input.label ?? null,
     tier: input.tier ?? 'balanced',
     good: input.good ?? [],
+    max_output_tokens: input.max_output_tokens ?? null,
     reliable: input.reliable ?? true,
     enabled: input.enabled ?? true,
   };
@@ -207,6 +212,7 @@ export async function addModel(accountId: string, providerId: string, input: {
 }
 
 export async function updateModel(accountId: string, modelId: string, patch: {
+  max_output_tokens?: number | null;
   label?: string | null; tier?: ModelTier; good?: string[]; reliable?: boolean; enabled?: boolean;
 }): Promise<AiModelRow> {
   // Ownership check: the model's provider must belong to this account.
@@ -217,6 +223,7 @@ export async function updateModel(accountId: string, modelId: string, patch: {
   if (patch.label !== undefined) row.label = patch.label;
   if (patch.tier !== undefined) row.tier = patch.tier;
   if (patch.good !== undefined) row.good = patch.good;
+  if (patch.max_output_tokens !== undefined) row.max_output_tokens = patch.max_output_tokens;
   if (patch.reliable !== undefined) row.reliable = patch.reliable;
   if (patch.enabled !== undefined) row.enabled = patch.enabled;
   const { data, error } = await supabase.from('ai_models').update(row).eq('id', modelId).select().single();
@@ -373,12 +380,49 @@ export async function resolveChainForTask(
   return deduped;
 }
 
+/** Per-provider-kind fallback ceilings, used when ai_models.max_output_tokens
+ *  is NULL (unknown) - e.g. the hardcoded ladder, which has no DB rows. */
+export const DEFAULT_MAX_OUTPUT_TOKENS = 2048;
+
+export const KIND_MAX_OUTPUT_TOKENS: Record<string, number> = {
+  'anthropic': 8192,
+  'openai-compatible': 8192,
+  'gemini': 8192,
+  'nim': 4096,
+  'opencode': 8192,
+  'zoask': 8192,
+  'custom': 4096,
+};
+
+/**
+ * Resolve the maximum output tokens for a given resolved model.
+ *
+ * A caller passing no explicit budget gets the model's own capability,
+ * optionally bounded by a ceiling for cost/latency, rather than a fixed
+ * constant; an explicit request is clamped DOWN to what the model can
+ * actually emit so a request never exceeds the model's real limit.
+ */
+export function resolveMaxOutputTokens(
+  resolved: { provider: { kind: string }; model: { max_output_tokens?: number | null } },
+  requested?: number,
+  ceiling?: number,
+): number {
+  const cap = resolved.model.max_output_tokens ?? KIND_MAX_OUTPUT_TOKENS[resolved.provider.kind] ?? DEFAULT_MAX_OUTPUT_TOKENS;
+  const result = requested && requested > 0 ? Math.min(requested, cap) : Math.min(cap, ceiling ?? cap);
+  return Math.max(1, Math.floor(result));
+}
+
 export interface CallModelOpts {
   system?: string;
   prompt?: string;              // text mode
   messages?: { role: 'user' | 'assistant'; content: string }[]; // chat mode
   temperature?: number;
+  /** Explicit budget. Clamped DOWN to the model's real ceiling. Omit to let the
+   *  selected model's own capability decide (migration 038). */
   maxOutputTokens?: number;
+  /** Upper bound applied when maxOutputTokens is omitted — lets a caller say
+   *  "use the model's capability, but not more than this" for cost/latency. */
+  maxOutputCeiling?: number;
 }
 
 /**
@@ -388,6 +432,10 @@ export interface CallModelOpts {
 export async function callModel(resolved: ResolvedModel, opts: CallModelOpts): Promise<string> {
   const { provider, model } = resolved;
   const isChat = Array.isArray(opts.messages);
+  // Budget follows the MODEL, not a constant (migration 038): an omitted
+  // request resolves to the model's own ceiling; an explicit one is clamped
+  // down so we never ask for more than the model can emit.
+  opts = { ...opts, maxOutputTokens: resolveMaxOutputTokens(resolved, opts.maxOutputTokens, opts.maxOutputCeiling) };
 
   switch (provider.kind) {
     case 'zoask': {
@@ -454,7 +502,7 @@ async function callOpenAiCompatible(provider: AiProviderRow, model: AiModelRow, 
       model: model.model_id,
       messages,
       temperature: opts.temperature ?? 0.7,
-      max_tokens: opts.maxOutputTokens ?? 2048,
+      max_tokens: opts.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
     }),
   });
   if (!res.ok) {
@@ -480,7 +528,7 @@ async function callAnthropic(provider: AiProviderRow, model: AiModelRow, opts: C
   }
   const body: Record<string, any> = {
     model: model.model_id,
-    max_tokens: opts.maxOutputTokens ?? 2048,
+    max_tokens: opts.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
     messages,
   };
   if (opts.system) body.system = opts.system;

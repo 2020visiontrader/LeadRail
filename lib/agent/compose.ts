@@ -15,6 +15,11 @@
 
 import { generateChat, type ChatMessage } from '@/lib/ai/router';
 
+// Upper bound on the compose budget. The model's own ceiling is used when it is
+// lower; this only stops an enormous-output model from being asked for far more
+// than a chat answer ever needs.
+const COMPOSE_CEILING = Number(process.env.AGENT_COMPOSE_CEILING || 8000);
+
 export interface ComposeInput {
   accountId: string;
   /** The user's most recent instruction. */
@@ -41,7 +46,13 @@ export async function composeAnswer(input: ComposeInput): Promise<string> {
       system: systemPrompt,
       messages: [{ role: 'user', content: userTurn }],
       temperature: 0.6,
-      maxOutputTokens: 2000,
+      // No fixed budget. maxOutputTokens is deliberately OMITTED so the answer
+      // length follows the capability of whichever model actually gets selected
+      // (migration 038 / resolveMaxOutputTokens): a model that can emit 8k is
+      // not capped at 2k, and one capped lower is never over-requested. The
+      // ceiling is a cost/latency bound, not a quality bound — override with
+      // AGENT_COMPOSE_CEILING.
+      maxOutputCeiling: COMPOSE_CEILING,
       accountId: input.accountId,
       task: 'draft',
       preferTier: 'heavy',
