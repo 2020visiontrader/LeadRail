@@ -7,13 +7,12 @@ import { apiSend } from '@/lib/api';
 // either answers or asks for approval before anything that spends money or
 // changes live state. Internal tool/vendor names are never shown to the user.
 
-interface ChatMsg { role: 'user' | 'assistant'; content: string }
-interface Proposal { tool: string; title: string; args: Record<string, any>; summary: string }
+interface Proposal { tool: string; title: string; args: Record<string, any>; summary: string; approvalId?: string }
 interface AgentResult {
   status: 'done' | 'needs_approval' | 'error';
   message: string;
   proposal?: Proposal;
-  transcript: ChatMsg[];
+  conversationId?: string;
 }
 interface Bubble { role: 'user' | 'ai'; text: string }
 
@@ -27,17 +26,24 @@ export default function CommandBar({ ventureName }: { ventureName?: string }) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<Bubble[]>([]);
-  const [convo, setConvo] = useState<ChatMsg[]>([]);
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [error, setError] = useState('');
   const logRef = useRef<HTMLDivElement>(null);
+  // The server owns conversation state (Packet 0.2). We hold only the opaque id
+  // it issued in the JSON response and echo it back on the next request —
+  // including the approve-resume, which reloads its context server-side.
+  // Undefined until the first turn completes, so a brand-new command-bar
+  // session sends no conversationId at all (never a stale or empty-string one).
+  // `log` remains the sole source for what is DISPLAYED; nothing rendered here
+  // is ever sent back to the server.
+  const conversationIdRef = useRef<string | undefined>(undefined);
 
   useEffect(() => { logRef.current?.scrollTo({ top: logRef.current.scrollHeight }); }, [log, busy, proposal]);
 
   const brandName = ventureName && ventureName !== 'All Ventures' ? ventureName : undefined;
 
   const handle = (res: AgentResult) => {
-    if (Array.isArray(res.transcript)) setConvo(res.transcript);
+    if (typeof res.conversationId === 'string' && res.conversationId) conversationIdRef.current = res.conversationId;
     if (res.status === 'needs_approval' && res.proposal) {
       setProposal(res.proposal);
     } else {
@@ -53,19 +59,35 @@ export default function CommandBar({ ventureName }: { ventureName?: string }) {
     setLog((l) => [...l, { role: 'user', text: message }]);
     setBusy(true);
     try {
-      const res = await apiSend<AgentResult>('/api/agent', 'POST', { message, transcript: convo, brandName }, { timeoutMs: 90_000 });
+      const res = await apiSend<AgentResult>('/api/agent', 'POST', {
+        message,
+        brandName,
+        ...(conversationIdRef.current ? { conversationId: conversationIdRef.current } : {}),
+      }, { timeoutMs: 90_000 });
       handle(res);
     } catch (e: any) {
       setError(e?.message || "LeadRail AI couldn't handle that — try rephrasing.");
     } finally { setBusy(false); }
   };
 
+  // approvalId is required by the server gate (Packet 0.1). If the proposal
+  // arrived without one, persistence failed upstream — refuse locally rather
+  // than firing a request the server will reject.
   const approve = async () => {
     if (!proposal || busy) return;
+    if (!proposal.approvalId) {
+      setProposal(null);
+      setLog((l) => [...l, { role: 'ai', text: 'This action could not be recorded for approval, so it was not run.' }]);
+      return;
+    }
     setBusy(true); setError('');
     const p = proposal; setProposal(null);
     try {
-      const res = await apiSend<AgentResult>('/api/agent', 'POST', { transcript: convo, approve: { tool: p.tool, args: p.args }, brandName }, { timeoutMs: 90_000 });
+      const res = await apiSend<AgentResult>('/api/agent', 'POST', {
+        approve: { approvalId: p.approvalId, tool: p.tool, args: p.args },
+        brandName,
+        ...(conversationIdRef.current ? { conversationId: conversationIdRef.current } : {}),
+      }, { timeoutMs: 90_000 });
       handle(res);
     } catch (e: any) {
       setError(e?.message || 'That action could not be completed.');
@@ -77,7 +99,9 @@ export default function CommandBar({ ventureName }: { ventureName?: string }) {
     setLog((l) => [...l, { role: 'ai', text: 'Okay — cancelled. Nothing was run.' }]);
   };
 
-  const reset = () => { setLog([]); setConvo([]); setProposal(null); setError(''); setText(''); };
+  // "New" starts a genuinely fresh thread: dropping the id means the next
+  // request carries no conversationId, so the server starts from empty context.
+  const reset = () => { conversationIdRef.current = undefined; setLog([]); setProposal(null); setError(''); setText(''); };
 
   return (
     <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-4 shadow-[var(--shadow-card)]">
