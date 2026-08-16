@@ -16,7 +16,7 @@
 // comes from the server session — never from the (round-tripped) transcript.
 
 import { generateChat, textConfigured, type ChatMessage } from '@/lib/ai/router';
-import { TOOLS, runTool, toolCatalogForPrompt } from './tools';
+import { TOOLS, runTool, toolCatalogForPrompt, capabilityFor } from './tools';
 import { estimateTokens, carryoverBlock, type CarryoverMemo } from './memory';
 import {
   loadPersonaForAgent, resolveMentionedPersonas, getCoordinator,
@@ -163,6 +163,11 @@ function systemPrompt(brandName?: string, agentContext?: string, carryover?: Car
 }
 
 function summarizeProposal(tool: string, args: Record<string, any>): string {
+  // A capability may supply its own summary (Packet 2.1). None do today, so
+  // every existing branch below still fires and output is unchanged; later
+  // packets add `summarize` so this branch list stops growing.
+  const cap = capabilityFor(tool);
+  if (cap?.summarize) return cap.summarize(args);
   const t = TOOLS[tool];
   const title = t?.title || tool;
   if (tool === 'launchCampaign') {
@@ -198,28 +203,11 @@ function observation(text: string): ChatMessage {
   return { role: 'user', content: `OBSERVATION: ${truncate(text)}` };
 }
 
-// Derive small, truthful per-run metrics from a tool's real result. Only counts
-// what actually happened; unknown shapes yield {} (nothing shown). Drives the
-// dock's "This run" domain KPIs — never fabricates.
-function deriveMetrics(tool: string, args: Record<string, any>, result: any): Record<string, number> {
-  const arrLen = (v: any): number | undefined =>
-    Array.isArray(v) ? v.length
-    : Array.isArray(v?.people) ? v.people.length
-    : Array.isArray(v?.leads) ? v.leads.length
-    : Array.isArray(v?.results) ? v.results.length
-    : undefined;
-  switch (tool) {
-    case 'sourceLeads': { const n = arrLen(result); return n != null ? { leadsFound: n } : {}; }
-    case 'enrichLead': return result ? { revealed: 1 } : {};
-    case 'draftOutreach': return result ? { drafts: 1 } : {};
-    case 'generateAdCopy': return result ? { copy: 1 } : {};
-    case 'sendEmail': return { emailsSent: 1 };
-    case 'enrollInSequence': { const n = Array.isArray(args?.contactIds) ? args.contactIds.length : 1; return { enrolled: n }; }
-    case 'updateLeadStatus': return args?.status === 'qualified' ? { qualified: 1 } : {};
-    case 'createDeal': return result ? { deals: 1 } : {};
-    default: return {};
-  }
-}
+// PORTED (Packet 2.1 step 5): the per-tool deriveMetrics switch that used to
+// live here now lives with each capability (lib/capabilities/metrics-port.ts,
+// attached in registry.ts). Call sites read capabilityFor(tool)?.metrics, so
+// adding a capability no longer requires editing this file. Behaviour is
+// unchanged: unknown tools yield {} exactly as the old `default` did.
 
 // --- Persona resolution (migration 024) -------------------------------------
 // Resolves which persona (if any) should frame this turn, and the model_id to
@@ -439,7 +427,7 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
     emit({ type: 'tool', tool, title: TOOLS[tool].title, args });
     const res = await runTool(tool, accountId, args);
     const obs = res.ok ? JSON.stringify(res.result) : `ERROR: ${res.error}`;
-    emit({ type: 'observation', text: truncate(obs), ok: res.ok, tool, metrics: res.ok ? deriveMetrics(tool, args, res.result) : {} });
+    emit({ type: 'observation', text: truncate(obs), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool)?.metrics?.(args, res.result) ?? {}) : {} });
     messages.push(observation(obs));
   }
 
@@ -522,7 +510,7 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
     emit({ type: 'tool', tool, title: def.title, args });
     const res = await runTool(tool, accountId, args);
     const obs = res.ok ? JSON.stringify(res.result) : `ERROR: ${res.error}`;
-    emit({ type: 'observation', text: truncate(obs), ok: res.ok, tool, metrics: res.ok ? deriveMetrics(tool, args, res.result) : {} });
+    emit({ type: 'observation', text: truncate(obs), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool)?.metrics?.(args, res.result) ?? {}) : {} });
     messages.push(observation(obs));
   }
 

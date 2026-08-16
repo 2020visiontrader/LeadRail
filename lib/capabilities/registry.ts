@@ -6,6 +6,7 @@ import { OUTREACH_CAPABILITIES } from './outreach';
 import { CRM_CAPABILITIES } from './crm';
 import { KNOWLEDGE_CAPABILITIES } from './knowledge';
 import { CREATIVE_CAPABILITIES } from './creative';
+import { METRICS_BY_NAME } from './metrics-port';
 
 const ALL: Capability[] = [
   ...VENTURE_CAPABILITIES,
@@ -48,7 +49,15 @@ if (unknown.length) {
   throw new Error(`CATALOG_ORDER lists unknown capability: ${unknown.join(', ')}`);
 }
 
-export const CAPABILITIES: Capability[] = CATALOG_ORDER.map((n) => byName.get(n)!);
+export const CAPABILITIES: Capability[] = CATALOG_ORDER.map((n) => {
+  const c = byName.get(n)!;
+  // Attach the ported deriveMetrics logic (Packet 2.1 step 5). Kept as a lookup
+  // rather than inlined per capability so the port stays diffable against the
+  // original switch in lib/agent/loop.ts. Capabilities with no entry get no
+  // metrics — equivalent to the old switch's `default: return {}`.
+  const m = METRICS_BY_NAME[n];
+  return m ? { ...c, metrics: m } : c;
+});
 
 export const CAPABILITY_BY_NAME: Record<string, Capability> =
   Object.fromEntries(CAPABILITIES.map((c) => [c.name, c]));
