@@ -89,6 +89,22 @@ export async function loadConversation(id: string, accountId: string): Promise<C
   }
 }
 
+/** Load a conversation's transcript, tenant-scoped. Returns [] when the id
+ *  is absent, unknown, or belongs to another account — callers must never
+ *  distinguish "not yours" from "empty" (no existence oracle).
+ *
+ *  This is the ONLY source of prior conversation content for an agent turn:
+ *  the server owns conversation state, the client never sends transcript. */
+export async function loadTranscript(conversationId: string | undefined, accountId: string): Promise<ChatMessage[]> {
+  if (!conversationId) return [];
+  const row = await loadConversation(conversationId, accountId);
+  const transcript = row?.transcript;
+  if (!Array.isArray(transcript)) return [];
+  return transcript.filter(
+    (m: any) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string',
+  ) as ChatMessage[];
+}
+
 /** Persist a carryover memo on a conversation (used at compaction). */
 export async function saveCarryover(id: string, accountId: string, carryover: CarryoverMemo): Promise<void> {
   try {

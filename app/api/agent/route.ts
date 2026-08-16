@@ -3,17 +3,19 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/db';
 import { runAgent, agentConfigured } from '@/lib/agent/loop';
 import { loadAgentContext } from '@/lib/agent/context';
-import { saveConversation, loadCarryover } from '@/lib/agent/memory';
+import { saveConversation, loadCarryover, loadTranscript } from '@/lib/agent/memory';
 import { parseMentions } from '@/lib/agent/personas';
-import type { ChatMessage } from '@/lib/ai/router';
 
 export const dynamic = 'force-dynamic';
 
 // POST /api/agent — LeadRail AI conversational executor.
-// Body: { message?, brandId?, transcript?, approve?: { tool, args } }
-//  - message:    a new user instruction (start or continue a conversation)
-//  - approve:    execute a previously-proposed sensitive tool, then continue
-//  - transcript: prior model transcript returned by a needs_approval result
+// Body: { message?, brandId?, conversationId?, approve?: { approvalId, tool, args } }
+//  - message:        a new user instruction (start or continue a conversation)
+//  - approve:        execute a previously-proposed sensitive tool, then continue
+//  - conversationId: opaque id WE issued; the server loads the transcript for it
+// The client NEVER sends transcript content (Packet 0.2): conversation state is
+// server-owned, so a client cannot inject fabricated OBSERVATION lines or fake
+// assistant turns into the model's context.
 // Account scope is ALWAYS the authenticated session — never the request body.
 async function POST__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
@@ -41,10 +43,13 @@ async function POST__impl(request: NextRequest) {
       }
     : undefined;
   if (!message && !approve) return badRequest('provide a message, or an approved action including its approvalId');
+  if (typeof message === 'string' && message.length > 8000) return badRequest('message too long');
 
-  const transcript: ChatMessage[] = Array.isArray(body?.transcript)
-    ? body.transcript.filter((m: any) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
-    : [];
+  // Server-owned conversation state. The transcript is loaded from OUR store,
+  // scoped to this session's account — an id belonging to another account (or
+  // an unknown one) yields [], never an error and never their data.
+  const conversationId = typeof body?.conversationId === 'string' && body.conversationId ? body.conversationId : undefined;
+  const transcript = await loadTranscript(conversationId, session.accountId);
 
   // Resolve a venture id/name for grounding (best-effort; ownership is still
   // enforced per-tool). Only for brands the session owns.
@@ -71,9 +76,6 @@ async function POST__impl(request: NextRequest) {
   // for every existing caller, so this is a no-op unless the client opts in.
   const personaId: string | undefined = typeof body?.personaId === 'string' && body.personaId ? body.personaId : undefined;
   const personaMentions = parseMentions(message);
-
-  // Persist the conversation (best-effort; never blocks the response).
-  const conversationId = typeof body?.conversationId === 'string' && body.conversationId ? body.conversationId : undefined;
 
   const result = await runAgent({
     accountId: session.accountId,

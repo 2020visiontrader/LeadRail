@@ -286,12 +286,26 @@ function approvalRefusal(e: any): string {
   }
 }
 
+/**
+ * Defensive bound on the reloaded transcript. NOT a security control — the
+ * transcript is server-owned state (loaded from `agent_conversations` by
+ * account), so nothing here is attacker-supplied. It is belt-and-braces only:
+ * a long-lived conversation can still grow past what a model call can carry,
+ * and this drops the oldest turns until the estimate is back under bound.
+ */
+function capTranscript(transcript: ChatMessage[]): ChatMessage[] {
+  const bound = HARD_TOKEN_LIMIT * 2;
+  const messages = [...transcript];
+  while (messages.length > 1 && estimateTokens(messages) > bound) messages.shift();
+  return messages;
+}
+
 export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
   const { accountId, brandContext } = input;
   const { systemBlock: personaBlock, modelId: personaModelId } = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
   const enabledSkills = await loadEnabledSkillsForAgent(accountId);
   const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills));
-  const messages: ChatMessage[] = [...(input.transcript || [])];
+  const messages: ChatMessage[] = capTranscript(input.transcript || []);
   const steps: AgentStep[] = [];
 
   if (input.message) messages.push({ role: 'user', content: input.message });
@@ -452,7 +466,7 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
   const { systemBlock: personaBlock, modelId: personaModelId } = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
   const enabledSkills = await loadEnabledSkillsForAgent(accountId);
   const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills));
-  const messages: ChatMessage[] = [...(input.transcript || [])];
+  const messages: ChatMessage[] = capTranscript(input.transcript || []);
 
   if (input.message) messages.push({ role: 'user', content: input.message });
 

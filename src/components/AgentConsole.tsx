@@ -38,7 +38,12 @@ export default function AgentConsole({ brandId, onSteps }: { brandId?: string; o
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [proposal, setProposal] = useState<Proposal | null>(null);
-  const transcriptRef = useRef<any[]>([]);
+  // The server owns conversation state (Packet 0.2). We hold only the opaque id
+  // it issued in the trailing `conversation` SSE event and echo it back on the
+  // next turn — including the approve-resume, which reloads its context server-
+  // side. Undefined until the first turn completes, so a brand-new chat sends
+  // no conversationId at all (never a stale or empty-string one).
+  const conversationIdRef = useRef<string | undefined>(undefined);
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [turns, busy]);
 
@@ -72,7 +77,11 @@ export default function AgentConsole({ brandId, onSteps }: { brandId?: string; o
       res = await fetch('/api/agent/stream', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-        body: JSON.stringify({ ...payload, brandId, transcript: transcriptRef.current }),
+        body: JSON.stringify({
+          ...payload,
+          brandId,
+          ...(conversationIdRef.current ? { conversationId: conversationIdRef.current } : {}),
+        }),
       });
     } catch {
       patchAssistant((t) => t.steps.push({ kind: 'error', text: 'Connection failed. Try again.' }));
@@ -115,6 +124,14 @@ export default function AgentConsole({ brandId, onSteps }: { brandId?: string; o
       patchAssistant((t) => { t.text = (t.text || '') + String(e.text ?? ''); });
       return;
     }
+    // Trailing event from the route's `finally`: the id the server persisted this
+    // turn under. Sent after `final` AND after `needs_approval`, so the resume
+    // request below always has it. Handled before patchAssistant so it never
+    // resolves a pending step.
+    if (e.type === 'conversation') {
+      if (typeof e.conversationId === 'string' && e.conversationId) conversationIdRef.current = e.conversationId;
+      return;
+    }
     patchAssistant((t) => {
       // resolve the previous pending step
       const prevPending = [...t.steps].reverse().find((s: Step) => 'done' in s && !s.done) as Step | undefined;
@@ -125,8 +142,8 @@ export default function AgentConsole({ brandId, onSteps }: { brandId?: string; o
       else if (e.type === 'observation') {
         const last = [...t.steps].reverse().find((s: Step) => s.kind === 'tool') as any;
         if (last) { last.done = true; last.ok = e.ok; if (e.metrics && Object.keys(e.metrics).length) last.metrics = e.metrics; }
-      } else if (e.type === 'final') { t.text = e.message; transcriptRef.current = e.transcript || []; }
-      else if (e.type === 'needs_approval') { transcriptRef.current = e.transcript || []; setProposal(e.proposal); }
+      } else if (e.type === 'final') { t.text = e.message; }
+      else if (e.type === 'needs_approval') { setProposal(e.proposal); }
       else if (e.type === 'error') t.steps.push({ kind: 'error', text: e.message });
     });
   }

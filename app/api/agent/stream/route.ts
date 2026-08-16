@@ -3,14 +3,17 @@ import { NextRequest } from 'next/server';
 import { supabase } from '@/lib/db';
 import { runAgentStream, agentConfigured, type AgentEvent } from '@/lib/agent/loop';
 import { loadAgentContext } from '@/lib/agent/context';
-import { saveConversation, loadCarryover } from '@/lib/agent/memory';
+import { saveConversation, loadCarryover, loadTranscript } from '@/lib/agent/memory';
 import { parseMentions } from '@/lib/agent/personas';
 import type { ChatMessage } from '@/lib/ai/router';
 
 export const dynamic = 'force-dynamic';
 
 // POST /api/agent/stream — same executor as /api/agent, streamed as SSE so the
-// UI renders each thinking/tool step live. Body: { message?, brandId?, transcript?, approve? }.
+// UI renders each thinking/tool step live. Body: { message?, brandId?, conversationId?, approve? }.
+// The client NEVER sends transcript content (Packet 0.2) — the server loads it
+// for the supplied conversationId, so client-supplied text can never reach the
+// model's message array.
 // Account scope is ALWAYS the session's. Not withApi-wrapped (that buffers JSON).
 export async function POST(request: NextRequest) {
   const { session, error } = await requireSession(request);
@@ -36,10 +39,7 @@ export async function POST(request: NextRequest) {
       }
     : undefined;
   if (!message && !approve) return badRequest('provide a message, or an approved action including its approvalId');
-
-  const transcript: ChatMessage[] = Array.isArray(body?.transcript)
-    ? body.transcript.filter((m: any) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')
-    : [];
+  if (typeof message === 'string' && message.length > 8000) return badRequest('message too long');
 
   let brandId: string | undefined;
   let brandName: string | undefined;
@@ -51,6 +51,10 @@ export async function POST(request: NextRequest) {
 
   const fromId = typeof body?.from === 'string' && body.from ? body.from : undefined;
   const conversationId = typeof body?.conversationId === 'string' && body.conversationId ? body.conversationId : undefined;
+  // Server-owned conversation state, scoped to this session's account. An id
+  // from another account (or an unknown one) yields [] — not an error, not
+  // their data. This is also the approve-resume path's context source.
+  const transcript = await loadTranscript(conversationId, session.accountId);
   const carryover = fromId ? await loadCarryover(fromId, session.accountId) : null;
   const agentContext = await loadAgentContext({ accountId: session.accountId, brandId, brandName, query: message });
 
