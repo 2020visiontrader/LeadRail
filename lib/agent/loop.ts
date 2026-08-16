@@ -40,12 +40,12 @@ export function compactionLevel(tokenEstimate: number): 'soft' | 'hard' | null {
   return null;
 }
 
-// The loop is latency-sensitive (a step per model round-trip), so it pins fast
-// tiers instead of inheriting the account default (which may be a slow reasoning
-// model). Zo Ask → Haiku (the standing Zo/Ask default for this account); if that
+// The loop is latency-sensitive (a step per model round-trip), so it prefers a
+// fast tier; when AGENT_ZOASK_MODEL is unset the Zo Ask call omits model_name
+// and uses the account default (Sonnet, sub-billed, no spend gate). If that
 // tier errors, the router falls through to DeepSeek-Flash, then NIM. Override
 // via AGENT_ZOASK_MODEL. JSON tool-routing is well within a fast model's ability.
-const AGENT_ZOASK_MODEL = process.env.AGENT_ZOASK_MODEL || 'byok:d49f5f12-5edf-4121-8079-a34a9077ae77';
+const AGENT_ZOASK_MODEL = process.env.AGENT_ZOASK_MODEL || '';
 const AGENT_OPENCODE_MODEL = 'deepseek-v4-flash';
 
 export interface AgentProposal {
@@ -190,6 +190,19 @@ function extractJson(raw: string): any | null {
   try { return JSON.parse(m[0]); } catch { return null; }
 }
 
+// When the model returns prose or a truncated JSON whose message got cut off,
+// recover the human answer rather than surfacing a generic failure.
+function salvageFinalMessage(raw: string): string | null {
+  const m = raw.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)/);
+  if (m && m[1]) {
+    try { return JSON.parse('"' + m[1].replace(/\\?$/, '') + '"'); }
+    catch { return m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').trim(); }
+  }
+  const stripped = raw.replace(/```json|```/g, '').trim();
+  if (stripped && !stripped.startsWith('{')) return stripped;
+  return null;
+}
+
 function truncate(s: string): string {
   return s.length > OBSERVATION_CHAR_LIMIT ? `${s.slice(0, OBSERVATION_CHAR_LIMIT)}… [truncated]` : s;
 }
@@ -315,7 +328,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
     let raw: string;
     try {
       raw = await generateChat({
-        system, messages, temperature: 0.2, maxOutputTokens: 700, zoAskModel: AGENT_ZOASK_MODEL, model: AGENT_OPENCODE_MODEL,
+        system, messages, temperature: 0.2, maxOutputTokens: 2048, zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
         // Only threaded through when a persona with a model override is active,
         // so the no-persona path calls generateChat with EXACTLY the same
         // options object shape as before this change.
@@ -332,6 +345,8 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
         messages.push({ role: 'user', content: 'Respond with ONLY one JSON object using the "tool" or "final" shape.' });
         continue;
       }
+      const salv = salvageFinalMessage(raw);
+      if (salv) return { status: 'done', message: salv, transcript: messages, steps };
       return { status: 'error', message: "I couldn't complete that request. Please rephrase and try again.", transcript: messages, steps };
     }
     corrected = false;
@@ -396,7 +411,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
   try {
     messages.push({ role: 'user', content: 'Stop calling tools. Using the information above, answer the user now. Respond with ONLY {"action":"final","message":"..."}.' });
     const raw = await generateChat({
-      system, messages, temperature: 0.2, maxOutputTokens: 500, zoAskModel: AGENT_ZOASK_MODEL, model: AGENT_OPENCODE_MODEL,
+      system, messages, temperature: 0.2, maxOutputTokens: 2048, zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
       ...(personaModelId ? { accountId, modelId: personaModelId } : {}),
     });
     const p = extractJson(raw);
@@ -418,7 +433,7 @@ export type AgentEvent =
   | { type: 'final'; message: string; transcript: ChatMessage[]; tokenEstimate?: number }
   | { type: 'needs_approval'; proposal: AgentProposal; message: string; transcript: ChatMessage[] }
   | { type: 'compaction_suggested'; level: 'soft' | 'hard'; tokenEstimate: number }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string; transcript?: ChatMessage[] };
 
 export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent) => void): Promise<void> {
   const { accountId, brandContext } = input;
@@ -431,7 +446,7 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
 
   if (input.approve) {
     const { tool, args } = input.approve;
-    if (!TOOLS[tool]?.sensitive) { emit({ type: 'error', message: 'That action can no longer be approved.' }); return; }
+    if (!TOOLS[tool]?.sensitive) { emit({ type: 'error', message: 'That action can no longer be approved.', transcript: messages }); return; }
     // Best-effort mirror of the resume-side approval into the durable
     // approvals table — see the matching comment in runAgent above. Never
     // blocks execution.
@@ -451,11 +466,11 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
     let raw: string;
     try {
       raw = await generateChat({
-        system, messages, temperature: 0.2, maxOutputTokens: 700, zoAskModel: AGENT_ZOASK_MODEL, model: AGENT_OPENCODE_MODEL,
+        system, messages, temperature: 0.2, maxOutputTokens: 2048, zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
         ...(personaModelId ? { accountId, modelId: personaModelId } : {}),
       });
     } catch {
-      emit({ type: 'error', message: 'LeadRail AI is temporarily unavailable. Please try again.' });
+      emit({ type: 'error', message: 'LeadRail AI is temporarily unavailable. Please try again.', transcript: messages });
       return;
     }
 
@@ -466,7 +481,9 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
         messages.push({ role: 'user', content: 'Respond with ONLY one JSON object using the "tool" or "final" shape.' });
         continue;
       }
-      emit({ type: 'error', message: "I couldn't complete that request. Please rephrase and try again." });
+      const salv = salvageFinalMessage(raw);
+      if (salv) { emit({ type: 'final', message: salv, transcript: messages }); return; }
+      emit({ type: 'error', message: "I couldn't complete that request. Please rephrase and try again.", transcript: messages });
       return;
     }
     corrected = false;
@@ -530,13 +547,13 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
   try {
     messages.push({ role: 'user', content: 'Stop calling tools. Using the information above, answer the user now. Respond with ONLY {"action":"final","message":"..."}.' });
     const raw = await generateChat({
-      system, messages, temperature: 0.2, maxOutputTokens: 500, zoAskModel: AGENT_ZOASK_MODEL, model: AGENT_OPENCODE_MODEL,
+      system, messages, temperature: 0.2, maxOutputTokens: 2048, zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
       ...(personaModelId ? { accountId, modelId: personaModelId } : {}),
     });
     const p = extractJson(raw);
     if (p?.action === 'final' && p.message) { emit({ type: 'final', message: String(p.message), transcript: messages }); return; }
   } catch { /* fall through */ }
-  emit({ type: 'error', message: 'I gathered the details but had trouble summarizing. Please ask again a bit more specifically.' });
+  emit({ type: 'error', message: 'I gathered the details but had trouble summarizing. Please ask again a bit more specifically.', transcript: messages });
 }
 
 // --- Long-chat handoff: carryover generation -------------------------------
@@ -568,7 +585,7 @@ export async function generateCarryover(transcript: ChatMessage[]): Promise<Carr
       messages: [{ role: 'user', content: `Transcript to compress:\n${convo}` }],
       temperature: 0.1,
       maxOutputTokens: 700,
-      zoAskModel: AGENT_ZOASK_MODEL,
+      zoAskModel: AGENT_ZOASK_MODEL || undefined,
       model: AGENT_OPENCODE_MODEL,
     });
     const parsed = extractJson(raw);

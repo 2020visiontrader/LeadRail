@@ -117,7 +117,7 @@ export default function AgentConsole({ brandId, onSteps }: { brandId?: string; o
         if (last) { last.done = true; last.ok = e.ok; if (e.metrics && Object.keys(e.metrics).length) last.metrics = e.metrics; }
       } else if (e.type === 'final') { t.text = e.message; transcriptRef.current = e.transcript || []; }
       else if (e.type === 'needs_approval') { transcriptRef.current = e.transcript || []; setProposal(e.proposal); }
-      else if (e.type === 'error') t.steps.push({ kind: 'error', text: e.message });
+      else if (e.type === 'error') { if (e.transcript) transcriptRef.current = e.transcript; t.steps.push({ kind: 'error', text: e.message }); }
     });
   }
 
