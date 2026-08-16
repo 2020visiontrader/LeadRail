@@ -12,3 +12,7 @@ public/generated/
 # runtime log exports + stray screenshot artifacts
 logs-export/
 --full-page
+
+# delegation harness scratch
+delegation/runs/
+delegation/task-*.txt
