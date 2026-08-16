@@ -13,7 +13,7 @@ export type Step =
   | { kind: 'tool'; label: string; done: boolean; ok?: boolean; metrics?: Record<string, number> }
   | { kind: 'error'; text: string };
 
-interface Proposal { tool: string; title: string; args: Record<string, any>; summary: string }
+interface Proposal { tool: string; title: string; args: Record<string, any>; summary: string; approvalId?: string }
 type Turn = { role: 'user' } & { text: string } | { role: 'assistant'; text: string; steps: Step[] };
 
 // Map internal tool names to plain-language present-tense actions.
@@ -122,7 +122,18 @@ export default function AgentConsole({ brandId, onSteps }: { brandId?: string; o
   }
 
   const send = () => { const m = input.trim(); if (!m || busy) return; setInput(''); run({ message: m }); };
-  const approve = () => proposal && run({ approve: { tool: proposal.tool, args: proposal.args } });
+  // approvalId is required by the server gate (Packet 0.1). If the proposal
+  // arrived without one, persistence failed upstream — refuse locally rather
+  // than firing a request the server will reject.
+  const approve = () => {
+    if (!proposal) return;
+    if (!proposal.approvalId) {
+      patchAssistant((t) => t.steps.push({ kind: 'error', text: 'This action could not be recorded for approval, so it was not run.' }));
+      setProposal(null);
+      return;
+    }
+    run({ approve: { approvalId: proposal.approvalId, tool: proposal.tool, args: proposal.args } });
+  };
 
   return (
     <div className="flex h-[calc(100vh-9rem)] flex-col rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] shadow-[var(--shadow-card)]">

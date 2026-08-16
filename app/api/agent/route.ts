@@ -30,10 +30,17 @@ async function POST__impl(request: NextRequest) {
   try { body = await request.json(); } catch { return badRequest('invalid JSON body'); }
 
   const message: string | undefined = typeof body?.message === 'string' ? body.message : undefined;
-  const approve = body?.approve && typeof body.approve === 'object' && typeof body.approve.tool === 'string'
-    ? { tool: body.approve.tool as string, args: (body.approve.args && typeof body.approve.args === 'object') ? body.approve.args : {} }
+  // approvalId is REQUIRED (Packet 0.1) — execution is gated on a persisted
+  // approvals row, so a resume without one is refused rather than executed.
+  const approve = body?.approve && typeof body.approve === 'object'
+    && typeof body.approve.tool === 'string' && typeof body.approve.approvalId === 'string' && body.approve.approvalId
+    ? {
+        approvalId: body.approve.approvalId as string,
+        tool: body.approve.tool as string,
+        args: (body.approve.args && typeof body.approve.args === 'object') ? body.approve.args : {},
+      }
     : undefined;
-  if (!message && !approve) return badRequest('provide a message or an approved action');
+  if (!message && !approve) return badRequest('provide a message, or an approved action including its approvalId');
 
   const transcript: ChatMessage[] = Array.isArray(body?.transcript)
     ? body.transcript.filter((m: any) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')

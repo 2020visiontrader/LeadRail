@@ -13,7 +13,10 @@ import { createHash } from 'node:crypto';
 import { supabase } from '@/lib/db';
 import { decryptSecret, encryptSecret, vaultConfigured } from '@/lib/ai/crypto';
 
-export type ApprovalState = 'pending' | 'approved' | 'rejected' | 'expired' | 'invalidated';
+// 'executed' (migration 037) is TERMINAL and makes this row authoritative for
+// execution: consumeApprovalForExecution flips approved -> executed atomically,
+// so an approval is single-use and a rejected one can never run.
+export type ApprovalState = 'pending' | 'approved' | 'rejected' | 'expired' | 'invalidated' | 'executed';
 
 export interface ApprovalRow {
   id: string;
@@ -245,4 +248,90 @@ export async function markApprovedByToolAndArgs(
     .eq('tool', tool)
     .eq('args_hash', hash)
     .eq('state', 'pending');
+}
+
+export class ApprovalExecutionError extends Error {
+  constructor(
+    public code: 'not_found' | 'not_approved' | 'args_mismatch' | 'already_executed',
+    message: string,
+  ) {
+    super(message);
+    this.name = 'ApprovalExecutionError';
+  }
+}
+
+/**
+ * Unlike `markApprovedByToolAndArgs` (best-effort, fire-and-forget), this is the
+ * authoritative execution gate. Any failure here MUST propagate so the caller
+ * refuses to execute the sensitive tool.
+ *
+ * Atomically consume an approved approval so a sensitive tool may run ONCE.
+ * Rejects with `ApprovalExecutionError`:
+ * - 'not_found'       no row for this approval id + account
+ * - 'args_mismatch'   tool or args_hash does not match the requested execution
+ * - 'already_executed' this approval was already consumed
+ * - 'not_approved'    the approval is pending/rejected/invalidated/expired
+ */
+export async function consumeApprovalForExecution(
+  accountId: string,
+  approvalId: string,
+  tool: string,
+  args: Record<string, any>,
+): Promise<void> {
+  // Scoped fetch: the approval row must belong to this account.
+  const { data: row, error: fetchError } = await supabase
+    .from('approvals')
+    .select('id, tool, args_hash, state')
+    .eq('id', approvalId)
+    .eq('account_id', accountId)
+    .maybeSingle();
+  if (fetchError) throw fetchError;
+  if (!row) {
+    throw new ApprovalExecutionError('not_found', 'Unknown approval');
+  }
+
+  // The exact tool and args must match what was approved. If args changed after
+  // approval, hashArgs(args) will differ and invalidation/refusal bites here.
+  if (row.tool !== tool || row.args_hash !== hashArgs(args)) {
+    throw new ApprovalExecutionError(
+      'args_mismatch',
+      'Approval does not match the requested tool and arguments.',
+    );
+  }
+
+  if (row.state === 'executed') {
+    throw new ApprovalExecutionError(
+      'already_executed',
+      'This approval has already been consumed.',
+    );
+  }
+
+  if (row.state !== 'approved') {
+    throw new ApprovalExecutionError(
+      'not_approved',
+      `This approval is ${row.state} and cannot be executed.`,
+    );
+  }
+
+  // Atomic consume: the state-conditioned UPDATE is the guard. If another caller
+  // consumes it first, zero rows are returned and we treat it as already executed.
+  const { data: consumed, error: updateError } = await supabase
+    .from('approvals')
+    .update({
+      state: 'executed',
+      executed_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', approvalId)
+    .eq('account_id', accountId)
+    .eq('state', 'approved') // single-use guard in the query, not in JS
+    .select('id')
+    .maybeSingle();
+  if (updateError) throw updateError;
+  if (!consumed) {
+    throw new ApprovalExecutionError(
+      'already_executed',
+      'This approval was just consumed by another execution.',
+    );
+  }
 }

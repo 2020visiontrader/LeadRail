@@ -23,7 +23,7 @@ import {
   buildPersonaSystemBlock, buildCoordinatorSystemBlock, type PersonaRow,
 } from './personas';
 import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
-import { createApproval, markApprovedByToolAndArgs } from '@/lib/approvals/store';
+import { createApproval, consumeApprovalForExecution, ApprovalExecutionError } from '@/lib/approvals/store';
 
 const MAX_STEPS = 10;
 const OBSERVATION_CHAR_LIMIT = 2000;
@@ -94,8 +94,12 @@ export interface RunAgentInput {
   carryover?: CarryoverMemo | null;
   /** Prior transcript to resume from (returned by a needs_approval result). */
   transcript?: ChatMessage[];
-  /** An approved sensitive call to execute before continuing the loop. */
-  approve?: { tool: string; args: Record<string, any> };
+  /** An approved sensitive call to execute before continuing the loop.
+   *  approvalId is REQUIRED (Packet 0.1): execution is gated on a persisted
+   *  approvals row being in state 'approved' with a matching args hash, and
+   *  consuming it is single-use. Without this the transcript-resume flow would
+   *  execute a REJECTED proposal if the same {tool,args} were resubmitted. */
+  approve?: { approvalId: string; tool: string; args: Record<string, any> };
   /** Optional persona (migration 024) to adopt for this turn. Omitted/undefined
    *  = today's default LeadRail AI behavior, unchanged. */
   personaId?: string;
@@ -265,6 +269,17 @@ async function resolvePersonaForTurn(
  * Run (or resume) the agent loop. Returns when the agent produces a final
  * answer, needs approval for a sensitive tool, or exhausts its step budget.
  */
+// Map an execution-gate failure to a plain-language refusal. Never leaks state
+// names or ids to the user; the audit trail carries the detail.
+function approvalRefusal(e: any): string {
+  switch (e?.code) {
+    case 'not_approved':     return 'That action has not been approved (or was rejected), so I did not run it.';
+    case 'already_executed': return 'That action was already carried out — I did not repeat it.';
+    case 'args_mismatch':    return 'The details changed since you approved that, so I did not run it. Ask me to propose it again.';
+    default:                 return 'I could not verify that this action was approved, so I did not run it.';
+  }
+}
+
 export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
   const { accountId, brandContext } = input;
   const { systemBlock: personaBlock, modelId: personaModelId } = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
@@ -279,16 +294,17 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
   // the agent can report the outcome. Re-validated by the tool's own schema;
   // account scope is the server session's, never the client's.
   if (input.approve) {
-    const { tool, args } = input.approve;
+    const { approvalId, tool, args } = input.approve;
     if (!TOOLS[tool]?.sensitive) {
       return { status: 'error', message: 'That action can no longer be approved.', transcript: messages, steps };
     }
-    // Best-effort: reflect the resume-side approval into the durable approvals
-    // table (migration 028_approvals.sql) so the persisted queue stays in
-    // sync with the transcript-resume flow. Never blocks execution — the
-    // resume/approve contract is unchanged even if this fails or the row was
-    // never created (e.g. persistence was down when the proposal was made).
-    try { await markApprovedByToolAndArgs(accountId, tool, args, input.requestedBy); } catch { /* never block execution */ }
+    // HARD GATE (Packet 0.1): consume a persisted, approved, args-matching,
+    // not-yet-executed approval. Failure MUST refuse — never fall through.
+    try {
+      await consumeApprovalForExecution(accountId, approvalId, tool, args);
+    } catch (e: any) {
+      return { status: 'error', message: approvalRefusal(e), transcript: messages, steps };
+    }
     const res = await runTool(tool, accountId, args);
     const obs = res.ok ? JSON.stringify(res.result) : `ERROR: ${res.error}`;
     steps.push({ tool, args, observation: truncate(obs) });
@@ -351,6 +367,9 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
       // actor trail (migration 028_approvals.sql). Best-effort — a failure
       // here (e.g. DB unavailable) must never block the existing
       // needs_approval/resume flow, so approvalId is simply omitted.
+      // REQUIRED, not best-effort (Packet 0.1): execution is gated on this row,
+      // so a proposal we cannot persist can never be approved. Offering it would
+      // strand the user on a button that always fails — refuse up front instead.
       try {
         const row = await createApproval(accountId, {
           tool, title: def.title, summary: proposal.summary, args,
@@ -358,7 +377,9 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
           requestedBy: input.requestedBy ?? null,
         });
         proposal.approvalId = row.id;
-      } catch { /* never block the proposal on persistence failure */ }
+      } catch {
+        return { status: 'error', message: "I couldn't record that action for your approval, so I haven't run it. Please try again.", transcript: messages, steps };
+      }
       steps.push({ thought: parsed.thought, tool, args });
       return { status: 'needs_approval', message: proposal.summary, proposal, transcript: messages, steps };
     }
@@ -418,12 +439,15 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
   if (input.message) messages.push({ role: 'user', content: input.message });
 
   if (input.approve) {
-    const { tool, args } = input.approve;
+    const { approvalId, tool, args } = input.approve;
     if (!TOOLS[tool]?.sensitive) { emit({ type: 'error', message: 'That action can no longer be approved.' }); return; }
-    // Best-effort mirror of the resume-side approval into the durable
-    // approvals table — see the matching comment in runAgent above. Never
-    // blocks execution.
-    try { await markApprovedByToolAndArgs(accountId, tool, args, input.requestedBy); } catch { /* never block execution */ }
+    // HARD GATE (Packet 0.1) — see the matching comment in runAgent.
+    try {
+      await consumeApprovalForExecution(accountId, approvalId, tool, args);
+    } catch (e: any) {
+      emit({ type: 'error', message: approvalRefusal(e) });
+      return;
+    }
     emit({ type: 'tool', tool, title: TOOLS[tool].title, args });
     const res = await runTool(tool, accountId, args);
     const obs = res.ok ? JSON.stringify(res.result) : `ERROR: ${res.error}`;
@@ -484,6 +508,7 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
       const proposal: AgentProposal = { tool, title: def.title, args, summary: summarizeProposal(tool, args) };
       // Additive persistence — see the matching comment in runAgent above.
       // Best-effort; never blocks the existing needs_approval/resume flow.
+      // REQUIRED, not best-effort — see the matching comment in runAgent.
       try {
         const row = await createApproval(accountId, {
           tool, title: def.title, summary: proposal.summary, args,
@@ -491,7 +516,10 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
           requestedBy: input.requestedBy ?? null,
         });
         proposal.approvalId = row.id;
-      } catch { /* never block the proposal on persistence failure */ }
+      } catch {
+        emit({ type: 'error', message: "I couldn't record that action for your approval, so I haven't run it. Please try again." });
+        return;
+      }
       emit({ type: 'needs_approval', proposal, message: proposal.summary, transcript: messages });
       return;
     }
