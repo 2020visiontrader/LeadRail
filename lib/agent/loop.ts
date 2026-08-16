@@ -23,9 +23,15 @@ import {
   buildPersonaSystemBlock, buildCoordinatorSystemBlock, type PersonaRow,
 } from './personas';
 import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
+import { composeAnswer } from './compose';
 import { createApproval, consumeApprovalForExecution, ApprovalExecutionError } from '@/lib/approvals/store';
 
 const MAX_STEPS = 10;
+// Two-pass output (Packet 8.1). The route pass below stays at temp 0.2 / 700
+// tokens behind a JSON envelope — correct for tool selection, poor for prose.
+// A second compose pass writes what the user actually reads. Set AGENT_COMPOSE=0
+// to revert to shipping the route pass's draft verbatim.
+const AGENT_COMPOSE = process.env.AGENT_COMPOSE !== '0';
 const OBSERVATION_CHAR_LIMIT = 2000;
 
 // Long-chat handoff thresholds (token estimate over the running transcript).
@@ -344,7 +350,13 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
     messages.push({ role: 'assistant', content: JSON.stringify(parsed) });
 
     if (parsed.action === 'final') {
-      const message = String(parsed.message || '').trim() || 'Done.';
+      const draft = String(parsed.message || '').trim() || 'Done.';
+      const message = AGENT_COMPOSE
+        ? await composeAnswer({
+            accountId, userMessage: input.message, draft, transcript: messages,
+            agentContext: input.agentContext, personaBlock,
+          })
+        : draft;
       steps.push({ thought: parsed.thought });
       const tokenEstimate = estimateTokens(messages);
       return { status: 'done', message, transcript: messages, steps, tokenEstimate, compaction: compactionLevel(tokenEstimate) };
@@ -487,8 +499,17 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
     if (parsed.thought) emit({ type: 'thought', text: String(parsed.thought) });
 
     if (parsed.action === 'final') {
+      const draft = String(parsed.message || '').trim() || 'Done.';
+      let message = draft;
+      if (AGENT_COMPOSE) {
+        emit({ type: 'thought', text: 'Writing up the answer…' });
+        message = await composeAnswer({
+          accountId, userMessage: input.message, draft, transcript: messages,
+          agentContext: input.agentContext, personaBlock,
+        });
+      }
       const tokenEstimate = estimateTokens(messages);
-      emit({ type: 'final', message: String(parsed.message || '').trim() || 'Done.', transcript: messages, tokenEstimate });
+      emit({ type: 'final', message, transcript: messages, tokenEstimate });
       const level = compactionLevel(tokenEstimate);
       if (level) emit({ type: 'compaction_suggested', level, tokenEstimate });
       return;

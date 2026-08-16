@@ -27,7 +27,7 @@ import type { ChatMessage } from './opencode';
 import * as opencode from './opencode';
 import { zoAskConfigured, zoAskText, zoAskChat } from './zoask';
 import { nimConfigured, nimText, nimChat } from './nim';
-import { registryConfigured, resolveChain, callModel, type ResolvedModel } from './providers';
+import { registryConfigured, resolveChain, resolveChainForTask, callModel, type ResolvedModel } from './providers';
 
 export type { ChatMessage };
 
@@ -63,10 +63,17 @@ async function tryRegistry(
   modelId: string | undefined,
   kind: 'text' | 'chat',
   call: (resolved: ResolvedModel) => Promise<string>,
+  // Task hint (Packet 8.1). When present, models tagged `good` for this task are
+  // tried first. Reordering only — a roster with no tags resolves exactly as
+  // before, so this stays a pure addition.
+  task?: string,
+  preferTier?: 'fast' | 'balanced' | 'heavy',
 ): Promise<string | null> {
   if (!accountId) return null;
   if (!(await registryConfigured(accountId).catch(() => false))) return null;
-  const chain = await resolveChain(accountId, { modelId }).catch(() => []);
+  const chain = task
+    ? await resolveChainForTask(accountId, task, { preferTier }).catch(() => [])
+    : await resolveChain(accountId, { modelId }).catch(() => []);
   for (const resolved of chain) {
     const start = Date.now();
     try {
@@ -136,9 +143,15 @@ export async function generateChat(opts: {
   accountId?: string;
   /** Specific ai_models.id to try before the account's active/fallback chain. */
   modelId?: string;
+  /** Task hint (Packet 8.1) — prefers models tagged `good` for this task, e.g.
+   *  'draft' for the compose pass. Reorders the chain; never excludes. */
+  task?: string;
+  /** Preferred tier for the task, e.g. 'heavy' for user-facing prose. */
+  preferTier?: 'fast' | 'balanced' | 'heavy';
 }): Promise<string> {
   const registryResult = await tryRegistry(opts.accountId, opts.modelId, 'chat', (resolved) =>
     callModel(resolved, { system: opts.system, messages: opts.messages, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens }),
+    opts.task, opts.preferTier,
   );
   if (registryResult) return registryResult;
 

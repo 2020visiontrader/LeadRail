@@ -316,6 +316,63 @@ export async function resolveChain(accountId: string, _opts: { modelId?: string 
   return chain;
 }
 
+/**
+ * Reorders an account's existing model chain for a specific task without
+ * removing any models.
+ *
+ * `ai_models.good` (migration 023) and `TaskKind` in `lib/ai/models.ts`
+ * already describe which model suits which job, but `resolveChain` never read
+ * them. This wires that up.
+ *
+ * Reordering only: models whose `good` list contains `task` move to the
+ * front (optionally with a preferred tier first), and everything else keeps
+ * the order returned by `resolveChain`. An account with no task tags
+ * therefore behaves exactly as before. This function never throws.
+ */
+export async function resolveChainForTask(
+  accountId: string,
+  task: string,
+  opts?: { preferTier?: 'fast' | 'balanced' | 'heavy' },
+): Promise<ResolvedModel[]> {
+  let chain: ResolvedModel[];
+  try {
+    chain = await resolveChain(accountId);
+  } catch {
+    return [];
+  }
+
+  if (!chain.length) return [];
+
+  const preferTier = opts?.preferTier;
+  const tierMatches: ResolvedModel[] = [];
+  const goodMatches: ResolvedModel[] = [];
+  const rest: ResolvedModel[] = [];
+
+  for (const resolved of chain) {
+    const good = Array.isArray(resolved.model.good) ? resolved.model.good : [];
+    const isGoodForTask = good.includes(task);
+
+    if (isGoodForTask && (preferTier === undefined || resolved.model.tier === preferTier)) {
+      tierMatches.push(resolved);
+    } else if (isGoodForTask) {
+      goodMatches.push(resolved);
+    } else {
+      rest.push(resolved);
+    }
+  }
+
+  const deduped: ResolvedModel[] = [];
+  const seen = new Set<string>();
+
+  for (const resolved of [...tierMatches, ...goodMatches, ...rest]) {
+    if (seen.has(resolved.model.id)) continue;
+    seen.add(resolved.model.id);
+    deduped.push(resolved);
+  }
+
+  return deduped;
+}
+
 export interface CallModelOpts {
   system?: string;
   prompt?: string;              // text mode
