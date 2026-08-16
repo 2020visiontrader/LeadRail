@@ -33,7 +33,8 @@ Route by *failure cost*, not size. Anything touching `account_id`, approval stat
 | Packet | Title | Tier | Status |
 |---|---|---|---|
 | 0.1 | Gate execution on approval state | A | ☑ merged |
-| 0.2 | Stop trusting the client transcript | A | ☐ |
+| 0.2 | Stop trusting the client transcript | A | ☑ merged |
+| 0.2b | CommandBar → 0.1 + 0.2 contracts | B | ☑ merged |
 | 0.3 | Close the MCP server bypass | A | ☐ |
 | 1.1 | Memory ingestion path (`rememberFact`) | B | ☐ |
 | 1.2 | Conversation persistence + compaction | B | ☐ |
