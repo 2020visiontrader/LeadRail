@@ -17,19 +17,55 @@ This is the source of truth for what LeadRail takes from the studied open-source
 
 ## 1. Licensing gate (decides everything)
 
-| Repo | License | Code reuse in commercial LeadRail? |
-|------|---------|-------------------------------------|
-| adclaw | Apache-2.0 | ✅ Yes (design + skills content + patterns) |
-| opensoul | MIT | ✅ Yes |
-| pendpost | MIT | ✅ Yes |
-| MARA | MIT | ✅ Yes (patterns only; agents are stubs) |
-| digital-marketing-pro | MIT | ✅ Yes (163 skills + 24 agents) |
-| marketing-os-starter | MIT | ✅ Yes (frameworks/hooks) |
-| kai-cmo-harness | MIT (plugin/knowledge) + **Elastic-2.0** (hosted infra) | ⚠️ MIT subset only — skip `app-meetkai/`, `daemon/`, `agent/`, `gateway/`, `kai/` |
-| evc | MIT | ⚠️ Skip — CLI-bound prompt bundles, low ROI |
-| helio | **AGPL-3.0** | ❌ Inspiration only, no code |
-| socialflow | **None** | ❌ No code |
-| fromHello | AGPL-3.0 | ❌ No code exists |
+| Repo | Upstream | License | Code reuse in commercial LeadRail? |
+|------|----------|---------|-------------------------------------|
+| adclaw | `Citedy/adclaw` | Apache-2.0 | ✅ Yes (design + skills content + patterns) |
+| opensoul | `iamevandrake/opensoul` | MIT | ✅ Yes |
+| pendpost | `pendpost/pendpost` | MIT | ✅ Yes |
+| MARA | `KEITH-GJINO/MARA` | MIT | ✅ Yes (patterns only; agents are stubs) |
+| digital-marketing-pro | `indranilbanerjee/digital-marketing-pro` | MIT | ✅ Yes (163 skills + 24 agents) |
+| marketing-os-starter | `ericosiu/marketing-os-starter` | MIT | ✅ Yes (frameworks/hooks) |
+| kai-cmo-harness | `cgallic/kai-cmo-harness` | MIT (plugin/knowledge) + **Elastic-2.0** (hosted infra) | ⚠️ MIT subset only — see §1a |
+| evc | **not located** | MIT | ⚠️ Skip — CLI-bound prompt bundles, low ROI |
+| helio | **not located** | **AGPL-3.0** | ❌ Inspiration only, no code |
+| socialflow | `inbharatai/SocialFlow` | **None** | ❌ No code |
+| fromHello | `Synapsr/fromHello` | AGPL-3.0 | ❌ No code exists |
+
+### 1a. Verification log — 2026-08-16
+
+Upstream coordinates and licences re-confirmed directly against GitHub (the
+original clones at `/home/.z/workspaces/.../oss-repos/` are gone, which is what
+blocked packet 5.1). Corrections to the original research:
+
+- **`SKILL.md` counts are higher than estimated.** Measured via the git trees
+  API: adclaw **122**, digital-marketing-pro **163**, kai-cmo-harness **245**
+  (229 inside MIT subtrees), marketing-os-starter **5**.
+- **kai-cmo-harness is ~2x what §2d recorded** (it said 57 skills). Its
+  `harness/` (115) and `plugins/` (114) trees are the SAME skills materialised
+  twice — the installer copies `harness/` into `plugins/` — so treat unique as
+  **~115**, not 229. `legacy/` (16) is ELv2 and excluded.
+- **Its MIT map is broader than recorded here.** Per its own `LICENSING.md`, MIT
+  covers `harness/`, `knowledge/`, `docs/`, `plugins/`,
+  `scripts/quality_gates/`, `scripts/reddit_monitor/`. The generating rule is
+  "anything the plugin or `install.sh` copies onto a user's machine is MIT".
+  Elastic-2.0 governs everything else — the §1 skip list is correct and extends
+  to `lib/`, `tools/`, `bin/`, `deploy/`, `evals/`, `site/`, `prod-static/` and
+  the rest of `scripts/`. It explicitly permits redistributing modified skills
+  "including inside a paid product of your own", which is exactly this use.
+- **Realistic harvest ≈ 405 unique permissive skills** before cross-repo dedupe,
+  against the ~350 estimated in §2d. LeadRail's registry currently has 18.
+- **fromHello still has zero code** — 26 KB, no detected language, last push
+  2026-06-01, contents are README/LICENSE/CONTRIBUTING/SECURITY/assets. The §0
+  assessment holds unchanged.
+- **helio and evc could not be located.** Both names collide with far more
+  popular unrelated projects. This costs nothing: helio was already
+  inspiration-only (AGPL-3.0 would force LeadRail open-source) and its journey
+  DAG is meant to be clean-roomed per §2c; evc is already marked skip. Drop both
+  from the roster unless the original URLs resurface.
+- **adclaw lineage:** it derives from CoPaw by AgentScope, and its skills
+  auto-update from a Skills Hub. Harvest the markdown CONTENT only — never the
+  auto-update mechanism. See the supply-chain note at the top of
+  `lib/skills/registry.ts`, which already states this policy.
 
 ---
 
