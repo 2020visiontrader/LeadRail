@@ -1,9 +1,9 @@
 import { withApi, requireSession, badRequest } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/db';
-import { runAgent, agentConfigured } from '@/lib/agent/loop';
+import { runAgent, agentConfigured, generateCarryover } from '@/lib/agent/loop';
 import { loadAgentContext } from '@/lib/agent/context';
-import { saveConversation, loadCarryover, loadTranscript } from '@/lib/agent/memory';
+import { saveConversation, loadCarryover, loadTranscript, ingestCarryoverFacts } from '@/lib/agent/memory';
 import { parseMentions } from '@/lib/agent/personas';
 
 export const dynamic = 'force-dynamic';
@@ -95,6 +95,16 @@ async function POST__impl(request: NextRequest) {
     title: typeof message === 'string' ? message.slice(0, 80) : undefined,
     transcript: result.transcript,
   });
+
+  // Passive memory extraction (Packet 1.1). Gated to a COMPACTION event, not
+  // every turn: once per long chat is the right cadence, per-message would
+  // flood agent_memory with task chatter. Fire-and-forget — never awaited, so
+  // it cannot delay or fail the response; recordFact applies the secret guard.
+  if (result.compaction === 'soft' || result.compaction === 'hard') {
+    void generateCarryover(result.transcript)
+      .then((memo) => ingestCarryoverFacts(session.accountId, memo))
+      .catch(() => { /* best-effort */ });
+  }
 
   return NextResponse.json({
     status: result.status,

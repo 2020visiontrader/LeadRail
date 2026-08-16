@@ -6,6 +6,7 @@ import { OUTREACH_CAPABILITIES } from './outreach';
 import { CRM_CAPABILITIES } from './crm';
 import { KNOWLEDGE_CAPABILITIES } from './knowledge';
 import { CREATIVE_CAPABILITIES } from './creative';
+import { MEMORY_CAPABILITIES } from './memory';
 import { METRICS_BY_NAME } from './metrics-port';
 
 const ALL: Capability[] = [
@@ -16,6 +17,7 @@ const ALL: Capability[] = [
   ...CRM_CAPABILITIES,
   ...KNOWLEDGE_CAPABILITIES,
   ...CREATIVE_CAPABILITIES,
+  ...MEMORY_CAPABILITIES,
 ];
 
 // CATALOG ORDER — the exact key order of the original TOOLS object literal in
@@ -33,6 +35,9 @@ const CATALOG_ORDER: string[] = [
   'draftOutreach', 'sendEmail', 'listSequences', 'enrollInSequence', 'listStages',
   'createDeal', 'moveDeal', 'addNote', 'updateLeadStatus', 'listTags', 'tagLead',
   'getPersona', 'updatePersona', 'generateAdCopy',
+  // --- appended by Packet 1.1 (durable memory). Appended, never sorted: the
+  // 37 names above must keep their exact order or the prompt catalog changes.
+  'rememberFact', 'forgetFact', 'listFacts',
 ];
 
 const byName = new Map(ALL.map((c) => [c.name, c]));

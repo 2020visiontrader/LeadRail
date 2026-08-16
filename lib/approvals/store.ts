@@ -48,7 +48,10 @@ function toSafe(row: ApprovalRow): SafeApproval {
 // Arg keys that are secret-ish and must never be shown to a client, even in
 // the "redacted" view. Matches the conventions already used for provider keys
 // / MCP auth headers elsewhere in the codebase.
-const SECRET_KEY_PATTERN = /token|password|api[_-]?key|secret|authorization|^key$/i;
+// Exported (Packet 1.1) so durable memory reuses the SAME heuristic rather than
+// keeping a second, drifting copy — lib/agent/memory.ts refuses to persist a
+// fact matching it. Read-only use: no /g flag, so there is no shared lastIndex.
+export const SECRET_KEY_PATTERN = /token|password|api[_-]?key|secret|authorization|^key$/i;
 
 /** Redact obvious secret-ish keys from a proposal's args for safe display.
  * Shallow + one level of nested objects/arrays — proposal args are simple

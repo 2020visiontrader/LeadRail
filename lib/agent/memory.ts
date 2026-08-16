@@ -12,6 +12,7 @@
 
 import { supabase } from '@/lib/db';
 import type { ChatMessage } from '@/lib/ai/router';
+import { SECRET_KEY_PATTERN } from '@/lib/approvals/store';
 import { embedPassage, embedQuery, toPgVector } from './embeddings';
 
 /** Cheap token estimate (~4 chars/token) over a transcript. */
@@ -129,7 +130,39 @@ export interface MemoryFact {
   object?: string;
 }
 
+/** Longest plausible durable fact. Anything longer is a pasted blob, not a
+ *  fact worth carrying into every future chat. */
+export const MAX_FACT_LENGTH = 500;
+
+// A long unbroken alphanumeric run is what an API key, JWT segment, or bearer
+// token looks like; ordinary prose never contains one. Paired with
+// SECRET_KEY_PATTERN (the same heuristic redactArgs uses in
+// lib/approvals/store.ts) so the two secret checks stay in one place.
+const OPAQUE_TOKEN_PATTERN = /[A-Za-z0-9_\-]{32,}/;
+
+/**
+ * Why this text must NOT be written to durable memory, or null if it's fine.
+ *
+ * Durable memory is read back into EVERY future prompt for this account, so a
+ * credential landing here would be re-surfaced indefinitely. Rejection is
+ * deliberately blunt: losing a fact that merely mentions the word "password" is
+ * cheaper than persisting one real key.
+ */
+export function factRejectionReason(fact: string | undefined | null): string | null {
+  const t = (fact || '').trim();
+  if (!t) return 'empty';
+  if (t.length > MAX_FACT_LENGTH) return `too long (max ${MAX_FACT_LENGTH} characters)`;
+  if (SECRET_KEY_PATTERN.test(t)) return 'looks like a credential — secrets are never remembered';
+  if (OPAQUE_TOKEN_PATTERN.test(t)) return 'contains what looks like a token or key — secrets are never remembered';
+  return null;
+}
+
 /** Record a durable fact about the account. Best-effort.
+ *
+ * Guarded (Packet 1.1): a fact that looks like a secret, or exceeds
+ * MAX_FACT_LENGTH, is dropped rather than stored. The guard lives HERE, at the
+ * write, because there are two ingestion paths — the rememberFact capability
+ * and passive carryover extraction — and only one of them is model-mediated.
  *
  * Embeds the fact (migration 036) so it's recallable by meaning. Embedding is
  * best-effort and never blocks: if it fails, the row is still written and stays
@@ -137,7 +170,7 @@ export interface MemoryFact {
  * backfill re-embeds it. */
 export async function recordFact(accountId: string, f: MemoryFact): Promise<void> {
   const fact = (f.fact || '').trim();
-  if (!fact) return;
+  if (factRejectionReason(fact)) return;
   const row: Record<string, any> = {
     account_id: accountId,
     fact,
@@ -152,6 +185,63 @@ export async function recordFact(accountId: string, f: MemoryFact): Promise<void
   try {
     await supabase.from('agent_memory').insert(row);
   } catch { /* best-effort */ }
+}
+
+export interface StoredFact {
+  id: string;
+  fact: string;
+  subject: string | null;
+  predicate: string | null;
+  object: string | null;
+  created_at: string | null;
+}
+
+/** The most recent durable facts for this account, newest first, so the user
+ *  can audit what the assistant remembers. Tenant-scoped in the query. */
+export async function listFacts(accountId: string, limit = 25): Promise<StoredFact[]> {
+  const n = Math.min(Math.max(Math.trunc(limit) || 25, 1), 100);
+  try {
+    const { data } = await supabase.from('agent_memory')
+      .select('id, fact, subject, predicate, object, created_at')
+      .eq('account_id', accountId)
+      .order('updated_at', { ascending: false })
+      .limit(n);
+    return (data || []) as StoredFact[];
+  } catch {
+    return [];
+  }
+}
+
+/** Delete one remembered fact. Returns whether a row was actually removed —
+ *  false for an unknown id AND for an id belonging to another account, which
+ *  are indistinguishable to the caller by design (no existence oracle). The
+ *  account_id filter is in the query, never applied after the fetch. */
+export async function deleteFact(accountId: string, id: string): Promise<boolean> {
+  if (!id) return false;
+  try {
+    const { data } = await supabase.from('agent_memory')
+      .delete().eq('id', id).eq('account_id', accountId)
+      .select('id');
+    return Array.isArray(data) && data.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Passive ingestion: promote a carryover memo's established_facts into durable
+ *  memory. Best-effort and per-fact isolated — recordFact already swallows its
+ *  own errors and applies the secret/length guard, so a bad entry drops instead
+ *  of aborting the rest. Callers fire this and forget it; it must never be
+ *  awaited on a request's critical path. */
+export async function ingestCarryoverFacts(accountId: string, carryover: CarryoverMemo | null): Promise<void> {
+  const facts = carryover?.established_facts;
+  if (!Array.isArray(facts) || !facts.length) return;
+  for (const f of facts.slice(0, 20)) {
+    if (typeof f !== 'string') continue;
+    try {
+      await recordFact(accountId, { fact: f });
+    } catch { /* best-effort */ }
+  }
 }
 
 /**

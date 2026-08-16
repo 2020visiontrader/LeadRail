@@ -1,9 +1,9 @@
 import { requireSession, badRequest } from '@/lib/http';
 import { NextRequest } from 'next/server';
 import { supabase } from '@/lib/db';
-import { runAgentStream, agentConfigured, type AgentEvent } from '@/lib/agent/loop';
+import { runAgentStream, agentConfigured, generateCarryover, type AgentEvent } from '@/lib/agent/loop';
 import { loadAgentContext } from '@/lib/agent/context';
-import { saveConversation, loadCarryover, loadTranscript } from '@/lib/agent/memory';
+import { saveConversation, loadCarryover, loadTranscript, ingestCarryoverFacts } from '@/lib/agent/memory';
 import { parseMentions } from '@/lib/agent/personas';
 import type { ChatMessage } from '@/lib/ai/router';
 
@@ -67,6 +67,10 @@ export async function POST(request: NextRequest) {
     async start(controller) {
       const send = (e: any) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(e)}\n\n`));
       let finalTranscript: ChatMessage[] | undefined;
+      // Set from the trailing compaction_suggested event (emitted after `final`),
+      // so the finally block below knows whether this turn hit a compaction
+      // threshold. Null on every ordinary turn.
+      let compaction: 'soft' | 'hard' | null = null;
       try {
         await runAgentStream(
           { accountId: session.accountId, message, approve, transcript, agentContext, carryover, brandContext: brandName ? { name: brandName } : undefined, personaId, personaMentions, requestedBy: session.email, conversationId },
@@ -75,6 +79,7 @@ export async function POST(request: NextRequest) {
             // including `final_delta` (a progressive preview of the answer being
             // written), passes straight through unfiltered and unpersisted.
             if (e.type === 'final' || e.type === 'needs_approval') finalTranscript = e.transcript;
+            if (e.type === 'compaction_suggested') compaction = e.level;
             send(e);
           },
         );
@@ -90,6 +95,16 @@ export async function POST(request: NextRequest) {
             transcript: finalTranscript,
           });
           send({ type: 'conversation', conversationId: savedId ?? conversationId });
+
+          // Passive memory extraction (Packet 1.1) — mirrors /api/agent. Only
+          // on a compaction event (once per long chat, not per message), and
+          // fire-and-forget: the stream closes immediately below regardless.
+          if (compaction === 'soft' || compaction === 'hard') {
+            const t = finalTranscript;
+            void generateCarryover(t)
+              .then((memo) => ingestCarryoverFacts(session.accountId, memo))
+              .catch(() => { /* best-effort */ });
+          }
         }
         controller.enqueue(encoder.encode('data: [DONE]\n\n'));
         controller.close();
