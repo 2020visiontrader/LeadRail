@@ -26,8 +26,8 @@
 import type { ChatMessage } from './opencode';
 import * as opencode from './opencode';
 import { zoAskConfigured, zoAskText, zoAskChat } from './zoask';
-import { nimConfigured, nimText, nimChat } from './nim';
-import { registryConfigured, resolveChain, resolveChainForTask, callModel, type ResolvedModel } from './providers';
+import { nimConfigured, nimText, nimChat, nimStreamChat } from './nim';
+import { registryConfigured, resolveChain, resolveChainForTask, callModel, callModelStream, type ResolvedModel } from './providers';
 
 export type { ChatMessage };
 
@@ -176,6 +176,66 @@ export async function generateChat(opts: {
   if (nimConfigured()) {
     try {
       return await nimChat(opts);
+    } catch (err: any) {
+      lastErr = err;
+    }
+  }
+  throw lastErr || new Error('No AI tier configured');
+}
+
+/**
+ * Streaming twin of `generateChat` (Packet 8.1c). Pure addition — `generateChat`
+ * is untouched.
+ *
+ * Tries the SAME layers in the SAME order as `generateChat`: the registry chain
+ * first (honouring `task`/`preferTier` via `resolveChainForTask`, and
+ * `accountId`/`modelId`) through the shared `tryRegistry` helper, then the
+ * hardcoded Zo Ask -> OpenCode -> NIM ladder. Errors behave identically: a
+ * failing tier falls through to the next, and if every tier fails the last
+ * error is thrown.
+ *
+ * Resolves with the COMPLETE text, exactly as `generateChat` would. Tiers that
+ * cannot stream (Zo Ask, Gemini) invoke `onDelta` exactly once with the whole
+ * answer, so the caller never has to know which kind it got.
+ *
+ * IMPORTANT — deltas are a PROGRESSIVE PREVIEW, not the truth. A tier can emit
+ * some deltas and THEN fail, at which point we fall through to the next tier and
+ * the already-emitted text is stale. Un-emitting it is impossible on a live
+ * stream, so the contract is the other way round: the caller MUST treat the
+ * returned string (and, downstream, the `final` event's `message`) as
+ * authoritative and OVERWRITE anything it accumulated from deltas.
+ */
+export async function streamChat(
+  opts: Parameters<typeof generateChat>[0],
+  onDelta: (chunk: string) => void,
+): Promise<string> {
+  const registryResult = await tryRegistry(opts.accountId, opts.modelId, 'chat', (resolved) =>
+    callModelStream(resolved, { system: opts.system, messages: opts.messages, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, maxOutputCeiling: opts.maxOutputCeiling }, onDelta),
+    opts.task, opts.preferTier,
+  );
+  if (registryResult) return registryResult;
+
+  let lastErr: any = null;
+  if (zoAskConfigured()) {
+    try {
+      // Zo Ask has no streaming transport — emit the whole answer as one delta.
+      const text = await zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel });
+      if (text) onDelta(text);
+      return text;
+    } catch (err: any) {
+      lastErr = err;
+    }
+  }
+  if (opencode.opencodeConfigured()) {
+    try {
+      return await opencode.streamChat(opts, onDelta);
+    } catch (err: any) {
+      lastErr = err;
+    }
+  }
+  if (nimConfigured()) {
+    try {
+      return await nimStreamChat(opts, onDelta);
     } catch (err: any) {
       lastErr = err;
     }

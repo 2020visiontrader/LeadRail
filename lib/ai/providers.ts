@@ -21,7 +21,7 @@ import { supabase, dbReady } from '@/lib/db';
 import { decryptSecret, encryptSecret, maskSecret, vaultConfigured } from './crypto';
 import * as opencode from './opencode';
 import { zoAskConfigured, zoAskText, zoAskChat } from './zoask';
-import { nimConfigured, nimText, nimChat } from './nim';
+import { nimConfigured, nimText, nimChat, nimStreamChat } from './nim';
 import * as gemini from './gemini';
 
 export type ProviderKind = 'openai-compatible' | 'anthropic' | 'zoask' | 'opencode' | 'nim' | 'gemini' | 'custom';
@@ -553,6 +553,162 @@ async function callAnthropic(provider: AiProviderRow, model: AiModelRow, opts: C
   const json = await res.json();
   const parts = Array.isArray(json?.content) ? json.content : [];
   return parts.map((p: any) => (typeof p?.text === 'string' ? p.text : '')).join('').trim();
+}
+
+// ---------------------------------------------------------------------------
+// Streaming (Packet 8.1c) — pure addition. callModel() above is untouched.
+// ---------------------------------------------------------------------------
+
+/**
+ * Streaming twin of `callModel`. Forwards each token delta to `onDelta` and
+ * resolves with the COMPLETE text, so a caller can treat it exactly like
+ * `callModel` and ignore `onDelta` entirely.
+ *
+ * Kinds that cannot stream (zoask, gemini) fall back to a buffered `callModel`
+ * and emit the whole answer as ONE delta — the caller must not care which
+ * happened.
+ */
+export async function callModelStream(
+  resolved: ResolvedModel,
+  opts: CallModelOpts,
+  onDelta: (chunk: string) => void,
+): Promise<string> {
+  const { provider, model } = resolved;
+  const isChat = Array.isArray(opts.messages);
+  // Same budget resolution as callModel (migration 038).
+  opts = { ...opts, maxOutputTokens: resolveMaxOutputTokens(resolved, opts.maxOutputTokens, opts.maxOutputCeiling) };
+
+  switch (provider.kind) {
+    case 'opencode': {
+      if (!opencode.opencodeConfigured()) throw Object.assign(new Error('OpenCode is not connected'), { code: 'not_configured' });
+      if (!isChat) break; // text mode has no streaming variant; buffer below
+      return opencode.streamChat(
+        { system: opts.system, messages: opts.messages as any, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, model: model.model_id },
+        onDelta,
+      );
+    }
+    case 'nim': {
+      if (!nimConfigured()) throw Object.assign(new Error('NIM is not connected'), { code: 'not_configured' });
+      if (!isChat) break;
+      return nimStreamChat(
+        { system: opts.system, messages: opts.messages!, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens },
+        onDelta,
+      );
+    }
+    case 'openai-compatible':
+    case 'custom':
+      return streamOpenAiCompatible(provider, model, opts, isChat, onDelta);
+    case 'anthropic':
+      return streamAnthropic(provider, model, opts, isChat, onDelta);
+    default:
+      break; // zoask, gemini, and anything unknown: buffered path below
+  }
+
+  // Non-streaming tier: produce the same result, delivered as one delta.
+  const text = await callModel(resolved, opts);
+  if (text) onDelta(text);
+  return text;
+}
+
+async function streamOpenAiCompatible(
+  provider: AiProviderRow,
+  model: AiModelRow,
+  opts: CallModelOpts,
+  isChat: boolean,
+  onDelta: (chunk: string) => void,
+): Promise<string> {
+  const key = decryptProviderKey(provider);
+  const base = (provider.base_url || 'https://api.openai.com/v1').replace(/\/$/, '');
+  const messages: { role: string; content: string }[] = [];
+  if (opts.system) messages.push({ role: 'system', content: opts.system });
+  if (isChat) {
+    for (const m of opts.messages!) if (m.content?.trim()) messages.push({ role: m.role, content: m.content });
+  } else {
+    messages.push({ role: 'user', content: opts.prompt || '' });
+  }
+  const res = await fetch(`${base}/chat/completions`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: model.model_id,
+      messages,
+      temperature: opts.temperature ?? 0.7,
+      max_tokens: opts.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+      stream: true,
+    }),
+  });
+  if (!res.ok) {
+    const detail = (await res.text().catch(() => '')).slice(0, 300);
+    const err: any = new Error(`${provider.name} failed (${res.status})`);
+    err.code = res.status === 401 || res.status === 403 ? 'auth' : 'upstream';
+    err.detail = detail;
+    throw err;
+  }
+  if (!res.body) {
+    const err: any = new Error(`${provider.name} returned no response stream`);
+    err.code = 'upstream';
+    throw err;
+  }
+  let text = '';
+  await opencode.readSseDeltas(res.body, (evt) => {
+    const chunk = evt?.choices?.[0]?.delta?.content;
+    if (typeof chunk === 'string' && chunk) { text += chunk; onDelta(chunk); }
+  });
+  return text.trim();
+}
+
+async function streamAnthropic(
+  provider: AiProviderRow,
+  model: AiModelRow,
+  opts: CallModelOpts,
+  isChat: boolean,
+  onDelta: (chunk: string) => void,
+): Promise<string> {
+  const key = decryptProviderKey(provider);
+  const base = (provider.base_url || 'https://api.anthropic.com/v1').replace(/\/$/, '');
+  const messages: { role: 'user' | 'assistant'; content: string }[] = [];
+  if (isChat) {
+    for (const m of opts.messages!) if (m.content?.trim()) messages.push({ role: m.role, content: m.content });
+  } else {
+    messages.push({ role: 'user', content: opts.prompt || '' });
+  }
+  const body: Record<string, any> = {
+    model: model.model_id,
+    max_tokens: opts.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+    messages,
+    stream: true,
+  };
+  if (opts.system) body.system = opts.system;
+  if (opts.temperature != null) body.temperature = opts.temperature;
+
+  const res = await fetch(`${base}/messages`, {
+    method: 'POST',
+    headers: {
+      'x-api-key': key,
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const detail = (await res.text().catch(() => '')).slice(0, 300);
+    const err: any = new Error(`${provider.name} failed (${res.status})`);
+    err.code = res.status === 401 || res.status === 403 ? 'auth' : 'upstream';
+    err.detail = detail;
+    throw err;
+  }
+  if (!res.body) {
+    const err: any = new Error(`${provider.name} returned no response stream`);
+    err.code = 'upstream';
+    throw err;
+  }
+  let text = '';
+  await opencode.readSseDeltas(res.body, (evt) => {
+    if (evt?.type !== 'content_block_delta') return;
+    const chunk = evt?.delta?.text;
+    if (typeof chunk === 'string' && chunk) { text += chunk; onDelta(chunk); }
+  });
+  return text.trim();
 }
 
 /** Lightweight connectivity probe used by the "test connection" UI action —

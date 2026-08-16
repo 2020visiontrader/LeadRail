@@ -436,6 +436,12 @@ export type AgentEvent =
   | { type: 'thought'; text: string }
   | { type: 'tool'; tool: string; title: string; args: Record<string, any> }
   | { type: 'observation'; text: string; ok: boolean; tool?: string; metrics?: Record<string, number> }
+  // Progressive preview of the compose pass, emitted token-by-token while the
+  // answer is being written. Carries NO transcript and is NOT authoritative:
+  // the `final` event's `message` is the truth and overwrites whatever the
+  // client accumulated from these (a mid-stream compose failure falls back to
+  // the route pass's draft, which will not match the deltas already sent).
+  | { type: 'final_delta'; text: string }
   | { type: 'final'; message: string; transcript: ChatMessage[]; tokenEstimate?: number }
   | { type: 'needs_approval'; proposal: AgentProposal; message: string; transcript: ChatMessage[] }
   | { type: 'compaction_suggested'; level: 'soft' | 'hard'; tokenEstimate: number }
@@ -503,10 +509,15 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
       let message = draft;
       if (AGENT_COMPOSE) {
         emit({ type: 'thought', text: 'Writing up the answer…' });
-        message = await composeAnswer({
-          accountId, userMessage: input.message, draft, transcript: messages,
-          agentContext: input.agentContext, personaBlock,
-        });
+        message = await composeAnswer(
+          {
+            accountId, userMessage: input.message, draft, transcript: messages,
+            agentContext: input.agentContext, personaBlock,
+          },
+          // Stream the answer to the UI as it is written. The `final` event
+          // below still carries the complete, authoritative message.
+          (chunk) => emit({ type: 'final_delta', text: chunk }),
+        );
       }
       const tokenEstimate = estimateTokens(messages);
       emit({ type: 'final', message, transcript: messages, tokenEstimate });

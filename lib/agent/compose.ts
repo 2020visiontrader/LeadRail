@@ -13,12 +13,17 @@
  * draft verbatim, so a compose outage degrades to today's output, never to an error.
  */
 
-import { generateChat, type ChatMessage } from '@/lib/ai/router';
+import { generateChat, streamChat, type ChatMessage } from '@/lib/ai/router';
 
 // Upper bound on the compose budget. The model's own ceiling is used when it is
 // lower; this only stops an enormous-output model from being asked for far more
 // than a chat answer ever needs.
 const COMPOSE_CEILING = Number(process.env.AGENT_COMPOSE_CEILING || 8000);
+
+// Second, independent kill switch (Packet 8.1c). AGENT_COMPOSE=0 disables the
+// compose pass entirely; AGENT_COMPOSE_STREAM=0 keeps compose but takes the
+// buffered path, so `onDelta` is ignored and no final_delta events are emitted.
+const AGENT_COMPOSE_STREAM = process.env.AGENT_COMPOSE_STREAM !== '0';
 
 export interface ComposeInput {
   accountId: string;
@@ -36,15 +41,25 @@ export interface ComposeInput {
 
 /** Rewrite the route pass's draft into the answer the user actually reads.
  *  Falls back to the draft verbatim on ANY failure — a compose outage must
- *  degrade to today's output, never to an error. */
-export async function composeAnswer(input: ComposeInput): Promise<string> {
+ *  degrade to today's output, never to an error.
+ *
+ *  Pass `onDelta` to stream the answer as it is written. Deltas are a
+ *  PROGRESSIVE PREVIEW only: the returned string is authoritative and the
+ *  caller must overwrite whatever it accumulated (a mid-stream failure returns
+ *  the draft, which will not match the deltas already emitted). With no
+ *  `onDelta` — or with AGENT_COMPOSE_STREAM=0 — this is byte-identical to the
+ *  buffered path. */
+export async function composeAnswer(
+  input: ComposeInput,
+  onDelta?: (chunk: string) => void,
+): Promise<string> {
   try {
     const systemPrompt = buildSystemPrompt(input);
     const userTurn = buildUserTurn(input);
 
-    const response = await generateChat({
+    const callOpts = {
       system: systemPrompt,
-      messages: [{ role: 'user', content: userTurn }],
+      messages: [{ role: 'user' as const, content: userTurn }],
       temperature: 0.6,
       // No fixed budget. maxOutputTokens is deliberately OMITTED so the answer
       // length follows the capability of whichever model actually gets selected
@@ -55,10 +70,14 @@ export async function composeAnswer(input: ComposeInput): Promise<string> {
       maxOutputCeiling: COMPOSE_CEILING,
       accountId: input.accountId,
       task: 'draft',
-      preferTier: 'heavy',
-    });
+      preferTier: 'heavy' as const,
+    };
 
-    // generateChat resolves to a string; no extraction layer needed.
+    const response = onDelta && AGENT_COMPOSE_STREAM
+      ? await streamChat(callOpts, onDelta)
+      : await generateChat(callOpts);
+
+    // Both resolve to a string; no extraction layer needed.
     if (!response || !response.trim()) return input.draft;
     return response.trim();
   } catch {

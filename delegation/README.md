@@ -32,13 +32,13 @@ Route by *failure cost*, not size. Anything touching `account_id`, approval stat
 
 | Packet | Title | Tier | Status |
 |---|---|---|---|
-| 0.1 | Gate execution on approval state | A | ☐ |
+| 0.1 | Gate execution on approval state | A | ☑ merged |
 | 0.2 | Stop trusting the client transcript | A | ☐ |
 | 0.3 | Close the MCP server bypass | A | ☐ |
 | 1.1 | Memory ingestion path (`rememberFact`) | B | ☐ |
 | 1.2 | Conversation persistence + compaction | B | ☐ |
 | 1.3 | Small correctness fixes | C | ☐ |
-| 2.1 | Capability Registry core | A | ☐ spec ready |
+| 2.1 | Capability Registry core | A | ☑ merged |
 | 2.2 | Domain backfill (15 domains, parallel) | B | ☐ |
 | 2.2-S | Social capabilities | A | ☐ spec ready |
 | 2.3 | API=MCP parity test | B | ☐ |
@@ -52,6 +52,9 @@ Route by *failure cost*, not size. Anything touching `account_id`, approval stat
 | 7.1 | OAuth: LinkedIn / TikTok / X (×3) | A | ☐ |
 | 7.2 | Per-account Buffer/GHL credentials | A | ☐ |
 | 7.3 | Automation runner | A | ☐ do LAST |
+| 8.1 | Split the loop: route ≠ compose | A | ☑ merged |
+| 8.1b | Output budget follows the model | B | ☑ merged |
+| 8.2 | Stream the compose pass | B | ☑ merged |
 
 ## Order to actually run
 

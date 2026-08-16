@@ -103,6 +103,149 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
   return text;
 }
 
+// ---------------------------------------------------------------------------
+// Streaming (Packet 8.1c) — pure addition. `complete()` above is untouched.
+// ---------------------------------------------------------------------------
+
+/**
+ * Shared SSE line reader for OpenAI-compatible `stream: true` responses.
+ * Parses `data: ` lines, ignores `[DONE]` and non-data lines, and handles
+ * frames split across network chunk boundaries.
+ *
+ * It lives in this module rather than in router.ts because opencode.ts is a
+ * dependency-free leaf that BOTH router.ts and providers.ts already import;
+ * hosting it in router.ts would make providers.ts import router.ts, which
+ * router.ts already imports (a circular import).
+ */
+export async function readSseDeltas(
+  body: ReadableStream<Uint8Array>,
+  onEvent: (payload: any) => void,
+): Promise<void> {
+  const reader = body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+
+  const handleLine = (raw: string) => {
+    const line = raw.trim();
+    if (!line.startsWith('data:')) return;
+    const payload = line.slice(5).trim();
+    if (!payload || payload === '[DONE]') return;
+    try { onEvent(JSON.parse(payload)); } catch { /* skip a malformed frame */ }
+  };
+
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let idx: number;
+    while ((idx = buf.indexOf('\n')) >= 0) {
+      handleLine(buf.slice(0, idx));
+      buf = buf.slice(idx + 1);
+    }
+  }
+  if (buf) handleLine(buf);
+}
+
+/** Streaming twin of `complete()`. Same request shape, same error shapes, same
+ *  timeout/AbortController pattern (the timer guards the response HEADERS, as
+ *  in `complete()`; the body is then read to completion).
+ *
+ *  Deliberately does NOT reproduce `complete()`'s empty-content self-heal
+ *  retry: re-running a call that has already emitted deltas would duplicate
+ *  visible output. An empty stream throws the same `upstream` error shape so
+ *  the router simply falls through to the next tier. */
+async function completeStream(
+  messages: OpenAIMessage[],
+  temperature: number,
+  maxTokens: number,
+  model: string | undefined,
+  onDelta: (chunk: string) => void,
+): Promise<string> {
+  requireKey();
+  const useModel = model || TEXT_MODEL;
+  const body: Record<string, any> = {
+    model: useModel,
+    messages,
+    temperature,
+    max_tokens: maxTokens,
+    stream: true,
+  };
+  // Same DeepSeek rule as complete(): thinking ON burns the whole budget on
+  // hidden reasoning_content and returns nothing usable.
+  if (/deepseek/i.test(useModel)) body.thinking = { type: 'disabled' };
+
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } catch (e: any) {
+    const err: any = new Error(
+      e?.name === 'AbortError' ? `OpenCode timed out after ${TIMEOUT_MS}ms` : `OpenCode request failed`,
+    );
+    err.code = 'upstream';
+    err.detail = String(e?.message || e).slice(0, 300);
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!res.ok) {
+    const detail = (await res.text().catch(() => '')).slice(0, 300);
+    const err: any = new Error(`OpenCode failed (${res.status})`);
+    err.code = res.status === 401 || res.status === 403 ? 'auth' : 'upstream';
+    err.detail = detail;
+    throw err;
+  }
+  if (!res.body) {
+    const err: any = new Error('OpenCode returned no response stream');
+    err.code = 'upstream';
+    throw err;
+  }
+
+  let text = '';
+  await readSseDeltas(res.body, (evt) => {
+    const chunk = evt?.choices?.[0]?.delta?.content;
+    if (typeof chunk === 'string' && chunk) {
+      text += chunk;
+      onDelta(chunk);
+    }
+  });
+
+  const out = text.trim();
+  if (!out) {
+    const err: any = new Error('OpenCode returned an empty stream');
+    err.code = 'upstream';
+    throw err;
+  }
+  return out;
+}
+
+/** Streaming twin of `generateChat`. Forwards each token delta to `onDelta`
+ *  and resolves with the COMPLETE text. */
+export async function streamChat(
+  opts: {
+    system?: string;
+    messages: ChatMessage[];
+    temperature?: number;
+    maxOutputTokens?: number;
+    model?: string;
+  },
+  onDelta: (chunk: string) => void,
+): Promise<string> {
+  const messages: OpenAIMessage[] = [];
+  if (opts.system) messages.push({ role: 'system', content: opts.system });
+  for (const m of opts.messages) {
+    if (m.content?.trim()) messages.push({ role: m.role, content: m.content });
+  }
+  return completeStream(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? 2048, opts.model, onDelta);
+}
+
 /** Generate text. Returns the model's plain-text completion. Pass `model` to
  * override the default (Hermes routes different tasks to different Go models). */
 export async function generateText(opts: {

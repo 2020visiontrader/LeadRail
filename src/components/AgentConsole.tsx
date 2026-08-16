@@ -105,6 +105,16 @@ export default function AgentConsole({ brandId, onSteps }: { brandId?: string; o
   }
 
   function handleEvent(e: any) {
+    // Progressive preview of the answer being written. Handled BEFORE the
+    // pending-step resolution below on purpose: the "Writing up the answer…"
+    // thought must stay pending (spinning) until `final` arrives, so a delta
+    // must not trip prevPending. `final` then OVERWRITES t.text with the
+    // authoritative message — which is what makes a mid-stream compose failure
+    // (fallback to the route pass's draft) render correctly.
+    if (e.type === 'final_delta') {
+      patchAssistant((t) => { t.text = (t.text || '') + String(e.text ?? ''); });
+      return;
+    }
     patchAssistant((t) => {
       // resolve the previous pending step
       const prevPending = [...t.steps].reverse().find((s: Step) => 'done' in s && !s.done) as Step | undefined;
