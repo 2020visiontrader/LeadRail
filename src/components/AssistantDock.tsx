@@ -3,9 +3,6 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import { usePathname } from 'next/navigation';
 import AgentConsole from '@/components/AgentConsole';
 import Button from '@/components/Button';
-import { apiGet } from '@/lib/api';
-
-interface Venture { id: string; name: string }
 
 type DockMode = 'hidden' | 'docked';
 const STORAGE_KEY = 'leadrail_dock';
@@ -40,8 +37,6 @@ function clampWidth(w: number): number {
 export default function AssistantDock() {
   const pathname = usePathname();
   const [mode, setMode] = useState<DockMode>('hidden');
-  const [ventures, setVentures] = useState<Venture[]>([]);
-  const [brandId, setBrandId] = useState<string | undefined>(undefined);
 
   const [width, setWidth] = useState<number>(DEFAULT_WIDTH);
   const dragOrigin = useRef<{ x: number; w: number } | null>(null);
@@ -68,13 +63,6 @@ export default function AssistantDock() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
-
-  // Same venture-fetch pattern as app/assistant/page.tsx.
-  useEffect(() => {
-    apiGet<{ ventures: Venture[] }>('/api/ventures')
-      .then((d) => { const vs = d.ventures || []; setVentures(vs); setBrandId(vs[0]?.id); })
-      .catch(() => setVentures([]));
   }, []);
 
   // Live pointer-drag resize on the dock's right edge. Ref holds the drag origin
@@ -108,15 +96,6 @@ export default function AssistantDock() {
     >
       <div className="flex h-[52px] shrink-0 items-center gap-3 border-b border-[var(--border-default)] px-4">
         <span className="text-[15px] font-bold tracking-tight text-[var(--text-primary)]" style={{ fontFamily: 'var(--font-display)' }}>Assistant</span>
-        {ventures.length > 0 && (
-          <select
-            value={brandId}
-            onChange={(e) => setBrandId(e.target.value)}
-            className="rounded-md border border-[var(--border-default)] bg-[var(--bg-surface)] px-2 py-1 text-[13px] text-[var(--text-primary)]"
-          >
-            {ventures.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-          </select>
-        )}
         <div className="ml-auto">
           <Button variant="ghost" onClick={hide} className="h-8 px-2.5 text-[13px]">
             <kbd className="rounded border border-[var(--border-default)] px-1 text-[11px] text-[var(--text-muted)]">⌘J</kbd>
@@ -127,7 +106,7 @@ export default function AssistantDock() {
 
       <div className="flex min-h-0 flex-1">
         <div className="min-w-0 flex-1 overflow-y-auto">
-          <AgentConsole key={brandId} brandId={brandId} />
+          <AgentConsole />
         </div>
       </div>
 
