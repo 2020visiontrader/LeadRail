@@ -1,7 +1,10 @@
 import { z } from 'zod';
 import { getPipelineStages, createDeal, moveDealStage, createNote } from '@/lib/crm';
 import { listConversations } from '@/lib/conversations';
-import { obj, S, type Capability } from './types';
+import {
+  obj, S, type Capability,
+  rowsOf, plural, tally, samples, digestLine,
+} from './types';
 
 export const CRM_CAPABILITIES: Capability[] = [
   {
@@ -13,6 +16,25 @@ export const CRM_CAPABILITIES: Capability[] = [
     inputSchema: obj({ limit: S.number }),
     zod: z.object({ limit: z.number().optional() }),
     run: (accountId, { limit = 50 }) => listConversations(accountId, limit),
+    // Unread is counted only over rows that carry unread_count, and only rows
+    // where it is a number greater than zero — rows lacking the field are not
+    // assumed to be read.
+    digest: (_args, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      const withUnread = rows.filter((r: any) => typeof r?.unread_count === 'number');
+      const unread = withUnread.filter((r: any) => r.unread_count > 0).length;
+      const by = tally(rows, 'status');
+      const channels = tally(rows, 'channel');
+      const subjects = samples(rows, ['subject']);
+      return digestLine(
+        `${plural(rows.length, 'conversation')} returned.`,
+        withUnread.length ? `${unread} of ${withUnread.length} with unread messages.` : null,
+        by ? `By status: ${by}.` : null,
+        channels ? `By channel: ${channels}.` : null,
+        subjects.length ? `Subjects include: ${subjects.join(' | ')}.` : null,
+      );
+    },
   },
   {
     name: 'listStages',

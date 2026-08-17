@@ -43,8 +43,93 @@ export interface Capability {
   run: (accountId: string, args: any) => Promise<any>;
   /** Optional: truthful per-run metrics derived from a REAL result. Never fabricate. */
   metrics?: (args: any, result: any) => Record<string, number>;
-  /** Optional: one-sentence approval summary. Falls back to `${title}: ${JSON.stringify(args)}`. */
+  /** Optional: one-sentence approval summary. Falls back to `${title}: ${JSON.stringify(args)}`.
+   *  NOTE (Packet 10.1): this runs BEFORE the tool does — it renders the approval
+   *  card and the audit trail, so it structurally cannot see a result. Its
+   *  signature is fixed. Result-aware wording belongs in `digest` below. */
   summarize?: (args: any) => string;
+  /** Optional (Packet 10.1): a short, plain-language rendering of a REAL result,
+   *  written for the model that will reason over it. It is placed FIRST in the
+   *  OBSERVATION line, ahead of the raw JSON, so blind truncation cannot remove it.
+   *
+   *  Truthful only. A digest may state ONLY what is present in `result`: never
+   *  infer, never round a value the result does not contain, never default a
+   *  missing field to zero. The compose pass treats these lines as fact, so a
+   *  guess here launders a fabrication into something the model trusts.
+   *
+   *  Never emit a secret, token, or credential — these lines reach the model
+   *  verbatim. Return '' (or omit the field) and the raw JSON is used alone. */
+  digest?: (args: any, result: any) => string;
+}
+
+// --- Digest helpers (Packet 10.1) -------------------------------------------
+// Shared by the per-capability `digest` implementations. Every helper is
+// strictly truthful: it reports only values actually present on the result. A
+// missing field yields NOTHING — never a zero, never a placeholder.
+
+/** True when `o` carries a usable (non-null, non-empty) value at `k`. */
+export function present(o: any, k: string): boolean {
+  if (!o || typeof o !== 'object') return false;
+  const v = (o as any)[k];
+  return v !== null && v !== undefined && v !== '';
+}
+
+/** Rows only when the result really IS an array. Otherwise null, so the caller
+ *  emits no digest at all rather than guessing at an unknown shape. */
+export function rowsOf(result: any): any[] | null {
+  return Array.isArray(result) ? result : null;
+}
+
+/** The first present field from `keys`, stringified. null when none are present. */
+export function firstField(o: any, keys: string[]): string | null {
+  for (const k of keys) if (present(o, k)) return String((o as any)[k]);
+  return null;
+}
+
+/** `${n} thing` / `${n} things` — a count and nothing else. */
+export function plural(n: number, one: string, many = `${one}s`): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** "3 qualified, 9 new" over the rows that actually carry `key`. Rows without
+ *  it are neither counted nor mentioned; null when no row carries it. */
+export function tally(rows: any[], key: string, max = 4): string | null {
+  const counts = new Map<string, number>();
+  for (const r of rows) {
+    if (!present(r, key)) continue;
+    const v = String((r as any)[key]);
+    counts.set(v, (counts.get(v) || 0) + 1);
+  }
+  if (!counts.size) return null;
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, max)
+    .map(([v, n]) => `${n} ${v}`)
+    .join(', ');
+}
+
+/** Up to `n` concrete labels, each taken from the first present key on its row.
+ *  Rows with none of the keys are skipped rather than described. */
+export function samples(rows: any[], keys: string[], n = 3): string[] {
+  const out: string[] = [];
+  for (const r of rows) {
+    if (out.length >= n) break;
+    const l = firstField(r, keys);
+    if (l) out.push(clip(l, 60));
+  }
+  return out;
+}
+
+/** Single-line, length-bounded rendering of a value that came from the result. */
+export function clip(s: string, max = 80): string {
+  const flat = s.replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
+/** Join the non-empty parts of a digest. Returns '' when nothing was truthful
+ *  enough to say — the loop then falls back to the raw JSON alone. */
+export function digestLine(...parts: (string | null | undefined)[]): string {
+  return parts.filter((p): p is string => !!p && p.trim() !== '').join(' ');
 }
 
 export const SENSITIVE_GATES: GateClass[] =

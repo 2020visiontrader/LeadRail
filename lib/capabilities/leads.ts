@@ -2,7 +2,10 @@ import { z } from 'zod';
 import { supabase, getContacts, updateContact } from '@/lib/db';
 import { searchPeople, matchPerson } from '@/lib/integrations/apollo';
 import { listTags, addTagToContact } from '@/lib/tags';
-import { obj, S, type Capability } from './types';
+import {
+  obj, S, type Capability,
+  present, rowsOf, firstField, plural, tally, samples, clip, digestLine,
+} from './types';
 
 // Module-local ownership helper — replaces TOOLS.getLead pattern
 async function getLeadOwned(accountId: string, id: string) {
@@ -21,6 +24,20 @@ export const LEAD_CAPABILITIES: Capability[] = [
     inputSchema: obj({ limit: S.number, offset: S.number }),
     zod: z.object({ limit: z.number().optional(), offset: z.number().optional() }),
     run: (accountId, { limit = 50, offset = 0 }) => getContacts(accountId, 'all', limit, offset),
+    // Truthful: counts only the rows returned, and states a status breakdown
+    // only over rows that actually carry a status. Says nothing about totals
+    // beyond this page — the result does not contain one.
+    digest: (_args, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      const by = tally(rows, 'status');
+      const names = samples(rows, ['name', 'company', 'email']);
+      return digestLine(
+        `${plural(rows.length, 'lead')} returned.`,
+        by ? `By status: ${by}.` : null,
+        names.length ? `Includes: ${names.join(', ')}.` : null,
+      );
+    },
   },
   {
     name: 'getLead',
@@ -31,6 +48,21 @@ export const LEAD_CAPABILITIES: Capability[] = [
     inputSchema: obj({ id: S.string }, ['id']),
     zod: z.object({ id: z.string() }),
     run: async (accountId, { id }) => getLeadOwned(accountId, id),
+    // Only fields the row actually carries are mentioned. A missing score is
+    // absent from the sentence rather than reported as 0.
+    digest: (_args, result) => {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) return '';
+      const who = firstField(result, ['name', 'email']);
+      const bits = [
+        present(result, 'title') ? `title ${clip(String(result.title), 40)}` : null,
+        present(result, 'company') ? `at ${clip(String(result.company), 40)}` : null,
+        present(result, 'status') ? `status ${result.status}` : null,
+        present(result, 'score') ? `score ${result.score}` : null,
+        present(result, 'segment') ? `segment ${result.segment}` : null,
+      ].filter(Boolean);
+      if (!who && !bits.length) return '';
+      return digestLine(`Lead${who ? ` ${who}` : ''}${bits.length ? `: ${bits.join(', ')}` : ''}.`);
+    },
   },
   {
     name: 'sourceLeads',

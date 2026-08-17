@@ -6,7 +6,10 @@ import {
 } from '@/lib/campaigns/actions';
 import { getCampaignAbReport } from '@/lib/campaigns/analytics';
 import { getCampaignAssets } from '@/lib/crm';
-import { obj, S, type Capability } from './types';
+import {
+  obj, S, type Capability,
+  present, rowsOf, firstField, plural, tally, samples, clip, digestLine,
+} from './types';
 
 // Module-local ownership helpers — replace TOOLS.getCampaign pattern
 async function getCampaignOwned(accountId: string, id: string) {
@@ -53,6 +56,22 @@ export const CAMPAIGN_CAPABILITIES: Capability[] = [
       if (error) throw error;
       return data;
     },
+    // Counts the rows returned and breaks them down by the status field where
+    // present. Spend/budget are NOT summed here: a row may legitimately lack
+    // either, and a partial sum stated as a total would be a fabrication.
+    digest: (_args, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      const by = tally(rows, 'status');
+      const live = tally(rows, 'meta_status');
+      const names = samples(rows, ['name']);
+      return digestLine(
+        `${plural(rows.length, 'campaign')} returned.`,
+        by ? `By status: ${by}.` : null,
+        live ? `Meta status: ${live}.` : null,
+        names.length ? `Includes: ${names.join(', ')}.` : null,
+      );
+    },
   },
   {
     name: 'getCampaign',
@@ -63,6 +82,21 @@ export const CAMPAIGN_CAPABILITIES: Capability[] = [
     inputSchema: obj({ id: S.string }, ['id']),
     zod: z.object({ id: z.string() }),
     run: async (accountId, { id }) => getCampaignOwned(accountId, id),
+    digest: (_args, result) => {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) return '';
+      const name = firstField(result, ['name']);
+      const bits = [
+        present(result, 'status') ? `status ${result.status}` : null,
+        present(result, 'meta_status') ? `Meta status ${result.meta_status}` : null,
+        present(result, 'channel') ? `channel ${result.channel}` : null,
+        present(result, 'objective') ? `objective ${result.objective}` : null,
+        present(result, 'budget') ? `budget ${result.budget}` : null,
+        present(result, 'spend') ? `spend ${result.spend}` : null,
+        present(result, 'meta_campaign_id') ? 'linked to a Meta campaign' : null,
+      ].filter(Boolean);
+      if (!name && !bits.length) return '';
+      return digestLine(`Campaign${name ? ` "${clip(name, 60)}"` : ''}${bits.length ? `: ${bits.join(', ')}` : ''}.`);
+    },
   },
   {
     name: 'listAdSets',
@@ -79,6 +113,17 @@ export const CAMPAIGN_CAPABILITIES: Capability[] = [
       if (error) throw error;
       return data;
     },
+    digest: (_args, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      const by = tally(rows, 'meta_status');
+      const names = samples(rows, ['name']);
+      return digestLine(
+        `${plural(rows.length, 'ad set')} on this campaign.`,
+        by ? `Meta status: ${by}.` : null,
+        names.length ? `Includes: ${names.join(', ')}.` : null,
+      );
+    },
   },
   {
     name: 'listAds',
@@ -94,6 +139,17 @@ export const CAMPAIGN_CAPABILITIES: Capability[] = [
         .eq('campaign_id', campaignId).order('created_at', { ascending: false });
       if (error) throw error;
       return data;
+    },
+    digest: (_args, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      const by = tally(rows, 'meta_status');
+      const names = samples(rows, ['name']);
+      return digestLine(
+        `${plural(rows.length, 'ad')} on this campaign.`,
+        by ? `Meta status: ${by}.` : null,
+        names.length ? `Includes: ${names.join(', ')}.` : null,
+      );
     },
   },
   {
@@ -115,6 +171,18 @@ export const CAMPAIGN_CAPABILITIES: Capability[] = [
     inputSchema: obj({ metaObjectId: S.string }, ['metaObjectId']),
     zod: z.object({ metaObjectId: z.string() }),
     run: (accountId, { metaObjectId }) => getInsights(accountId, metaObjectId),
+    // Restates the metric fields that are present on the result object, with the
+    // values it holds. No derived rates, no filled-in blanks — a metric the
+    // result omits is simply not mentioned.
+    digest: (args, result) => {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) return '';
+      const bits = (['spend', 'impressions', 'clicks', 'ctr', 'cpc', 'cpm'] as const)
+        .filter((k) => present(result, k))
+        .map((k) => `${k} ${(result as any)[k]}`);
+      if (!bits.length) return '';
+      const id = args?.metaObjectId ? ` for ${clip(String(args.metaObjectId), 40)}` : '';
+      return digestLine(`Meta insights${id}: ${bits.join(', ')}.`);
+    },
   },
   {
     name: 'createCampaign',

@@ -214,6 +214,38 @@ function observation(text: string): ChatMessage {
   return { role: 'user', content: `OBSERVATION: ${truncate(text)}` };
 }
 
+// Build the observation body for a SUCCESSFUL tool run (Packet 10.1).
+//
+// A capability may declare `digest(args, result)` — a short, truthful,
+// plain-language rendering of its own result. When it does, the digest goes
+// FIRST and the raw JSON follows, under the same single `OBSERVATION:` prefix
+// that compose.ts scrapes. That ordering is the whole point: truncate() (here)
+// and compose's 6000-char cap both cut from the end, so the digest survives
+// while the JSON is what gets clipped.
+//
+// A capability WITHOUT a digest produces `JSON.stringify(result)` exactly as
+// before — byte-identical, no separator, no wrapper.
+//
+// A digest that throws is treated as absent. This is a best-effort presentation
+// hook, never a gate: a bad digest must degrade to today's raw-JSON behaviour,
+// not fail the tool call whose result the user is waiting on.
+function successObservation(tool: string, args: any, result: any): string {
+  const raw = JSON.stringify(result);
+  let digest = '';
+  try {
+    digest = (capabilityFor(tool)?.digest?.(args, result) || '').trim();
+  } catch {
+    digest = '';
+  }
+  return digest ? `${digest}\n${raw}` : raw;
+}
+
+/** The single observation-building path shared by runAgent and runAgentStream.
+ *  Both loops MUST call this — they are required to stay identical here. */
+function observationFor(tool: string, args: any, res: { ok: boolean; result?: any; error?: string }): string {
+  return res.ok ? successObservation(tool, args, res.result) : `ERROR: ${res.error}`;
+}
+
 // PORTED (Packet 2.1 step 5): the per-tool deriveMetrics switch that used to
 // live here now lives with each capability (lib/capabilities/metrics-port.ts,
 // attached in registry.ts). Call sites read capabilityFor(tool)?.metrics, so
@@ -327,7 +359,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
       return { status: 'error', message: approvalRefusal(e), transcript: messages, steps };
     }
     const res = await runTool(tool, accountId, args);
-    const obs = res.ok ? JSON.stringify(res.result) : `ERROR: ${res.error}`;
+    const obs = observationFor(tool, args, res);
     steps.push({ tool, args, observation: truncate(obs) });
     messages.push(observation(obs));
   }
@@ -422,7 +454,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
     seen.add(sig);
 
     const res = await runTool(tool, accountId, args);
-    const obs = res.ok ? JSON.stringify(res.result) : `ERROR: ${res.error}`;
+    const obs = observationFor(tool, args, res);
     steps.push({ thought: parsed.thought, tool, args, observation: truncate(obs) });
     messages.push(observation(obs));
   }
@@ -483,7 +515,7 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
     }
     emit({ type: 'tool', tool, title: TOOLS[tool].title, args });
     const res = await runTool(tool, accountId, args);
-    const obs = res.ok ? JSON.stringify(res.result) : `ERROR: ${res.error}`;
+    const obs = observationFor(tool, args, res);
     emit({ type: 'observation', text: truncate(obs), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool)?.metrics?.(args, res.result) ?? {}) : {} });
     messages.push(observation(obs));
   }
@@ -584,7 +616,7 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
 
     emit({ type: 'tool', tool, title: def.title, args });
     const res = await runTool(tool, accountId, args);
-    const obs = res.ok ? JSON.stringify(res.result) : `ERROR: ${res.error}`;
+    const obs = observationFor(tool, args, res);
     emit({ type: 'observation', text: truncate(obs), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool)?.metrics?.(args, res.result) ?? {}) : {} });
     messages.push(observation(obs));
   }

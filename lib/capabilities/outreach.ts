@@ -3,7 +3,10 @@ import { supabase, getVentures, getVenture } from '@/lib/db';
 import { sendOutreachEmail } from '@/lib/outreach';
 import { listSequences, enrollContacts } from '@/lib/sequences';
 import { generateOutreach } from '@/lib/ai/generation';
-import { obj, S, type Capability } from './types';
+import {
+  obj, S, type Capability,
+  present, rowsOf, plural, tally, samples, digestLine,
+} from './types';
 
 // Module-local ownership helper — replaces TOOLS.getLead pattern
 async function getLeadOwned(accountId: string, id: string) {
@@ -54,6 +57,23 @@ export const OUTREACH_CAPABILITIES: Capability[] = [
     inputSchema: obj({ brandId: S.string }, ['brandId']),
     zod: z.object({ brandId: z.string() }),
     run: (_accountId, { brandId }) => listSequences(brandId),
+    // Step counts come from the embedded sequence_steps array where the row
+    // actually has one; a sequence without that key contributes no step claim.
+    digest: (_args, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      const names = samples(rows, ['name'], 5);
+      const by = tally(rows, 'status');
+      const stepped = rows.filter((r: any) => Array.isArray(r?.sequence_steps));
+      const steps = stepped.length
+        ? stepped.map((r: any) => `${present(r, 'name') ? String(r.name) : 'unnamed'} (${r.sequence_steps.length} steps)`).slice(0, 5).join(', ')
+        : null;
+      return digestLine(
+        `${plural(rows.length, 'sequence')} for this venture.`,
+        by ? `By status: ${by}.` : null,
+        steps ? `Steps: ${steps}.` : (names.length ? `Includes: ${names.join(', ')}.` : null),
+      );
+    },
   },
   {
     name: 'enrollInSequence',

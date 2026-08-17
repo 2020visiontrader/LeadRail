@@ -1,7 +1,10 @@
 import { z } from 'zod';
 import { notionSearch, notionGetPageText } from '@/lib/integrations/notion';
 import { driveSearch, driveReadFileText } from '@/lib/integrations/gdrive';
-import { obj, S, type Capability } from './types';
+import {
+  obj, S, type Capability,
+  rowsOf, plural, tally, samples, digestLine,
+} from './types';
 
 export const KNOWLEDGE_CAPABILITIES: Capability[] = [
   {
@@ -13,6 +16,18 @@ export const KNOWLEDGE_CAPABILITIES: Capability[] = [
     inputSchema: obj({ query: S.string, limit: S.number }, ['query']),
     zod: z.object({ query: z.string(), limit: z.number().optional() }),
     run: (accountId, { query, limit }) => notionSearch(accountId, query, limit),
+    digest: (args, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      const titles = samples(rows, ['title'], 5);
+      const kinds = tally(rows, 'type');
+      const q = args?.query ? ` for "${String(args.query)}"` : '';
+      return digestLine(
+        `${plural(rows.length, 'Notion result')}${q}.`,
+        kinds ? `By type: ${kinds}.` : null,
+        titles.length ? `Titles: ${titles.join(' | ')}.` : null,
+      );
+    },
   },
   {
     name: 'searchDrive',
@@ -23,6 +38,18 @@ export const KNOWLEDGE_CAPABILITIES: Capability[] = [
     inputSchema: obj({ query: S.string, limit: S.number }, ['query']),
     zod: z.object({ query: z.string(), limit: z.number().optional() }),
     run: (accountId, { query, limit }) => driveSearch(accountId, query, limit),
+    digest: (args, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      const names = samples(rows, ['name'], 5);
+      const kinds = tally(rows, 'mimeType');
+      const q = args?.query ? ` for "${String(args.query)}"` : '';
+      return digestLine(
+        `${plural(rows.length, 'Drive file')}${q}.`,
+        kinds ? `By type: ${kinds}.` : null,
+        names.length ? `Files: ${names.join(' | ')}.` : null,
+      );
+    },
   },
   {
     name: 'readNotionPage',

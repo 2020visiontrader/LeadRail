@@ -14,7 +14,10 @@
 
 import { z } from 'zod';
 import { recordFact, deleteFact, listFacts, factRejectionReason } from '@/lib/agent/memory';
-import { obj, S, type Capability } from './types';
+import {
+  obj, S, type Capability,
+  rowsOf, plural, samples, digestLine,
+} from './types';
 
 export const MEMORY_CAPABILITIES: Capability[] = [
   {
@@ -64,5 +67,18 @@ export const MEMORY_CAPABILITIES: Capability[] = [
     inputSchema: obj({ limit: S.number }),
     zod: z.object({ limit: z.number().int().min(1).max(100).optional() }),
     run: (accountId, { limit }) => listFacts(accountId, limit),
+    // The facts themselves ARE the content here, so the digest quotes a few
+    // verbatim rather than describing them. `samples` clips and skips rows that
+    // carry no `fact` field, so nothing is invented.
+    digest: (_a, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      if (!rows.length) return 'Nothing remembered for this account yet.';
+      const recent = samples(rows, ['fact'], 3);
+      return digestLine(
+        `${plural(rows.length, 'remembered fact')}.`,
+        recent.length ? `Most recent: ${recent.join(' | ')}` : null,
+      );
+    },
   },
 ];

@@ -39,7 +39,7 @@ import { getIntegrations } from '@/lib/social/index';
 import { createPost as bufferCreatePost, listPosts as bufferListPosts } from '@/lib/social/buffer';
 import { generateContentPost } from '@/lib/ai/generation';
 import { LIVE_SOCIALS, SOCIAL_KEYS, type SocialKey } from '@/lib/social/providers';
-import { obj, S, type Capability } from './types';
+import { obj, S, type Capability, rowsOf, plural, samples, tally, present, digestLine } from './types';
 
 // ---------------------------------------------------------------------------
 // Registry-driven platform validation
@@ -160,6 +160,22 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
           username: c.username || null,
         }));
     },
+    // Which accounts are connected drives almost every follow-up on this
+    // domain, and publish/DM disambiguation needs the external ids. `tally`
+    // counts only rows that actually carry `platform`; `samples` prefers a
+    // username, falls back to a display name, and skips rows with neither.
+    digest: (_a, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      if (!rows.length) return 'No social accounts are connected for this account.';
+      return digestLine(
+        `${plural(rows.length, 'connected social account')}.`,
+        tally(rows, 'platform') ? `${tally(rows, 'platform')}.` : null,
+        samples(rows, ['username', 'name'], 4).length
+          ? `Accounts: ${samples(rows, ['username', 'name'], 4).join(', ')}`
+          : null,
+      );
+    },
   },
   {
     name: 'getSocialStatus',
@@ -180,6 +196,23 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     inputSchema: obj({ postId: S.string, platform: S.string, limit: S.number }, ['postId', 'platform']),
     zod: z.object({ postId: z.string().min(1), platform: livePlatform, limit: z.number().int().min(1).max(100).optional() }),
     run: (accountId, a) => getComments(accountId, a.postId, commentPlatform(a.platform), a.limit ?? 25),
+    // Comment text is the substance of this result and is exactly what gets
+    // clipped by truncation, so quote a few verbatim. `hidden` is only reported
+    // when at least one row actually carries the field — Meta omits it on some
+    // edges, and reporting "0 hidden" from an absent field would be a guess.
+    digest: (_a, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      if (!rows.length) return 'No comments on that post.';
+      const hasHidden = rows.some((r) => present(r, 'hidden'));
+      const hidden = hasHidden ? rows.filter((r) => (r as any).hidden === true).length : null;
+      const quoted = samples(rows, ['message'], 3);
+      return digestLine(
+        `${plural(rows.length, 'comment')}.`,
+        hidden !== null ? `${hidden} hidden.` : null,
+        quoted.length ? `Latest: ${quoted.map((q) => `"${q}"`).join(' | ')}` : null,
+      );
+    },
   },
   {
     name: 'getSocialInsights',

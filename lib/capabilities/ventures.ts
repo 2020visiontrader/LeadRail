@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { supabase, getVentures, getVenture, updateVenture } from '@/lib/db';
-import { obj, S, type Capability } from './types';
+import { obj, S, type Capability, rowsOf, plural, samples, digestLine } from './types';
 
 // Module-local ownership helper — replaces TOOLS.getVenture pattern
 async function getVentureOwned(accountId: string, brandId: string) {
@@ -19,6 +19,18 @@ export const VENTURE_CAPABILITIES: Capability[] = [
     inputSchema: obj({}),
     zod: z.object({}),
     run: async (accountId) => (await getVentures(accountId)).map((v: any) => ({ id: v.id, name: v.name })),
+    // Small result, but it is the one the model resolves names against on
+    // almost every turn — naming the ventures outright saves a re-read.
+    digest: (_a, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      if (!rows.length) return 'No ventures in this account.';
+      const names = samples(rows, ['name'], 8);
+      return digestLine(
+        `${plural(rows.length, 'venture')}.`,
+        names.length ? `${names.join(', ')}${rows.length > names.length ? ', …' : ''}` : null,
+      );
+    },
   },
   {
     name: 'getPersona',
