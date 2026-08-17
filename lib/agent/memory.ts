@@ -89,6 +89,21 @@ export async function loadConversation(id: string, accountId: string): Promise<C
   }
 }
 
+/** List an account's chat threads (newest first) for the thread switcher. */
+export async function listAgentConversations(
+  accountId: string,
+  limit = 30,
+): Promise<Array<{ id: string; title: string | null; updated_at: string | null }>> {
+  try {
+    const { data } = await supabase.from('agent_conversations')
+      .select('id, title, updated_at').eq('account_id', accountId)
+      .order('updated_at', { ascending: false }).limit(limit);
+    return (data as any[]) || [];
+  } catch {
+    return [];
+  }
+}
+
 /** Persist a carryover memo on a conversation (used at compaction). */
 export async function saveCarryover(id: string, accountId: string, carryover: CarryoverMemo): Promise<void> {
   try {

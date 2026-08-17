@@ -16,7 +16,7 @@
 // directly.
 
 import { z } from 'zod';
-import { supabase, getContacts, getVentures, getVenture, updateContact, updateVenture, insertCampaignAsset } from '@/lib/db';
+import { supabase, getContacts, getVentures, getVenture, updateContact, updateVenture, insertCampaignAsset, getConnections } from '@/lib/db';
 import { getCampaignAssets, getPipelineStages, createDeal, moveDealStage, createNote } from '@/lib/crm';
 import { listConversations } from '@/lib/conversations';
 import { listAdAccounts, getInsights } from '@/lib/social/meta-ads';
@@ -31,6 +31,8 @@ import { sendOutreachEmail } from '@/lib/outreach';
 import { listSequences, enrollContacts } from '@/lib/sequences';
 import { listTags, addTagToContact } from '@/lib/tags';
 import { generateOutreach, generateContentPost } from '@/lib/ai/generation';
+import { getComments, replyToComment, sendInstagramMessage } from '@/lib/social/meta-engagement';
+import { publishToInstagramForAccount, publishToFacebookPage } from '@/lib/integrations/meta';
 
 export interface AgentTool {
   /** Short human title shown in approval proposals. */
@@ -160,10 +162,58 @@ export const TOOLS: Record<string, AgentTool> = {
   },
   listConversations: {
     title: 'List conversations',
-    description: 'List inbox conversations for the account.',
+    description: 'List inbox conversations for the account (email replies and social messages/comments from connected Facebook and Instagram).',
     inputSchema: obj({ limit: S.number }),
     zod: z.object({ limit: z.number().optional() }),
     run: (accountId, { limit = 50 }) => listConversations(accountId, limit),
+  },
+
+  // ---- social: connected Facebook/Instagram/Threads accounts ---------------
+  listSocialConnections: {
+    title: 'List social connections',
+    description: 'List the social accounts connected to LeadRail (Facebook Pages, Instagram, Threads) and their status. Use to check what is connected before doing social work.',
+    inputSchema: obj({}),
+    zod: z.object({}),
+    run: async (accountId) => (await getConnections(accountId)).map((c: any) => ({
+      provider: c.provider,
+      externalId: c.external_id,
+      name: c.display_name || c.username || null,
+      status: c.status,
+      updatedAt: c.updated_at,
+    })),
+  },
+  getComments: {
+    title: 'Get post comments',
+    description: 'Get the comments on a Facebook post or Instagram media post. Pass the post id and platform ("facebook" or "instagram").',
+    inputSchema: obj({ postId: S.string, platform: S.string, limit: S.number }, ['postId', 'platform']),
+    zod: z.object({ postId: z.string(), platform: z.enum(['facebook', 'instagram']), limit: z.number().optional() }),
+    run: (accountId, { postId, platform, limit }) => getComments(accountId, postId, platform, limit),
+  },
+  publishSocialPost: {
+    title: 'Publish social post (POSTS to social)',
+    description: 'Publish a post to a connected Facebook Page or Instagram business account. platform "instagram" needs caption plus imageUrl or videoUrl; "facebook" needs message (link and imageUrl optional). Pass externalId to target a specific account.',
+    inputSchema: obj({ platform: S.string, caption: S.string, message: S.string, imageUrl: S.string, videoUrl: S.string, link: S.string, externalId: S.string }, ['platform']),
+    zod: z.object({ platform: z.enum(['facebook', 'instagram']), caption: z.string().optional(), message: z.string().optional(), imageUrl: z.string().optional(), videoUrl: z.string().optional(), link: z.string().optional(), externalId: z.string().optional() }),
+    sensitive: true,
+    run: (accountId, { platform, ...rest }) => platform === 'instagram'
+      ? publishToInstagramForAccount(accountId, { caption: rest.caption || '', imageUrl: rest.imageUrl, videoUrl: rest.videoUrl }, rest.externalId)
+      : publishToFacebookPage(accountId, { message: rest.message || '', link: rest.link, imageUrl: rest.imageUrl }, rest.externalId),
+  },
+  replyToComment: {
+    title: 'Reply to comment (POSTS to social)',
+    description: 'Reply to a comment on a Facebook post or Instagram media. Pass the comment id, reply text, and platform ("facebook" or "instagram").',
+    inputSchema: obj({ commentId: S.string, message: S.string, platform: S.string, externalId: S.string }, ['commentId', 'message', 'platform']),
+    zod: z.object({ commentId: z.string(), message: z.string(), platform: z.enum(['facebook', 'instagram']), externalId: z.string().optional() }),
+    sensitive: true,
+    run: (accountId, { commentId, message, platform, externalId }) => replyToComment(accountId, commentId, message, platform, externalId),
+  },
+  sendInstagramMessage: {
+    title: 'Reply to Instagram message (SENDS to a real person)',
+    description: 'Reply to an Instagram direct message on a connected business account. Pass the recipient id (the sender id of the message, from the Conversations inbox) and the reply text.',
+    inputSchema: obj({ recipientId: S.string, text: S.string, externalId: S.string }, ['recipientId', 'text']),
+    zod: z.object({ recipientId: z.string(), text: z.string(), externalId: z.string().optional() }),
+    sensitive: true,
+    run: (accountId, { recipientId, text, externalId }) => sendInstagramMessage(accountId, recipientId, text, externalId),
   },
 
   // ---- write: gated behind human approval in the agent loop --------------

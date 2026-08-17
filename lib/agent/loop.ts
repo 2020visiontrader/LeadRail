@@ -170,6 +170,9 @@ function summarizeProposal(tool: string, args: Record<string, any>): string {
     return `Launch a live paid campaign${budget}. This will start spending on Meta.`;
   }
   if (tool === 'pauseCampaign') return 'Pause a live campaign (stops spend).';
+  if (tool === 'publishSocialPost') return 'Publish a post to social.';
+  if (tool === 'replyToComment') return 'Reply to a comment on social.';
+  if (tool === 'sendInstagramMessage') return 'Reply to an Instagram direct message.';
   if (tool === 'createCampaign') {
     const meta = args.channel === 'meta' ? ' and a PAUSED Meta campaign (no spend yet)' : '';
     return `Create the campaign "${args.name}"${meta}.`;
@@ -427,13 +430,36 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
 // sensitive tool it emits `needs_approval` with the transcript to resume from.
 
 export type AgentEvent =
+  | { type: 'step_start'; text: string }
   | { type: 'thought'; text: string }
   | { type: 'tool'; tool: string; title: string; args: Record<string, any> }
   | { type: 'observation'; text: string; ok: boolean; tool?: string; metrics?: Record<string, number> }
+  | { type: 'token'; text: string }
   | { type: 'final'; message: string; transcript: ChatMessage[]; tokenEstimate?: number }
   | { type: 'needs_approval'; proposal: AgentProposal; message: string; transcript: ChatMessage[] }
   | { type: 'compaction_suggested'; level: 'soft' | 'hard'; tokenEstimate: number }
   | { type: 'error'; message: string; transcript?: ChatMessage[] };
+
+// Stream an already-complete final answer as incremental `token` events so the
+// UI can type it out, Claude-desktop style, instead of it popping in as one
+// blob. Purely a presentation delay on top of a string we already have — no
+// model-provider changes. Chunks on whitespace boundaries (keeps words whole)
+// and paces itself so a long answer never adds more than ~1.5s of latency.
+async function streamTokens(message: string, emit: (e: AgentEvent) => void): Promise<void> {
+  if (!message) return;
+  const chunks = message.split(/(\s+)/).filter((c) => c.length > 0);
+  if (!chunks.length) return;
+  const MAX_TOTAL_DELAY_MS = 1500;
+  const PER_CHUNK_MS = 12;
+  // If pacing every chunk at PER_CHUNK_MS would blow the total budget, batch
+  // multiple chunks per emitted event so we still finish in time.
+  const batchSize = Math.max(1, Math.ceil((chunks.length * PER_CHUNK_MS) / MAX_TOTAL_DELAY_MS));
+  for (let i = 0; i < chunks.length; i += batchSize) {
+    const batch = chunks.slice(i, i + batchSize).join('');
+    emit({ type: 'token', text: batch });
+    if (i + batchSize < chunks.length) await new Promise((r) => setTimeout(r, PER_CHUNK_MS));
+  }
+}
 
 export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent) => void): Promise<void> {
   const { accountId, brandContext } = input;
@@ -463,6 +489,11 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
   let dupNudges = 0;
   const toolCalls: Record<string, number> = {};
   for (let i = 0; i < MAX_STEPS; i++) {
+    // Emit a live "working" step BEFORE the blocking model call so the UI shows
+    // motion during the 3-8s generation window (otherwise the first event of a
+    // step — `thought` — only lands after generateChat returns, so the trace
+    // looks like it renders in a burst at the end).
+    emit({ type: 'step_start', text: i === 0 ? 'Thinking through your request…' : 'Working through the next step…' });
     let raw: string;
     try {
       raw = await generateChat({
@@ -482,7 +513,7 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
         continue;
       }
       const salv = salvageFinalMessage(raw);
-      if (salv) { emit({ type: 'final', message: salv, transcript: messages }); return; }
+      if (salv) { await streamTokens(salv, emit); emit({ type: 'final', message: salv, transcript: messages }); return; }
       emit({ type: 'error', message: "I couldn't complete that request. Please rephrase and try again.", transcript: messages });
       return;
     }
@@ -493,7 +524,9 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
 
     if (parsed.action === 'final') {
       const tokenEstimate = estimateTokens(messages);
-      emit({ type: 'final', message: String(parsed.message || '').trim() || 'Done.', transcript: messages, tokenEstimate });
+      const finalMessage = String(parsed.message || '').trim() || 'Done.';
+      await streamTokens(finalMessage, emit);
+      emit({ type: 'final', message: finalMessage, transcript: messages, tokenEstimate });
       const level = compactionLevel(tokenEstimate);
       if (level) emit({ type: 'compaction_suggested', level, tokenEstimate });
       return;
@@ -546,12 +579,18 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
   // Forced final rather than a "too many steps" error.
   try {
     messages.push({ role: 'user', content: 'Stop calling tools. Using the information above, answer the user now. Respond with ONLY {"action":"final","message":"..."}.' });
+    emit({ type: 'step_start', text: 'Putting the answer together…' });
     const raw = await generateChat({
       system, messages, temperature: 0.2, maxOutputTokens: 2048, zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
       ...(personaModelId ? { accountId, modelId: personaModelId } : {}),
     });
     const p = extractJson(raw);
-    if (p?.action === 'final' && p.message) { emit({ type: 'final', message: String(p.message), transcript: messages }); return; }
+    if (p?.action === 'final' && p.message) {
+      const finalMessage = String(p.message);
+      await streamTokens(finalMessage, emit);
+      emit({ type: 'final', message: finalMessage, transcript: messages });
+      return;
+    }
   } catch { /* fall through */ }
   emit({ type: 'error', message: 'I gathered the details but had trouble summarizing. Please ask again a bit more specifically.', transcript: messages });
 }
