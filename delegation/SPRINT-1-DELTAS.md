@@ -84,11 +84,29 @@ that respects that structure — read the comments there before inserting.
 Verified individually:
 
 1. **`listContacts` is confirmed dead.** No such capability exists; the real name
-   is `listLeads`. `TOOL_VERB` in `AgentConsole.tsx` has 12 entries against 37
-   registered capabilities, so ~25 verbs are missing. **Generate the list from
-   `CATALOG_ORDER` in `lib/capabilities/registry.ts`, not from the plan's
-   hand-written list** — the plan's list predates the registry and is not
-   authoritative.
+   is `listLeads`. **Generate the list from `CATALOG_ORDER` in
+   `lib/capabilities/registry.ts`, not from the plan's hand-written list** — the
+   plan's list predates the registry and is not authoritative.
+
+   **Measured 2026-08-17** (recount before starting; the registry keeps growing):
+   59 capabilities, 31 `TOOL_VERB` keys, **29 missing**, 1 dead.
+
+   Missing: `getCampaign`, `listAdSets`, `listAds`, `listAssets`, `getInsights`,
+   `listLeads`, `getLead`, `importAsset`, `readNotionPage`, `readDriveFile`,
+   `sourceLeads`, `enrichLead`, `draftOutreach`, `sendEmail`, `listSequences`,
+   `enrollInSequence`, `listStages`, `createDeal`, `moveDeal`, `addNote`,
+   `updateLeadStatus`, `listTags`, `tagLead`, `getPersona`, `updatePersona`,
+   `generateAdCopy`, `rememberFact`, `forgetFact`, `listFacts`.
+
+   Dead: `listContacts`.
+
+   Note 2.2-S already added its own 19 verbs, so the social domain is covered —
+   the gap is the pre-existing capabilities plus 1.1's three memory tools.
+
+   `verbFor()` falls back to the capability's `title`, so a missing verb is a
+   cosmetic degradation, not a crash. That is why this is Tier C. But `sendEmail`
+   and `sourceLeads` are in the missing list, and those are the steps a user most
+   wants to read clearly while they are happening.
 2. **`toolCalls` is still declared-and-unused in `runAgent`** (`lib/agent/loop.ts:337`;
    the used copy is at 493 in the stream variant). Apply the cap, per the plan.
 3. **`pauseCampaign` is confirmed non-sensitive** — `gate: 'internal_write'` at
