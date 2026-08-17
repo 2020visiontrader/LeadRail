@@ -26,12 +26,26 @@ export function igRedirectUri(): string {
   return `${publicBase()}/api/social/instagram/callback`;
 }
 
+/**
+ * Build the Instagram Business Login URL.
+ *
+ * MULTI-ACCOUNT: connections are stored one row per IG account, keyed by
+ * external_id (see the callback), so the store has never been the limit. The
+ * limit was here — without `force_reauth`, Meta silently reuses the browser's
+ * existing Instagram session and returns the SAME account every time, so a user
+ * with six accounts could connect one and every subsequent attempt appeared to
+ * do nothing. `force_reauth=true` makes Meta show the login / account chooser,
+ * which is the only way the user can pick a different account to add.
+ */
 export function buildInstagramAuthorizeUrl(state: string): string {
   const p = new URLSearchParams({
     client_id: process.env.INSTAGRAM_APP_ID!,
     redirect_uri: igRedirectUri(),
     scope: IG_SCOPES,
     response_type: 'code',
+    // Always re-prompt. Costs one extra tap when re-connecting the same
+    // account; without it, adding a second account is impossible.
+    force_reauth: 'true',
     state,
   });
   return `${IG_AUTH}?${p.toString()}`;
