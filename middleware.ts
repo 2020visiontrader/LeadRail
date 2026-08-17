@@ -48,7 +48,19 @@ export async function middleware(req: NextRequest) {
   // gets the landing page instead of a bare login form. No `next` param — there
   // is nothing to bounce back to, and '/' is where /login already lands.
   // Every OTHER private route keeps the existing behaviour below, unchanged.
-  if (pathname === '/') {
+  // HOST-AWARE (fix): this deployment serves two hostnames with different jobs.
+  //   leadrail.xyz      — marketing. '/' should land on the landing page.
+  //   app.leadrail.xyz  — the product. '/' should land on the login form; a
+  //                       logged-out user who typed the APP host wants to sign
+  //                       in, not read a pitch.
+  // The first version of this redirect was host-blind and sent BOTH to
+  // /welcome, which made the app subdomain unreachable without typing /login.
+  // Marketing hosts are matched by exclusion: anything that is not an app/admin
+  // host is treated as marketing, so a preview URL or a new marketing domain
+  // does not silently start hiding the login form.
+  const host = (req.headers.get('host') || '').toLowerCase();
+  const isAppHost = host.startsWith('app.') || host.startsWith('admin.');
+  if (pathname === '/' && !isAppHost) {
     url.pathname = '/welcome';
     url.search = '';
     return NextResponse.redirect(url);

@@ -37,7 +37,7 @@ Route by *failure cost*, not size. Anything touching `account_id`, approval stat
 | 0.2b | CommandBar → 0.1 + 0.2 contracts | B | ☑ merged |
 | 0.3 | Close the MCP server bypass | A | ☑ merged |
 | 1.1 | Memory ingestion path (`rememberFact`) | B | ☑ merged |
-| 1.2 | Conversation persistence + compaction | B | ☐ |
+| 1.2 | Conversation persistence + compaction | B | ☑ merged |
 | 1.3 | Small correctness fixes | C | ☑ merged |
 | 1.4 | Enforce the spend budget (zero callers) | A | ☑ merged (gate live, meter dormant) |
 | 2.1 | Capability Registry core | A | ☑ merged |

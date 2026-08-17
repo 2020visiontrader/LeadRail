@@ -6,6 +6,7 @@ import Button from '@/components/Button';
 import { apiGet } from '@/lib/api';
 
 interface Venture { id: string; name: string }
+interface ConversationSummary { id: string; title: string | null; updated_at: string | null; token_estimate: number | null }
 
 type DockMode = 'hidden' | 'docked';
 const STORAGE_KEY = 'leadrail_dock';
@@ -54,6 +55,23 @@ export default function AssistantDock() {
   const [busy, setBusy] = useState(false);
   const [pendingApproval, setPendingApproval] = useState(false);
   const dragOrigin = useRef<{ x: number; w: number } | null>(null);
+
+  // Chat history. `activeConversationId` is handed to AgentConsole as a prop; it
+  // rehydrates the transcript from the server. `chatNonce` only exists so that
+  // "New chat" remounts the console even though the id goes back to undefined.
+  const [conversations, setConversations] = useState<ConversationSummary[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [activeConversationId, setActiveConversationId] = useState<string | undefined>(undefined);
+  const [chatNonce, setChatNonce] = useState(0);
+
+  // The list route returns no transcripts, so refreshing it is cheap. Refresh on
+  // mount and whenever a run finishes (a new chat only gets an id at that point).
+  const refreshConversations = useCallback(() => {
+    apiGet<{ conversations: ConversationSummary[] }>('/api/agent/conversations')
+      .then((d) => setConversations(d.conversations || []))
+      .catch(() => { /* history is a convenience; never block the console */ });
+  }, []);
+  useEffect(() => { if (!busy) refreshConversations(); }, [busy, refreshConversations]);
 
   // Hydrate from storage after mount (avoids SSR/localStorage mismatch), then
   // stay in sync with the rail launcher and other tabs.
@@ -153,7 +171,12 @@ export default function AssistantDock() {
 
       <div className="flex min-h-0 flex-1">
         <div className="min-w-0 flex-1 overflow-y-auto">
-          <AgentConsole key={brandId} brandId={brandId} onSteps={(s, b, pa) => { setSteps(s); setBusy(b); setPendingApproval(pa); }} />
+          <AgentConsole
+            key={`${brandId || 'none'}:${activeConversationId || 'new'}:${chatNonce}`}
+            brandId={brandId}
+            conversationId={activeConversationId}
+            onSteps={(s, b, pa) => { setSteps(s); setBusy(b); setPendingApproval(pa); }}
+          />
         </div>
 
         {showContext && (
@@ -189,6 +212,43 @@ export default function AssistantDock() {
                 </div>
               )}
             </div>
+
+            {/* Collapsed by default — history is a way back, not the main event. */}
+            <button
+              type="button"
+              onClick={() => setHistoryOpen((v) => !v)}
+              className="mt-5 flex w-full items-center gap-2 text-left text-[11px] font-semibold uppercase tracking-wide text-[var(--text-secondary)]"
+            >
+              <span className="w-3 shrink-0 text-center text-[var(--text-muted)]">{historyOpen ? '▾' : '▸'}</span>
+              Recent chats
+              {conversations.length > 0 && <span className="text-[var(--text-muted)]">{conversations.length}</span>}
+            </button>
+            {historyOpen && (
+              <div className="mt-2 space-y-1.5">
+                <button
+                  type="button"
+                  onClick={() => { setActiveConversationId(undefined); setChatNonce((n) => n + 1); }}
+                  className="flex w-full items-center gap-2 text-left text-[13px] text-[var(--text-secondary)] hover:text-[var(--text-primary)]"
+                >
+                  <span className="flex w-3 shrink-0 justify-center text-[var(--text-muted)]">+</span>
+                  <span className="min-w-0 flex-1 truncate">New chat</span>
+                </button>
+                {conversations.length === 0 ? (
+                  <div className="rounded-[10px] border border-dashed border-[var(--border-default)] px-3 py-4 text-center text-[12px] text-[var(--text-muted)]">
+                    No saved chats yet.
+                  </div>
+                ) : (
+                  conversations.map((c) => (
+                    <HistoryRow
+                      key={c.id}
+                      conversation={c}
+                      active={c.id === activeConversationId}
+                      onOpen={() => setActiveConversationId(c.id)}
+                    />
+                  ))
+                )}
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -218,6 +278,29 @@ function RunningGlyph() {
       <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--brand)] opacity-70" />
       <span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--brand)]" />
     </span>
+  );
+}
+
+// Same three-slot layout as ActivityRow (glyph · label · trailing meta) so the
+// history list reads as part of the context column rather than a new widget.
+function HistoryRow({ conversation, active, onOpen }: { conversation: ConversationSummary; active: boolean; onOpen: () => void }) {
+  const label = (conversation.title || '').trim() || 'Untitled chat';
+  let when = '';
+  if (conversation.updated_at) {
+    const d = new Date(conversation.updated_at);
+    if (!Number.isNaN(d.getTime())) when = d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  }
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title={label}
+      className={`flex w-full items-center gap-2 text-left text-[13px] ${active ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'} hover:text-[var(--text-primary)]`}
+    >
+      <span className="flex w-3 shrink-0 justify-center text-[var(--text-muted)]">{active ? '•' : '·'}</span>
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      <span className="shrink-0 text-[11px] text-[var(--text-muted)]">{when}</span>
+    </button>
   );
 }
 

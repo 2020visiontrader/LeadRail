@@ -106,6 +106,38 @@ export async function loadTranscript(conversationId: string | undefined, account
   ) as ChatMessage[];
 }
 
+export interface ConversationSummary {
+  id: string;
+  title: string | null;
+  updated_at: string | null;
+  token_estimate: number | null;
+}
+
+/** Recent conversations for one account, newest first.
+ *
+ *  Deliberately does NOT select `transcript` (or `carryover`): this powers a
+ *  sidebar list that renders on every dock open, and a transcript column is
+ *  unbounded. Cost and blast radius both stay small. Rehydration pulls the
+ *  transcript one conversation at a time via loadTranscript.
+ *
+ *  The account filter is in the query, never applied after the fetch. */
+export async function listConversationsForAccount(
+  accountId: string,
+  limit = 30,
+): Promise<ConversationSummary[]> {
+  const n = Math.min(Math.max(Math.trunc(limit) || 30, 1), 100);
+  try {
+    const { data } = await supabase.from('agent_conversations')
+      .select('id, title, updated_at, token_estimate')
+      .eq('account_id', accountId)
+      .order('updated_at', { ascending: false })
+      .limit(n);
+    return (data || []) as ConversationSummary[];
+  } catch {
+    return [];
+  }
+}
+
 /** Persist a carryover memo on a conversation (used at compaction). */
 export async function saveCarryover(id: string, accountId: string, carryover: CarryoverMemo): Promise<void> {
   try {

@@ -2,6 +2,7 @@
 import { useRef, useState, useEffect } from 'react';
 import Button from '@/components/Button';
 import Markdown from '@/components/Markdown';
+import { apiGet, apiSend } from '@/lib/api';
 
 // Live agentic console. Streams the assistant's real reasoning from
 // /api/agent/stream and renders it Claude-desktop style: one plain-language
@@ -88,19 +89,51 @@ const TOOL_VERB: Record<string, string> = {
 };
 const verbFor = (tool: string, title: string) => TOOL_VERB[tool] || title || 'Working';
 
-export default function AgentConsole({ brandId, onSteps }: { brandId?: string; onSteps?: (steps: Step[], busy: boolean, pendingApproval: boolean) => void }) {
+export default function AgentConsole({ brandId, conversationId, onSteps }: { brandId?: string; conversationId?: string; onSteps?: (steps: Step[], busy: boolean, pendingApproval: boolean) => void }) {
   const [turns, setTurns] = useState<Array<any>>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [proposal, setProposal] = useState<Proposal | null>(null);
+  const [compaction, setCompaction] = useState<{ level: 'soft' | 'hard'; tokenEstimate: number } | null>(null);
+  const [handingOver, setHandingOver] = useState(false);
   // The server owns conversation state (Packet 0.2). We hold only the opaque id
   // it issued in the trailing `conversation` SSE event and echo it back on the
   // next turn — including the approve-resume, which reloads its context server-
   // side. Undefined until the first turn completes, so a brand-new chat sends
   // no conversationId at all (never a stale or empty-string one).
-  const conversationIdRef = useRef<string | undefined>(undefined);
+  //
+  // Packet 1.2: it can also be seeded from the `conversationId` prop, when the
+  // dock reopens an existing chat.
+  const conversationIdRef = useRef<string | undefined>(conversationId);
+  // Latch: the server re-emits compaction_suggested on EVERY turn once the
+  // transcript is over the threshold. The banner is an offer, not a status line
+  // — show it once per chat and never again, even if the user dismisses it.
+  const compactionShownRef = useRef(false);
+  // Set once, by the carryover handoff, and consumed by the very next request.
+  // `from` reseeds a fresh chat from the previous one's memo; sending it twice
+  // would re-inject the same carryover block into an already-seeded chat.
+  const pendingFromRef = useRef<string | undefined>(undefined);
   const endRef = useRef<HTMLDivElement>(null);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [turns, busy]);
+
+  // Mount-time rehydration. The transcript is already on the server (0.2); this
+  // just repaints it, so a refresh no longer looks like the chat is gone.
+  // Rehydrated assistant turns carry no steps (steps are live-run telemetry, not
+  // persisted) and render through the SAME <Markdown> bubble as live ones.
+  useEffect(() => {
+    if (!conversationId) return;
+    let cancelled = false;
+    apiGet<{ transcript: Array<{ role: string; content: string }> }>(`/api/agent/conversations/${encodeURIComponent(conversationId)}`)
+      .then((d) => {
+        if (cancelled) return;
+        const rows = Array.isArray(d.transcript) ? d.transcript : [];
+        setTurns(rows.map((m) => (m.role === 'user'
+          ? { role: 'user', text: m.content }
+          : { role: 'assistant', text: m.content, steps: [] })));
+      })
+      .catch(() => { /* best-effort: an empty console is still usable */ });
+    return () => { cancelled = true; };
+  }, [conversationId]);
 
   // Additive, non-breaking: surface the latest assistant turn's real steps to an
   // optional parent (the dock's context column). No effect on this component's UI.
@@ -127,6 +160,11 @@ export default function AgentConsole({ brandId, onSteps }: { brandId?: string; o
     if (payload.message) setTurns((p) => [...p, { role: 'user', text: payload.message }]);
     setTurns((p) => [...p, { role: 'assistant', text: '', steps: [] }]);
 
+    // Consumed here, cleared once the request is actually on the wire (below) —
+    // so `from` reaches the server at most once. A connection failure leaves it
+    // set, because nothing was sent.
+    const from = pendingFromRef.current;
+
     let res: Response;
     try {
       res = await fetch('/api/agent/stream', {
@@ -136,8 +174,10 @@ export default function AgentConsole({ brandId, onSteps }: { brandId?: string; o
           ...payload,
           brandId,
           ...(conversationIdRef.current ? { conversationId: conversationIdRef.current } : {}),
+          ...(from ? { from } : {}),
         }),
       });
+      if (from) pendingFromRef.current = undefined;
     } catch {
       patchAssistant((t) => t.steps.push({ kind: 'error', text: 'Connection failed. Try again.' }));
       setBusy(false); return;
@@ -187,6 +227,18 @@ export default function AgentConsole({ brandId, onSteps }: { brandId?: string; o
       if (typeof e.conversationId === 'string' && e.conversationId) conversationIdRef.current = e.conversationId;
       return;
     }
+    // Trailing event emitted after `final` once the transcript crosses
+    // AGENT_SOFT_TOKENS — and re-emitted on every later turn. It's a banner, not
+    // a step, so it returns early like the two branches above: falling through
+    // would resolve whatever step was left pending and draw a phantom check.
+    // The latch makes the offer appear exactly once per chat.
+    if (e.type === 'compaction_suggested') {
+      if (!compactionShownRef.current && (e.level === 'soft' || e.level === 'hard')) {
+        compactionShownRef.current = true;
+        setCompaction({ level: e.level, tokenEstimate: Number(e.tokenEstimate) || 0 });
+      }
+      return;
+    }
     patchAssistant((t) => {
       // resolve the previous pending step
       const prevPending = [...t.steps].reverse().find((s: Step) => 'done' in s && !s.done) as Step | undefined;
@@ -217,6 +269,31 @@ export default function AgentConsole({ brandId, onSteps }: { brandId?: string; o
     run({ approve: { approvalId: proposal.approvalId, tool: proposal.tool, args: proposal.args } });
   };
 
+  // Long-chat handoff: distil the current chat into a carryover memo server-side,
+  // then start an empty chat that will send `from=<old id>` on its first (and
+  // only its first) message. The old conversation is untouched and still listed.
+  const startFreshChat = async () => {
+    const fromId = conversationIdRef.current;
+    if (!fromId || handingOver) return;
+    setHandingOver(true);
+    try {
+      await apiSend('/api/agent/carryover', 'POST', { conversationId: fromId });
+    } catch {
+      // The memo could not be written; carrying `from` forward would seed the
+      // new chat with nothing. Tell the user rather than silently degrading.
+      setHandingOver(false);
+      patchAssistant((t) => t.steps.push({ kind: 'error', text: 'Could not prepare the handoff. Your chat is unchanged — try again.' }));
+      return;
+    }
+    pendingFromRef.current = fromId;
+    conversationIdRef.current = undefined;
+    compactionShownRef.current = false; // fresh chat, fresh (future) offer
+    setTurns([]);
+    setProposal(null);
+    setCompaction(null);
+    setHandingOver(false);
+  };
+
   return (
     <div className="flex h-[calc(100vh-9rem)] flex-col rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] shadow-[var(--shadow-card)]">
       <div className="flex-1 space-y-4 overflow-y-auto p-5">
@@ -245,6 +322,22 @@ export default function AgentConsole({ brandId, onSteps }: { brandId?: string; o
               )}
             </div>
           ),
+        )}
+        {compaction && (
+          <div className="animate-fade-in rounded-xl border border-[#D97706] bg-[color-mix(in_srgb,#D97706_8%,transparent)] p-4">
+            <div className="text-sm font-semibold text-[var(--text-primary)]">
+              {compaction.level === 'hard' ? 'This chat is very long' : 'This chat is getting long'}
+            </div>
+            <p className="mt-1 text-sm text-[var(--text-secondary)]">
+              {compaction.level === 'hard'
+                ? 'I recommend starting a fresh one — I’ll carry the objective, decisions and open tasks over.'
+                : 'Start a fresh one and I’ll carry the context over.'}
+            </p>
+            <div className="mt-3 flex gap-2">
+              <Button onClick={startFreshChat} loading={handingOver}>Start a fresh chat</Button>
+              <Button variant="secondary" onClick={() => setCompaction(null)}>Not now</Button>
+            </div>
+          </div>
         )}
         {proposal && (
           <div className="animate-fade-in rounded-xl border border-[#D97706] bg-[color-mix(in_srgb,#D97706_8%,transparent)] p-4">
