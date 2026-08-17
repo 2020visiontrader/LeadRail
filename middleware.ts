@@ -5,7 +5,7 @@ import { verifySession, SESSION_COOKIE } from '@/lib/session';
 // '/r/' is the ambassador capture link — clicked by logged-out strangers, so it
 // must be public. The trailing slash keeps it from matching the authed
 // '/referrals' portal (which stays gated).
-const PUBLIC_PAGES = ['/login', '/privacy', '/terms', '/data-deletion', '/r/'];
+const PUBLIC_PAGES = ['/welcome', '/login', '/privacy', '/terms', '/data-deletion', '/r/'];
 // Only genuinely public endpoints: user login, provider webhooks (signature-verified),
 // the cron tick (bearer-protected), and the Meta OAuth callback. Everything else —
 // including all social read/write routes — now requires a session.
@@ -38,6 +38,14 @@ export async function middleware(req: NextRequest) {
 
   if (isApi) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const url = req.nextUrl.clone();
+  // A stranger hitting the root gets the public marketing landing, not the bare
+  // login form. Every other unauthenticated page still routes to /login (with a
+  // next param so the operator returns to where they were headed).
+  if (pathname === '/') {
+    url.pathname = '/welcome';
+    url.search = '';
+    return NextResponse.redirect(url);
+  }
   url.pathname = '/login';
   url.searchParams.set('next', pathname);
   return NextResponse.redirect(url);
