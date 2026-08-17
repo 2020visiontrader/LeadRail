@@ -31,6 +31,26 @@ const TOOL_VERB: Record<string, string> = {
   analyzeCampaign: 'Comparing your ad creatives',
   searchNotion: 'Searching your Notion',
   searchDrive: 'Searching your Google Drive',
+  // --- added by Packet 2.2-S (social capabilities) ---
+  listSocialAccounts: 'Checking your connected social accounts',
+  getSocialStatus: 'Checking your social integrations',
+  listSocialComments: 'Reading the comments on that post',
+  getSocialInsights: 'Pulling that post’s performance',
+  draftSocialPost: 'Writing your post',
+  publishSocialPost: 'Preparing to publish your post',
+  replyToSocialComment: 'Preparing a public reply',
+  hideSocialComment: 'Preparing to hide that comment',
+  deleteSocialComment: 'Preparing to delete that comment',
+  sendSocialMessage: 'Preparing a direct message',
+  scheduleSocialPost: 'Preparing to schedule your post',
+  listScheduledSocialPosts: 'Checking what’s scheduled',
+  getAdBreakdown: 'Breaking down ad performance',
+  setAdStatus: 'Preparing to change that ad’s status',
+  listSocialAutomations: 'Checking your automatic rules',
+  createSocialAutomation: 'Preparing a new automatic rule',
+  enableSocialAutomation: 'Preparing to switch on an automatic rule',
+  disableSocialAutomation: 'Switching off that automatic rule',
+  deleteSocialAutomation: 'Preparing to delete that automatic rule',
 };
 const verbFor = (tool: string, title: string) => TOOL_VERB[tool] || title || 'Working';
 

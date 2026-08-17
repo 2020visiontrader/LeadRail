@@ -17,7 +17,14 @@ export type GateClass =
   | 'internal_write'  // mutates only LeadRail state. runs immediately.
   | 'spend'           // consumes credits or ad budget. approval required.
   | 'external_send'   // reaches a real third party. approval required.
-  | 'destructive';    // irreversible deletion. approval required.
+  | 'destructive'     // irreversible deletion. approval required.
+  // Additive (Packet 2.2-S): creates or switches on a rule that will send on
+  // its own, repeatedly, with no further human in the loop. The existing gates
+  // cannot express that — approving one send authorises one action, approving
+  // a standing rule authorises an unbounded stream of them. Sensitive like the
+  // others, so isSensitive() and the approval gate work unchanged; what differs
+  // is that its `summarize` MUST state the ongoing nature and the cap.
+  | 'standing_rule';
 
 export interface Capability {
   /** Stable id, camelCase. NEVER renamed once shipped — MCP clients bind to it. */
@@ -40,7 +47,8 @@ export interface Capability {
   summarize?: (args: any) => string;
 }
 
-export const SENSITIVE_GATES: GateClass[] = ['spend', 'external_send', 'destructive'];
+export const SENSITIVE_GATES: GateClass[] =
+  ['spend', 'external_send', 'destructive', 'standing_rule'];
 
 export function isSensitive(c: Capability): boolean {
   return SENSITIVE_GATES.includes(c.gate);

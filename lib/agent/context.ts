@@ -10,7 +10,8 @@
 // authenticated accountId (never a client value). All lookups degrade gracefully
 // — a copilot with partial context is better than a failed turn.
 
-import { supabase } from '@/lib/db';
+import { supabase, getConnections } from '@/lib/db';
+import { LIVE_SOCIALS } from '@/lib/social/providers';
 import { loadVentureContext } from '@/lib/ai/venture-context';
 import { recallMemoryDigest } from './memory';
 
@@ -90,6 +91,39 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
     snap.push(`- Ad campaigns: ${campaignCount ?? 0}`);
     sections.push(snap.join('\n'));
   } catch { /* snapshot omitted */ }
+
+  // --- Connected social accounts (Packet 2.2-S) ----------------------------
+  // Without this the model has to call listSocialAccounts before it can even
+  // answer "what am I connected to?", and it cannot name the right account when
+  // the user says "post this to the salon page". Identity only — display name,
+  // username and the public external id. NEVER secret_ref or meta, which carry
+  // access tokens. Omitted entirely when nothing is connected: an empty header
+  // would invite the model to claim connections that don't exist.
+  try {
+    const live = new Set(LIVE_SOCIALS.map((p) => p.key as string));
+    const labelFor = new Map(LIVE_SOCIALS.map((p) => [p.key as string, p.label]));
+    const conns = (await getConnections(accountId))
+      .filter((c: any) => c.status === 'connected' && live.has(c.provider));
+    if (conns.length) {
+      const lines = ['CONNECTED SOCIAL ACCOUNTS:'];
+      // Cap the block: a user with 40 connected pages must not crowd out the
+      // rest of the briefing. The model can call listSocialAccounts for the full list.
+      for (const c of conns.slice(0, 12)) {
+        const who = c.username ? `@${c.username}` : (c.display_name || '(unnamed)');
+        lines.push(`- ${labelFor.get(c.provider) || c.provider}: ${who} (id: ${c.external_id})`);
+      }
+      if (conns.length > 12) lines.push(`- …and ${conns.length - 12} more (call listSocialAccounts).`);
+      try {
+        const { count } = await supabase
+          .from('social_automations')
+          .select('id', { count: 'exact', head: true })
+          .eq('account_id', accountId)
+          .eq('enabled', true);
+        if (count) lines.push(`Active automations: ${count} (see listSocialAutomations)`);
+      } catch { /* automation count omitted */ }
+      sections.push(lines.join('\n'));
+    }
+  } catch { /* social section omitted */ }
 
   // --- Durable memory: facts learned across sessions -----------------------
   try {
