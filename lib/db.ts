@@ -246,8 +246,13 @@ export async function upsertConnection(row: {
   status?: string;
   secret_ref?: string | null;
   meta?: Record<string, any>;
+  // AES-256-GCM ciphertext (migration 042). Written ONLY by
+  // lib/social/credentials.ts storeSocialCredential, which encrypts first —
+  // never accepted from a request body. Omitted (not nulled) when absent, so an
+  // unrelated re-upsert of the same row cannot erase a stored token.
+  secret_encrypted?: string;
 }) {
-  const payload = {
+  const payload: Record<string, any> = {
     account_id: row.account_id,
     provider: row.provider,
     external_id: row.external_id ?? row.provider,
@@ -258,6 +263,7 @@ export async function upsertConnection(row: {
     meta: row.meta ?? {},
     updated_at: new Date().toISOString(),
   };
+  if (row.secret_encrypted !== undefined) payload.secret_encrypted = row.secret_encrypted;
   const { data, error } = await supabase
     .from('integration_connections')
     .upsert(payload, { onConflict: 'account_id,provider,external_id' })

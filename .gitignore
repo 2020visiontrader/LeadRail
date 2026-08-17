@@ -16,3 +16,6 @@ logs-export/
 # delegation harness scratch
 delegation/runs/
 delegation/task-*.txt
+
+# Claude Code agent worktrees (multi-GB, never committed)
+.claude/

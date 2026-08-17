@@ -37,6 +37,7 @@ import {
 import { getInsightsByLevel, updateStatus } from '@/lib/social/meta-ads';
 import { getIntegrations } from '@/lib/social/index';
 import { createPost as bufferCreatePost, listPosts as bufferListPosts } from '@/lib/social/buffer';
+import { requireSocialCredential } from '@/lib/social/credentials';
 import { generateContentPost } from '@/lib/ai/generation';
 import { LIVE_SOCIALS, SOCIAL_KEYS, type SocialKey } from '@/lib/social/providers';
 import { obj, S, type Capability, rowsOf, plural, samples, tally, present, digestLine } from './types';
@@ -125,16 +126,28 @@ function commentPlatform(platform: string): 'facebook' | 'instagram' {
 // ---------------------------------------------------------------------------
 
 /**
- * Buffer is single-tenant today (global env credentials — see lib/social/buffer.ts).
- * Exposing it to the agent unscoped would leak one account's channels and
- * scheduled posts to another, so a capability only runs when THIS account has
- * its own connection row. Per-account credential storage is Packet 7.2; until
- * then refusing is the correct behaviour, not a limitation to work around.
+ * Buffer used to be single-tenant (global env credentials), so this guard
+ * refused every account: exposing it unscoped would have leaked one account's
+ * channels and scheduled posts to another. Packet 7.2 made per-account
+ * credentials real, so the guard now PASSES for an account that has connected
+ * its own Buffer token — and still refuses, unchanged, for one that has not.
+ *
+ * It got stricter rather than looser. A connection row alone is no longer
+ * enough: `requireSocialCredential` also demands a usable credential for THIS
+ * account, because POST /api/integrations lets a client create a bare
+ * `provider: 'buffer'` row with no token. A row without a credential is not a
+ * connection, and it must not open the capability.
+ *
+ * Both reads are account-scoped in-query and neither is silently caught — a
+ * failed credential resolve refuses, it never falls through.
  */
 async function requireBuffer(accountId: string) {
   const conn = await getConnection(accountId, 'buffer');
   if (!conn) throw new Error('Buffer is not connected for this account.');
-  return conn;
+  const cred = await requireSocialCredential(accountId, 'buffer');
+  // Prefer the row's external_id (the Buffer organisation), falling back to the
+  // credential's, so scheduling still targets the right organisation.
+  return { ...conn, external_id: conn.external_id ?? cred.externalId };
 }
 
 export const SOCIAL_CAPABILITIES: Capability[] = [
@@ -371,7 +384,7 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     }),
     run: async (accountId, a) => {
       await requireBuffer(accountId);
-      return bufferCreatePost(a.channelId, a.text, a.dueAt);
+      return bufferCreatePost(accountId, a.channelId, a.text, a.dueAt);
     },
     summarize: (a) => `Schedule a ${a.platform} post for ${a.dueAt}: "${String(a.text).slice(0, 120)}". It publishes automatically at that time.`,
   },
@@ -385,7 +398,7 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     zod: z.object({ status: z.string().optional(), limit: z.number().int().min(1).max(100).optional() }),
     run: async (accountId, a) => {
       const conn = await requireBuffer(accountId);
-      return bufferListPosts(String(conn.external_id), a?.status, a?.limit ?? 20);
+      return bufferListPosts(accountId, String(conn.external_id), a?.status, a?.limit ?? 20);
     },
   },
 

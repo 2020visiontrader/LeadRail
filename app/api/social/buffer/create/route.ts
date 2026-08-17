@@ -6,13 +6,15 @@ import { requireSession, errorResponse, badRequest } from '@/lib/http';
 export const dynamic = 'force-dynamic';
 
 async function POST__impl(request: NextRequest) {
-  const { error } = await requireSession(request);
+  const { session, error } = await requireSession(request);
   if (error) return error;
   try {
     const body = await request.json();
     const { channelId, text, dueAt, draft } = body;
     if (!channelId || !text) return badRequest('channelId and text required');
-    const result = await createPost(channelId, text, dueAt, draft ?? false);
+    // Packet 7.2: publishes with THIS account's Buffer credential, not a
+    // deployment-wide one.
+    const result = await createPost(session.accountId, channelId, text, dueAt, draft ?? false);
     return NextResponse.json({ success: true, result }, { status: 201 });
   } catch (error: any) {
     return errorResponse(error);

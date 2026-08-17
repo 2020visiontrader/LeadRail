@@ -1,3 +1,14 @@
+// Integration status for the account's Settings view (GET /api/social). This is
+// browser-facing, so it returns BOOLEANS AND LABELS ONLY — never a token, a
+// secret_ref, or a connection row.
+//
+// Packet 7.2: Buffer and GoHighLevel used to report `connected` from
+// process.env, i.e. every tenant was told the operator's credential was theirs,
+// and the capability then failed confusingly. They now report whether THIS
+// account can actually authenticate.
+
+import { hasSocialCredential } from './credentials';
+
 interface IntegrationStatus {
   provider: 'meta' | 'buffer' | 'ghl';
   connected: boolean;
@@ -31,26 +42,27 @@ export async function getIntegrations(accountId?: string): Promise<IntegrationSt
       : ['requires connection'],
   });
 
-  // Buffer
-  const bufferConnected = !!process.env.BUFFER_API_KEY;
+  // Buffer / GoHighLevel — per-account credentials (Packet 7.2). With no
+  // accountId there is nothing to resolve against, so they report disconnected
+  // rather than reporting a shared env credential as if it were the caller's.
+  const bufferConnected = accountId ? await hasSocialCredential(accountId, 'buffer') : false;
   integrations.push({
     provider: 'buffer',
     connected: bufferConnected,
     label: 'Buffer (Cross-Platform)',
     capabilities: bufferConnected
       ? ['publish', 'schedule', 'analytics', 'LinkedIn', 'Twitter/X', 'Facebook', 'Instagram']
-      : ['requires BUFFER_API_KEY'],
+      : ['requires connection'],
   });
 
-  // GoHighLevel
-  const ghlConnected = !!process.env.GOHIGHLEVEL_ACCESS_TOKEN;
+  const ghlConnected = accountId ? await hasSocialCredential(accountId, 'ghl') : false;
   integrations.push({
     provider: 'ghl',
     connected: ghlConnected,
     label: 'GoHighLevel CRM',
     capabilities: ghlConnected
       ? ['publish', 'schedule', 'analytics', 'Facebook', 'Instagram', 'LinkedIn', 'Google Business']
-      : ['requires GHL connection'],
+      : ['requires connection'],
   });
 
   return integrations;

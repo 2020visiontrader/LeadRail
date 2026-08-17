@@ -11,12 +11,15 @@ async function GET__impl(request: NextRequest) {
   try {
     const locationId = request.nextUrl.searchParams.get('locationId')
       || (await resolveGhlLocationId(session.accountId));
-    const accountId = request.nextUrl.searchParams.get('accountId') || undefined;
+    // `accountId` in the query string is a GoHighLevel social-profile id, NOT a
+    // LeadRail account id — the tenant is session.accountId, which is what
+    // selects the credential (Packet 7.2).
+    const socialAccountId = request.nextUrl.searchParams.get('accountId') || undefined;
     const limit = parseInt(request.nextUrl.searchParams.get('limit') || '20', 10);
     const postId = request.nextUrl.searchParams.get('postId');
     if (!locationId) return badRequest('locationId required (none configured for this account)');
-    if (postId) return NextResponse.json(await getPostAnalytics(locationId, postId));
-    return NextResponse.json(await listPosts(locationId, accountId, limit));
+    if (postId) return NextResponse.json(await getPostAnalytics(session.accountId, locationId, postId));
+    return NextResponse.json(await listPosts(session.accountId, locationId, socialAccountId, limit));
   } catch (error: any) {
     return errorResponse(error);
   }
@@ -30,7 +33,7 @@ async function DELETE__impl(request: NextRequest) {
       || (await resolveGhlLocationId(session.accountId));
     const postId = request.nextUrl.searchParams.get('postId');
     if (!locationId || !postId) return badRequest('locationId and postId required');
-    return NextResponse.json(await deletePost(locationId, postId));
+    return NextResponse.json(await deletePost(session.accountId, locationId, postId));
   } catch (error: any) {
     return errorResponse(error);
   }

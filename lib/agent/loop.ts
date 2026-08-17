@@ -140,8 +140,28 @@ function skillsBlock(skills: { name: string; instructions: string }[]): string {
   ].join('\n');
 }
 
+// PROMPT BLOCK ORDER IS LOAD-BEARING (Packet 10.2 Part A) — do not rearrange.
+//
+// Everything static for an account comes FIRST; everything volatile comes LAST:
+//
+//   identity → personaBlock → skillsGuidance → HOW YOU RESPOND → HOW YOU WORK
+//            → tool catalog → agentContext → carryover
+//
+// Prompt caching keys on a stable *prefix*: every byte after the first volatile
+// byte is uncacheable. `agentContext` (loadAgentContext is query-specific) and
+// `carryover` change per turn; `HOW YOU WORK` and the tool catalog are the two
+// largest blocks here and are identical on every turn for an account. With the
+// volatile blocks in the middle — where they used to sit — the biggest static
+// content was the least cacheable part of the prompt.
+//
+// LeadRail does NOT implement provider-side prompt caching yet. This ordering
+// makes the prefix *cacheable*; enabling caching is a separate change in
+// lib/ai/providers.ts and is deliberately out of scope here. Reordering these
+// blocks back also changes what the model attends to most strongly (recency),
+// so it is a behaviour change, not a cosmetic one — do not do it casually.
 function systemPrompt(brandName?: string, agentContext?: string, carryover?: CarryoverMemo | null, personaBlock?: string, skillsGuidance?: string): string {
   return [
+    // ---- STATIC (stable across every turn for an account) -------------------
     'You are LeadRail AI — the operator copilot built into the LeadRail platform. Think of yourself the way a great chief-of-staff works: you understand the whole platform, you know this account and its ventures, you reason things through in plain language, and you actually DO the work by using LeadRail\'s tools. You are conversational and intellectually engaged — you can discuss strategy, weigh options, and explain your thinking, not just fire off tool calls.',
     '',
     // Persona override (migration 024) — absent for every call today, so this
@@ -150,13 +170,15 @@ function systemPrompt(brandName?: string, agentContext?: string, carryover?: Car
     // Enabled skills (migration 025) — absent when the account has none
     // enabled (the default), so this is a no-op for every account today.
     skillsGuidance ? skillsGuidance + '\n' : '',
-    agentContext || (brandName ? `The user is working in the "${brandName}" venture; prefer it when a venture is needed and not otherwise specified.` : ''),
-    carryover ? '\n' + carryoverBlock(carryover) : '',
     '',
     'HOW YOU RESPOND: on EACH turn output ONE JSON object and nothing else — no prose outside it, no markdown fences. Use exactly one shape:',
     '  {"thought":"<short plain-language sentence describing what you\'re doing/thinking>","action":"tool","tool":"<toolName>","args":{...}}',
     '  {"thought":"<short plain-language sentence>","action":"final","message":"<your full reply to the user>"}',
     'The "thought" is shown to the user live as your thinking step — write it as a human sentence ("Checking your active campaigns…"), never a raw tool name.',
+    'You MAY split that one field into two, in either shape — both are optional and either may be omitted:',
+    '  "plan": your own internal reasoning about what to do next. It is NEVER shown to the user, so be as technical as you like.',
+    '  "narration": the single line the user reads instead of "thought". Short, plain language, present tense, no tool, vendor, or model names ("Pulling this month\'s numbers…").',
+    'When "narration" is present it replaces "thought" in the live trace. When it is absent, "thought" is used exactly as described above — so omitting both new fields is always safe.',
     '',
     'HOW YOU WORK:',
     '- Ground every answer in this account\'s real data — use the context above and the tools; never invent numbers, leads, or campaigns.',
@@ -181,6 +203,12 @@ function systemPrompt(brandName?: string, agentContext?: string, carryover?: Car
           'AVAILABLE TOOLS:',
           toolCatalogForPrompt(),
         ]),
+    // ---- VOLATILE (changes per turn — nothing static may follow) ------------
+    // Both blocks below are per-turn grounding. They are LAST on purpose; see
+    // the PROMPT BLOCK ORDER note above before moving either of them.
+    '',
+    agentContext || (brandName ? `The user is working in the "${brandName}" venture; prefer it when a venture is needed and not otherwise specified.` : ''),
+    carryover ? '\n' + carryoverBlock(carryover) : '',
   ].filter(Boolean).join('\n');
 }
 
@@ -218,6 +246,35 @@ function extractJson(raw: string): any | null {
   const m = raw.match(/\{[\s\S]*\}/);
   if (!m) return null;
   try { return JSON.parse(m[0]); } catch { return null; }
+}
+
+/** The user-facing line for one route-pass envelope (Packet 10.2 Part B).
+ *
+ *  The route pass used to make `thought` do two jobs: the model's private
+ *  reasoning AND the sentence the user reads in the live trace — both inside
+ *  one 700-token envelope at a temperature picked for routing accuracy. The
+ *  protocol now offers `plan` (private) and `narration` (public) as an optional
+ *  split.
+ *
+ *  `plan` is deliberately NOT consulted here. It reaches the model again only
+ *  via the transcript (the whole envelope is stringified into `messages`), which
+ *  is server-side continuity; it must never reach a client. This function is the
+ *  ONLY way either loop derives a user-visible line, so there is exactly one
+ *  place to audit that.
+ *
+ *  Backward compatibility is unconditional, not best-effort: with `narration`
+ *  absent — every model response before this packet, and any model that ignores
+ *  the new field — this returns `parsed.thought` untouched, so both call sites
+ *  behave byte-for-byte as they did before.
+ *
+ *  BOTH runAgent and runAgentStream must call this. Their parsing of the
+ *  envelope is required to be identical (runAgent has no `emit`, so it records
+ *  the line into `steps` instead of emitting it).
+ */
+function narrationFor(parsed: any): string | undefined {
+  const n = parsed?.narration;
+  if (typeof n === 'string' && n.trim() !== '') return n;
+  return parsed?.thought;
 }
 
 function truncate(s: string): string {
@@ -418,7 +475,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
             agentContext: input.agentContext, personaBlock,
           })
         : draft;
-      steps.push({ thought: parsed.thought });
+      steps.push({ thought: narrationFor(parsed) });
       const tokenEstimate = estimateTokens(messages);
       return { status: 'done', message, transcript: messages, steps, tokenEstimate, compaction: compactionLevel(tokenEstimate) };
     }
@@ -429,7 +486,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
     const def = TOOLS[tool];
 
     if (!def) {
-      steps.push({ thought: parsed.thought, tool });
+      steps.push({ thought: narrationFor(parsed), tool });
       messages.push(observation(`ERROR: unknown tool "${tool}".`));
       continue;
     }
@@ -453,7 +510,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
       } catch {
         return { status: 'error', message: "I couldn't record that action for your approval, so I haven't run it. Please try again.", transcript: messages, steps };
       }
-      steps.push({ thought: parsed.thought, tool, args });
+      steps.push({ thought: narrationFor(parsed), tool, args });
       return { status: 'needs_approval', message: proposal.summary, proposal, transcript: messages, steps };
     }
 
@@ -470,7 +527,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
 
     const res = await runTool(tool, accountId, args);
     const obs = observationFor(tool, args, res);
-    steps.push({ thought: parsed.thought, tool, args, observation: truncate(obs) });
+    steps.push({ thought: narrationFor(parsed), tool, args, observation: truncate(obs) });
     messages.push(observation(obs));
   }
 
@@ -576,7 +633,11 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
     corrected = false;
     messages.push({ role: 'assistant', content: JSON.stringify(parsed) });
 
-    if (parsed.thought) emit({ type: 'thought', text: String(parsed.thought) });
+    // Packet 10.2 Part B: `narration` when the model supplied one, else
+    // `thought` exactly as before. `parsed.plan` is never read here — it stays
+    // in the transcript for the model and never reaches an SSE payload.
+    const narration = narrationFor(parsed);
+    if (narration) emit({ type: 'thought', text: String(narration) });
 
     if (parsed.action === 'final') {
       const draft = String(parsed.message || '').trim() || 'Done.';

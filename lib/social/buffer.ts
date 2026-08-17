@@ -1,16 +1,33 @@
 // Buffer MCP wrapper — calls the Buffer MCP JSON-RPC endpoint.
-// BUFFER_API_KEY must be set in environment.
+//
+// PACKET 7.2. Every function here takes the caller's authenticated accountId
+// FIRST and authenticates with THAT account's own credential, resolved from its
+// integration_connections row (lib/social/credentials.ts). Previously this file
+// read BUFFER_API_KEY from process.env, which meant `getChannels()` returned
+// the operator's channels to every tenant on the deployment — the leak that
+// forced Packet 2.2-S to refuse Buffer to the agent entirely.
+//
+// There is deliberately no un-scoped variant of `rpc`: an accountId is the only
+// way to obtain a token, so a future caller cannot accidentally reintroduce a
+// shared credential. The token is used for one outbound header and never
+// logged, returned, or included in an error message — note that the HTTP error
+// path below quotes Buffer's response body, never our request.
+
+import { requireSocialCredential } from './credentials';
 
 const ENDPOINT = 'https://mcp.buffer.com/mcp';
 
-async function rpc(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
-  const apiKey = process.env.BUFFER_API_KEY;
-  if (!apiKey) throw new Error('BUFFER_API_KEY not set');
+async function rpc(
+  accountId: string,
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<unknown> {
+  const { token } = await requireSocialCredential(accountId, 'buffer');
 
   const res = await fetch(ENDPOINT, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${apiKey}`,
+      Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
       Accept: 'application/json, text/event-stream',
     },
@@ -41,18 +58,18 @@ function extractText(result: unknown): any {
   return result;
 }
 
-export async function getChannels(orgId?: string) {
-  const result = await rpc('list_channels', orgId ? { organization_id: orgId } : {});
+export async function getChannels(accountId: string, orgId?: string) {
+  const result = await rpc(accountId, 'list_channels', orgId ? { organization_id: orgId } : {});
   return extractText(result);
 }
 
-export async function getChannel(channelId: string) {
-  const result = await rpc('get_channel', { channel_id: channelId });
+export async function getChannel(accountId: string, channelId: string) {
+  const result = await rpc(accountId, 'get_channel', { channel_id: channelId });
   return extractText(result);
 }
 
-export async function listPosts(orgId: string, status?: string, limit = 20) {
-  const result = await rpc('list_posts', {
+export async function listPosts(accountId: string, orgId: string, status?: string, limit = 20) {
+  const result = await rpc(accountId, 'list_posts', {
     organization_id: orgId,
     ...(status ? { status } : {}),
     limit,
@@ -60,13 +77,19 @@ export async function listPosts(orgId: string, status?: string, limit = 20) {
   return extractText(result);
 }
 
-export async function getPost(postId: string) {
-  const result = await rpc('get_post', { post_id: postId });
+export async function getPost(accountId: string, postId: string) {
+  const result = await rpc(accountId, 'get_post', { post_id: postId });
   return extractText(result);
 }
 
-export async function createPost(channelId: string, text: string, dueAt?: string, draft = false) {
-  const result = await rpc('create_post', {
+export async function createPost(
+  accountId: string,
+  channelId: string,
+  text: string,
+  dueAt?: string,
+  draft = false,
+) {
+  const result = await rpc(accountId, 'create_post', {
     channel_id: channelId,
     text,
     ...(dueAt ? { due_at: dueAt } : {}),
@@ -75,8 +98,8 @@ export async function createPost(channelId: string, text: string, dueAt?: string
   return extractText(result);
 }
 
-export async function editPost(postId: string, text: string, dueAt?: string) {
-  const result = await rpc('edit_post', {
+export async function editPost(accountId: string, postId: string, text: string, dueAt?: string) {
+  const result = await rpc(accountId, 'edit_post', {
     post_id: postId,
     text,
     ...(dueAt ? { due_at: dueAt } : {}),
@@ -84,7 +107,7 @@ export async function editPost(postId: string, text: string, dueAt?: string) {
   return extractText(result);
 }
 
-export async function deletePost(postId: string) {
-  const result = await rpc('delete_post', { post_id: postId });
+export async function deletePost(accountId: string, postId: string) {
+  const result = await rpc(accountId, 'delete_post', { post_id: postId });
   return extractText(result);
 }

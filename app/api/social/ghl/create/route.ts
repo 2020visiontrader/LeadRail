@@ -13,7 +13,9 @@ async function POST__impl(request: NextRequest) {
     const { summary, accountIds, scheduleDate, media } = body;
     const locationId = body.locationId || (await resolveGhlLocationId(session.accountId));
     if (!locationId || !summary) return badRequest('locationId (or configured account location) and summary required');
-    const result = await createPost(locationId, summary, accountIds, scheduleDate, media);
+    // Packet 7.2: `accountIds` are GoHighLevel social-profile ids from the
+    // request; session.accountId is the LeadRail tenant whose token signs it.
+    const result = await createPost(session.accountId, locationId, summary, accountIds, scheduleDate, media);
     return NextResponse.json({ success: true, result }, { status: 201 });
   } catch (error: any) {
     return errorResponse(error);

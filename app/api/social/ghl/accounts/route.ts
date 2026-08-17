@@ -12,7 +12,9 @@ async function GET__impl(request: NextRequest) {
     const locationId = request.nextUrl.searchParams.get('locationId')
       || (await resolveGhlLocationId(session.accountId));
     if (!locationId) return badRequest('locationId required (none configured for this account)');
-    const accounts = await getSocialAccounts(locationId);
+    // Packet 7.2: authenticates with THIS account's location-scoped GHL token,
+    // so the locationId a client passes cannot reach another tenant's location.
+    const accounts = await getSocialAccounts(session.accountId, locationId);
     return NextResponse.json(accounts);
   } catch (error: any) {
     return errorResponse(error);
