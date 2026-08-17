@@ -13,7 +13,11 @@
 
 import { generateText, textConfigured } from './router';
 import { pickModel, getModel, type TaskKind } from './models';
-import { SKILLS, getSkill, type Skill } from '@/lib/skills/registry';
+import { SKILLS, ROUTABLE_SKILLS, getSkill, type Skill } from '@/lib/skills/registry';
+
+// Harvested-only slice, precomputed once: the built-ins are always in the
+// shortlist, so scoring them again would be wasted work on every request.
+const HARVESTED_FOR_ROUTING: Skill[] = ROUTABLE_SKILLS.slice(SKILLS.length);
 
 export interface HermesPlan {
   intent: string;
@@ -98,6 +102,57 @@ function finalize(
   };
 }
 
+/** How many skills the routing prompt may name. Keeps the classify call small
+ *  and the choice discriminable. Built-ins are always included, so this is a
+ *  floor of 12 plus the best-scoring harvested matches. */
+const ROUTING_SHORTLIST = 45;
+
+/** Words too common to carry signal — scoring on them would rank by noise. */
+const STOPWORDS = new Set([
+  'the', 'and', 'for', 'with', 'that', 'this', 'from', 'into', 'about', 'your',
+  'you', 'our', 'are', 'was', 'can', 'how', 'what', 'why', 'who', 'when', 'get',
+  'make', 'need', 'want', 'please', 'help', 'some', 'more', 'all', 'any',
+]);
+
+/**
+ * Deterministic, offline prefilter: score every routable skill by term overlap
+ * with the request, and return the built-ins plus the best harvested matches.
+ *
+ * Deliberately dumb — no embeddings, no model call. It runs before the routing
+ * model on every request, so it must be free and instant. It does not decide
+ * anything; it only decides what the model is allowed to SEE, and the model
+ * still picks 1-4 from that. A poor shortlist degrades to the built-in 12,
+ * which is exactly the behaviour before the harvest — never worse.
+ */
+/** One line's worth of "what is this skill for", flattened and bounded. The
+ *  built-ins' `when` values are already one-liners and pass through untouched. */
+function clipWhen(when: string, max = 150): string {
+  const flat = String(when || '').replace(/\s+/g, ' ').trim();
+  return flat.length > max ? `${flat.slice(0, max)}…` : flat;
+}
+
+function shortlistForRouting(request: string): Skill[] {
+  const terms = String(request || '')
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length > 2 && !STOPWORDS.has(t));
+  if (!terms.length) return SKILLS;
+
+  const scored = HARVESTED_FOR_ROUTING.map((s) => {
+    const hay = `${s.name} ${s.when} ${s.category}`.toLowerCase();
+    // Count distinct matching terms, not occurrences: a skill that mentions
+    // "email" ten times is not more relevant than one matching "email" AND
+    // "sequence".
+    let score = 0;
+    for (const t of terms) if (hay.includes(t)) score++;
+    return { s, score };
+  }).filter((x) => x.score > 0);
+
+  scored.sort((a, b) => b.score - a.score);
+  const room = Math.max(0, ROUTING_SHORTLIST - SKILLS.length);
+  return [...SKILLS, ...scored.slice(0, room).map((x) => x.s)];
+}
+
 /**
  * Route a request to a plan. Tries a fast AI classification against the skill
  * catalog; on any problem falls back to the deterministic keyword router.
@@ -108,7 +163,21 @@ export async function hermesRoute(request: string, ctx: HermesContext = {}): Pro
     return finalize(base.intent, base.taskKind, base.skillIds, 'Routed by keyword rules (AI router unavailable).', 'fallback');
   }
 
-  const catalog = SKILLS.map((s: Skill) => `${s.id} [${s.category}] — ${s.when}`).join('\n');
+  // Shortlist BEFORE the model sees anything. Packet 5.1 took the catalog from
+  // 12 to 353; rendering all of them here would put ~8.5k tokens of prompt into
+  // a cheap classify call on EVERY request, and ask the model to discriminate
+  // between 353 candidates — which costs accuracy as well as money. Same problem
+  // packet 10.3 solved for the tool catalog, same shape of answer: narrow first,
+  // then let the model choose from a bounded set.
+  // Clip each line too. Harvested `when` values are trigger-dense paragraphs
+  // (~500 chars each), so 45 unclipped lines is still ~5.5k tokens. The router
+  // only has to judge RELEVANCE, not execute the skill — the full instructions
+  // are injected later by composeSkillGuidance for whichever 1-4 it picks. One
+  // clipped line is enough to choose from, and takes the routing prompt to
+  // roughly 1.5k.
+  const catalog = shortlistForRouting(text)
+    .map((s: Skill) => `${s.id} [${s.category}] — ${clipWhen(s.when)}`)
+    .join('\n');
   const kinds = 'classify | extract | draft | reason | long | code';
   const system =
     'You are Hermes, a routing brain for a B2B outreach CRM. Given a user request, choose the work type and the relevant skills from a fixed catalog. Pick 1-4 skills that genuinely apply — do not pad. Respond with ONLY JSON.';

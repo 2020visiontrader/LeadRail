@@ -177,7 +177,41 @@ export const SKILL_CATEGORIES: { key: SkillCategory; label: string }[] = [
   { key: 'humanizer', label: 'Humanizer' },
 ];
 
-const skillById = new Map(SKILLS.map((s) => [s.id, s]));
+/**
+ * The harvested OSS catalog (Packet 5.1, 341 skills) projected into the same
+ * `Skill` shape the built-ins use, so Hermes can select them and
+ * composeSkillGuidance can inject them.
+ *
+ * Before this, harvested skills existed only in `skillCatalog()` — the shape the
+ * API/UI reads — and were absent from `skillById`. Hermes therefore never saw
+ * them, and even if it had named one, `getSkill()` would have returned undefined
+ * and the id would have been filtered out of the plan. They were harvested and
+ * catalogued but genuinely unreachable.
+ *
+ * Ids are namespaced `harvested:<slug>` so a harvested skill can never collide
+ * with, or silently shadow, a curated built-in.
+ *
+ * `taskKind` is 'draft' for all of them: these are marketing prompt modules
+ * (copy, SEO, ads, content), and 'draft' is the tier that produces prose. That
+ * is a deliberate default, not derived data — the upstream frontmatter has no
+ * equivalent field, and guessing per skill would be inventing information.
+ */
+const HARVESTED_AS_SKILLS: Skill[] = HARVESTED_SKILLS.map((h) => ({
+  id: `harvested:${h.slug}`,
+  name: h.name,
+  category: (['claude', 'marketing', 'linkedin', 'outreach', 'lead-gen', 'humanizer'] as string[])
+    .includes(h.category) ? (h.category as SkillCategory) : 'marketing',
+  when: h.description,
+  systemModule: h.instructions,
+  taskKind: 'draft' as TaskKind,
+  inspiredBy: `${h.sourceRepo} (${h.license})`,
+}));
+
+/** Everything Hermes may route to: the curated built-ins plus the harvest.
+ *  Built-ins come FIRST so a prefilter that truncates still keeps them. */
+export const ROUTABLE_SKILLS: Skill[] = [...SKILLS, ...HARVESTED_AS_SKILLS];
+
+const skillById = new Map(ROUTABLE_SKILLS.map((s) => [s.id, s]));
 
 export function getSkill(id: string): Skill | undefined {
   return skillById.get(id);
