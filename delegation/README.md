@@ -60,7 +60,7 @@ Route by *failure cost*, not size. Anything touching `account_id`, approval stat
 | 9.2 | Sanitize the email template preview | A | ☑ merged |
 | 10.1 | Observation digests (result → language) | B | ☑ merged |
 | 10.2 | Prompt prefix order + plan/narration split | B | ☐ spec ready |
-| 10.3 | Two-stage tool catalog | B | ☐ spec ready · **blocks 5.1** |
+| 10.3 | Two-stage tool catalog | B | ☑ merged (opt-in flag) |
 | 11.1 | Legal entity + AI subprocessor disclosure | A | ☐ spec ready · needs counsel |
 | 11.2 | Public landing page | C | ☐ spec ready |
 

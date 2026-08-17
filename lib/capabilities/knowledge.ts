@@ -71,4 +71,28 @@ export const KNOWLEDGE_CAPABILITIES: Capability[] = [
     zod: z.object({ fileId: z.string(), maxChars: z.number().optional() }),
     run: (accountId, { fileId, maxChars }) => driveReadFileText(accountId, fileId, maxChars),
   },
+  // --- Packet 10.3: stage 2 of the two-stage tool catalog. Registered ONLY when
+  // AGENT_STAGED_CATALOG=1 (filtered in registry.ts) — with staging off there is
+  // no compact index to expand.
+  {
+    name: 'describeTools',
+    domain: 'knowledge',
+    title: 'Describe tools in a domain',
+    description: 'Look up the full argument list for every tool in one domain (e.g. "campaigns", "leads", "social"). Call this before using a tool whose arguments you have not been shown yet.',
+    gate: 'read',
+    inputSchema: obj({ domain: S.string }, ['domain']),
+    zod: z.object({ domain: z.string() }),
+    // Static registry data only: no account scope is read, and the signature
+    // deliberately ignores accountId so this can never become per-account.
+    // The registry import is dynamic purely to avoid an import cycle
+    // (registry.ts imports this file).
+    run: async (_accountId, { domain }) => {
+      const { describeDomain } = await import('./registry');
+      return describeDomain(domain);
+    },
+    digest: (_args, result) => {
+      if (!result || typeof result !== 'object' || !Array.isArray(result.tools)) return '';
+      return `Full signatures for the "${result.domain}" domain (${result.count} tools).`;
+    },
+  },
 ];

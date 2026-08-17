@@ -1,4 +1,4 @@
-import type { Capability } from './types';
+import { isSensitive, type Capability } from './types';
 import { VENTURE_CAPABILITIES } from './ventures';
 import { CAMPAIGN_CAPABILITIES } from './campaigns';
 import { LEAD_CAPABILITIES } from './leads';
@@ -11,6 +11,20 @@ import { SOCIAL_CAPABILITIES } from './social';
 import { SOCIAL_AUTOMATION_CAPABILITIES } from './social-automations';
 import { METRICS_BY_NAME } from './metrics-port';
 
+// Two-stage tool catalog (Packet 10.3). Opt-IN, never opt-out: staging changes
+// what the routing pass sees, and routing regressions are expensive. With the
+// flag unset the registry holds EXACTLY the capabilities that shipped before
+// this packet, so toolCatalogForPrompt() and the assembled system prompt are
+// byte-identical to today. Flip the default only after measuring routing
+// quality flag-on vs flag-off.
+export const AGENT_STAGED_CATALOG = process.env.AGENT_STAGED_CATALOG === '1';
+
+// Capabilities that exist only to drive the staged catalog. They are registered
+// (and therefore reach the prompt, MCP tools/list and runTool) only when staging
+// is on — with staging off there is nothing to expand, so exposing them would
+// just add a line to a prompt this packet promises not to touch.
+const STAGED_ONLY: string[] = ['describeTools'];
+
 const ALL: Capability[] = [
   ...VENTURE_CAPABILITIES,
   ...CAMPAIGN_CAPABILITIES,
@@ -22,7 +36,7 @@ const ALL: Capability[] = [
   ...MEMORY_CAPABILITIES,
   ...SOCIAL_CAPABILITIES,
   ...SOCIAL_AUTOMATION_CAPABILITIES,
-];
+].filter((c) => AGENT_STAGED_CATALOG || !STAGED_ONLY.includes(c.name));
 
 // CATALOG ORDER — the exact key order of the original TOOLS object literal in
 // lib/agent/tools.ts, which interleaved domains. toolCatalogForPrompt() renders
@@ -51,6 +65,10 @@ const CATALOG_ORDER: string[] = [
   'listScheduledSocialPosts', 'getAdBreakdown', 'setAdStatus',
   'listSocialAutomations', 'createSocialAutomation', 'enableSocialAutomation',
   'disableSocialAutomation', 'deleteSocialAutomation',
+  // --- appended by Packet 10.3 (two-stage catalog). Appended, never sorted.
+  // Present only when staging is on, matching the ALL filter above; the
+  // missing/unknown checks below still hold in both modes.
+  ...(AGENT_STAGED_CATALOG ? STAGED_ONLY : []),
 ];
 
 const byName = new Map(ALL.map((c) => [c.name, c]));
@@ -79,3 +97,62 @@ export const CAPABILITIES: Capability[] = CATALOG_ORDER.map((n) => {
 
 export const CAPABILITY_BY_NAME: Record<string, Capability> =
   Object.fromEntries(CAPABILITIES.map((c) => [c.name, c]));
+
+// --- Two-stage catalog rendering (Packet 10.3) -------------------------------
+// Stage 1 (stagedCatalogText): every domain, names only — what the routing pass
+// sees on every hop. Stage 2 (describeDomain): full signatures for exactly one
+// domain, fetched on demand by the describeTools capability.
+//
+// The `[needs approval]` marker is carried through BOTH stages. It is a safety
+// property, not formatting: without it the model plans around a gate it cannot
+// see and proposes sensitive actions believing they run immediately.
+
+/** `name(a, b?)` plus the approval marker — the left half of a catalog line. */
+function signatureOf(c: Capability): string {
+  const args = Object.keys(c.inputSchema.properties || {});
+  const req = new Set<string>(c.inputSchema.required || []);
+  const sig = args.map((a) => (req.has(a) ? a : `${a}?`)).join(', ') || '—';
+  return `${c.name}(${sig})${isSensitive(c) ? ' [needs approval]' : ''}`;
+}
+
+/** Full catalog line, identical in shape to toolCatalogForPrompt()'s. */
+function fullLineOf(c: Capability): string {
+  return `${signatureOf(c)} — ${c.description}`;
+}
+
+/** Domains actually present in the registry, in catalog order (first appearance).
+ *  DERIVED, never hardcoded — a new domain file (or packet 5.1) shows up here on
+ *  its own instead of silently missing from the staged catalog. */
+export function capabilityDomains(): string[] {
+  const seen: string[] = [];
+  for (const c of CAPABILITIES) if (!seen.includes(c.domain)) seen.push(c.domain);
+  return seen;
+}
+
+/** Stage 1 — one line per domain, capability NAMES only (no arg signatures, no
+ *  descriptions), with the approval marker preserved per name. */
+export function stagedCatalogText(): string {
+  return capabilityDomains().map((d) => {
+    const caps = CAPABILITIES.filter((c) => c.domain === d);
+    const names = caps
+      .map((c) => `${c.name}${isSensitive(c) ? ' [needs approval]' : ''}`)
+      .join(', ');
+    return `${d} (${caps.length}): ${names}`;
+  }).join('\n');
+}
+
+/** Stage 2 — full signatures + descriptions for exactly ONE domain.
+ *  Static registry data only: no account scope, no per-account input, nothing
+ *  that could enumerate another account's anything.
+ *  Throws (never returns empty) on an unknown domain, so the model gets a clean,
+ *  actionable error listing the domains that do exist. */
+export function describeDomain(domain: string): { domain: string; count: number; tools: string[] } {
+  const known = capabilityDomains();
+  const key = String(domain ?? '').trim();
+  const match = known.find((d) => d.toLowerCase() === key.toLowerCase());
+  if (!match) {
+    throw new Error(`Unknown tool domain "${key}". Known domains: ${known.join(', ')}.`);
+  }
+  const tools = CAPABILITIES.filter((c) => c.domain === match).map(fullLineOf);
+  return { domain: match, count: tools.length, tools };
+}

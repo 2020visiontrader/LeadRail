@@ -5,7 +5,7 @@
 // Exports stay byte-compatible so app/api/mcp/route.ts and lib/agent/loop.ts need no changes.
 
 import { z } from 'zod';
-import { CAPABILITIES, CAPABILITY_BY_NAME } from '@/lib/capabilities/registry';
+import { CAPABILITIES, CAPABILITY_BY_NAME, stagedCatalogText } from '@/lib/capabilities/registry';
 import { isSensitive, type Capability } from '@/lib/capabilities/types';
 
 export interface AgentTool {
@@ -38,6 +38,19 @@ export function toolCatalogForPrompt(): string {
     const sig = args.map((a) => (req.has(a) ? a : `${a}?`)).join(', ') || '—';
     return `${name}(${sig})${t.sensitive ? ' [needs approval]' : ''} — ${t.description}`;
   }).join('\n');
+}
+
+/** Two-stage catalog flag (Packet 10.3). Re-exported from the registry so the
+ *  loop and the registry can never disagree about which mode is active. */
+export { AGENT_STAGED_CATALOG } from '@/lib/capabilities/registry';
+
+/** Staged catalog (Packet 10.3) — stage 1: one line per domain, names only,
+ *  approval markers preserved. Roughly an order of magnitude smaller than
+ *  toolCatalogForPrompt(), which it does NOT replace: the full form stays the
+ *  default and this is used only when AGENT_STAGED_CATALOG=1. The model expands
+ *  a domain on demand with the describeTools capability. */
+export function toolCatalogStaged(): string {
+  return stagedCatalogText();
 }
 
 /** Tool specs for MCP tools/list. */

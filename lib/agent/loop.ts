@@ -16,7 +16,7 @@
 // comes from the server session — never from the (round-tripped) transcript.
 
 import { generateChat, textConfigured, type ChatMessage } from '@/lib/ai/router';
-import { TOOLS, runTool, toolCatalogForPrompt, capabilityFor } from './tools';
+import { TOOLS, runTool, toolCatalogForPrompt, toolCatalogStaged, AGENT_STAGED_CATALOG, capabilityFor } from './tools';
 import { estimateTokens, carryoverBlock, type CarryoverMemo } from './memory';
 import {
   loadPersonaForAgent, resolveMentionedPersonas, getCoordinator,
@@ -168,8 +168,19 @@ function systemPrompt(brandName?: string, agentContext?: string, carryover?: Car
     '- NEVER call the same tool with the same arguments twice; if you already have the result, answer.',
     '- Speak only in plain language. NEVER mention internal tool names, vendors, model names, or third-party services (Apollo, Meta API internals, etc.) — everything is "LeadRail".',
     '',
-    'AVAILABLE TOOLS:',
-    toolCatalogForPrompt(),
+    // Two-stage tool catalog (Packet 10.3). Default (flag unset) is the full
+    // catalog, byte-identical to what shipped before this packet. With
+    // AGENT_STAGED_CATALOG=1 the route pass sees a compact per-domain index
+    // instead and expands one domain at a time with describeTools.
+    ...(AGENT_STAGED_CATALOG
+      ? [
+          'AVAILABLE TOOLS — grouped by domain, names only. Before calling a tool whose arguments you have not been shown, call describeTools with that domain to get its full signatures. Tools marked [needs approval] still pause for the user to confirm.',
+          toolCatalogStaged(),
+        ]
+      : [
+          'AVAILABLE TOOLS:',
+          toolCatalogForPrompt(),
+        ]),
   ].filter(Boolean).join('\n');
 }
 
