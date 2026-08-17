@@ -22,13 +22,19 @@
   --border-default: #E2E8F0;     /* slate-200 */
   --border-strong: #CBD5E1;      /* slate-300 */
 
-  --ink: #2563EB;                /* PRIMARY action = blue */
-  --ink-hover: #1D4ED8;
+  /* PRIMARY = indigo, per OSS_INTEGRATION_PLAN §2a (the adclaw/Legora visual
+     language). The slate neutral scale above was already Legora-shaped
+     (#0F172A ink on #F8FAFC canvas); the primary was the one token still on
+     generic blue, so this is the whole palette change — not a redesign.
+     DAY THEME ONLY. The .dark block below is deliberately untouched: dark keeps
+     its operator-teal identity. */
+  --ink: #615CED;                /* PRIMARY action = indigo */
+  --ink-hover: #4F46E5;
   --ink-fg: #FFFFFF;             /* text on primary */
 
-  --brand: #2563EB;              /* brand blue */
-  --brand-hover: #1D4ED8;
-  --brand-soft: rgba(37, 99, 235, 0.10);
+  --brand: #615CED;              /* brand indigo */
+  --brand-hover: #4F46E5;
+  --brand-soft: rgba(97, 92, 237, 0.10);
 
   --accent: #DC2626;             /* red tint — destructive only, sparing */
   --accent-soft: rgba(220, 38, 38, 0.10);
