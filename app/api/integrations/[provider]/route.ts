@@ -10,7 +10,11 @@ async function DELETE__impl(request: NextRequest, ctx: { params: { provider: str
   if (error) return error;
   if (!dbReady()) return badRequest('database not connected');
   try {
-    const result = await deleteConnection(session.accountId, ctx.params.provider);
+    // externalId targets ONE connected account when several exist on the same
+    // provider (e.g. two Google Drive accounts). Omitted = remove all rows for
+    // that provider, the pre-existing behaviour.
+    const externalId = request.nextUrl.searchParams.get('externalId') || undefined;
+    const result = await deleteConnection(session.accountId, ctx.params.provider, externalId);
     return NextResponse.json(result);
   } catch (error) {
     return errorResponse(error);

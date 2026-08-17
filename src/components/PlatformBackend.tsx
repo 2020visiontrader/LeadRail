@@ -71,16 +71,23 @@ export default function PlatformBackend() {
 
   useEffect(() => { load(); }, [load]);
 
+  // Connections are keyed (account_id, provider, external_id), so even a backend
+  // service can hold more than one row. Count them all instead of stopping at the
+  // first match, which used to hide every connection after the first.
+  const connectionsFor = (platform: string) =>
+    connections.filter((c) => c.provider === platform && c.status === 'connected');
+
   function isConnected(platform: string): boolean {
     const env = envStatus[platform] ?? false;
-    const conn = connections.find((c) => c.provider === platform && c.status === 'connected');
-    return env || !!conn;
+    return env || connectionsFor(platform).length > 0;
   }
 
   function connectedVia(platform: string): string | null {
     if (envStatus[platform]) return 'env var';
-    const conn = connections.find((c) => c.provider === platform && c.status === 'connected');
-    return conn ? `account token (${conn.meta?.platform_name || 'validated'})` : null;
+    const conns = connectionsFor(platform);
+    if (!conns.length) return null;
+    const names = conns.map((c) => c.meta?.platform_name || c.display_name || c.external_id || 'validated');
+    return `account token (${names.join(', ')})`;
   }
 
   async function handleConnect(platform: string) {

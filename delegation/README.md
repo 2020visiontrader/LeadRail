@@ -50,7 +50,7 @@ Route by *failure cost*, not size. Anything touching `account_id`, approval stat
 | 5.2 | Agent roles → persona templates | C | ☐ |
 | 6.1 | Persona picker UI | C | ☐ |
 | 6.2 | Coordinator fan-out | A | ☐ |
-| 7.1b | Fix misleading Connections UI | C | ☐ |
+| 7.1b | Fix misleading Connections UI | C | ☑ merged |
 | 7.1 | OAuth: LinkedIn / TikTok / X (×3) | A | ☐ |
 | 7.2 | Per-account Buffer/GHL credentials | A | ☐ |
 | 7.3 | Automation runner | A | ☐ do LAST |

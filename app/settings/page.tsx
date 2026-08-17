@@ -107,6 +107,38 @@ function DataPrivacySection() {
   );
 }
 
+// One connected account, individually identifiable and individually removable.
+// Shows only human-facing identity fields — never meta.access_token /
+// meta.user_token / secret_ref, which the row objects also carry.
+function ConnectionRow({ c, busy, onDisconnect }: { c: Connection; busy: boolean; onDisconnect: () => void }) {
+  const primary = c.username ? `@${c.username}` : c.display_name || c.external_id || c.provider;
+  // For Instagram the Page it came through is the relationship that governs
+  // access, so it is the thing that actually tells two accounts apart.
+  const viaPage = typeof c.meta?.via_page_name === 'string' ? c.meta.via_page_name : null;
+  const secondary = viaPage
+    ? `via ${viaPage}`
+    : c.username && c.display_name && c.display_name !== c.username
+      ? c.display_name
+      : null;
+  const showId = c.external_id && c.external_id !== primary;
+  return (
+    <li className="flex items-start justify-between gap-2 rounded-lg bg-slate-50 px-3 py-2 text-sm">
+      <span className="min-w-0 flex-1">
+        <span className="block truncate">{primary}</span>
+        {secondary && <span className="block truncate text-xs text-[var(--text-secondary)]">{secondary}</span>}
+        {showId && <span className="block truncate text-xs text-[var(--text-muted)]">ID {c.external_id}</span>}
+      </span>
+      <button
+        onClick={onDisconnect}
+        disabled={busy}
+        className="ml-2 shrink-0 text-xs text-[var(--text-muted)] hover:text-red-600"
+      >
+        {busy ? '…' : 'Disconnect'}
+      </button>
+    </li>
+  );
+}
+
 // ---- Advertising accounts ----
 // Paid-ad platforms the user connects for the Campaigns page. Google Ads OAuth
 // isn't wired yet, so it shows as "soon" — an honest placeholder, not a button
@@ -115,14 +147,23 @@ const AD_PROVIDERS = [
   { key: 'google_ads', label: 'Google Ads', desc: 'Connect your Google Ads account to launch and track paid campaigns', brand: '#4285F4', live: false, connectPath: '' },
 ];
 
-function AdAccounts({ connections }: { connections: Connection[] }) {
-  const conn = (p: string) => connections.find((c) => c.provider === p && c.status === 'connected');
+function AdAccounts({ connections, onChange }: { connections: Connection[]; onChange: () => void }) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const accountsFor = (p: string) => connections.filter((c) => c.provider === p && c.status === 'connected');
+
+  async function disconnect(provider: string, externalId?: string) {
+    const key = externalId || provider;
+    setBusy(key);
+    try { await apiSend('/api/social/disconnect', 'POST', { provider, externalId }); onChange(); }
+    catch { /* surfaced on next load */ } finally { setBusy(null); }
+  }
+
   return (
     <div className="space-y-4">
       <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Advertising accounts</h3>
       <div className="grid gap-4 sm:grid-cols-2">
         {AD_PROVIDERS.map((s) => {
-          const c = conn(s.key);
+          const accts = accountsFor(s.key);
           return (
             <div key={s.key} className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
               <div className="flex items-start justify-between">
@@ -130,11 +171,27 @@ function AdAccounts({ connections }: { connections: Connection[] }) {
                   <span className="flex h-9 w-9 items-center justify-center rounded-lg text-sm font-bold text-white" style={{ backgroundColor: s.brand }}>{s.label.charAt(0)}</span>
                   <div><h3 className="font-semibold">{s.label}</h3><p className="text-sm text-slate-500">{s.desc}</p></div>
                 </div>
-                <Badge tone={c ? 'green' : s.live ? 'gray' : 'amber'}>{c ? 'connected' : s.live ? 'off' : 'soon'}</Badge>
+                <Badge tone={accts.length ? 'green' : s.live ? 'gray' : 'amber'}>
+                  {accts.length ? `${accts.length} connected` : s.live ? 'off' : 'soon'}
+                </Badge>
               </div>
+              {accts.length > 0 && (
+                <ul className="space-y-1.5">
+                  {accts.map((c) => (
+                    <ConnectionRow
+                      key={c.external_id || c.provider}
+                      c={c}
+                      busy={busy === (c.external_id || c.provider)}
+                      onDisconnect={() => disconnect(s.key, c.external_id)}
+                    />
+                  ))}
+                </ul>
+              )}
               {s.live && s.connectPath ? (
                 <a href={s.connectPath} className="w-full">
-                  <Button variant={c ? 'ghost' : 'secondary'} className="w-full text-xs">{c ? `Reconnect ${s.label}` : `Connect ${s.label}`}</Button>
+                  <Button variant={accts.length ? 'ghost' : 'secondary'} className="w-full text-xs">
+                    {accts.length ? `+ Add another ${s.label}` : `Connect ${s.label}`}
+                  </Button>
                 </a>
               ) : (
                 <Button variant="ghost" disabled className="w-full cursor-not-allowed text-xs opacity-60">Coming soon</Button>
@@ -157,13 +214,20 @@ function KnowledgeSources({ connections, onChange }: { connections: Connection[]
   const [notionToken, setNotionToken] = useState('');
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
-  const conn = (p: string) => connections.find((c) => c.provider === p && c.status === 'connected');
-  const driveConn = conn('google_drive');
-  const notionConn = conn('notion');
+  // Multi-account: a user can connect several Drive accounts / Notion workspaces.
+  // Show every row, not just the first one the DB happened to return.
+  const accountsFor = (p: string) => connections.filter((c) => c.provider === p && c.status === 'connected');
+  const driveAccts = accountsFor('google_drive');
+  const notionAccts = accountsFor('notion');
 
-  async function disconnect(provider: string) {
-    setBusy(provider);
-    try { await apiSend(`/api/integrations/${provider}`, 'DELETE'); onChange(); }
+  async function disconnect(provider: string, externalId?: string) {
+    const key = externalId || provider;
+    setBusy(key);
+    try {
+      const qs = externalId ? `?externalId=${encodeURIComponent(externalId)}` : '';
+      await apiSend(`/api/integrations/${provider}${qs}`, 'DELETE');
+      onChange();
+    }
     catch { /* surfaced on reload */ } finally { setBusy(null); }
   }
 
@@ -190,16 +254,26 @@ function KnowledgeSources({ connections, onChange }: { connections: Connection[]
               <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#1FA463] text-sm font-bold text-white">D</span>
               <div><h3 className="font-semibold">Google Drive</h3><p className="text-sm text-slate-500">Let the assistant search your Drive files</p></div>
             </div>
-            <Badge tone={driveConn ? 'green' : 'gray'}>{driveConn ? 'connected' : 'off'}</Badge>
+            <Badge tone={driveAccts.length ? 'green' : 'gray'}>
+              {driveAccts.length ? `${driveAccts.length} connected` : 'off'}
+            </Badge>
           </div>
-          {driveConn && (
-            <div className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
-              <span className="truncate">{driveConn.username || driveConn.display_name || driveConn.external_id}</span>
-              <button onClick={() => disconnect('google_drive')} disabled={busy === 'google_drive'} className="ml-2 shrink-0 text-xs text-slate-400 hover:text-red-600">{busy === 'google_drive' ? '…' : 'Disconnect'}</button>
-            </div>
+          {driveAccts.length > 0 && (
+            <ul className="space-y-1.5">
+              {driveAccts.map((c) => (
+                <ConnectionRow
+                  key={c.external_id || c.provider}
+                  c={c}
+                  busy={busy === (c.external_id || 'google_drive')}
+                  onDisconnect={() => disconnect('google_drive', c.external_id)}
+                />
+              ))}
+            </ul>
           )}
           <a href="/api/social/google-drive/connect" className="w-full">
-            <Button variant={driveConn ? 'ghost' : 'secondary'} className="w-full text-xs">{driveConn ? 'Reconnect Google Drive' : 'Connect Google Drive'}</Button>
+            <Button variant={driveAccts.length ? 'ghost' : 'secondary'} className="w-full text-xs">
+              {driveAccts.length ? '+ Add another Google Drive' : 'Connect Google Drive'}
+            </Button>
           </a>
         </div>
 
@@ -210,13 +284,21 @@ function KnowledgeSources({ connections, onChange }: { connections: Connection[]
               <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#111111] text-sm font-bold text-white">N</span>
               <div><h3 className="font-semibold">Notion</h3><p className="text-sm text-slate-500">Let the assistant read your Notion pages</p></div>
             </div>
-            <Badge tone={notionConn ? 'green' : 'gray'}>{notionConn ? 'connected' : 'off'}</Badge>
+            <Badge tone={notionAccts.length ? 'green' : 'gray'}>
+              {notionAccts.length ? `${notionAccts.length} connected` : 'off'}
+            </Badge>
           </div>
-          {notionConn && (
-            <div className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
-              <span className="truncate">{notionConn.display_name || notionConn.external_id}</span>
-              <button onClick={() => disconnect('notion')} disabled={busy === 'notion'} className="ml-2 shrink-0 text-xs text-slate-400 hover:text-red-600">{busy === 'notion' ? '…' : 'Disconnect'}</button>
-            </div>
+          {notionAccts.length > 0 && (
+            <ul className="space-y-1.5">
+              {notionAccts.map((c) => (
+                <ConnectionRow
+                  key={c.external_id || c.provider}
+                  c={c}
+                  busy={busy === (c.external_id || 'notion')}
+                  onDisconnect={() => disconnect('notion', c.external_id)}
+                />
+              ))}
+            </ul>
           )}
           {notionOpen ? (
             <div className="space-y-2 rounded-lg bg-slate-50 p-3">
@@ -228,7 +310,7 @@ function KnowledgeSources({ connections, onChange }: { connections: Connection[]
               </div>
             </div>
           ) : (
-            <Button variant={notionConn ? 'ghost' : 'secondary'} className="w-full text-xs" onClick={() => { setNotionOpen(true); setMsg(null); }}>{notionConn ? 'Reconnect Notion' : 'Connect Notion'}</Button>
+            <Button variant={notionAccts.length ? 'ghost' : 'secondary'} className="w-full text-xs" onClick={() => { setNotionOpen(true); setMsg(null); }}>{notionAccts.length ? '+ Add another Notion workspace' : 'Connect Notion'}</Button>
           )}
         </div>
       </div>
@@ -247,8 +329,10 @@ function ClientConnections({ connections, onChange }: { connections: Connection[
   const accountsFor = (key: string) =>
     connections.filter((c) => c.provider === key && c.status === 'connected');
 
-  async function disconnect(provider: string, externalId: string) {
-    setBusy(externalId);
+  // Targets ONE connection: externalId identifies the individual account row, so
+  // removing one of six Instagram accounts leaves the other five connected.
+  async function disconnect(provider: string, externalId?: string) {
+    setBusy(externalId || provider);
     try {
       await apiSend('/api/social/disconnect', 'POST', { provider, externalId });
       onChange();
@@ -284,16 +368,12 @@ function ClientConnections({ connections, onChange }: { connections: Connection[
               {accts.length > 0 && (
                 <ul className="space-y-1.5">
                   {accts.map((c) => (
-                    <li key={c.external_id || c.provider} className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 text-sm">
-                      <span className="truncate">{c.username ? `@${c.username}` : c.display_name || c.external_id}</span>
-                      <button
-                        onClick={() => disconnect(s.key, String(c.external_id))}
-                        disabled={busy === c.external_id}
-                        className="ml-2 shrink-0 text-xs text-slate-400 hover:text-red-600"
-                      >
-                        {busy === c.external_id ? '…' : 'Disconnect'}
-                      </button>
-                    </li>
+                    <ConnectionRow
+                      key={c.external_id || c.provider}
+                      c={c}
+                      busy={busy === (c.external_id || c.provider)}
+                      onDisconnect={() => disconnect(s.key, c.external_id)}
+                    />
                   ))}
                 </ul>
               )}
@@ -320,7 +400,7 @@ function ClientConnections({ connections, onChange }: { connections: Connection[
       </p>
 
       <div className="border-t border-slate-200 pt-6">
-        <AdAccounts connections={connections} />
+        <AdAccounts connections={connections} onChange={onChange} />
       </div>
 
       <div className="border-t border-slate-200 pt-6">
