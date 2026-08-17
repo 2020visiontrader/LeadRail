@@ -35,13 +35,13 @@ Route by *failure cost*, not size. Anything touching `account_id`, approval stat
 | 0.1 | Gate execution on approval state | A | ☑ merged |
 | 0.2 | Stop trusting the client transcript | A | ☑ merged |
 | 0.2b | CommandBar → 0.1 + 0.2 contracts | B | ☑ merged |
-| 0.3 | Close the MCP server bypass | A | ☐ |
+| 0.3 | Close the MCP server bypass | A | ☑ merged |
 | 1.1 | Memory ingestion path (`rememberFact`) | B | ☑ merged |
 | 1.2 | Conversation persistence + compaction | B | ☐ |
 | 1.3 | Small correctness fixes | C | ☐ |
 | 2.1 | Capability Registry core | A | ☑ merged |
 | 2.2 | Domain backfill (15 domains, parallel) | B | ☐ |
-| 2.2-S | Social capabilities | A | ☐ spec ready |
+| 2.2-S | Social capabilities | A | ☑ merged |
 | 2.3 | API=MCP parity test | B | ☐ |
 | 3.1 | Ground the background agents | A | ☐ |
 | 4 | External MCP client bridge | A | ☐ |
@@ -57,7 +57,7 @@ Route by *failure cost*, not size. Anything touching `account_id`, approval stat
 | 8.1b | Output budget follows the model | B | ☑ merged |
 | 8.2 | Stream the compose pass | B | ☑ merged |
 | 9.1 | Render the assistant's markdown | B | ☑ merged |
-| 9.2 | Sanitize the email template preview | A | ☐ spec ready |
+| 9.2 | Sanitize the email template preview | A | ☑ merged |
 | 10.1 | Observation digests (result → language) | B | ☐ spec ready |
 | 10.2 | Prompt prefix order + plan/narration split | B | ☐ spec ready |
 | 10.3 | Two-stage tool catalog | B | ☐ spec ready · **blocks 5.1** |
