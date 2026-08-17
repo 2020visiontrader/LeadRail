@@ -266,8 +266,10 @@ export function explainSkillSelection(goal: string, ventureSkills?: string[] | n
 // The original 12 built-ins above (SKILLS) are UNCHANGED and keep powering
 // outreach generation exactly as before (selectSkillsForGoal/composeSkillGuidance
 // only ever look at SKILLS). This section adds a read-only, static view of the
-// harvested OSS catalog (lib/skills/harvested.ts, ~121 skills from adclaw,
-// Apache-2.0) in the same shape the DB `skills` table rows take, so API
+// harvested OSS catalog (lib/skills/harvested.ts, 341 skills from four
+// permissively-licensed upstreams — adclaw (Apache-2.0), digital-marketing-pro,
+// kai-cmo-harness (MIT subtrees only) and marketing-os-starter (MIT); see the
+// root NOTICE) in the same shape the DB `skills` table rows take, so API
 // routes/UI can present "built-in + harvested + custom" as one browsable list
 // without a DB round-trip for the static portion. The DB `skills`/`account_skills`
 // tables are the source of truth for what's actually enabled per account; this

@@ -1,98 +1,410 @@
 // scripts/harvest-skills.ts
 //
-// One-shot, offline import: walk the adclaw OSS repo's SKILL.md files and emit
-// a typed lib/skills/harvested.ts array. This is a PURE, SYNCHRONOUS, LOCAL
-// FILE-PARSING script — no LLM/AI calls, no network, no MCP, no subprocesses.
-// The "quality/security scan" below is regex/string heuristics ONLY. A single
-// malformed SKILL.md is skipped, never fatal — the whole run must finish in
-// well under 15s.
+// One-shot, offline import: walk four permissively-licensed OSS repos' SKILL.md
+// files and emit a typed lib/skills/harvested.ts array plus a root NOTICE.
+// This is a PURE, SYNCHRONOUS, LOCAL FILE-PARSING script — no LLM/AI calls, no
+// network, no MCP, no subprocesses (the commit SHA is read out of .git/, not
+// via `git`). The "quality/security scan" below is regex/string heuristics
+// ONLY. A single malformed SKILL.md is skipped, never fatal — the whole run
+// must finish in well under 30s.
 //
-// Run once with: npx tsx scripts/harvest-skills.ts
-// (Re-run any time the source repo changes; output is fully regenerated.)
+// Run with:
+//   HARVEST_ROOT=/path/to/oss-repos npx tsx scripts/harvest-skills.ts
+//   npx tsx scripts/harvest-skills.ts /path/to/oss-repos
+//
+// The clone root MUST live outside this git tree; vendored upstream source is
+// never committed, only the normalised content this script emits.
+//
+// Clone with:
+//   git clone --depth 1 https://github.com/indranilbanerjee/digital-marketing-pro
+//   git clone --depth 1 https://github.com/Citedy/adclaw
+//   git clone --depth 1 https://github.com/cgallic/kai-cmo-harness
+//   git clone --depth 1 https://github.com/ericosiu/marketing-os-starter
 
-import { readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { join, relative, sep } from 'node:path';
 
-const SOURCE_ROOT = '/home/.z/workspaces/con_rf0cG0dud6GVzG4C/oss-repos/adclaw';
-const SKILLS_ROOT = join(SOURCE_ROOT, 'src/adclaw/agents/skills');
-const OUTPUT_FILE = join(__dirname, '..', 'lib', 'skills', 'harvested.ts');
+const DEFAULT_ROOT = join(__dirname, '..', '..', 'oss-repos');
+const HARVEST_ROOT = process.argv[2] || process.env.HARVEST_ROOT || DEFAULT_ROOT;
+const REPO_ROOT = join(__dirname, '..');
+const OUTPUT_FILE = join(REPO_ROOT, 'lib', 'skills', 'harvested.ts');
+const NOTICE_FILE = join(REPO_ROOT, 'NOTICE');
 const MIN_BODY_LENGTH = 80;
 
 // ---------------------------------------------------------------------------
-// License gate — abort the whole import if the source isn't Apache/MIT.
+// Source table.
+//
+// `licenseMode`:
+//   'root'              — one root LICENSE governs the whole repo. Correct for
+//                         adclaw / digital-marketing-pro / marketing-os-starter.
+//   'subtree-allowlist' — the ROOT license does NOT govern. Only the listed
+//                         subtrees are permissive, each carrying its own
+//                         LICENSE, and the allowlist is enforced against EVERY
+//                         accepted file path. This is the kai-cmo-harness case:
+//                         its root LICENSE is Elastic-2.0, so a root-level check
+//                         would either abort the import or — if someone relaxed
+//                         the gate to make the abort go away — wave
+//                         Elastic-licensed content into a commercial product.
+//                         See that repo's LICENSING.md, which is authoritative.
+//
+// `dialect` is deliberately per-source. The four upstreams use different
+// frontmatter shapes; widening one loose parser across all of them would let a
+// malformed mapping pass silently.
 // ---------------------------------------------------------------------------
-function verifyLicense(): string {
-  const licensePath = join(SOURCE_ROOT, 'LICENSE');
-  let text: string;
-  try {
-    text = readFileSync(licensePath, 'utf8');
-  } catch (e) {
-    throw new Error(`Cannot read LICENSE at ${licensePath}: ${(e as Error).message}`);
-  }
-  const head = text.slice(0, 2000);
+type Dialect = 'adclaw' | 'dmp' | 'kai' | 'mos';
+
+interface SourceSpec {
+  key: string;
+  repo: string;
+  dir: string;
+  licenseMode: 'root' | 'subtree-allowlist';
+  expectLicense: 'Apache-2.0' | 'MIT';
+  /** Directories (repo-relative) walked for SKILL.md files. */
+  skillRoots: string[];
+  /**
+   * Only for 'subtree-allowlist': every accepted file's repo-relative path must
+   * start with one of these prefixes, and each prefix must itself carry an MIT
+   * LICENSE. Anything else is a hard abort, not a skip.
+   */
+  pathAllowlist?: string[];
+  dialect: Dialect;
+  /** Lower wins a dedupe tie when instruction bodies are the same length. */
+  priority: number;
+  /** Attribution required by the licence (Apache-2.0 §4). */
+  requiresNotice: boolean;
+}
+
+const SOURCES: SourceSpec[] = [
+  {
+    key: 'adclaw',
+    repo: 'Citedy/adclaw',
+    dir: 'adclaw',
+    licenseMode: 'root',
+    expectLicense: 'Apache-2.0',
+    skillRoots: ['src/adclaw/agents/skills'],
+    dialect: 'adclaw',
+    priority: 1,
+    requiresNotice: true,
+  },
+  {
+    key: 'digital-marketing-pro',
+    repo: 'indranilbanerjee/digital-marketing-pro',
+    dir: 'digital-marketing-pro',
+    licenseMode: 'root',
+    expectLicense: 'MIT',
+    skillRoots: ['skills'],
+    dialect: 'dmp',
+    priority: 2,
+    requiresNotice: false,
+  },
+  {
+    key: 'kai-cmo-harness',
+    repo: 'cgallic/kai-cmo-harness',
+    dir: 'kai-cmo-harness',
+    licenseMode: 'subtree-allowlist',
+    expectLicense: 'MIT',
+    // `harness/` and `plugins/` are the SAME skills materialised twice (the
+    // installer copies one into the other), so only `harness/` is walked —
+    // `plugins/` would just double the dedupe pass's work. `legacy/` is
+    // Elastic-2.0 and is not in the allowlist at all.
+    skillRoots: ['harness'],
+    pathAllowlist: [
+      'harness',
+      'knowledge',
+      'docs',
+      'plugins',
+      'scripts/quality_gates',
+      'scripts/reddit_monitor',
+    ],
+    dialect: 'kai',
+    priority: 3,
+    requiresNotice: false,
+  },
+  {
+    key: 'marketing-os-starter',
+    repo: 'ericosiu/marketing-os-starter',
+    dir: 'marketing-os-starter',
+    licenseMode: 'root',
+    expectLicense: 'MIT',
+    skillRoots: ['.claude/skills'],
+    dialect: 'mos',
+    priority: 4,
+    requiresNotice: false,
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Licence gate — fail closed. Any source that cannot be positively identified
+// as the licence we expect aborts the whole import.
+// ---------------------------------------------------------------------------
+function classifyLicense(text: string): 'Apache-2.0' | 'MIT' | 'Elastic-2.0' | 'unknown' {
+  const head = text.slice(0, 4000);
+  if (/Elastic License 2\.0/i.test(head)) return 'Elastic-2.0';
   if (/Apache License[\s\S]*Version 2\.0/i.test(head)) return 'Apache-2.0';
-  if (/MIT License/i.test(head)) return 'MIT';
-  throw new Error('Source LICENSE is not Apache-2.0 or MIT — aborting import (see printed head above).');
+  if (/MIT License|Permission is hereby granted, free of charge/i.test(head)) return 'MIT';
+  return 'unknown';
+}
+
+/**
+ * Classifier for a SUBTREE LICENSE inside a dual-licensed repo.
+ *
+ * These files legitimately MENTION the repo's other licence ("The rest of this
+ * repository is licensed under the Elastic License 2.0"), so a naive
+ * whole-file scan mis-classifies them. Rather than relaxing the gate, this
+ * splits the file at the `MIT License` marker and demands three things:
+ *
+ *   1. the preamble positively asserts THIS directory is MIT,
+ *   2. the operative grant after the marker is the MIT grant, and
+ *   3. that operative grant makes no mention of any other licence.
+ *
+ * Anything else fails closed.
+ */
+function classifySubtreeLicense(text: string, prefix: string): 'MIT' | 'unknown' {
+  const markerIdx = text.search(/^MIT License$/m);
+  if (markerIdx < 0) return 'unknown';
+  const preamble = text.slice(0, markerIdx);
+  const grant = text.slice(markerIdx);
+
+  const dirClaim = new RegExp(
+    `this directory \\(\`?${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/?\`?\\)[\\s\\S]{0,240}?licensed\\s+under\\s+the\\s+MIT`,
+    'i',
+  );
+  if (!dirClaim.test(preamble)) return 'unknown';
+  if (!/Permission is hereby granted, free of charge/i.test(grant)) return 'unknown';
+  if (/Elastic License|Apache License|GNU (Affero |General )?Public License/i.test(grant)) return 'unknown';
+  return 'MIT';
+}
+
+function readLicense(path: string): string {
+  try {
+    return readFileSync(path, 'utf8');
+  } catch (e) {
+    throw new Error(`Cannot read LICENSE at ${path}: ${(e as Error).message}`);
+  }
+}
+
+/** Verifies a source's licence position and returns the allowlisted subtree
+ *  prefixes (empty for whole-repo permissive sources). Throws to abort. */
+function verifyLicense(src: SourceSpec, repoPath: string): { license: string; allow: string[] } {
+  if (src.licenseMode === 'root') {
+    const found = classifyLicense(readLicense(join(repoPath, 'LICENSE')));
+    if (found !== src.expectLicense) {
+      throw new Error(
+        `[${src.key}] root LICENSE classified as ${found}, expected ${src.expectLicense} — aborting import.`,
+      );
+    }
+    return { license: found, allow: [] };
+  }
+
+  // subtree-allowlist: the ROOT licence is expected NOT to be permissive, and
+  // every allowlisted subtree must carry its own MIT LICENSE.
+  const rootFound = classifyLicense(readLicense(join(repoPath, 'LICENSE')));
+  if (rootFound !== 'Elastic-2.0') {
+    throw new Error(
+      `[${src.key}] root LICENSE classified as ${rootFound}; this source is configured as dual-licensed with an ` +
+        `Elastic-2.0 root. Re-read its LICENSING.md and update SOURCES before importing.`,
+    );
+  }
+  const allow = src.pathAllowlist || [];
+  if (!allow.length) throw new Error(`[${src.key}] subtree-allowlist mode with an empty allowlist.`);
+  for (const prefix of allow) {
+    const sub = join(repoPath, prefix, 'LICENSE');
+    const found = classifySubtreeLicense(readLicense(sub), prefix);
+    if (found !== 'MIT') {
+      throw new Error(`[${src.key}] subtree ${prefix}/LICENSE classified as ${found}, expected MIT — aborting import.`);
+    }
+  }
+  return { license: 'MIT', allow };
+}
+
+/** Enforced on EVERY accepted file of an allowlisted source. Fail closed: a
+ *  path outside the allowlist is a configuration bug, not a skippable file. */
+function assertPathAllowed(src: SourceSpec, allow: string[], relPath: string): void {
+  if (!allow.length) return;
+  const posix = relPath.split(sep).join('/');
+  const ok = allow.some((p) => posix === p || posix.startsWith(p + '/'));
+  if (!ok) {
+    throw new Error(
+      `[${src.key}] refusing ${posix}: outside the MIT subtree allowlist (${allow.join(', ')}). ` +
+        `Everything else in that repo is Elastic-2.0.`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
-// Category mapping — best-effort keyword match on the skill directory name.
-// Mirrors the SkillCategory union in lib/skills/registry.ts, but harvested
-// skills are a superset, so category here is a free-text label rather than a
-// TS union member (kept broad: seo, ads, marketing, content, analytics, dev,
-// social, other).
+// Commit SHA — read out of .git/ directly. No subprocess, no network.
 // ---------------------------------------------------------------------------
-function mapCategory(dirName: string): string {
-  const d = dirName.toLowerCase();
-  if (d.startsWith('seo')) return 'seo';
-  if (d.startsWith('ads') || d.includes('google-ads')) return 'ads';
-  if (d.startsWith('marketing')) return 'marketing';
-  if (d.includes('social') || d.includes('twitter') || d.includes('instagram') || d.includes('reddit') || d.includes('tiktok')) return 'social';
-  if (d.includes('email') || d.includes('himalaya') || d.includes('dingtalk')) return 'email';
-  if (d.includes('analytics') || d.includes('ga4') || d.includes('gsc')) return 'analytics';
-  if (d.includes('content') || d.includes('citedy') || d.includes('video') || d.includes('image') || d.includes('deck') || d.includes('pptx') || d.includes('docx') || d.includes('xlsx') || d.includes('pdf')) return 'content';
-  if (d.includes('browser') || d.includes('playwright') || d.includes('crawl') || d.includes('firecrawl') || d.includes('sitefetch') || d.includes('camoufox')) return 'dev-tooling';
-  if (d.includes('cron') || d.includes('agenthub') || d.includes('skill-creator') || d.includes('self-setup')) return 'ops';
+function readGitSha(repoPath: string): string {
+  const gitDir = join(repoPath, '.git');
+  let head: string;
+  try {
+    head = readFileSync(join(gitDir, 'HEAD'), 'utf8').trim();
+  } catch {
+    return 'unknown';
+  }
+  if (/^[0-9a-f]{40}$/i.test(head)) return head;
+  const m = head.match(/^ref:\s*(.+)$/);
+  if (!m) return 'unknown';
+  const ref = m[1].trim();
+  try {
+    const direct = readFileSync(join(gitDir, ...ref.split('/')), 'utf8').trim();
+    if (/^[0-9a-f]{40}$/i.test(direct)) return direct;
+  } catch {
+    /* fall through to packed-refs */
+  }
+  try {
+    const packed = readFileSync(join(gitDir, 'packed-refs'), 'utf8');
+    for (const line of packed.split(/\r?\n/)) {
+      if (line.startsWith('#') || line.startsWith('^')) continue;
+      const [sha, name] = line.split(/\s+/);
+      if (name === ref || name === ref.replace('refs/heads/', 'refs/remotes/origin/')) return sha;
+    }
+  } catch {
+    /* no packed-refs */
+  }
+  return 'unknown';
+}
+
+// ---------------------------------------------------------------------------
+// Category mapping — best-effort keyword match on the skill slug plus its
+// description. Mirrors the spirit of the SkillCategory union in
+// lib/skills/registry.ts, but harvested skills are a superset, so category here
+// is a free-text label rather than a TS union member (kept to a fixed
+// vocabulary: seo, ads, marketing, content, analytics, social, email,
+// dev-tooling, ops, other). SkillCategory itself is NOT changed by this script.
+// ---------------------------------------------------------------------------
+const CATEGORY_RULES: { category: string; re: RegExp }[] = [
+  { category: 'seo', re: /\bseo\b|serp|keyword|backlink|sitemap|hreflang|schema[- ]markup|\bgeo\b|\baeo\b|rank/ },
+  { category: 'ads', re: /\bads?\b|\bppc\b|paid[- ]advertis|retarget|creative[- ]test|media[- ]plan/ },
+  { category: 'social', re: /social|twitter|instagram|reddit|tiktok|linkedin|youtube|influencer/ },
+  { category: 'email', re: /email|newsletter|drip|\bsms\b|sequence/ },
+  { category: 'content', re: /content|copy|blog|video|image|deck|pptx|docx|xlsx|\bpdf\b|script|story|narrative|webinar|\bpr\b/ },
+  { category: 'analytics', re: /analytic|\bga4\b|\bgsc\b|attribution|cohort|dashboard|report|metric|forecast|roi|funnel|\bcro\b/ },
+  { category: 'dev-tooling', re: /browser|playwright|crawl|firecrawl|sitefetch|camoufox|scrape|connector|integration|\bapi\b|\bcrm\b|import|export|sync/ },
+  { category: 'ops', re: /cron|agenthub|skill-creator|self-setup|onboard|memory|quality[- ]gate|eval|status|config|setup|help|validate/ },
+  { category: 'marketing', re: /marketing|brand|campaign|persona|audience|positioning|launch|growth|lead|competitor|market/ },
+];
+
+/** Slug evidence wins over description evidence — a description mentioning
+ *  "email" in passing should not re-file a copywriting skill under `email`. */
+function mapCategory(slug: string, description: string): string {
+  const s = slug.toLowerCase().replace(/-/g, ' ');
+  for (const rule of CATEGORY_RULES) if (rule.re.test(s)) return rule.category;
+  const d = description.toLowerCase();
+  for (const rule of CATEGORY_RULES) if (rule.re.test(d)) return rule.category;
   return 'other';
 }
 
 // ---------------------------------------------------------------------------
-// Minimal YAML frontmatter parser — only needs flat `key: value` pairs plus
-// quoted-string values (the two shapes actually used across the ~120
-// SKILL.md files sampled: `name: foo` and `description: "..."`). Not a
-// general YAML parser by design — this is a bounded, local, synchronous
-// heuristic, not a dependency.
+// Minimal YAML frontmatter parser — flat `key: value` pairs plus quoted-string
+// values. Not a general YAML parser by design: this is a bounded, local,
+// synchronous heuristic, not a dependency. Nested/indented lines are ignored.
 // ---------------------------------------------------------------------------
 function parseFrontmatter(raw: string): { attrs: Record<string, string>; body: string } | null {
   const m = raw.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
   if (!m) return null;
   const [, fmBlock, body] = m;
   const attrs: Record<string, string> = {};
-  const lines = fmBlock.split(/\r?\n/);
-  let currentKey: string | null = null;
-  for (const line of lines) {
-    // top-level `key: value` (skip nested/indented lines like `metadata:` blocks)
-    const kv = line.match(/^([A-Za-z_][A-Za-z0-9_]*):\s*(.*)$/);
+  for (const line of fmBlock.split(/\r?\n/)) {
+    const kv = line.match(/^([A-Za-z_][A-Za-z0-9_-]*):\s*(.*)$/);
     if (kv && !/^\s/.test(line)) {
       const [, key, rawValue] = kv;
-      currentKey = key;
       let value = rawValue.trim();
-      // Strip a single layer of matching quotes.
       if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
         value = value.slice(1, -1);
       }
-      attrs[key] = value;
-    } else {
-      currentKey = null;
+      attrs[key] = value.replace(/\\"/g, '"');
     }
   }
   return { attrs, body };
 }
 
 // ---------------------------------------------------------------------------
-// Quality/security scan — REGEX/STRING HEURISTICS ONLY. Flags a skill for
-// skip if it looks like it embeds a live secret or destructive shell command,
-// or is too short to be a real skill body.
+// Per-source dialect handlers. Each one states exactly which upstream keys it
+// reads and returns null when the shape does not match, so a malformed mapping
+// is recorded as a skip instead of passing silently.
+// ---------------------------------------------------------------------------
+interface Meta {
+  name: string;
+  description: string;
+}
+
+function readDialect(dialect: Dialect, attrs: Record<string, string>, dirName: string): Meta | null {
+  switch (dialect) {
+    // adclaw: `name` + `description`; `metadata:`/`license:`/`version:` blocks
+    // and `allowed-tools` are dropped (they do not map onto Skill).
+    case 'adclaw': {
+      if (!attrs.name && !attrs.title) return null;
+      const name = (attrs.name || attrs.title).trim();
+      const description = (attrs.description || '').trim();
+      if (!name) return null;
+      return { name, description };
+    }
+    // digital-marketing-pro: `name` + `description`, where description embeds
+    // the trigger phrases. `argument-hint`, `user-invocable`,
+    // `disable-model-invocation`, `allowed-tools`, `view-preference`,
+    // `engagement-part` and `effort` are CLI-bound and dropped. `triggers`,
+    // when present, is folded into the description because Hermes reads
+    // description for relevance.
+    case 'dmp': {
+      const name = (attrs.name || '').trim();
+      if (!name) return null;
+      let description = (attrs.description || '').trim();
+      const triggers = (attrs.triggers || '').trim();
+      if (triggers) description = description ? `${description} Triggers: ${triggers}.` : `Triggers: ${triggers}.`;
+      return { name, description };
+    }
+    // kai-cmo-harness: strictly `name` + `description`, nothing else.
+    case 'kai': {
+      const name = (attrs.name || '').trim();
+      const description = (attrs.description || '').trim();
+      if (!name || !description) return null;
+      return { name, description };
+    }
+    // marketing-os-starter: `name` + `description`; the dir name is the slug.
+    case 'mos': {
+      const name = (attrs.name || dirName).trim();
+      const description = (attrs.description || '').trim();
+      if (!name || !description) return null;
+      return { name, description };
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Strip CLI-bound content. A LeadRail skill is a prompt module, not an
+// executable: anything that assumes Claude Code's shell, slash-command
+// namespace, hook system or plugin manifest is removed. Deliberately narrow and
+// auditable — it does not attempt to rewrite prose.
+// ---------------------------------------------------------------------------
+const SHELL_FENCE = /^```(bash|sh|shell|zsh|console|powershell|ps1)\b[\s\S]*?^```[ \t]*$/gim;
+const PLUGIN_MANIFEST_LINE = /^.*\b(plugin\.(json|yaml)|\.claude\/hooks?\/|hooks\.json|settings\.json\.example|gemini-extension\.json)\b.*$/gim;
+const SLASH_COMMAND = /(^|[\s(`"'[])\/([a-z][a-z0-9-]*:)?([a-z][a-z0-9-]{2,})\b/gim;
+
+function stripCliBound(body: string): { text: string; strips: Record<string, number> } {
+  const strips: Record<string, number> = { shellBlocks: 0, manifestLines: 0, slashCommands: 0 };
+  let out = body.replace(SHELL_FENCE, () => {
+    strips.shellBlocks++;
+    return '';
+  });
+  out = out.replace(PLUGIN_MANIFEST_LINE, () => {
+    strips.manifestLines++;
+    return '';
+  });
+  // `/digital-marketing-pro:seo-audit` → `seo-audit`; `/kai-partnership` →
+  // `kai-partnership`. Leaves real paths (`harness/…`) and URLs untouched
+  // because those never match a bare leading slash at a token boundary.
+  out = out.replace(SLASH_COMMAND, (m, lead: string, ns: string | undefined, cmd: string) => {
+    if (/^(https?|mailto)$/i.test(cmd)) return m;
+    strips.slashCommands++;
+    return `${lead}${cmd}`;
+  });
+  out = out.replace(/\n{3,}/g, '\n\n').trim();
+  return { text: out, strips };
+}
+
+// ---------------------------------------------------------------------------
+// Quality/security scan — REGEX/STRING HEURISTICS ONLY.
 // ---------------------------------------------------------------------------
 const SECRET_PATTERNS: { name: string; re: RegExp }[] = [
   { name: 'openai-style-secret-key', re: /sk-[A-Za-z0-9]{20,}/ },
@@ -116,14 +428,16 @@ function scanQuality(body: string): string[] {
 
 function slugify(name: string, dirName: string): string {
   const base = (name || dirName).toLowerCase().trim();
-  return base
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 64) || dirName.toLowerCase();
+  return (
+    base
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 64) || dirName.toLowerCase()
+  );
 }
 
 // ---------------------------------------------------------------------------
-// Types (also exported for lib/skills/harvested.ts consumers)
+// Types (mirrored into lib/skills/harvested.ts)
 // ---------------------------------------------------------------------------
 interface HarvestedSkillRaw {
   slug: string;
@@ -132,100 +446,195 @@ interface HarvestedSkillRaw {
   category: string;
   instructions: string;
   source: string;
+  sourceRepo: string;
+  sourceCommit: string;
+  sourcePath: string;
   license: string;
   inspiredBy: string;
 }
 
+function walkSkillFiles(root: string, acc: string[] = [], depth = 0): string[] {
+  if (depth > 6) return acc;
+  let entries: string[];
+  try {
+    entries = readdirSync(root);
+  } catch {
+    return acc;
+  }
+  for (const entry of entries) {
+    if (entry === '.git' || entry === 'node_modules') continue;
+    const full = join(root, entry);
+    let st;
+    try {
+      st = statSync(full);
+    } catch {
+      continue;
+    }
+    if (st.isDirectory()) walkSkillFiles(full, acc, depth + 1);
+    else if (entry === 'SKILL.md') acc.push(full);
+  }
+  return acc;
+}
+
+interface SourceStats {
+  key: string;
+  commit: string;
+  license: string;
+  found: number;
+  accepted: number;
+  skipped: { path: string; reason: string }[];
+  strips: Record<string, number>;
+}
+
 function main() {
   const startedAt = Date.now();
-  const license = verifyLicense();
-  console.log(`[harvest-skills] source LICENSE verified: ${license}`);
 
-  let dirs: string[] = [];
-  try {
-    dirs = readdirSync(SKILLS_ROOT).filter((name) => {
+  if (!existsSync(HARVEST_ROOT)) {
+    throw new Error(
+      `Clone root not found: ${HARVEST_ROOT}\n` +
+        `Pass it as argv[2] or set HARVEST_ROOT. It must be OUTSIDE this git tree — vendored upstream source is never committed.`,
+    );
+  }
+  if (!relative(REPO_ROOT, HARVEST_ROOT).startsWith('..')) {
+    throw new Error(`Clone root ${HARVEST_ROOT} is inside the repo tree. Clone upstreams outside ${REPO_ROOT}.`);
+  }
+
+  const stats: SourceStats[] = [];
+  // slug -> entry, for cross-source and within-source dedupe.
+  const bySlug = new Map<string, HarvestedSkillRaw>();
+  const priorityOf = new Map<string, number>();
+  const dedupeLosers: { slug: string; lost: string; won: string }[] = [];
+
+  for (const src of SOURCES) {
+    const repoPath = join(HARVEST_ROOT, src.dir);
+    if (!existsSync(repoPath)) {
+      throw new Error(`[${src.key}] clone missing at ${repoPath} — clone all four sources before harvesting.`);
+    }
+    const { license, allow } = verifyLicense(src, repoPath);
+    const commit = readGitSha(repoPath);
+    console.log(`[harvest-skills] ${src.key}: licence ${license}${allow.length ? ` (subtrees: ${allow.join(', ')})` : ''} @ ${commit.slice(0, 12)}`);
+
+    const stat: SourceStats = { key: src.key, commit, license, found: 0, accepted: 0, skipped: [], strips: {} };
+
+    const files: string[] = [];
+    for (const rootRel of src.skillRoots) walkSkillFiles(join(repoPath, rootRel), files);
+    files.sort();
+
+    for (const file of files) {
+      const relPath = relative(repoPath, file);
+      // Per-file licence enforcement — fail closed.
+      assertPathAllowed(src, allow, relPath);
+      stat.found++;
+
+      let raw: string;
       try {
-        return statSync(join(SKILLS_ROOT, name)).isDirectory();
-      } catch {
-        return false;
+        raw = readFileSync(file, 'utf8');
+      } catch (e) {
+        stat.skipped.push({ path: relPath, reason: `read-error: ${(e as Error).message}` });
+        continue;
       }
-    });
-  } catch (e) {
-    throw new Error(`Cannot read skills dir ${SKILLS_ROOT}: ${(e as Error).message}`);
+
+      let parsed: ReturnType<typeof parseFrontmatter>;
+      try {
+        parsed = parseFrontmatter(raw);
+      } catch (e) {
+        stat.skipped.push({ path: relPath, reason: `parse-error: ${(e as Error).message}` });
+        continue;
+      }
+      if (!parsed) {
+        stat.skipped.push({ path: relPath, reason: 'no-frontmatter' });
+        continue;
+      }
+
+      const dirName = relPath.split(sep).slice(-2)[0] || 'skill';
+      const meta = readDialect(src.dialect, parsed.attrs, dirName);
+      if (!meta) {
+        stat.skipped.push({ path: relPath, reason: `dialect-mismatch (${src.dialect})` });
+        continue;
+      }
+
+      const { text: bodyTrimmed, strips } = stripCliBound(parsed.body);
+      for (const [k, v] of Object.entries(strips)) stat.strips[k] = (stat.strips[k] || 0) + v;
+
+      const flags = scanQuality(bodyTrimmed);
+      if (flags.includes('too-short')) {
+        stat.skipped.push({ path: relPath, reason: `too-short (<${MIN_BODY_LENGTH} chars body)` });
+        continue;
+      }
+      const secretFlags = flags.filter((f) => f.startsWith('secret:'));
+      if (secretFlags.length) {
+        stat.skipped.push({ path: relPath, reason: `secret-pattern: ${secretFlags.join(',')}` });
+        continue;
+      }
+      const destructiveFlags = flags.filter((f) => f.startsWith('destructive:'));
+      if (destructiveFlags.length) {
+        stat.skipped.push({ path: relPath, reason: `destructive-shell: ${destructiveFlags.join(',')}` });
+        continue;
+      }
+
+      const slug = slugify(meta.name, dirName);
+      const posixPath = relPath.split(sep).join('/');
+      const entry: HarvestedSkillRaw = {
+        slug,
+        name: meta.name,
+        description: meta.description || `Imported skill: ${meta.name}`,
+        category: mapCategory(slug, meta.description),
+        instructions: bodyTrimmed,
+        source: src.key,
+        sourceRepo: src.repo,
+        sourceCommit: commit,
+        sourcePath: posixPath,
+        license,
+        inspiredBy: `${src.repo}@${commit.slice(0, 12)} — ${posixPath}`,
+      };
+
+      // Dedupe: prefer the more specific (longer) instruction body; on a tie,
+      // the lower-priority source wins. Records which source won.
+      const existing = bySlug.get(slug);
+      if (existing) {
+        const incomingWins =
+          entry.instructions.length > existing.instructions.length ||
+          (entry.instructions.length === existing.instructions.length &&
+            src.priority < (priorityOf.get(slug) ?? Number.MAX_SAFE_INTEGER));
+        if (incomingWins) {
+          dedupeLosers.push({ slug, lost: `${existing.source}:${existing.sourcePath}`, won: `${src.key}:${posixPath}` });
+          bySlug.set(slug, entry);
+          priorityOf.set(slug, src.priority);
+          stat.accepted++;
+        } else {
+          dedupeLosers.push({ slug, lost: `${src.key}:${posixPath}`, won: `${existing.source}:${existing.sourcePath}` });
+        }
+        continue;
+      }
+      bySlug.set(slug, entry);
+      priorityOf.set(slug, src.priority);
+      stat.accepted++;
+    }
+
+    stats.push(stat);
   }
 
-  let found = 0;
-  let imported = 0;
-  const skipped: { dir: string; reason: string }[] = [];
-  const seenSlugs = new Set<string>();
-  const results: HarvestedSkillRaw[] = [];
+  const results = Array.from(bySlug.values()).sort((a, b) => a.slug.localeCompare(b.slug));
 
-  for (const dir of dirs) {
-    const skillPath = join(SKILLS_ROOT, dir, 'SKILL.md');
-    let raw: string;
-    try {
-      raw = readFileSync(skillPath, 'utf8');
-    } catch {
-      continue; // no SKILL.md in this dir — not a skill folder, don't count as "found"
-    }
-    found++;
-
-    let parsed: ReturnType<typeof parseFrontmatter>;
-    try {
-      parsed = parseFrontmatter(raw);
-    } catch (e) {
-      skipped.push({ dir, reason: `parse-error: ${(e as Error).message}` });
-      continue;
-    }
-    if (!parsed) {
-      skipped.push({ dir, reason: 'no-frontmatter' });
-      continue;
-    }
-
-    const { attrs, body } = parsed;
-    const name = (attrs.name || dir).trim();
-    const description = (attrs.description || '').trim();
-    const bodyTrimmed = body.trim();
-
-    const flags = scanQuality(bodyTrimmed);
-    if (flags.includes('too-short')) {
-      skipped.push({ dir, reason: 'too-short (<80 chars body)' });
-      continue;
-    }
-    const secretFlags = flags.filter((f) => f.startsWith('secret:'));
-    const destructiveFlags = flags.filter((f) => f.startsWith('destructive:'));
-    if (secretFlags.length) {
-      skipped.push({ dir, reason: `secret-pattern: ${secretFlags.join(',')}` });
-      continue;
-    }
-    if (destructiveFlags.length) {
-      skipped.push({ dir, reason: `destructive-shell: ${destructiveFlags.join(',')}` });
-      continue;
-    }
-
-    const slug = slugify(name, dir);
-    if (seenSlugs.has(slug)) {
-      skipped.push({ dir, reason: `duplicate-slug: ${slug}` });
-      continue;
-    }
-    seenSlugs.add(slug);
-
-    results.push({
-      slug,
-      name,
-      description: description || `Imported skill: ${name}`,
-      category: mapCategory(dir),
-      instructions: bodyTrimmed,
-      source: 'adclaw',
-      license,
-      inspiredBy: `adclaw agent skill: src/adclaw/agents/skills/${dir}/SKILL.md`,
-    });
-    imported++;
-  }
+  // -------------------------------------------------------------------------
+  // Emit lib/skills/harvested.ts
+  // -------------------------------------------------------------------------
+  const perSource = new Map<string, number>();
+  for (const r of results) perSource.set(r.source, (perSource.get(r.source) || 0) + 1);
+  const provenanceLines = SOURCES.map((s) => {
+    const st = stats.find((x) => x.key === s.key)!;
+    return `//   - ${s.repo} (${st.license}) @ ${st.commit} — ${perSource.get(s.key) || 0} skills`;
+  }).join('\n');
 
   const header = `// AUTO-GENERATED by scripts/harvest-skills.ts — DO NOT EDIT BY HAND.
-// Source: adclaw (${license}), src/adclaw/agents/skills/*/SKILL.md
-// Regenerate with: npx tsx scripts/harvest-skills.ts
+// Regenerate with: HARVEST_ROOT=<clone-dir> npx tsx scripts/harvest-skills.ts
+//
+// Sources (all permissively licensed; see the root NOTICE file):
+${provenanceLines}
+//
+// kai-cmo-harness is dual-licensed: only its MIT subtrees are read, enforced
+// per file by the harvester's path allowlist. Nothing under an Elastic-2.0
+// path is imported.
 //
 // These are catalog entries (migration 025_skills.sql \`skills\` table seed
 // candidates / static fallback) — NOT auto-wired into the agent's default
@@ -238,22 +647,111 @@ export interface HarvestedSkill {
   description: string;
   category: string;
   instructions: string;
+  /** Short source key, e.g. 'adclaw'. */
   source: string;
+  /** Upstream repo, e.g. 'Citedy/adclaw'. */
+  sourceRepo: string;
+  /** Upstream commit SHA this content was harvested from. */
+  sourceCommit: string;
+  /** Repo-relative path of the upstream SKILL.md. */
+  sourcePath: string;
   license: string;
   inspiredBy: string;
 }
 
 export const HARVESTED_SKILLS: HarvestedSkill[] = ${JSON.stringify(results, null, 2)};
 `;
-
   writeFileSync(OUTPUT_FILE, header, 'utf8');
 
+  // -------------------------------------------------------------------------
+  // Emit the root NOTICE (Apache-2.0 §4 attribution for adclaw; the MIT sources
+  // are listed too so the attribution file is the single place to look).
+  // -------------------------------------------------------------------------
+  const noticeSources = SOURCES.map((s) => {
+    const st = stats.find((x) => x.key === s.key)!;
+    return `${s.repo}
+  License:   ${st.license}${s.licenseMode === 'subtree-allowlist' ? ' (MIT subtrees only; the rest of that repo is Elastic-2.0 and is NOT used)' : ''}
+  Commit:    ${st.commit}
+  Used for:  ${perSource.get(s.key) || 0} normalised skill entries in lib/skills/harvested.ts
+  Notes:     ${s.requiresNotice ? 'Apache-2.0 §4 attribution — see the copyright line in the section above.' : 'MIT — attribution retained here as a courtesy and audit trail.'}`;
+  }).join('\n\n');
+
+  const notice = `LeadRail
+Copyright (c) LeadRail
+
+This product includes marketing skill CONTENT derived from the open-source
+projects listed below. No upstream source code is executed, imported, or
+distributed — only normalised markdown prompt modules, emitted by
+scripts/harvest-skills.ts into lib/skills/harvested.ts.
+
+--------------------------------------------------------------------------------
+Apache License 2.0 attribution
+--------------------------------------------------------------------------------
+
+Citedy/adclaw
+
+  Copyright 2025 The CoPaw Authors
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+  Skill content from src/adclaw/agents/skills/*/SKILL.md was modified:
+  frontmatter was normalised onto LeadRail's skill schema and CLI-bound
+  content (shell blocks, slash commands, plugin-manifest references) was
+  removed.
+
+--------------------------------------------------------------------------------
+All sources
+--------------------------------------------------------------------------------
+
+${noticeSources}
+
+--------------------------------------------------------------------------------
+Excluded on licence grounds
+--------------------------------------------------------------------------------
+
+  cgallic/kai-cmo-harness — everything outside harness/, knowledge/, docs/,
+    plugins/, scripts/quality_gates/ and scripts/reddit_monitor/ is
+    Elastic License 2.0 and is NOT used. That includes legacy/, app-meetkai/,
+    daemon/, agent/, gateway/, kai/, lib/, tools/, bin/, deploy/, evals/,
+    site/, prod-static/ and the rest of scripts/.
+  helio, Synapsr/fromHello — AGPL-3.0. Not used.
+  inbharatai/SocialFlow — no licence. Not used.
+`;
+  writeFileSync(NOTICE_FILE, notice, 'utf8');
+
+  // -------------------------------------------------------------------------
+  // Report
+  // -------------------------------------------------------------------------
   const elapsedMs = Date.now() - startedAt;
-  console.log(`[harvest-skills] SKILL.md found: ${found}`);
-  console.log(`[harvest-skills] imported: ${imported}`);
-  console.log(`[harvest-skills] skipped: ${skipped.length}`);
-  for (const s of skipped) console.log(`  - ${s.dir}: ${s.reason}`);
+  let totalFound = 0;
+  let totalSkipped = 0;
+  for (const st of stats) {
+    totalFound += st.found;
+    totalSkipped += st.skipped.length;
+    console.log(
+      `[harvest-skills] ${st.key}: found ${st.found}, kept ${perSource.get(st.key) || 0}, skipped ${st.skipped.length}, strips ${JSON.stringify(st.strips)}`,
+    );
+    for (const s of st.skipped) console.log(`    - ${s.path}: ${s.reason}`);
+  }
+  console.log(`[harvest-skills] SKILL.md found across sources: ${totalFound}`);
+  console.log(`[harvest-skills] skipped (malformed/quality): ${totalSkipped}`);
+  console.log(`[harvest-skills] deduped away: ${dedupeLosers.length}`);
+  const withinKai = dedupeLosers.filter((d) => d.lost.startsWith('kai-cmo-harness') && d.won.startsWith('kai-cmo-harness')).length;
+  console.log(`[harvest-skills]   of which within kai-cmo-harness (skills vs skills-v2): ${withinKai}`);
+  console.log(`[harvest-skills]   cross-source: ${dedupeLosers.length - withinKai}`);
+  console.log(`[harvest-skills] FINAL unique skills: ${results.length}`);
   console.log(`[harvest-skills] wrote ${OUTPUT_FILE}`);
+  console.log(`[harvest-skills] wrote ${NOTICE_FILE}`);
   console.log(`[harvest-skills] done in ${elapsedMs}ms`);
 }
 
