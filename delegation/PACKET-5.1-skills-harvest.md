@@ -39,12 +39,53 @@ selected, injected, or rendered.
 - adclaw is Apache-2.0 and therefore requires **attribution**: a `NOTICE` file.
 - Do NOT clone helio, socialflow, or fromHello. AGPL / no-license / no code.
 
+## ⚠ AMENDED 2026-08-16 — most of this is already built
+
+**`scripts/harvest-skills.ts` already exists (260 lines) and does most of the
+job.** Read it before writing anything. It already implements:
+
+- a **licence gate** that aborts the whole import unless the source `LICENSE` is
+  Apache-2.0 or MIT (`verifyLicense()`)
+- a `SKILL.md` **frontmatter parser** (`parseFrontmatter`)
+- a **category mapper** onto the existing `SkillCategory` union (`mapCategory`)
+- a **secret / destructive-pattern scan** over each body (`SECRET_PATTERNS`,
+  `DESTRUCTIVE_PATTERNS`, `scanQuality`)
+- slugification, a `MIN_BODY_LENGTH` floor, skip-don't-fail on a malformed file
+- emission of `lib/skills/harvested.ts` with **provenance already modelled**:
+  `HarvestedSkill` carries `source`, `license`, and `inspiredBy`
+
+It is pure, offline, synchronous — no network, no LLM, no subprocesses. Keep it
+that way.
+
+**Do NOT create `lib/skills/normalize.ts`.** That would fork a working
+normalizer. **Extend this script instead.** What it actually lacks:
+
+1. `SOURCE_ROOT` is hardcoded to `/home/.z/workspaces/.../oss-repos/adclaw` — a
+   path that no longer exists. Parameterise it (argv or env), defaulting to a
+   scratch clone dir outside the git tree.
+2. **Single-source only.** It handles adclaw's frontmatter dialect alone. The
+   other three upstreams use different shapes (digital-marketing-pro declares
+   slug / triggers / reads / produces / gate; kai-cmo-harness differs again).
+   Handle each source explicitly — do not widen one loose parser to cover all
+   four, or a malformed mapping will pass silently.
+3. **No cross-source dedupe.** Required now that four repos overlap.
+4. **No per-path licence restriction.** `verifyLicense()` checks ONE root
+   `LICENSE` file. That is correct for adclaw and dmp, and **wrong and unsafe for
+   kai-cmo-harness**, whose root `LICENSE` is Elastic-2.0 with MIT applying only
+   to specific subtrees. A root-level check there would either abort the import
+   or, worse, wave through Elastic-licensed content. That repo needs a path
+   allowlist (`harness/`, `knowledge/`, `docs/`, `plugins/`,
+   `scripts/quality_gates/`, `scripts/reddit_monitor/`) enforced per file.
+5. **No `NOTICE` file emission** for adclaw's Apache attribution.
+
 ## Files
 
-**Create:** `lib/skills/library/` (staging tree), `lib/skills/normalize.ts`,
-`NOTICE`
-**Modify:** `lib/skills/registry.ts` (extend the catalog only — do not change its
-types or selection logic)
+**Modify:** `scripts/harvest-skills.ts` (extend — see above),
+`lib/skills/registry.ts` (extend the catalog only — do not change its types or
+selection logic)
+**Regenerate:** `lib/skills/harvested.ts` (auto-generated; never hand-edit)
+**Create:** `NOTICE`, and a `lib/skills/library/` staging tree only if the
+extended script genuinely needs one
 
 Clone upstreams to a scratch directory **outside the git tree**. Never commit
 vendored repo source; only the normalised skill content lands in the repo.
