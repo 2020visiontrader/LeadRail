@@ -9,6 +9,27 @@ import { CREATIVE_CAPABILITIES } from './creative';
 import { MEMORY_CAPABILITIES } from './memory';
 import { SOCIAL_CAPABILITIES } from './social';
 import { SOCIAL_AUTOMATION_CAPABILITIES } from './social-automations';
+import { DEAL_CAPABILITIES } from './deals';
+import { SEGMENT_CAPABILITIES } from './segments';
+import { JOURNEY_CAPABILITIES } from './journeys';
+import { COMPANY_CAPABILITIES } from './companies';
+import { ANALYTICS_CAPABILITIES } from './analytics';
+import { FORM_CAPABILITIES } from './forms';
+import { BUDGET_CAPABILITIES } from './budgets';
+// './scheduled' (SCHEDULED_CAPABILITIES) is INTENTIONALLY not imported here.
+// lib/scheduled/store.ts imports runAgent from lib/agent/loop.ts at module
+// top level; lib/agent/loop.ts imports lib/agent/tools.ts, which imports
+// THIS file. Registering it closes that cycle: CAPABILITIES comes back
+// undefined when the graph is re-evaluated (reproduced under vitest's
+// resetModules + dynamic import — tests/parity.test.ts). Fixing it means
+// breaking that cycle inside lib/scheduled/store.ts (e.g. a lazy import of
+// runAgent inside runDueScheduledTasks instead of a top-level one), which is
+// outside this packet's file list. capabilities/scheduled.ts is written and
+// complete; it is reported as blocked rather than wired in. See its header.
+import { TEMPLATE_CAPABILITIES } from './templates';
+import { SEARCH_CAPABILITIES } from './search';
+import { SUPPRESSION_CAPABILITIES } from './suppressions';
+import { INBOX_CAPABILITIES } from './inbox';
 import { METRICS_BY_NAME } from './metrics-port';
 
 // Two-stage tool catalog (Packet 10.3). Opt-IN, never opt-out: staging changes
@@ -36,6 +57,17 @@ const ALL: Capability[] = [
   ...MEMORY_CAPABILITIES,
   ...SOCIAL_CAPABILITIES,
   ...SOCIAL_AUTOMATION_CAPABILITIES,
+  ...DEAL_CAPABILITIES,
+  ...SEGMENT_CAPABILITIES,
+  ...JOURNEY_CAPABILITIES,
+  ...COMPANY_CAPABILITIES,
+  ...ANALYTICS_CAPABILITIES,
+  ...FORM_CAPABILITIES,
+  ...BUDGET_CAPABILITIES,
+  ...TEMPLATE_CAPABILITIES,
+  ...SEARCH_CAPABILITIES,
+  ...SUPPRESSION_CAPABILITIES,
+  ...INBOX_CAPABILITIES,
 ].filter((c) => AGENT_STAGED_CATALOG || !STAGED_ONLY.includes(c.name));
 
 // CATALOG ORDER — the exact key order of the original TOOLS object literal in
@@ -69,6 +101,21 @@ const CATALOG_ORDER: string[] = [
   // Present only when staging is on, matching the ALL filter above; the
   // missing/unknown checks below still hold in both modes.
   ...(AGENT_STAGED_CATALOG ? STAGED_ONLY : []),
+  // --- appended by Packet 2.2 (domain backfill). Appended, never sorted —
+  // every name above (including the staged-only entry) keeps its exact
+  // order. Grouped by the new domain file, in the order those files were
+  // added; see each capabilities/<domain>.ts for what was left out and why.
+  'listDeals', 'getDeal', 'updateDeal', 'deleteDeal', 'listActivities', 'logActivity',
+  'listSegments', 'previewSegment', 'createSegment', 'updateSegment',
+  'listJourneys', 'getJourney', 'createJourney', 'pauseJourney',
+  'listCompanies', 'getCompany', 'createCompany', 'linkContactToCompany',
+  'getOverview',
+  'listForms', 'getForm', 'listSubmissions', 'createForm',
+  'getBudget', 'getBudgetStatus', 'setBudget',
+  'listIcpProfiles', 'updateIcpProfile',
+  'globalSearch',
+  'addSuppression',
+  'getThread', 'replyToThread', 'markRead',
 ];
 
 const byName = new Map(ALL.map((c) => [c.name, c]));

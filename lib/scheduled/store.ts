@@ -8,18 +8,24 @@
 
 import { supabase } from '@/lib/db';
 import { runAgent } from '@/lib/agent/loop';
+import { loadAgentContext } from '@/lib/agent/context';
+import { createNotification } from '@/lib/notifications/store';
 
 export type ScheduledInterval = 'hourly' | 'daily' | 'weekly';
 
 export interface ScheduledTaskRow {
   id: string;
   account_id: string;
+  /** Optional venture scope (migration 043). ADDITIVE — null = account-wide,
+   *  which is every pre-043 row. Used only to ground the background run. */
+  brand_id: string | null;
   name: string;
   prompt: string;
   interval: ScheduledInterval;
   enabled: boolean;
   last_run_at: string | null;
   next_run_at: string | null;
+  /** 'ok' | 'needs_approval' | 'error' | null (never run). */
   last_status: string | null;
   last_result: string | null;
   created_at: string;
@@ -121,14 +127,60 @@ export async function deleteScheduledTask(accountId: string, id: string): Promis
 }
 
 /**
+ * Grounding for an unattended run (Packet 3.1). Mirrors what the chat routes
+ * assemble (app/api/agent/route.ts): venture name resolved account-scoped, then
+ * the full loadAgentContext block keyed on the task prompt.
+ *
+ * Best-effort BY DESIGN: a background job has no human to retry it, so a
+ * grounding read that fails must cost the run some context, never the run
+ * itself. Both catches are therefore silent — this is a read, not a gate.
+ */
+async function groundingFor(task: ScheduledTaskRow): Promise<{
+  agentContext?: string;
+  brandName?: string;
+}> {
+  let brandName: string | undefined;
+  if (task.brand_id) {
+    try {
+      // account_id is filtered IN THE QUERY: a background job has no session to
+      // fall back on, so an unscoped read here would be silent cross-tenant access.
+      const { data } = await supabase
+        .from('brands')
+        .select('name')
+        .eq('id', task.brand_id)
+        .eq('account_id', task.account_id)
+        .maybeSingle();
+      brandName = data?.name || undefined;
+    } catch { /* venture name omitted — grounding degrades, run continues */ }
+  }
+  try {
+    const agentContext = await loadAgentContext({
+      accountId: task.account_id,
+      brandId: task.brand_id ?? undefined,
+      brandName,
+      query: task.prompt,
+    });
+    return { agentContext, brandName };
+  } catch {
+    // No context block at all — the run still happens, just ungrounded.
+    return { brandName };
+  }
+}
+
+/**
  * Sweep due tasks (enabled AND next_run_at <= now), run each through the
  * existing agent loop, and record the outcome. Bounded to 25 per call.
  * Each task is wrapped in its own try/catch so one failure never stops the
  * sweep — the loop always finishes and reports a per-task result.
+ *
+ * All three runAgent statuses are handled explicitly (Packet 3.1). Before, only
+ * throw-vs-return existed, so a `needs_approval` return recorded 'ok' with the
+ * proposal text as its result: a task that hit a sensitive tool did nothing and
+ * reported success, with nobody watching to notice.
  */
 export async function runDueScheduledTasks(): Promise<{
   processed: number;
-  results: { id: string; ok: boolean; error?: string }[];
+  results: { id: string; ok: boolean; status?: string; error?: string }[];
 }> {
   const nowIso = new Date().toISOString();
   const { data: due, error } = await supabase
@@ -139,11 +191,69 @@ export async function runDueScheduledTasks(): Promise<{
     .limit(25);
   if (error) throw error;
 
-  const results: { id: string; ok: boolean; error?: string }[] = [];
+  const results: { id: string; ok: boolean; status?: string; error?: string }[] = [];
 
   for (const task of (due || []) as ScheduledTaskRow[]) {
     try {
-      const agentResult = await runAgent({ accountId: task.account_id, message: task.prompt });
+      const { agentContext, brandName } = await groundingFor(task);
+      const agentResult = await runAgent({
+        accountId: task.account_id,
+        message: task.prompt,
+        agentContext,
+        brandContext: brandName ? { name: brandName } : undefined,
+      });
+
+      if (agentResult?.status === 'needs_approval') {
+        // The run proposed a sensitive action and stopped. It did NOT execute.
+        // Record that plainly and tell a human — an unattended run that needs a
+        // decision is worthless if nothing surfaces it.
+        const approvalId = agentResult.proposal?.approvalId;
+        const summary = (agentResult.message || '').slice(0, RESULT_TRUNCATE_LEN);
+        const lastResult = (approvalId ? `approval_id=${approvalId}; ${summary}` : summary)
+          .slice(0, RESULT_TRUNCATE_LEN);
+        await supabase
+          .from('scheduled_tasks')
+          .update({
+            last_run_at: new Date().toISOString(),
+            last_status: 'needs_approval',
+            last_result: lastResult,
+            next_run_at: computeNextRun(task.interval).toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', task.id)
+          .eq('account_id', task.account_id);
+        // Best-effort notify: a failed bell entry must not turn a correctly
+        // halted run into a failed one.
+        try {
+          await createNotification(task.account_id, {
+            type: 'scheduled_task',
+            title: `Scheduled task "${task.name}" needs your approval`,
+            body: lastResult,
+          });
+        } catch { /* notification is best-effort */ }
+        results.push({ id: task.id, ok: false, status: 'needs_approval' });
+        continue;
+      }
+
+      if (agentResult?.status === 'error') {
+        // runAgent returns errors as a value, not a throw — record it as an
+        // error rather than letting it pass as 'ok'.
+        const errMsg = (agentResult.message || 'agent error').slice(0, RESULT_TRUNCATE_LEN);
+        await supabase
+          .from('scheduled_tasks')
+          .update({
+            last_run_at: new Date().toISOString(),
+            last_status: 'error',
+            last_result: errMsg,
+            next_run_at: computeNextRun(task.interval).toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', task.id)
+          .eq('account_id', task.account_id);
+        results.push({ id: task.id, ok: false, status: 'error', error: errMsg });
+        continue;
+      }
+
       const resultText = (agentResult?.message || '').slice(0, RESULT_TRUNCATE_LEN);
       await supabase
         .from('scheduled_tasks')
@@ -156,7 +266,7 @@ export async function runDueScheduledTasks(): Promise<{
         })
         .eq('id', task.id)
         .eq('account_id', task.account_id);
-      results.push({ id: task.id, ok: true });
+      results.push({ id: task.id, ok: true, status: 'ok' });
     } catch (e: any) {
       const errMsg = String(e?.message || e).slice(0, RESULT_TRUNCATE_LEN);
       await supabase
@@ -171,7 +281,7 @@ export async function runDueScheduledTasks(): Promise<{
         .eq('id', task.id)
         .eq('account_id', task.account_id)
         .then(() => {}, () => {});
-      results.push({ id: task.id, ok: false, error: errMsg });
+      results.push({ id: task.id, ok: false, status: 'error', error: errMsg });
     }
   }
 

@@ -13,6 +13,7 @@
 
 import { supabase } from '@/lib/db';
 import { runAgent } from '@/lib/agent/loop';
+import { loadAgentContext } from '@/lib/agent/context';
 
 export type PipelineStageKey = 'scout' | 'planner' | 'creator' | 'reviewer' | 'publisher' | 'analyst';
 export type PipelineStatus = 'running' | 'completed' | 'failed';
@@ -30,6 +31,9 @@ export interface PipelineStageResult {
 export interface ContentPipelineRunRow {
   id: string;
   account_id: string;
+  /** Optional venture scope (migration 043). ADDITIVE — null = account-wide,
+   *  which is every row today; used only to ground each stage's agent call. */
+  brand_id: string | null;
   topic: string;
   status: PipelineStatus;
   current_stage: PipelineStageKey | null;
@@ -170,6 +174,45 @@ async function persistRun(accountId: string, id: string, patch: {
 // --- Orchestrator ----------------------------------------------------------
 
 /**
+ * Grounding for the run (Packet 3.1), assembled ONCE and reused by all six
+ * stages — the block is per-account/venture, not per-stage, so rebuilding it
+ * six times would only multiply the reads.
+ *
+ * Best-effort BY DESIGN: this is a read, not a gate. A grounding failure must
+ * cost the run some context, never the run itself, so the catches are silent.
+ */
+async function groundingForRun(run: ContentPipelineRunRow): Promise<{
+  agentContext?: string;
+  brandName?: string;
+}> {
+  let brandName: string | undefined;
+  if (run.brand_id) {
+    try {
+      // account_id filtered IN THE QUERY — this path has no session to fall
+      // back on, so an unscoped read would be silent cross-tenant access.
+      const { data } = await supabase
+        .from('brands')
+        .select('name')
+        .eq('id', run.brand_id)
+        .eq('account_id', run.account_id)
+        .maybeSingle();
+      brandName = data?.name || undefined;
+    } catch { /* venture name omitted — grounding degrades, run continues */ }
+  }
+  try {
+    const agentContext = await loadAgentContext({
+      accountId: run.account_id,
+      brandId: run.brand_id ?? undefined,
+      brandName,
+      query: run.topic,
+    });
+    return { agentContext, brandName };
+  } catch {
+    return { brandName };
+  }
+}
+
+/**
  * Walk the 6 stages sequentially for a topic, calling runAgent once per stage
  * and persisting each stage's result. The Reviewer stage gates the run: a
  * "needs revision" verdict (or any stage error) marks the run `failed` and
@@ -183,6 +226,9 @@ async function persistRun(accountId: string, id: string, patch: {
  */
 export async function runPipeline(accountId: string, topic: string): Promise<ContentPipelineRunRow> {
   const run = await createPipelineRun(accountId, topic);
+  // Grounding once for the whole run (Packet 3.1) — before, every stage ran
+  // with no platform/venture/memory context at all.
+  const { agentContext, brandName } = await groundingForRun(run);
   let stages: PipelineStageResult[] = PIPELINE_STAGES.map((s) => ({ key: s.key, status: 'pending' }));
   let prior = '';
   let failed = false;
@@ -195,7 +241,52 @@ export async function runPipeline(accountId: string, topic: string): Promise<Con
 
     try {
       const instruction = def.instruction(topic, prior);
-      const result = await runAgent({ accountId, message: instruction });
+      const result = await runAgent({
+        accountId,
+        message: instruction,
+        agentContext,
+        brandContext: brandName ? { name: brandName } : undefined,
+      });
+
+      // A stage that proposed a sensitive action has NOT run it. Halt here:
+      // continuing would feed the next stage a promise instead of an artifact,
+      // and the run would report a result nobody actually produced.
+      if (result?.status === 'needs_approval') {
+        const approvalId = result.proposal?.approvalId;
+        const halted = `Halted: this stage needs approval before it can run${approvalId ? ` (approval_id=${approvalId})` : ''}.`;
+        stages[i] = {
+          ...stages[i],
+          status: 'failed',
+          output: String(result.message || '').slice(0, RESULT_TRUNCATE_LEN),
+          error: halted,
+          finishedAt: new Date().toISOString(),
+        };
+        await persistRun(accountId, run.id, {
+          status: 'failed',
+          current_stage: def.key,
+          stages,
+          output: { error: halted, stage: def.key, needsApproval: true, approvalId: approvalId ?? null },
+        });
+        failed = true;
+        break;
+      }
+
+      // Third status: runAgent reports failure as a VALUE, not a throw, so
+      // without this branch an error message became the stage's "output" and
+      // the pipeline built on top of it.
+      if (result?.status === 'error') {
+        const err = String(result.message || 'agent error').slice(0, RESULT_TRUNCATE_LEN);
+        stages[i] = { ...stages[i], status: 'failed', error: err, finishedAt: new Date().toISOString() };
+        await persistRun(accountId, run.id, {
+          status: 'failed',
+          current_stage: def.key,
+          stages,
+          output: { error: err, stage: def.key },
+        });
+        failed = true;
+        break;
+      }
+
       const text = String(result?.message || '').trim() || '(no output)';
       const output = text.slice(0, RESULT_TRUNCATE_LEN);
 

@@ -86,8 +86,47 @@ const TOOL_VERB: Record<string, string> = {
   forgetFact: 'Forgetting that',
   listFacts: 'Checking what I remember',
   describeTools: 'Working out what I can do here',
+  // --- added by Packet 2.2 (domain backfill) ---
+  listDeals: 'Pulling up your deals',
+  getDeal: 'Opening that deal',
+  updateDeal: 'Updating that deal',
+  deleteDeal: 'Preparing to delete that deal',
+  listActivities: 'Checking logged activity',
+  logActivity: 'Logging that activity',
+  listSegments: 'Checking your saved segments',
+  previewSegment: 'Previewing who matches those filters',
+  createSegment: 'Saving that segment',
+  updateSegment: 'Updating that segment',
+  listJourneys: 'Checking your journeys',
+  getJourney: 'Opening that journey',
+  createJourney: 'Setting up the journey',
+  pauseJourney: 'Preparing to pause that journey',
+  listCompanies: 'Pulling up your companies',
+  getCompany: 'Opening that company',
+  createCompany: 'Adding the company',
+  linkContactToCompany: 'Linking that lead to the company',
+  getOverview: 'Pulling your account overview',
+  listForms: 'Checking your forms',
+  getForm: 'Opening that form',
+  listSubmissions: 'Checking form submissions',
+  createForm: 'Setting up the form',
+  getBudget: 'Checking your budget settings',
+  getBudgetStatus: 'Checking your spend against budget',
+  setBudget: 'Updating your budget settings',
+  listScheduledTasks: 'Checking your scheduled tasks',
+  createScheduledTask: 'Setting up the scheduled task',
+  disableScheduledTask: 'Preparing to turn off that scheduled task',
+  listIcpProfiles: 'Checking your saved ICP profiles',
+  updateIcpProfile: 'Updating that ICP profile',
+  globalSearch: 'Searching your account',
+  addSuppression: 'Adding that to your suppression list',
+  getThread: 'Opening that conversation',
+  replyToThread: 'Preparing a reply',
+  markRead: 'Marking that conversation',
 };
 const verbFor = (tool: string, title: string) => TOOL_VERB[tool] || title || 'Working';
+
+interface PersonaOption { id: string; name: string; avatar?: string | null }
 
 export default function AgentConsole({ brandId, conversationId, onSteps }: { brandId?: string; conversationId?: string; onSteps?: (steps: Step[], busy: boolean, pendingApproval: boolean) => void }) {
   const [turns, setTurns] = useState<Array<any>>([]);
@@ -96,6 +135,8 @@ export default function AgentConsole({ brandId, conversationId, onSteps }: { bra
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [compaction, setCompaction] = useState<{ level: 'soft' | 'hard'; tokenEstimate: number } | null>(null);
   const [handingOver, setHandingOver] = useState(false);
+  const [personas, setPersonas] = useState<PersonaOption[]>([]);
+  const [selectedPersonaId, setSelectedPersonaId] = useState<string | undefined>(undefined);
   // The server owns conversation state (Packet 0.2). We hold only the opaque id
   // it issued in the trailing `conversation` SSE event and echo it back on the
   // next turn — including the approve-resume, which reloads its context server-
@@ -134,6 +175,21 @@ export default function AgentConsole({ brandId, conversationId, onSteps }: { bra
       .catch(() => { /* best-effort: an empty console is still usable */ });
     return () => { cancelled = true; };
   }, [conversationId]);
+
+  // Fetch available personas on mount. Additive: only populated when the
+  // account has created any personas; empty list is normal for new accounts.
+  useEffect(() => {
+    let cancelled = false;
+    apiGet<{ personas: Array<{ id: string; name: string; avatar?: string | null; enabled: boolean }> }>('/api/personas')
+      .then((d) => {
+        if (cancelled) return;
+        // Filter to enabled personas only — mirrors the UI filtering on the personas list page.
+        const enabled = (Array.isArray(d.personas) ? d.personas : []).filter((p: any) => p.enabled);
+        setPersonas(enabled);
+      })
+      .catch(() => { /* best-effort: a missing persona list still leaves the console usable */ });
+    return () => { cancelled = true; };
+  }, []);
 
   // Additive, non-breaking: surface the latest assistant turn's real steps to an
   // optional parent (the dock's context column). No effect on this component's UI.
@@ -175,6 +231,7 @@ export default function AgentConsole({ brandId, conversationId, onSteps }: { bra
           brandId,
           ...(conversationIdRef.current ? { conversationId: conversationIdRef.current } : {}),
           ...(from ? { from } : {}),
+          ...(selectedPersonaId ? { personaId: selectedPersonaId } : {}),
         }),
       });
       if (from) pendingFromRef.current = undefined;
@@ -291,6 +348,7 @@ export default function AgentConsole({ brandId, conversationId, onSteps }: { bra
     setTurns([]);
     setProposal(null);
     setCompaction(null);
+    setSelectedPersonaId(undefined); // reset persona for the new chat
     setHandingOver(false);
   };
 
@@ -351,6 +409,38 @@ export default function AgentConsole({ brandId, conversationId, onSteps }: { bra
         )}
         <div ref={endRef} />
       </div>
+
+      {/* Persona picker — optional pill-tabs above the composer. Additive, non-breaking:
+          only appears when the account has created personas, and omits personaId from
+          the request body when the default is selected (maintaining byte-identical requests). */}
+      {personas.length > 0 && (
+        <div className="flex flex-wrap gap-2 border-t border-[var(--border-default)] bg-[var(--bg-canvas)] px-3 py-2">
+          <button
+            onClick={() => setSelectedPersonaId(undefined)}
+            className={`inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
+              !selectedPersonaId
+                ? 'bg-[var(--brand)] text-white'
+                : 'bg-[var(--bg-raised)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+            }`}
+          >
+            Default
+          </button>
+          {personas.map((persona) => (
+            <button
+              key={persona.id}
+              onClick={() => setSelectedPersonaId(persona.id)}
+              className={`inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                selectedPersonaId === persona.id
+                  ? 'bg-[var(--brand)] text-white'
+                  : 'bg-[var(--bg-raised)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
+              }`}
+            >
+              {persona.avatar && <span className="mr-1.5">{persona.avatar}</span>}
+              {persona.name}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="flex items-end gap-2 border-t border-[var(--border-default)] p-3">
         <textarea
