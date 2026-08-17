@@ -38,8 +38,8 @@ Route by *failure cost*, not size. Anything touching `account_id`, approval stat
 | 0.3 | Close the MCP server bypass | A | ☑ merged |
 | 1.1 | Memory ingestion path (`rememberFact`) | B | ☑ merged |
 | 1.2 | Conversation persistence + compaction | B | ☐ |
-| 1.3 | Small correctness fixes | C | ☐ |
-| 1.4 | Enforce the spend budget (zero callers) | A | ☐ spec ready |
+| 1.3 | Small correctness fixes | C | ☑ merged |
+| 1.4 | Enforce the spend budget (zero callers) | A | ☑ merged (gate live, meter dormant) |
 | 2.1 | Capability Registry core | A | ☑ merged |
 | 2.2 | Domain backfill (15 domains, parallel) | B | ☐ |
 | 2.2-S | Social capabilities | A | ☑ merged |

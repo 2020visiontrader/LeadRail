@@ -22,7 +22,6 @@ const TOOL_VERB: Record<string, string> = {
   listVentures: 'Checking your ventures',
   listAdAccounts: 'Looking up your ad accounts',
   listCampaigns: 'Pulling up your campaigns',
-  listContacts: 'Scanning your contacts',
   listConversations: 'Reading recent conversations',
   createCampaign: 'Setting up the campaign',
   launchCampaign: 'Preparing to launch the campaign',
@@ -51,6 +50,41 @@ const TOOL_VERB: Record<string, string> = {
   enableSocialAutomation: 'Preparing to switch on an automatic rule',
   disableSocialAutomation: 'Switching off that automatic rule',
   deleteSocialAutomation: 'Preparing to delete that automatic rule',
+  // --- added by Packet 1.3 (verb coverage) ---
+  // INVARIANT: every capability in CATALOG_ORDER (lib/capabilities/registry.ts)
+  // — including the staged-catalog-only ones — has a key here. verbFor() falls
+  // back to the capability title, so a gap degrades quietly instead of failing;
+  // when you add a capability, add its verb in the same commit.
+  getCampaign: 'Opening that campaign',
+  listAdSets: 'Looking through the ad sets',
+  listAds: 'Looking through the ads',
+  listAssets: 'Gathering your creative assets',
+  getInsights: 'Pulling the performance numbers',
+  listLeads: 'Going through your leads',
+  getLead: 'Opening that lead',
+  importAsset: 'Saving that asset',
+  readNotionPage: 'Reading that Notion page',
+  readDriveFile: 'Reading that file',
+  sourceLeads: 'Preparing to find new leads',
+  enrichLead: 'Preparing to fill in that lead’s details',
+  draftOutreach: 'Writing the outreach',
+  sendEmail: 'Preparing to send the email',
+  listSequences: 'Checking your follow-up sequences',
+  enrollInSequence: 'Preparing to start the follow-ups',
+  listStages: 'Checking your pipeline stages',
+  createDeal: 'Adding the deal',
+  moveDeal: 'Moving the deal along',
+  addNote: 'Saving your note',
+  updateLeadStatus: 'Updating that lead’s status',
+  listTags: 'Checking your tags',
+  tagLead: 'Tagging that lead',
+  getPersona: 'Reading your brand profile',
+  updatePersona: 'Updating your brand profile',
+  generateAdCopy: 'Writing ad copy',
+  rememberFact: 'Making a note of that',
+  forgetFact: 'Forgetting that',
+  listFacts: 'Checking what I remember',
+  describeTools: 'Working out what I can do here',
 };
 const verbFor = (tool: string, title: string) => TOOL_VERB[tool] || title || 'Working';
 

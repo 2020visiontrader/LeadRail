@@ -196,7 +196,10 @@ function summarizeProposal(tool: string, args: Record<string, any>): string {
     const budget = args.dailyBudget != null ? ` at $${args.dailyBudget}/day` : '';
     return `Launch a live paid campaign${budget}. This will start spending on Meta.`;
   }
-  if (tool === 'pauseCampaign') return 'Pause a live campaign (stops spend).';
+  // NO pauseCampaign branch, deliberately (Packet 1.3). Pausing STOPS spend, so
+  // it stays non-sensitive (`gate: 'internal_write'`, lib/capabilities/campaigns.ts)
+  // and runs immediately — it never reaches an approval card, so a summary here
+  // would be dead code. If you are tempted to re-add it, change the gate first.
   if (tool === 'createCampaign') {
     const meta = args.channel === 'meta' ? ' and a PAUSED Meta campaign (no spend yet)' : '';
     return `Create the campaign "${args.name}"${meta}.`;
@@ -455,14 +458,15 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
     }
 
     const sig = `${tool}:${JSON.stringify(args)}`;
-    if (seen.has(sig)) {
-      // Model is repeating a call it already ran. Don't re-execute — nudge it to
-      // answer. If it keeps looping, break to the forced final below.
+    if (seen.has(sig) || (toolCalls[tool] || 0) >= 2) {
+      // Exact repeat, or the same tool called too many times (e.g. pagination
+      // churn). Don't re-run — nudge to answer; break to forced final if stuck.
       if (++dupNudges >= 2) break;
-      messages.push({ role: 'user', content: 'You already ran that and its result is in the OBSERVATION above. Do NOT call it again — answer now with action:"final".' });
+      messages.push({ role: 'user', content: 'You have enough from previous results. Do NOT call more tools — answer now with action:"final".' });
       continue;
     }
     seen.add(sig);
+    toolCalls[tool] = (toolCalls[tool] || 0) + 1;
 
     const res = await runTool(tool, accountId, args);
     const obs = observationFor(tool, args, res);
@@ -505,6 +509,18 @@ export type AgentEvent =
   | { type: 'compaction_suggested'; level: 'soft' | 'hard'; tokenEstimate: number }
   | { type: 'error'; message: string };
 
+// LOOP-CONTROL INVARIANT (Packet 1.3): runAgentStream and runAgent must keep
+// IDENTICAL loop control — the step cap (MAX_STEPS), the executed-signature
+// duplicate check and its two-nudge budget, and the per-tool repeat cap of 2.
+// Change any of those in one variant and change it in the other in the same
+// commit; otherwise the same conversation behaves differently over SSE than
+// over the JSON route.
+//
+// This is NOT a claim that the two are behaviourally identical, and they must
+// not be made so. The divergence below is deliberate (Packets 8.1/8.2): this
+// variant owns an `emit` channel, streams `final_delta`, and passes an onDelta
+// callback to composeAnswer that runAgent intentionally does not. Do not
+// "harmonize" the streaming/compose paths.
 export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent) => void): Promise<void> {
   const { accountId, brandContext } = input;
   const { systemBlock: personaBlock, modelId: personaModelId } = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
