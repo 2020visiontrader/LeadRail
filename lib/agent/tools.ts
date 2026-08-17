@@ -7,6 +7,7 @@
 import { z } from 'zod';
 import { CAPABILITIES, CAPABILITY_BY_NAME, stagedCatalogText } from '@/lib/capabilities/registry';
 import { isSensitive, type Capability } from '@/lib/capabilities/types';
+import { assertWithinBudget } from '@/lib/budgets/store';
 
 export interface AgentTool {
   title: string;
@@ -67,6 +68,30 @@ export async function runTool(name: string, accountId: string, rawArgs: unknown)
   if (!tool) return { ok: false, error: `Unknown tool: ${name}` };
   const parsed = tool.zod.safeParse(rawArgs ?? {});
   if (!parsed.success) return { ok: false, error: `Invalid arguments: ${parsed.error.message}` };
+
+  // SPEND GATE (Packet 1.4). This is the one place any capability is executed —
+  // the chat loop (both the streaming and non-streaming variants, including the
+  // post-approval resume) and the MCP server all funnel through here — so the
+  // monthly budget is enforced once, for every entrance, and can't be forgotten
+  // when a new spend-gated capability is added.
+  //
+  // It runs AFTER argument validation (so spendsMoney sees parsed args) and
+  // BEFORE tool.run(), i.e. before any external call: money that has already
+  // left cannot be un-spent by a later check.
+  //
+  // The catch is NOT a silent catch — assertWithinBudget() has already made the
+  // fail-closed decision and produced a user-facing reason; this only converts
+  // its throw into runTool's never-throws {ok,error} contract, preserving the
+  // message so it reaches the model and the user intact.
+  const cap = CAPABILITY_BY_NAME[name];
+  if (cap && (cap.gate === 'spend' || cap.spendsMoney?.(parsed.data) === true)) {
+    try {
+      await assertWithinBudget(accountId, cap.title);
+    } catch (e: any) {
+      return { ok: false, error: e?.message || 'Blocked by this account’s monthly spend limit.' };
+    }
+  }
+
   try {
     return { ok: true, result: await tool.run(accountId, parsed.data) };
   } catch (e: any) {

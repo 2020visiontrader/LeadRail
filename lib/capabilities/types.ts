@@ -41,6 +41,16 @@ export interface Capability {
   /** Runtime validation for both callers. */
   zod: z.ZodTypeAny;
   run: (accountId: string, args: any) => Promise<any>;
+  /** Optional (Packet 1.4): true when THESE arguments commit real spend even
+   *  though the capability's gate class is not 'spend'. The spend budget gate
+   *  in runTool() fires on `gate === 'spend' || spendsMoney?.(args)`.
+   *
+   *  Exists because "reaches a third party" and "costs money" are not the same
+   *  axis: setAdStatus is external_send for every call, but only status:'ACTIVE'
+   *  restarts a live ad. Declaring that here keeps the money gate arg-aware
+   *  without a per-name special case inside the chokepoint, and without
+   *  reclassifying a gate (which would change approval and audit semantics). */
+  spendsMoney?: (args: any) => boolean;
   /** Optional: truthful per-run metrics derived from a REAL result. Never fabricate. */
   metrics?: (args: any, result: any) => Record<string, number>;
   /** Optional: one-sentence approval summary. Falls back to `${title}: ${JSON.stringify(args)}`.

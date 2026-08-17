@@ -1,6 +1,7 @@
 import { supabase, assertBrandOwned } from '@/lib/db';
 import { getCampaignAssets } from '@/lib/crm';
 import { getMetaCreds } from '@/lib/integrations/meta';
+import { assertWithinBudget } from '@/lib/budgets/store';
 import {
   createCampaign, createAdSet, uploadAdImage, uploadAdVideo,
   createAdCreative, createAd, updateStatus, getInsights,
@@ -69,6 +70,19 @@ export async function launchCampaign(
   opts: { message?: string; link?: string; dailyBudget?: number } = {},
 ) {
   const c = await ownedCampaign(campaignId, accountId);
+
+  // SPEND GATE (Packet 1.4). runTool() gates every capability, but this
+  // function has a second entrance the capability layer does not cover:
+  // POST /api/campaigns/[id]/launch, which the campaigns UI calls directly.
+  // The check therefore lives here as well — before getMetaCreds/createAdSet,
+  // i.e. before the first external call. Re-raised as a GuardError so the HTTP
+  // route returns the reason to the user instead of a generic 500.
+  try {
+    await assertWithinBudget(accountId, 'this campaign launch');
+  } catch (e: any) {
+    throw new GuardError(e?.message || 'Monthly spend limit reached', 402);
+  }
+
   if (!c.meta_campaign_id) throw new GuardError('Campaign has no linked Meta campaign — create it with channel "meta" and an ad account first');
   const budget = Number(opts.dailyBudget ?? c.budget) || 0;
   if (budget <= 0) throw new GuardError('Set a budget above 0 before launching');

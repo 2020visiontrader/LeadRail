@@ -414,6 +414,10 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     inputSchema: obj({ metaObjectId: S.string, status: S.string }, ['metaObjectId', 'status']),
     zod: z.object({ metaObjectId: z.string().min(1), status: z.enum(['ACTIVE', 'PAUSED']) }),
     run: (accountId, a) => updateStatus(accountId, a.metaObjectId, a.status),
+    // Packet 1.4: ACTIVE restarts real ad spend, so it must clear the monthly
+    // budget gate as well; PAUSED stops spend and must stay available even when
+    // the account is over its limit — blocking the off-switch would be perverse.
+    spendsMoney: (a) => a?.status === 'ACTIVE',
     summarize: (a) => (a.status === 'ACTIVE'
       ? `Set ${a.metaObjectId} to ACTIVE. This restarts real ad spend immediately.`
       : `Set ${a.metaObjectId} to PAUSED. This stops its ad spend.`),

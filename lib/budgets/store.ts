@@ -105,3 +105,48 @@ export async function checkBudget(accountId: string): Promise<{ allowed: boolean
   }
   return { allowed: true };
 }
+
+/** Thrown by assertWithinBudget(). `message` is written for the end user and
+ *  always names the reason; callers surface it verbatim. */
+export class BudgetBlockedError extends Error {
+  code = 'budget_exceeded';
+  constructor(message: string) {
+    super(message);
+    this.name = 'BudgetBlockedError';
+  }
+}
+
+/**
+ * THE spend gate (Packet 1.4). Throws BudgetBlockedError when the account's
+ * monthly hard stop must refuse this action; returns normally otherwise.
+ * Every caller must invoke it BEFORE the external call, never after.
+ *
+ * FAIL-CLOSED, deliberately, and NOT a silent catch. checkBudget() reads
+ * account_budgets and credit_transactions; if either read fails we cannot
+ * distinguish "under budget" from "over budget", and the action about to run
+ * spends real money. An unreadable budget therefore refuses. The underlying
+ * error text is carried into the refusal so an operator can tell a database
+ * outage apart from an actual limit — the decision is visible, not swallowed.
+ *
+ * Soft budgets are untouched: checkBudget() returns allowed:true whenever
+ * hard_stop is false (warn only), whenever budgets are disabled, and whenever
+ * the account has no budget row at all. An account that has not opted in
+ * behaves exactly as it did before this packet.
+ */
+export async function assertWithinBudget(accountId: string, actionLabel: string): Promise<void> {
+  let verdict: { allowed: boolean; reason?: string };
+  try {
+    verdict = await checkBudget(accountId);
+  } catch (e: any) {
+    throw new BudgetBlockedError(
+      `I couldn't read this account's spend budget, so I did not run ${actionLabel} — it spends real money and I won't do that unverified. ` +
+      `(budget lookup failed: ${e?.message || 'unknown error'})`,
+    );
+  }
+  if (!verdict.allowed) {
+    throw new BudgetBlockedError(
+      `${verdict.reason || 'Monthly spend limit reached'} — I did not run ${actionLabel}. ` +
+      'Raise the monthly limit or turn off the hard stop in your budget settings, then ask me again.',
+    );
+  }
+}
