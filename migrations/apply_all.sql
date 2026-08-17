@@ -2628,3 +2628,96 @@ RETURNS TABLE (id UUID, fact TEXT, similarity REAL) AS $$
   ORDER BY m.embedding <=> p_query
   LIMIT GREATEST(p_limit, 1);
 $$ LANGUAGE sql STABLE;
+
+-- ===========================================================================
+-- 037_approval_execution.sql
+-- Adds the terminal 'executed' state to the approval lifecycle (Packet 0.1),
+-- so an approved action is consumed exactly once and the audit trail records
+-- that it actually ran. args_hash index backs the no-drift check.
+-- ===========================================================================
+
+ALTER TABLE approvals DROP CONSTRAINT IF EXISTS approvals_state_check;
+ALTER TABLE approvals ADD CONSTRAINT approvals_state_check
+  CHECK (state IN ('pending','approved','rejected','expired','invalidated','executed'));
+ALTER TABLE approvals ADD COLUMN IF NOT EXISTS executed_at TIMESTAMPTZ;
+CREATE INDEX IF NOT EXISTS idx_approvals_account_tool_hash ON approvals(account_id, tool, args_hash);
+
+-- ===========================================================================
+-- 038_model_output_limits.sql
+-- Per-model output ceiling, so an answer's length follows the capability of
+-- whichever model actually serves it rather than one hardcoded constant.
+-- NULL means unknown; callers fall back to a conservative default.
+-- ===========================================================================
+
+ALTER TABLE ai_models ADD COLUMN IF NOT EXISTS max_output_tokens INT;
+COMMENT ON COLUMN ai_models.max_output_tokens IS 'Per-model maximum output token limit; NULL means unknown, callers should fall back to a conservative default.';
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'ai_models_max_output_tokens_check'
+          AND conrelid = 'ai_models'::regclass
+    ) THEN
+        ALTER TABLE ai_models
+        ADD CONSTRAINT ai_models_max_output_tokens_check
+        CHECK (max_output_tokens IS NULL OR max_output_tokens > 0);
+    END IF;
+END $$;
+
+-- ===========================================================================
+-- 039_mcp_keys.sql
+-- Per-account API keys for LeadRail's OWN MCP server (Packet 0.3). Replaces
+-- the single shared APP_API_SECRET as the authorisation decision: a bearer
+-- maps to exactly one account, and sensitive tools need an explicit per-key
+-- opt-in. The token itself is NEVER stored, only its sha256. Revocation is a
+-- timestamp, not a delete, so the audit trail survives.
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS mcp_api_keys (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id      UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  label           TEXT NOT NULL,
+  key_hash        TEXT NOT NULL UNIQUE,
+  allow_sensitive BOOLEAN NOT NULL DEFAULT FALSE,
+  last_used_at    TIMESTAMPTZ,
+  revoked_at      TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_api_keys_key_hash ON mcp_api_keys(key_hash);
+CREATE INDEX IF NOT EXISTS idx_mcp_api_keys_account ON mcp_api_keys(account_id);
+ALTER TABLE mcp_api_keys ENABLE ROW LEVEL SECURITY;
+
+-- ===========================================================================
+-- 040_social_automations.sql
+-- Standing rules over social activity (Packet 2.2-S). A row is a RULE, not an
+-- action. Two safety properties are enforced here rather than in code:
+--   1. `enabled` defaults FALSE — creating a rule and switching it on are two
+--      separate approvals, so one approval can never yield a live auto-sender.
+--   2. `daily_cap` is bounded by a DB CHECK, so no code path (capability, MCP
+--      caller, or the Packet 7.3 runner) can store a rule allowed to send more
+--      than 200 times a day.
+-- The execution runner is Packet 7.3; until it exists these rows never fire.
+-- ===========================================================================
+
+CREATE TABLE IF NOT EXISTS social_automations (
+  id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id    UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  platform      TEXT NOT NULL,
+  external_id   TEXT NOT NULL,
+  trigger       TEXT NOT NULL,
+  match         JSONB NOT NULL DEFAULT '{}'::jsonb,
+  action        TEXT NOT NULL,
+  template      TEXT,
+  daily_cap     INT NOT NULL DEFAULT 25,
+  sends_today   INT NOT NULL DEFAULT 0,
+  last_reset_at DATE,
+  enabled       BOOLEAN NOT NULL DEFAULT false,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT social_automations_cap_check CHECK (daily_cap > 0 AND daily_cap <= 200),
+  CONSTRAINT social_automations_trigger_check CHECK (trigger IN ('comment_received','dm_received','mention')),
+  CONSTRAINT social_automations_action_check CHECK (action IN ('reply','hide','notify','tag_lead'))
+);
+CREATE INDEX IF NOT EXISTS idx_social_automations_account ON social_automations(account_id, enabled);
+ALTER TABLE social_automations ENABLE ROW LEVEL SECURITY;
