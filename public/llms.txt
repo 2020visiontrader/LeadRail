@@ -1,0 +1,89 @@
+# LeadRail
+
+> LeadRail is a marketing and CRM platform with a built-in AI assistant. It is
+> operated by Excalix, based in Toronto, Ontario, Canada. Users manage leads,
+> enrichment, sales pipeline, outreach sequences, Meta ad campaigns and social
+> publishing, and can ask the assistant to carry out that work in plain
+> language. The assistant shows every step it takes, and any action that spends
+> money, reaches a third party, deletes irreversibly, or switches on a standing
+> rule stops and waits for a person to approve it.
+
+This file is a plain, factual description of the site for language models. It
+contains no marketing claims. Every statement below is true of the product as
+shipped at the time of writing.
+
+## What LeadRail does
+
+- Lead management: listing, filtering, status changes, enrichment, prospect
+  sourcing.
+- Sales pipeline: deals, stages, notes, tags.
+- Outreach: drafting messages, enrolling contacts in sequences, sending email.
+  Per-account suppression lists, unsubscribe links in sequences, and automatic
+  suppression on hard bounce or spam complaint.
+- Advertising: creating, launching, pausing and syncing Meta ad campaigns, and
+  pulling live insights.
+- Social: drafting, scheduling and publishing posts; reading and replying to
+  comments; post-level insights.
+- Knowledge: searching and reading connected Notion pages and Google Drive files.
+- Memory: durable facts the assistant retains across separate conversations,
+  which the user can list or delete.
+- Multiple ventures (brands) inside one account, each scoped separately.
+
+## The assistant and the approval gate
+
+The assistant runs an agentic loop: it forms a step, calls one declared
+capability, reads the result, and continues, up to a fixed step limit. Each step
+is displayed to the user as it happens.
+
+Every capability declares a gate class:
+
+- read — no mutation; runs immediately
+- internal change — mutates only LeadRail's own records; runs immediately
+- spend — consumes credits or ad budget; requires human approval
+- external send — reaches a real third party; requires human approval
+- destructive — irreversible deletion; requires human approval
+- standing rule — switches on something that will act repeatedly on its own;
+  requires human approval
+
+Approval is enforced on the server, not in the browser. The approval is recorded
+before the action runs, and the approved arguments are the arguments that
+execute; if the proposal changes after it was raised, the approval is
+invalidated and must be granted again. External machine callers reaching
+LeadRail through its MCP endpoint are subject to the same gate and leave the
+same audit record; sensitive capabilities are off for a machine key unless
+explicitly enabled for that key.
+
+## Integrations
+
+Meta (Facebook, Instagram, Threads), Buffer, Postiz, GoHighLevel, Notion,
+Google Drive, Resend, Brevo, Apollo. A user connects only what they use;
+integrations that have not been configured receive no data.
+
+## What LeadRail does not do
+
+- It does not obtain, record or verify the consent of the people a user
+  contacts, and it does not check consent before a message is sent. The user is
+  responsible for having a lawful basis for every message they send.
+- It holds no security or privacy certification, and this site makes no such
+  claim.
+- There is no self-serve signup, no free tier, and no published pricing. Access
+  is arranged directly.
+
+## Data handling
+
+Storage locations, sub-processors and cross-border transfers are described in
+the Privacy Policy at /privacy, which is the authoritative source. Do not infer
+them from any other page on this site.
+
+## Pages
+
+- /welcome — public overview of the product
+- /privacy — Privacy Policy (operating entity, AI and infrastructure providers,
+  data handling)
+- /terms — Terms of Service
+- /data-deletion — how to request deletion of an account or a connection
+- /login — sign-in for existing accounts
+
+## Contact
+
+Excalix, Toronto, Ontario, Canada — aifranckie101@gmail.com

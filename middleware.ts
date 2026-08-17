@@ -5,7 +5,13 @@ import { verifySession, SESSION_COOKIE } from '@/lib/session';
 // '/r/' is the ambassador capture link — clicked by logged-out strangers, so it
 // must be public. The trailing slash keeps it from matching the authed
 // '/referrals' portal (which stays gated).
-const PUBLIC_PAGES = ['/login', '/privacy', '/terms', '/data-deletion', '/r/'];
+// '/welcome' is the public landing page (Packet 11.2) — the first thing a
+// logged-out stranger sees. '/robots.txt', '/sitemap.xml' and '/llms.txt' are
+// its crawler-facing artifacts; the matcher below does not exclude them, so
+// without this they would redirect a crawler to /login and the page would be
+// unindexable. All four are public *by definition* — they contain no account
+// data and read nothing from a session.
+const PUBLIC_PAGES = ['/login', '/privacy', '/terms', '/data-deletion', '/r/', '/welcome', '/robots.txt', '/sitemap.xml', '/llms.txt'];
 // Only genuinely public endpoints: user login, provider webhooks (signature-verified),
 // the cron tick (bearer-protected), and the Meta OAuth callback. Everything else —
 // including all social read/write routes — now requires a session.
@@ -38,6 +44,15 @@ export async function middleware(req: NextRequest) {
 
   if (isApi) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   const url = req.nextUrl.clone();
+  // Packet 11.2: the ROOT path only. A logged-out stranger typing the domain
+  // gets the landing page instead of a bare login form. No `next` param — there
+  // is nothing to bounce back to, and '/' is where /login already lands.
+  // Every OTHER private route keeps the existing behaviour below, unchanged.
+  if (pathname === '/') {
+    url.pathname = '/welcome';
+    url.search = '';
+    return NextResponse.redirect(url);
+  }
   url.pathname = '/login';
   url.searchParams.set('next', pathname);
   return NextResponse.redirect(url);

@@ -39,6 +39,7 @@ Route by *failure cost*, not size. Anything touching `account_id`, approval stat
 | 1.1 | Memory ingestion path (`rememberFact`) | B | ☑ merged |
 | 1.2 | Conversation persistence + compaction | B | ☐ |
 | 1.3 | Small correctness fixes | C | ☐ |
+| 1.4 | Enforce the spend budget (zero callers) | A | ☐ spec ready |
 | 2.1 | Capability Registry core | A | ☑ merged |
 | 2.2 | Domain backfill (15 domains, parallel) | B | ☐ |
 | 2.2-S | Social capabilities | A | ☑ merged |
@@ -62,7 +63,7 @@ Route by *failure cost*, not size. Anything touching `account_id`, approval stat
 | 10.2 | Prompt prefix order + plan/narration split | B | ☐ spec ready |
 | 10.3 | Two-stage tool catalog | B | ☑ merged (opt-in flag) |
 | 11.1 | Legal entity + AI subprocessor disclosure | A | ☑ merged · DRAFT, needs counsel |
-| 11.2 | Public landing page | C | ☐ spec ready |
+| 11.2 | Public landing page | C | ☑ merged |
 
 ## Order to actually run
 
