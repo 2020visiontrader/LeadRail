@@ -124,6 +124,18 @@
 @keyframes fadeIn { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
 .animate-fade-in { animation: fadeIn 0.25s ease-in-out; }
 
+/* Agent console: typing caret + collapsible-trace chevron (AgentConsole.tsx). */
+@keyframes caretBlink { 0%, 49% { opacity: 1; } 50%, 100% { opacity: 0; } }
+.agent-caret { display: inline-block; margin-left: 1px; animation: caretBlink 1s step-end infinite; color: var(--text-secondary); }
+.agent-chevron { display: inline-block; transition: transform 0.15s ease; transform: rotate(0deg); }
+.agent-chevron-open { transform: rotate(90deg); }
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-caret { animation: none; opacity: 1; }
+  .agent-chevron { transition: none; }
+  .animate-fade-in { animation: none; }
+}
+
 @media (max-width: 768px) { table { font-size: 12px; } }
 
 /* Operator-console settings rail (SettingsConsole primitive): thin, unobtrusive
