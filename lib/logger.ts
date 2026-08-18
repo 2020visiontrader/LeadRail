@@ -120,9 +120,16 @@ export const log = {
   info(message: string, detail?: Record<string, unknown>): void {
     emit('info', { message, detail }, { persist: false });
   },
-  /** Request-completion line — console + persisted so success/latency is queryable. */
-  request(fields: LogFields): void {
-    emit('info', fields, { persist: true });
+  /** Request-completion line — console + persisted so success/latency is queryable.
+   *
+   *  `level` defaults to 'info' but callers should derive it from the HTTP
+   *  status. Every request line used to be logged as info regardless of outcome,
+   *  which made the Error and Warn filters on /logs permanently empty: a run of
+   *  rejected Meta webhooks showed as "0 errors, 0 warns" while real inbound
+   *  events were being dropped. A filter that cannot go non-zero is worse than
+   *  no filter — it actively reassures. */
+  request(fields: LogFields, level: LogLevel = 'info'): void {
+    emit(level, fields, { persist: true });
   },
   warn(message: string, detail?: Record<string, unknown>): void {
     emit('warn', { message, detail }, { persist: true });

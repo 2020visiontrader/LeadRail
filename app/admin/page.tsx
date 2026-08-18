@@ -3,6 +3,10 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import PlatformBackend from '@/components/PlatformBackend';
+import Diagnostics from '@/components/Diagnostics';
+import ModelsProviders from '@/components/ModelsProviders';
+import AiUsage from '@/components/AiUsage';
+import McpClients from '@/components/McpClients';
 import ActivityFeed from '@/components/ActivityFeed';
 
 // Owner Admin portal — the one place platform-ops surfaces live: infra/service
@@ -34,12 +38,23 @@ export default function AdminPage() {
     <div className="mx-auto max-w-6xl space-y-8">
       <div>
         <h1 className="text-2xl font-bold">Admin</h1>
-        <p className="text-sm text-slate-500">Platform operations — infrastructure, service keys, and the live system feed. Owner only.</p>
+        <p className="text-sm text-slate-500">Platform operations — infrastructure, service keys, AI providers, usage, MCP servers and the live system feed. Owner only; never shown to client accounts.</p>
       </div>
 
       <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_360px]">
         <div className="min-w-0 space-y-8">
           <PlatformBackend />
+          {/* Moved here from /settings. Each of these exposes the PLATFORM's own
+              infrastructure rather than anything belonging to the signed-in
+              account: which service keys are configured, which AI providers the
+              registry routes through, how many AI calls the platform made, and
+              which external MCP servers are wired in. On /settings they sat on a
+              page every client account can open. Admin is owner-gated, both in
+              the nav and in this page's own role check. */}
+          <Diagnostics />
+          <ModelsProviders />
+          <AiUsage />
+          <McpClients />
         </div>
         <div className="space-y-4 xl:sticky xl:top-6 xl:self-start">
           <div className="h-[520px]">

@@ -81,7 +81,11 @@ export function withApi(handler: RouteHandler, meta: { route: string; method: st
         const res = await handler(request, routeCtx);
         store.status = res.status;
         store.durationMs = Date.now() - start;
-        log.request({ message: `${meta.method} ${meta.route} → ${res.status}` });
+        // 5xx is ours and is an error; 4xx is a rejected request and is a
+        // warning worth surfacing (401 on a webhook = dropped inbound events).
+        // Anything else is routine info.
+        const level = res.status >= 500 ? 'error' : res.status >= 400 ? 'warn' : 'info';
+        log.request({ message: `${meta.method} ${meta.route} → ${res.status}` }, level);
         return res;
       } catch (err) {
         // A handler without its own try/catch would otherwise 500 silently.

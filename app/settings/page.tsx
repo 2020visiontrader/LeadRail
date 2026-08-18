@@ -8,12 +8,8 @@ import { apiGet, apiSend } from '@/lib/api';
 import SenderProfiles from '@/components/SenderProfiles';
 import Personas from '@/components/Personas';
 import Skills from '@/components/Skills';
-import ModelsProviders from '@/components/ModelsProviders';
 import Budgets from '@/components/Budgets';
-import AiUsage from '@/components/AiUsage';
-import McpClients from '@/components/McpClients';
 import ScheduledTasks from '@/components/ScheduledTasks';
-import Diagnostics from '@/components/Diagnostics';
 import Approvals from '@/components/Approvals';
 import { SOCIAL_PROVIDERS } from '@/lib/social/providers';
 
@@ -492,6 +488,11 @@ export default function Settings() {
             </div>
           )}
 
+          {/* Platform-ops surfaces — AI providers, AI usage, MCP servers and
+              Diagnostics — moved to /admin. They expose the platform's own
+              infrastructure (service-key presence, provider registry, request
+              counts), which is owner-only by definition and does not belong on
+              a page every client account can open. */}
           <ClientConnections connections={connections} onChange={load} />
 
           <SenderProfiles />
@@ -500,17 +501,9 @@ export default function Settings() {
 
           <Skills />
 
-          <ModelsProviders />
-
-          <AiUsage />
-
           <Budgets />
 
-          <McpClients />
-
           <ScheduledTasks />
-
-          <Diagnostics />
 
           <Approvals />
 
