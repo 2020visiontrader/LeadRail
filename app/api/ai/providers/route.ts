@@ -6,7 +6,7 @@ import { listProviders, createProvider, type ProviderKind } from '@/lib/ai/provi
 
 export const dynamic = 'force-dynamic';
 
-const VALID_KINDS: ProviderKind[] = ['openai-compatible', 'anthropic', 'zoask', 'opencode', 'nim', 'gemini', 'custom'];
+const VALID_KINDS: ProviderKind[] = ['anthropic', 'zoask', 'opencode', 'nim', 'gemini', 'custom'];
 
 // GET /api/ai/providers — list this account's providers. Keys are always
 // masked (has_key + key_preview only; api_key_encrypted never leaves the DB).
