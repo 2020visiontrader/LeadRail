@@ -31,7 +31,7 @@ import { getConnections, getConnection, getVentures, getVenture } from '@/lib/db
 import {
   publishToInstagramForAccount, publishToFacebookPage, getInstagramInsights, getMetaCreds,
 } from '@/lib/integrations/meta';
-import {
+import { listConversations,
   getComments, replyToComment, hideComment, deleteComment, sendInstagramMessage,
 } from '@/lib/social/meta-engagement';
 import { getInsightsByLevel, updateStatus } from '@/lib/social/meta-ads';
@@ -227,6 +227,30 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     inputSchema: obj({}),
     zod: z.object({}),
     run: (accountId) => getIntegrations(accountId),
+  },
+  {
+    name: 'listSocialMessages',
+    domain: 'social',
+    title: 'List direct messages',
+    description: 'Read recent DM conversations for a connected account, newest first. Returns who each thread is with, their recipient id, and the last message — use this BEFORE sendSocialMessage, which needs that recipient id.',
+    gate: 'read',
+    inputSchema: obj({ platform: S.string, limit: S.number }, ['platform']),
+    zod: z.object({ platform: livePlatform, limit: z.number().int().min(1).max(100).optional() }),
+    run: (accountId, a) => listConversations(accountId, commentPlatform(a.platform), a.limit ?? 25),
+    // The message text is the substance here and is what truncation eats first,
+    // so quote a few verbatim alongside who they are from.
+    digest: (_a, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      if (!rows.length) return 'No direct messages.';
+      const names = samples(rows, ['recipientName'], 4);
+      const quoted = samples(rows, ['lastMessage'], 2);
+      return digestLine(
+        `${plural(rows.length, 'conversation')}.`,
+        names.length ? `With: ${names.join(', ')}.` : null,
+        quoted.length ? `Latest: ${quoted.map((q) => `"${q}"`).join(' · ')}` : null,
+      );
+    },
   },
   {
     name: 'listSocialComments',

@@ -86,6 +86,19 @@ export default function Skills() {
     });
   }, [catalog, search, categoryFilter, sourceFilter]);
 
+  // Pagination. The catalog is 353 skills; rendering them as one column meant
+  // scrolling hundreds of rows to reach anything and losing your place on every
+  // filter change. Page size is the user's choice — some want a quick scan, some
+  // want to page through deliberately.
+  const [pageSize, setPageSize] = useState(10);
+  const [page, setPage] = useState(1);
+  const pageCount = Math.max(1, Math.ceil(filtered.length / pageSize));
+  // Any filter/search/page-size change invalidates the current page number —
+  // without this you can end up on page 12 of a 2-page result and see nothing.
+  useEffect(() => { setPage(1); }, [search, categoryFilter, sourceFilter, pageSize]);
+  const pageStart = (page - 1) * pageSize;
+  const visible = filtered.slice(pageStart, pageStart + pageSize);
+
   function openCreate() {
     setEditingId(null);
     setDraft(EMPTY_DRAFT);
@@ -188,7 +201,7 @@ export default function Skills() {
         />
       ) : (
         <div className="space-y-2">
-          {filtered.map((s) => (
+          {visible.map((s) => (
             <div key={s.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--border-default)] bg-[var(--bg-raised)] px-4 py-3">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
@@ -211,6 +224,37 @@ export default function Skills() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Pager. Rendered whenever there is more than one page, or whenever the
+          result set is large enough that the page-size choice matters. */}
+      {filtered.length > 0 && (filtered.length > pageSize || pageSize !== 10) && (
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+          <div className="flex items-center gap-2 text-[13px] text-[var(--text-secondary)]">
+            <span>
+              {pageStart + 1}&ndash;{Math.min(pageStart + pageSize, filtered.length)} of {filtered.length}
+            </span>
+            <label className="flex items-center gap-1.5">
+              <span className="sr-only">Skills per page</span>
+              <select
+                value={pageSize}
+                onChange={(e) => setPageSize(Number(e.target.value))}
+                className="rounded-md border border-[var(--border-default)] bg-[var(--bg-surface)] px-2 py-1 text-[13px] text-[var(--text-primary)]"
+              >
+                {[10, 20, 50, 100].map((n) => <option key={n} value={n}>{n} per page</option>)}
+              </select>
+            </label>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1}>
+              &larr; Previous
+            </Button>
+            <span className="text-[13px] text-[var(--text-secondary)]">Page {page} of {pageCount}</span>
+            <Button variant="secondary" onClick={() => setPage((p) => Math.min(pageCount, p + 1))} disabled={page >= pageCount}>
+              Next &rarr;
+            </Button>
+          </div>
         </div>
       )}
 

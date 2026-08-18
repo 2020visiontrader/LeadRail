@@ -35,6 +35,7 @@ const TOOL_VERB: Record<string, string> = {
   listSocialAccounts: 'Checking your connected social accounts',
   getSocialStatus: 'Checking your social integrations',
   listSocialComments: 'Reading the comments on that post',
+  listSocialMessages: 'Reading your direct messages',
   getSocialInsights: 'Pulling that post’s performance',
   draftSocialPost: 'Writing your post',
   publishSocialPost: 'Preparing to publish your post',

@@ -90,7 +90,7 @@ const CATALOG_ORDER: string[] = [
   // --- appended by Packet 2.2-S (social). Appended after 1.1's three, never
   // sorted: every name above must keep its exact order or the prompt catalog
   // the model routes against changes.
-  'listSocialAccounts', 'getSocialStatus', 'listSocialComments', 'getSocialInsights',
+  'listSocialAccounts', 'getSocialStatus', 'listSocialComments', 'listSocialMessages', 'getSocialInsights',
   'draftSocialPost', 'publishSocialPost', 'replyToSocialComment', 'hideSocialComment',
   'deleteSocialComment', 'sendSocialMessage', 'scheduleSocialPost',
   'listScheduledSocialPosts', 'getAdBreakdown', 'setAdStatus',
