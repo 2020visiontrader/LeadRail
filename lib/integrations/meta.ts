@@ -141,7 +141,7 @@ export async function getInstagramInsights(mediaId: string, token?: string) {
   const accessToken = token || ENV_META_ACCESS_TOKEN;
   if (!accessToken) throw new Error('META_ACCESS_TOKEN not set');
   const response = await fetch(
-    `${META_API_URL}/${mediaId}/insights?metric=engagement,impressions,reach&access_token=${accessToken}`
+    `${META_API_URL}/${mediaId}/insights?metric=engagement,impressions,reach,saved&access_token=${accessToken}`
   );
   const json = await response.json();
   if (!response.ok) throw new Error(`Failed to fetch Meta insights: ${json?.error?.message || response.statusText}`);
