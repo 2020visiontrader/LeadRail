@@ -20,8 +20,16 @@ function b64url(input: Buffer | string): string {
   return Buffer.from(input).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
+function readServiceAccountJson(): string | null {
+  // Prefer the base64 form: some hosts (e.g. process-supervisor env vars)
+  // reject values containing raw newlines, which a PEM private_key needs.
+  const b64 = process.env.GOOGLE_SERVICE_ACCOUNT_JSON_B64;
+  if (b64) return Buffer.from(b64, 'base64').toString('utf8');
+  return process.env.GOOGLE_SERVICE_ACCOUNT_JSON || null;
+}
+
 async function serviceAccountToken(): Promise<string | null> {
-  const raw = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+  const raw = readServiceAccountJson();
   if (!raw) return null;
   const now = Math.floor(Date.now() / 1000);
   if (saTokenCache && saTokenCache.exp - 60 > now) return saTokenCache.token;
