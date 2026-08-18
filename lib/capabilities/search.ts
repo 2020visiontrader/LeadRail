@@ -2,6 +2,7 @@
 // account-scoped full-text search.
 import { z } from 'zod';
 import { searchEntities } from '@/lib/search';
+import { webSearch as runWebSearch } from '@/lib/integrations/websearch';
 import { obj, S, type Capability, plural, samples, digestLine } from './types';
 
 export const SEARCH_CAPABILITIES: Capability[] = [
@@ -25,6 +26,37 @@ export const SEARCH_CAPABILITIES: Capability[] = [
         companies ? `${plural(companies.length, 'company', 'companies')} matched.` : null,
         contactNames.length ? `Contacts include: ${contactNames.join(', ')}.` : null,
         companyNames.length ? `Companies include: ${companyNames.join(', ')}.` : null,
+      );
+    },
+  },
+  // Packet W1 — open-web search (Tavily primary, SerpAPI fallback). Appended,
+  // never inserted above globalSearch: CATALOG_ORDER position is what matters
+  // for prompt stability, not position in this array.
+  {
+    name: 'webSearch',
+    domain: 'search',
+    title: 'Search the web',
+    description: 'Search the open internet for current information not in the CRM — news, company research, competitor info, general facts. Not for searching your own contacts/companies (use globalSearch) or connected Notion/Drive.',
+    gate: 'read',
+    inputSchema: obj({ query: S.string, limit: S.number }, ['query']),
+    zod: z.object({ query: z.string().min(1), limit: z.number().optional() }),
+    run: async (_accountId, { query, limit = 5 }) => {
+      try {
+        return await runWebSearch(query, limit);
+      } catch (e: any) {
+        return { provider: null, query, results: [], error: e?.message || 'Web search failed — no provider configured or reachable.' };
+      }
+    },
+    digest: (args, result) => {
+      if (!result || typeof result !== 'object') return '';
+      if (result.error) return digestLine(`Web search failed: ${String(result.error)}`);
+      const hits = Array.isArray(result.results) ? result.results : [];
+      const titles = samples(hits, ['title'], 5);
+      const q = args?.query ? ` for "${String(args.query)}"` : '';
+      return digestLine(
+        `${plural(hits.length, 'web result')}${q}.`,
+        result.answer ? `Direct answer: ${String(result.answer)}` : null,
+        titles.length ? `Titles: ${titles.join(' | ')}.` : null,
       );
     },
   },

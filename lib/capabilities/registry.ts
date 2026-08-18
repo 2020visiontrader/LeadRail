@@ -122,6 +122,9 @@ const CATALOG_ORDER: string[] = [
   // import was broken). Appended, never sorted: every name above keeps its
   // exact order, because toolCatalogForPrompt() must stay byte-stable.
   'listScheduledTasks', 'createScheduledTask', 'disableScheduledTask',
+  // --- appended by Packet W1 (open-web search, Tavily/SerpAPI). Appended,
+  // never sorted, same reason as every entry above.
+  'webSearch',
 ];
 
 const byName = new Map(ALL.map((c) => [c.name, c]));

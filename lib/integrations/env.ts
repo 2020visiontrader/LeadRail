@@ -13,6 +13,8 @@ export interface OptionalEnv {
   META_ACCESS_TOKEN?: string;
   NIM_API_KEY?: string;
   OPENCODE_API_KEY?: string;
+  TAVILY_API_KEY?: string;
+  SERPAPI_KEY?: string;
 }
 
 export function validateEnv(): RequiredEnv & OptionalEnv {
@@ -33,6 +35,8 @@ export function validateEnv(): RequiredEnv & OptionalEnv {
     'META_ACCESS_TOKEN',
     'NIM_API_KEY',
     'OPENCODE_API_KEY',
+    'TAVILY_API_KEY',
+    'SERPAPI_KEY',
   ];
 
   const env: RequiredEnv & OptionalEnv = {
@@ -63,6 +67,7 @@ export function getIntegrationStatus() {
     nim: !!process.env.NIM_API_KEY,
     notion: !!(process.env.NOTION_API_KEY || process.env.NOTION_TOKEN),
     google_drive: !!(process.env.GOOGLE_SERVICE_ACCOUNT_JSON_B64 || process.env.GOOGLE_SERVICE_ACCOUNT_JSON || process.env.GOOGLE_DRIVE_ACCESS_TOKEN),
+    web_search: !!(process.env.TAVILY_API_KEY || process.env.SERPAPI_KEY),
   };
 
   return status;
