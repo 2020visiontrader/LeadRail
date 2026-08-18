@@ -42,6 +42,16 @@ async function checkDb(): Promise<CheckResult> {
 async function GET__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
+  // Owner/admin only. This endpoint reports which platform service keys are
+  // configured (Supabase service role, NIM, OpenCode, Brevo, Postiz) and
+  // platform-wide record counts. Presence alone still discloses the provider
+  // stack a tenant is running on, which is exactly the "no backend connections
+  // visible to client accounts" boundary the Admin portal exists to enforce —
+  // and it was reachable by ANY authenticated session, on every tenant.
+  // Matches the gate on /api/logs.
+  if (session.role !== 'owner' && session.role !== 'admin') {
+    return NextResponse.json({ error: 'Owners only' }, { status: 403 });
+  }
 
   const checks: CheckResult[] = [];
 
