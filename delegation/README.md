@@ -49,7 +49,7 @@ Route by *failure cost*, not size. Anything touching `account_id`, approval stat
 | 5.1 | Re-clone + finish skills harvest | C | ☑ merged (341 skills) |
 | 5.2 | Agent roles → persona templates | C | ☑ merged (24 templates) |
 | 6.1 | Persona picker UI | C | ☑ merged |
-| 6.2 | Coordinator fan-out | A | ◐ PARTIAL — framing only, no fan-out |
+| 6.2 | Coordinator fan-out | A | ☑ merged (real fan-out + synthesis) |
 | 7.1b | Fix misleading Connections UI | C | ☑ merged |
 | 7.1 | OAuth: LinkedIn / TikTok / X (×3) | A | ☐ |
 | 7.2 | Per-account Buffer/GHL credentials | A | ☑ merged |

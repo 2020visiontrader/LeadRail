@@ -368,7 +368,10 @@ async function resolvePersonaForTurn(
         return { systemBlock: buildPersonaSystemBlock(persona), modelId: persona.model_id || undefined };
       }
       if (matched.length > 1) {
-        // TODO(coordinator synthesis): a full pass would run each mentioned
+        // NOTE (not a TODO): the full fan-out EXISTS — see runCoordinatorFanout
+        // above, which runAgent/runAgentStream check first. This branch is only
+        // the fallback for when that path declines. Historical text follows:
+        // a full pass would run each mentioned
         // persona's instructions independently and merge their outputs. That
         // multi-call fan-out doesn't fit safely inside the existing
         // single-transcript ReAct loop without risking MAX_STEPS/token

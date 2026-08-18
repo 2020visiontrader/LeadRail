@@ -59,29 +59,28 @@ re-harvesting needs that script rewritten first. Original note: digital-marketin
 (Marketing Strategist, Brand Guardian, SEO Specialist, CRM Manager …) that map
 onto `personas`. Same licence discipline as 5.1: MIT/Apache paths only.
 
-### 6.2 — Coordinator fan-out (Tier A) — **PARTIAL, finish this**
+### 6.2 — DONE (commit `66f806e`)
 
-Commit `66f806e` landed the scaffolding, NOT the fan-out. `getCoordinator()` is
-now read, and when a turn @mentions personas the coordinator FRAMES one unified
-reply. But there is no delegated execution — the loop still runs a single pass.
-The code marks it itself: `TODO(coordinator synthesis)` at `lib/agent/loop.ts`
-line ~371.
+**Correction.** This was briefly recorded as PARTIAL. That was a review error on
+my part, not a gap in the code: I grepped `is_coordinator` in `lib/agent/loop.ts`
+(it is read in `lib/agent/personas.ts` via `getCoordinator`) and saw a
+`TODO(coordinator synthesis)` without reading the comment ten lines above it.
 
-Ready for whoever finishes it: a per-call `maxSteps` override clamped to
-`[1, MAX_STEPS]` (it can only SHRINK a delegate's budget, never grow it),
-`MAX_FANOUT_DELEGATES = 3`, and a `MAX_FANOUT_TOTAL_STEPS` ceiling.
+The real fan-out shipped in `66f806e`: `resolveCoordinatorFanout`,
+`runFanoutDelegates`, `synthesizeCoordinatorAnswer`, `runCoordinatorFanout` and
+`runCoordinatorFanoutStream`. `runAgent`/`runAgentStream` check it BEFORE
+`resolvePersonaForTurn`. The TODO sits in the fallback branch that only runs when
+no coordinator is configured — that fallback is deliberately framing-only and is
+the unchanged pre-6.2 behaviour.
 
-Missing: actually running each mentioned persona and synthesising from what they
-RETURNED. Synthesis must never invent a result a delegate did not produce — the
-OBSERVATION discipline and packet 10.1's digests apply. Every delegate stays on
-the same `accountId`, every sensitive tool still passes the 0.1 approval gate and
-the 1.4 budget gate, and a failed delegate is reported, not silently dropped.
-
-### (was) 6.2 — original note
-`personas.is_coordinator` exists, with logic ensuring one per account, and
-**nothing reads it.** This is the packet that turns one assistant into a
-coordinated set. Highest-value remaining item for the product vision.
-Touches `lib/agent/loop.ts` — coordinate with anything else editing it.
+Properties confirmed: delegates run through ordinary `runAgent`, so every tool
+call still hits the 0.1 approval gate and 1.4 spend gate; a `needs_approval` from
+any delegate halts the whole fan-out and returns that single proposal rather than
+continuing; caps are 3 delegates / 4 steps each / 12 total, with `maxSteps`
+clamped so it can only shrink; a failed delegate is marked `— FAILED` in the
+synthesis rather than dropped; synthesis falls back to concatenating real outputs
+if the synthesis call fails, rather than guessing; and with no coordinator or
+fewer than two mentions the path is byte-identical to before.
 
 ### 7.1 — OAuth for LinkedIn / TikTok / X (Tier A, one packet each)
 `lib/social/providers.ts` already lists them with `live: false`. Because 2.2-S
