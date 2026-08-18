@@ -195,6 +195,10 @@ export async function removeAccountSkillState(accountId: string, skillId: string
 // ---------------------------------------------------------------------------
 
 export interface EnabledSkillInstruction {
+  /** Catalog slug — the id Hermes routes on (lib/skills/registry.ts ids are the
+   *  same strings). Needed so the agent loop can intersect Hermes's chosen
+   *  skillIds with what this account actually has enabled. */
+  slug: string;
   name: string;
   instructions: string;
 }
@@ -208,13 +212,14 @@ export async function loadEnabledSkillsForAgent(accountId: string): Promise<Enab
   try {
     const { data, error } = await supabase
       .from('account_skills')
-      .select('enabled, overridden_instructions, skills(name, instructions, account_id)')
+      .select('enabled, overridden_instructions, skills(slug, name, instructions, account_id)')
       .eq('account_id', accountId)
       .eq('enabled', true);
     if (error) throw error;
     return (data || [])
       .filter((row: any) => row.skills)
       .map((row: any) => ({
+        slug: row.skills.slug as string,
         name: row.skills.name as string,
         instructions: (row.overridden_instructions?.trim() || row.skills.instructions || '').trim(),
       }))

@@ -95,8 +95,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   // landing page and brings its own <header>/<main>/<footer>, so wrapping it in
   // the authenticated nav rail would show a logged-out visitor a dashboard
   // sidebar and nest a second <main>.
+  // D12: '/welcome' now has sub-pages (/welcome/how-it-works, /faq, …), so an
+  // EXACT match would leave those wrapped in the authenticated shell — the very
+  // bug this list exists to prevent, just one path segment deeper. Match on a
+  // path-segment boundary instead, the same rule middleware.ts uses for its
+  // public prefixes, so every current and future marketing page stays bare.
   const bareRoutes = ['/login', '/privacy', '/terms', '/data-deletion', '/welcome'];
-  if (bareRoutes.some((r) => pathname === r)) return <>{children}</>;
+  if (bareRoutes.some((r) => pathname === r || pathname.startsWith(`${r}/`))) return <>{children}</>;
   // Owner sees platform-admin items (Logs) appended; client accounts never do.
   const nav = isOwner ? [...NAV, ...OWNER_NAV] : NAV;
   return (

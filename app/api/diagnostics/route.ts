@@ -69,9 +69,15 @@ async function GET__impl(request: NextRequest) {
           const controller = new AbortController();
           const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
           try {
+            // Count with '*', not 'id'. Not every table in this list HAS an id
+            // column — account_skills is keyed on (account_id, skill_id) — so
+            // selecting 'id' errored there and the probe reported the table as
+            // failing. That false alarm read as "the skills subsystem is broken"
+            // when the table was fine and simply empty. head+exact means no rows
+            // are transferred either way, so '*' costs nothing.
             const { error: countErr, count } = await supabase
               .from(table)
-              .select('id', { count: 'exact', head: true })
+              .select('*', { count: 'exact', head: true })
               .eq('account_id', session.accountId)
               .abortSignal(controller.signal);
             if (countErr) throw countErr;

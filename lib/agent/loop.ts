@@ -30,6 +30,8 @@ import {
 import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
 import { composeAnswer } from './compose';
 import { createApproval, consumeApprovalForExecution, ApprovalExecutionError } from '@/lib/approvals/store';
+import { log } from '@/lib/logger';
+import { hermesRoute } from '@/lib/ai/hermes';
 
 const MAX_STEPS = 10;
 // Two-pass output (Packet 8.1). The route pass below stays at temp 0.2 / 700
@@ -149,6 +151,50 @@ function skillsBlock(skills: { name: string; instructions: string }[]): string {
     'ENABLED SKILLS — apply this guidance when relevant to the current task:',
     ...skills.map((s) => `• ${s.name}: ${s.instructions}`),
   ].join('\n');
+}
+
+// Above how many enabled skills it stops being safe to inject them all. The
+// catalog is 353 skills (12 curated + 341 harvested); an account that enables
+// even a fraction would blow the context window and bury the relevant guidance
+// in noise. Below this we skip routing entirely — a small set costs less to
+// include than an extra classify round-trip costs in latency.
+const SKILL_ROUTING_THRESHOLD = 8;
+// Hard ceiling on what routing may return, matching Hermes's own "pick 1-4"
+// instruction. Belt and braces: a malformed plan cannot flood the prompt.
+const MAX_ROUTED_SKILLS = 4;
+
+/**
+ * Choose which of an account's enabled skills belong in THIS turn's prompt.
+ *
+ * Packet: closes the gap where the loop injected every enabled skill regardless
+ * of the request. Hermes (lib/ai/hermes.ts) already solves selection — it
+ * shortlists the catalog, asks a cheap classify call for 1-4 ids, and falls back
+ * to deterministic keyword rules when the model is unavailable — but nothing in
+ * the agent path called it. This is that call.
+ *
+ * Failure is never fatal: any error, empty plan, or non-overlapping result falls
+ * back to a truncated slice of the enabled set, so the assistant degrades to
+ * "some guidance" rather than losing skills entirely.
+ */
+async function selectSkillsForTurn(
+  enabled: { slug: string; name: string; instructions: string }[],
+  message: string | undefined,
+  ventureName: string | undefined,
+): Promise<{ name: string; instructions: string }[]> {
+  if (enabled.length <= SKILL_ROUTING_THRESHOLD) return enabled;
+  const text = (message || '').trim();
+  if (!text) return enabled.slice(0, MAX_ROUTED_SKILLS);
+
+  try {
+    const plan = await hermesRoute(text, ventureName ? { ventureName } : {});
+    const wanted = new Set(plan.skillIds || []);
+    // Intersect: Hermes routes over the whole catalog, but an account may not
+    // have every routed skill enabled. Enabled-ness always wins.
+    const picked = enabled.filter((s) => wanted.has(s.slug)).slice(0, MAX_ROUTED_SKILLS);
+    return picked.length ? picked : enabled.slice(0, MAX_ROUTED_SKILLS);
+  } catch {
+    return enabled.slice(0, MAX_ROUTED_SKILLS);
+  }
 }
 
 // PROMPT BLOCK ORDER IS LOAD-BEARING (Packet 10.2 Part A) — do not rearrange.
@@ -669,7 +715,9 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
     if (fanout) return runCoordinatorFanout(accountId, fanout, input);
   }
   const { systemBlock: personaBlock, modelId: personaModelId } = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
-  const enabledSkills = await loadEnabledSkillsForAgent(accountId);
+  const allEnabledSkills = await loadEnabledSkillsForAgent(accountId);
+  // Hermes picks the 1-4 that apply to THIS request instead of injecting all.
+  const enabledSkills = await selectSkillsForTurn(allEnabledSkills, input.message, brandContext?.name);
   // Packet 4: this account's connected, enabled external-MCP-client tools for
   // THIS turn only — a pure cached DB read (see lib/capabilities/external-mcp.ts),
   // never a network call, so it cannot add hot-path latency or hang the turn.
@@ -714,6 +762,9 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
   // Packet 6.2: clamp, never extend, the per-call step cap. Ordinary callers
   // never set maxSteps, so stepCap === MAX_STEPS for every call today.
   const stepCap = input.maxSteps && input.maxSteps > 0 ? Math.min(input.maxSteps, MAX_STEPS) : MAX_STEPS;
+  // Which tool produced the most recent observation, so a model-call failure can
+  // report what it was reacting to (failures after a tool differ from cold ones).
+  let lastToolName: string | undefined;
   for (let i = 0; i < stepCap; i++) {
     let raw: string;
     try {
@@ -724,7 +775,12 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
         // options object shape as before this change.
         ...(personaModelId ? { accountId, modelId: personaModelId } : {}),
       });
-    } catch (e: any) {
+    } catch (e: unknown) {
+      // Mirrors the streaming twin below — `e` was bound but never read here,
+      // so this path was equally silent. Same fields, same reasoning.
+      log.error('agent: model call failed', e, {
+        accountId, step: i, afterTool: lastToolName ?? null, messageCount: messages.length,
+      });
       return { status: 'error', message: 'LeadRail AI is temporarily unavailable. Please try again.', transcript: messages, steps };
     }
 
@@ -802,6 +858,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
 
     const res = await runTool(tool, accountId, args, extraTools, extraCapsByName);
     const obs = observationFor(tool, args, res, extraCapsByName);
+    lastToolName = tool;
     steps.push({ thought: narrationFor(parsed), tool, args, observation: truncate(obs) });
     messages.push(observation(obs));
   }
@@ -861,7 +918,9 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
     if (fanout) { await runCoordinatorFanoutStream(accountId, fanout, input, emit); return; }
   }
   const { systemBlock: personaBlock, modelId: personaModelId } = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
-  const enabledSkills = await loadEnabledSkillsForAgent(accountId);
+  const allEnabledSkills = await loadEnabledSkillsForAgent(accountId);
+  // Hermes picks the 1-4 that apply to THIS request instead of injecting all.
+  const enabledSkills = await selectSkillsForTurn(allEnabledSkills, input.message, brandContext?.name);
   // Packet 4 — see the matching comment in runAgent above.
   const externalCaps = await loadExternalCapabilities(accountId);
   const extraTools = toolsFromCapabilities(externalCaps);
@@ -896,6 +955,9 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
   // Packet 6.2 — identical clamp to runAgent's, per the LOOP-CONTROL INVARIANT
   // above: both variants must derive the same step cap from the same field.
   const stepCap = input.maxSteps && input.maxSteps > 0 ? Math.min(input.maxSteps, MAX_STEPS) : MAX_STEPS;
+  // Which tool produced the most recent observation, so a model-call failure can
+  // report what it was reacting to (failures after a tool differ from cold ones).
+  let lastToolName: string | undefined;
   for (let i = 0; i < stepCap; i++) {
     let raw: string;
     try {
@@ -903,7 +965,15 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
         system, messages, temperature: 0.2, maxOutputTokens: 700, zoAskModel: AGENT_ZOASK_MODEL, model: AGENT_OPENCODE_MODEL,
         ...(personaModelId ? { accountId, modelId: personaModelId } : {}),
       });
-    } catch {
+    } catch (e: unknown) {
+      // Never swallow this. It is the single most common way a run dies, and an
+      // unbound `catch {}` here made every such failure undiagnosable: the SSE
+      // route is deliberately not withApi-wrapped, so this log line is the ONLY
+      // record that the run failed at all. `step` matters — failures after a
+      // tool observation behave differently from failures on the opening call.
+      log.error('agent stream: model call failed', e, {
+        accountId, step: i, afterTool: lastToolName ?? null, messageCount: messages.length,
+      });
       emit({ type: 'error', message: 'LeadRail AI is temporarily unavailable. Please try again.' });
       return;
     }

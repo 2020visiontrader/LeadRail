@@ -138,3 +138,69 @@
 .console-rail-scroll::-webkit-scrollbar { width: 6px; }
 .console-rail-scroll::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 9999px; }
 .console-rail-scroll::-webkit-scrollbar-track { background: transparent; }
+
+/* =========================================================================
+   MARKETING SURFACE — warm beige. Scoped to the public pages only.
+   =========================================================================
+   The app console is a cool slate/navy tool; the marketing site should not
+   look like the tool. This block re-binds the SAME token names inside
+   `.marketing`, so every existing class on those pages (bg-[var(--bg-canvas)],
+   text-[var(--text-primary)], …) picks up the warm palette with no markup
+   change and, critically, no effect on the authenticated app.
+
+   Palette: warm paper neutrals, espresso ink, muted ochre accent. No blue,
+   no red — those read as "product UI status colors" and are what made the
+   landing page feel like a dashboard.
+
+   Both modes are defined. Editing a colour here changes ONLY /welcome/*.
+   ========================================================================= */
+.marketing {
+  --bg-canvas: #F4EFE4;          /* warm paper — the page */
+  --bg-surface: #FBF7EF;         /* cards, chrome — lighter than canvas */
+  --bg-raised: #EAE1D0;          /* nested tiles, hover rows */
+
+  --text-primary: #2B2418;       /* warm near-black, not slate */
+  --text-secondary: #5B5241;
+  --text-muted: #8C8170;
+
+  --border-default: #E1D7C4;
+  --border-strong: #CDBFA6;
+
+  --ink: #3E3527;                /* PRIMARY action = espresso */
+  --ink-hover: #2B2418;
+  --ink-fg: #FBF7EF;             /* cream text on espresso */
+
+  --brand: #9A6B34;              /* muted ochre — links, eyebrow text */
+  --brand-hover: #7E5628;
+  --brand-soft: rgba(154, 107, 52, 0.10);
+}
+
+.dark .marketing {
+  /* Warm dark: espresso-brown canvas, sand ink. Deliberately NOT the console's
+     navy/teal — a visitor in dark mode should still land somewhere warm. */
+  --bg-canvas: #171310;
+  --bg-surface: #201B16;
+  --bg-raised: #2B241D;
+
+  --text-primary: #F2EBDF;
+  --text-secondary: #B9AE9C;
+  --text-muted: #8B8071;
+
+  --border-default: rgba(242, 235, 223, 0.10);
+  --border-strong: rgba(242, 235, 223, 0.18);
+
+  --ink: #D9C29A;                /* PRIMARY = warm sand */
+  --ink-hover: #E8D5B2;
+  --ink-fg: #1B1611;             /* dark text on sand */
+
+  --brand: #C9A87C;
+  --brand-hover: #DCBF95;
+  --brand-soft: rgba(201, 168, 124, 0.16);
+}
+
+/* The .marketing div is min-h-screen, but <body> sits behind it and still
+   carries the console's cool slate canvas — visible as a blue-grey flash when
+   you overscroll (macOS rubber-banding). Paint the body warm on marketing
+   pages too. :has() keeps this scoped without touching the app. */
+html:has(.marketing) body { background: #F4EFE4; }
+html.dark:has(.marketing) body { background: #171310; }
