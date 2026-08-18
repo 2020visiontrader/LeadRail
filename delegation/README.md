@@ -41,18 +41,18 @@ Route by *failure cost*, not size. Anything touching `account_id`, approval stat
 | 1.3 | Small correctness fixes | C | ☑ merged |
 | 1.4 | Enforce the spend budget (zero callers) | A | ☑ merged (gate live, meter dormant) |
 | 2.1 | Capability Registry core | A | ☑ merged |
-| 2.2 | Domain backfill (15 domains, parallel) | B | ☐ |
+| 2.2 | Domain backfill (15 domains, parallel) | B | ☑ merged |
 | 2.2-S | Social capabilities | A | ☑ merged |
-| 2.3 | API=MCP parity test | B | ☐ |
-| 3.1 | Ground the background agents | A | ☐ |
+| 2.3 | API=MCP parity test | B | ☑ merged |
+| 3.1 | Ground the background agents | A | ☑ merged |
 | 4 | External MCP client bridge | A | ☐ |
-| 5.1 | Re-clone + finish skills harvest | C | ☐ spec ready (unblocked 2026-08-16) |
-| 5.2 | Agent roles → persona templates | C | ☐ |
-| 6.1 | Persona picker UI | C | ☐ |
-| 6.2 | Coordinator fan-out | A | ☐ |
+| 5.1 | Re-clone + finish skills harvest | C | ☑ merged (341 skills) |
+| 5.2 | Agent roles → persona templates | C | ☑ merged (24 templates) |
+| 6.1 | Persona picker UI | C | ☑ merged |
+| 6.2 | Coordinator fan-out | A | ◐ PARTIAL — framing only, no fan-out |
 | 7.1b | Fix misleading Connections UI | C | ☑ merged |
 | 7.1 | OAuth: LinkedIn / TikTok / X (×3) | A | ☐ |
-| 7.2 | Per-account Buffer/GHL credentials | A | ☐ |
+| 7.2 | Per-account Buffer/GHL credentials | A | ☑ merged |
 | 7.3 | Automation runner | A | ☐ do LAST |
 | 8.1 | Split the loop: route ≠ compose | A | ☑ merged |
 | 8.1b | Output budget follows the model | B | ☑ merged |
@@ -60,7 +60,7 @@ Route by *failure cost*, not size. Anything touching `account_id`, approval stat
 | 9.1 | Render the assistant's markdown | B | ☑ merged |
 | 9.2 | Sanitize the email template preview | A | ☑ merged |
 | 10.1 | Observation digests (result → language) | B | ☑ merged |
-| 10.2 | Prompt prefix order + plan/narration split | B | ☐ spec ready |
+| 10.2 | Prompt prefix order + plan/narration split | B | ☑ merged |
 | 10.3 | Two-stage tool catalog | B | ☑ merged (opt-in flag) |
 | 11.1 | Legal entity + AI subprocessor disclosure | A | ☑ merged · DRAFT, needs counsel |
 | 11.2 | Public landing page | C | ☑ merged |

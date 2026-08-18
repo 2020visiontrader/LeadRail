@@ -53,12 +53,31 @@ Unstarted. Note 0.3 rebuilt MCP auth: `mcp_api_keys` with per-key
 per sensitive call. Build the bridge on that, not on `APP_API_SECRET` — the
 legacy path is deliberately capped at read + safe-write.
 
-### 5.2 — Agent roles → persona templates (Tier C)
-Unblocked by 5.1. digital-marketing-pro ships 24 specialist agent definitions
+### 5.2 — DONE (commit `66f806e`, 24 templates)
+NOTE: `scripts/harvest-personas.ts` was NOT saved before its executor died, so
+re-harvesting needs that script rewritten first. Original note: digital-marketing-pro ships 24 specialist agent definitions
 (Marketing Strategist, Brand Guardian, SEO Specialist, CRM Manager …) that map
 onto `personas`. Same licence discipline as 5.1: MIT/Apache paths only.
 
-### 6.2 — Coordinator fan-out (Tier A) — **the actual "swarm"**
+### 6.2 — Coordinator fan-out (Tier A) — **PARTIAL, finish this**
+
+Commit `66f806e` landed the scaffolding, NOT the fan-out. `getCoordinator()` is
+now read, and when a turn @mentions personas the coordinator FRAMES one unified
+reply. But there is no delegated execution — the loop still runs a single pass.
+The code marks it itself: `TODO(coordinator synthesis)` at `lib/agent/loop.ts`
+line ~371.
+
+Ready for whoever finishes it: a per-call `maxSteps` override clamped to
+`[1, MAX_STEPS]` (it can only SHRINK a delegate's budget, never grow it),
+`MAX_FANOUT_DELEGATES = 3`, and a `MAX_FANOUT_TOTAL_STEPS` ceiling.
+
+Missing: actually running each mentioned persona and synthesising from what they
+RETURNED. Synthesis must never invent a result a delegate did not produce — the
+OBSERVATION discipline and packet 10.1's digests apply. Every delegate stays on
+the same `accountId`, every sensitive tool still passes the 0.1 approval gate and
+the 1.4 budget gate, and a failed delegate is reported, not silently dropped.
+
+### (was) 6.2 — original note
 `personas.is_coordinator` exists, with logic ensuring one per account, and
 **nothing reads it.** This is the packet that turns one assistant into a
 coordinated set. Highest-value remaining item for the product vision.
