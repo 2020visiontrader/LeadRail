@@ -29,6 +29,7 @@ import {
 } from './personas';
 import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
 import { composeAnswer } from './compose';
+import { stripAiMarkers } from '@/lib/ai/humanizer';
 import { createApproval, consumeApprovalForExecution, ApprovalExecutionError } from '@/lib/approvals/store';
 import { log } from '@/lib/logger';
 import { hermesRoute } from '@/lib/ai/hermes';
@@ -808,7 +809,11 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
         continue;
       }
       const salv = salvageFinalMessage(raw);
-      if (salv) return { status: 'done', message: salv, transcript: messages, steps };
+      if (salv) {
+        const cleaned = stripAiMarkers(salv);
+        messages.push({ role: 'assistant', content: cleaned });
+        return { status: 'done', message: cleaned, transcript: messages, steps };
+      }
       return { status: 'error', message: "I couldn't complete that request. Please rephrase and try again.", transcript: messages, steps };
     }
     corrected = false;
@@ -818,12 +823,19 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
 
     if (parsed.action === 'final') {
       const draft = String(parsed.message || '').trim() || 'Done.';
-      const message = AGENT_COMPOSE
+      const message = stripAiMarkers(AGENT_COMPOSE
         ? await composeAnswer({
             accountId, userMessage: input.message, draft, transcript: messages,
             agentContext: input.agentContext, personaBlock,
           })
-        : draft;
+        : draft);
+      // Overwrite the raw JSON envelope just pushed above with the actual
+      // composed answer the user sees. Without this, the persisted transcript
+      // carries the pre-compose draft (or nothing readable), so a later turn
+      // "sees" only the raw tool observations, not its own prior answer, and
+      // re-derives conclusions from scratch instead of building on what it
+      // already told the user.
+      messages[messages.length - 1] = { role: 'assistant', content: message };
       steps.push({ thought: narrationFor(parsed) });
       const tokenEstimate = estimateTokens(messages);
       return { status: 'done', message, transcript: messages, steps, tokenEstimate, compaction: compactionLevel(tokenEstimate) };
@@ -1033,7 +1045,13 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
         continue;
       }
       const salv = salvageFinalMessage(raw);
-      if (salv) { await streamTokens(salv, emit); emit({ type: 'final', message: salv, transcript: messages }); return; }
+      if (salv) {
+        const cleaned = stripAiMarkers(salv);
+        messages.push({ role: 'assistant', content: cleaned });
+        await streamTokens(cleaned, emit);
+        emit({ type: 'final', message: cleaned, transcript: messages });
+        return;
+      }
       emit({ type: 'error', message: "I couldn't complete that request. Please rephrase and try again.", transcript: messages });
       return;
     }
@@ -1061,6 +1079,11 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
           (chunk) => emit({ type: 'final_delta', text: chunk }),
         );
       }
+      message = stripAiMarkers(message);
+      // See the matching comment in runAgent: overwrite the raw JSON envelope
+      // with the actual composed answer so a later turn builds on what the
+      // user was actually shown instead of re-deriving it from raw observations.
+      messages[messages.length - 1] = { role: 'assistant', content: message };
       const tokenEstimate = estimateTokens(messages);
       emit({ type: 'final', message, transcript: messages, tokenEstimate });
       const level = compactionLevel(tokenEstimate);
@@ -1126,7 +1149,8 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
     });
     const p = extractJson(raw);
     if (p?.action === 'final' && p.message) {
-      const finalMessage = String(p.message);
+      const finalMessage = stripAiMarkers(String(p.message));
+      messages.push({ role: 'assistant', content: finalMessage });
       await streamTokens(finalMessage, emit);
       emit({ type: 'final', message: finalMessage, transcript: messages });
       return;

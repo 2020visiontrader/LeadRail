@@ -14,6 +14,7 @@
  */
 
 import { generateChat, streamChat, type ChatMessage } from '@/lib/ai/router';
+import { stripAiMarkers, HUMANIZE_RULES } from '@/lib/ai/humanizer';
 
 // Upper bound on the compose budget. The model's own ceiling is used when it is
 // lower; this only stops an enormous-output model from being asked for far more
@@ -77,11 +78,14 @@ export async function composeAnswer(
       ? await streamChat(callOpts, onDelta)
       : await generateChat(callOpts);
 
-    // Both resolve to a string; no extraction layer needed.
-    if (!response || !response.trim()) return input.draft;
-    return response.trim();
+    // Both resolve to a string; no extraction layer needed. stripAiMarkers is
+    // the same post-process generation.ts runs on every outreach draft — the
+    // chat answer is user-facing text too, so it gets the identical pass
+    // instead of only ever being described in the tone rules below.
+    if (!response || !response.trim()) return stripAiMarkers(input.draft);
+    return stripAiMarkers(response.trim());
   } catch {
-    return input.draft;
+    return stripAiMarkers(input.draft);
   }
 }
 
@@ -105,7 +109,8 @@ Instructions:
 - Lead with the answer. No "Great question!", no restating the request, no summary of what you just did unless asked.
 - Never mention tools, internal names, vendors, model names, or the two-pass architecture.
 - Match length to the question: one line for a one-line answer, more when it earns it.
-- Output plain text only. No JSON, no wrapper object.`);
+- Output plain text only. No JSON, no wrapper object.
+${HUMANIZE_RULES.map((r) => `- ${r}`).join('\n')}`);
 
   return parts.join('\n\n');
 }
