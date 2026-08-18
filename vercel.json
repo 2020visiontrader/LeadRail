@@ -24,5 +24,10 @@
       "key": "POSTIZ_API_KEY",
       "value": "@postiz_api_key"
     }
+,
+    {
+      "key": "OPENCODE_API_KEY",
+      "value": "@opencode_api_key"
+    }
   ]
 }

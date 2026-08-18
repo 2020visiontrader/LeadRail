@@ -24,7 +24,7 @@ import { zoAskConfigured, zoAskText, zoAskChat } from './zoask';
 import { nimConfigured, nimText, nimChat, nimStreamChat } from './nim';
 import * as gemini from './gemini';
 
-export type ProviderKind = 'openai-compatible' | 'anthropic' | 'zoask' | 'opencode' | 'nim' | 'gemini' | 'custom';
+export type ProviderKind = 'anthropic' | 'zoask' | 'opencode' | 'nim' | 'gemini' | 'custom';
 export type ModelTier = 'fast' | 'balanced' | 'heavy';
 
 export interface AiProviderRow {
@@ -462,8 +462,6 @@ export async function callModel(resolved: ResolvedModel, opts: CallModelOpts): P
         ? gemini.generateChat({ system: opts.system, messages: opts.messages as any, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens })
         : gemini.generateText({ system: opts.system, prompt: opts.prompt || '', temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens });
     }
-    case 'openai-compatible':
-      return callOpenAiCompatible(provider, model, opts, isChat);
     case 'anthropic':
       return callAnthropic(provider, model, opts, isChat);
     case 'custom':
@@ -595,7 +593,8 @@ export async function callModelStream(
         onDelta,
       );
     }
-    case 'openai-compatible':
+    // 'openai-compatible' was main's name for what this branch calls 'custom';
+    // both reach the same handler. Kept as 'custom' only, matching ProviderKind.
     case 'custom':
       return streamOpenAiCompatible(provider, model, opts, isChat, onDelta);
     case 'anthropic':

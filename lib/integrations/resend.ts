@@ -9,6 +9,27 @@ const RESEND_API_URL = 'https://api.resend.com';
 // product's account.
 const ENV_RESEND_API_KEY = process.env.LEADRAIL_RESEND_API_KEY;
 
+// Per-brand Resend accounts. Each brand can have its own verified sending
+// domain/account; unlisted or unknown brands fall back to LeadRail's own
+// leadrail.xyz key (today's behavior, unchanged). NEVER map a brand to
+// RESEND_API_KEY — that's the separate FilmOps account and must stay out of
+// LeadRail's send path entirely.
+// To onboard a new brand's own Resend account, add one line here.
+const BRAND_RESEND_ENV_KEYS: Record<string, string | undefined> = {
+  rentahub: process.env.RENTAHUB_RESEND_API_KEY,
+};
+
+/**
+ * Resolve the Resend API key to use for a given brand. Known brands with
+ * their own verified Resend account use that account's key; every other
+ * brand (including unknown or missing brand ids) uses LeadRail's own
+ * leadrail.xyz key — i.e. today's behavior, unchanged.
+ */
+export function resendApiKeyForBrand(brandId?: string | null): string | undefined {
+  if (brandId && BRAND_RESEND_ENV_KEYS[brandId]) return BRAND_RESEND_ENV_KEYS[brandId];
+  return ENV_RESEND_API_KEY;
+}
+
 export interface ResendEmail {
   from: string;
   to: string[];
@@ -22,20 +43,22 @@ export interface ResendEmail {
 
 /**
  * Resolve the Resend key for an account: prefer the account-scoped key stored
- * in integration_connections (meta.access_token), fall back to the env key.
+ * in integration_connections (meta.access_token), then the brand's own
+ * account (e.g. rentahub), then LeadRail's own env key.
  */
-export async function getResendApiKey(accountId?: string): Promise<string> {
+export async function getResendApiKey(accountId?: string, brandId?: string | null): Promise<string> {
   if (accountId) {
     try {
       const conns = await getConnections(accountId);
       const resendConn = conns.find((c) => c.provider === 'resend' && c.status === 'connected');
       if (resendConn?.meta?.access_token) return String(resendConn.meta.access_token);
     } catch {
-      // fall through to env
+      // fall through to brand/env
     }
   }
-  if (!ENV_RESEND_API_KEY) throw new Error('LEADRAIL_RESEND_API_KEY not set — connect LeadRail\'s Resend (leadrail.xyz) in Settings → Integrations');
-  return ENV_RESEND_API_KEY;
+  const key = resendApiKeyForBrand(brandId);
+  if (!key) throw new Error('LEADRAIL_RESEND_API_KEY not set — connect LeadRail\'s Resend (leadrail.xyz) in Settings → Integrations');
+  return key;
 }
 
 /**
@@ -45,8 +68,8 @@ export async function getResendApiKey(accountId?: string): Promise<string> {
  * LeadRail's own leadrail.xyz Resend account. Throws on failure so callers can
  * decide whether to swallow (notifications fan-out swallows).
  */
-export async function sendPlatformEmail(email: ResendEmail, accountId?: string) {
-  const apiKey = await getResendApiKey(accountId);
+export async function sendPlatformEmail(email: ResendEmail, accountId?: string, brandId?: string | null) {
+  const apiKey = await getResendApiKey(accountId, brandId);
   const payload: Record<string, unknown> = {
     from: email.from,
     to: email.to,
@@ -75,9 +98,10 @@ export async function sendResendEmail(
   email: ResendEmail,
   contactId: string,
   templateId?: string,
-  accountId?: string
+  accountId?: string,
+  brandId?: string | null
 ) {
-  const apiKey = await getResendApiKey(accountId);
+  const apiKey = await getResendApiKey(accountId, brandId);
   if (!contactId) throw new Error('contactId is required to record an email campaign');
 
   const data = await withRetry(() =>

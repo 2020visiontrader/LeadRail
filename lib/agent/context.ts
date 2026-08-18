@@ -24,10 +24,12 @@ const PLATFORM_BRIEF = [
   '- Sourcing: find and reveal leads/contacts (people at target companies) matching a venture\'s ideal-customer profile.',
   '- Outreach: draft and send emails to leads, and enroll them into multi-step follow-up sequences.',
   '- CRM / pipeline: track leads through pipeline stages as deals, add notes, update status, tag.',
-  '- Conversations: an inbox of replies from leads.',
+  '- Conversations: an inbox of replies from leads, plus social messages (Instagram direct messages and comments sent to connected business accounts land here too).',
   '- Campaigns: create and run Meta (Facebook/Instagram) ad campaigns, launch/pause them, and read live performance insights.',
+  '- Social: connect Facebook Pages, Instagram business accounts, and Threads for the user, then publish posts, read and reply to comments, and reply to Instagram direct messages.',
   '- Knowledge: connected Notion and Google Drive the user keeps briefs and assets in.',
   'You can DO these things for the user by calling tools — you are not just an advisor. Reads and safe internal writes run immediately; actions that spend money, send messages to real people, or are destructive pause for the user to approve first.',
+  'SOCIAL SCOPE: act only on accounts the user connected, and only within the permissions (scopes) they granted at connect time. For Instagram, messages and comments sent TO a connected business account arrive here; you cannot browse a private inbox you were not granted access to, or accounts that are not connected. If a requested social account is not connected, say so and offer to help connect it.',
 ].join('\n');
 
 export interface AgentContextInput {

@@ -106,7 +106,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const nav = isOwner ? [...NAV, ...OWNER_NAV] : NAV;
   return (
     <div className="flex min-h-screen bg-[var(--bg-canvas)] text-[var(--text-primary)]">
-      <aside className={`hidden w-52 shrink-0 flex-col border-r border-[var(--border-default)] bg-[var(--bg-surface)] ${docked ? '' : 'md:flex'}`}>
+      <aside className="hidden w-52 shrink-0 flex-col border-r border-[var(--border-default)] bg-[var(--bg-surface)] md:flex">
         <div className="flex h-16 shrink-0 items-center px-4">
           <Wordmark />
         </div>
@@ -150,7 +150,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
       <AssistantDock />
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className={`min-w-0 flex-1 flex-col ${docked ? 'hidden' : 'flex'}`}>
         <header className="flex h-14 items-center gap-4 overflow-x-auto border-b border-[var(--border-default)] bg-[var(--bg-surface)] px-4 md:hidden">
           <Wordmark />
           {nav.map((n) => (

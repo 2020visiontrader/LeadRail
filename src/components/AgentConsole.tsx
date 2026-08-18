@@ -305,7 +305,12 @@ export default function AgentConsole({ brandId, conversationId, onSteps }: { bra
       const prevPending = [...t.steps].reverse().find((s: Step) => 'done' in s && !s.done) as Step | undefined;
       if (prevPending && 'done' in prevPending) prevPending.done = true;
 
-      if (e.type === 'thought') t.steps.push({ kind: 'thought', text: e.text, done: false });
+      // 'step_start' (from main) is the live "working" line emitted BEFORE the
+      // blocking model call, so the trace shows motion during the 3-8s generation
+      // window instead of appearing all at once at the end. It renders as a
+      // thought; the real 'thought' that follows supersedes it.
+      if (e.type === 'step_start') t.steps.push({ kind: 'thought', text: e.text, done: false });
+      else if (e.type === 'thought') t.steps.push({ kind: 'thought', text: e.text, done: false });
       else if (e.type === 'tool') t.steps.push({ kind: 'tool', label: verbFor(e.tool, e.title), done: false });
       else if (e.type === 'observation') {
         const last = [...t.steps].reverse().find((s: Step) => s.kind === 'tool') as any;

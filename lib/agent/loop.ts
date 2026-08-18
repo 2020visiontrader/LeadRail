@@ -53,12 +53,12 @@ export function compactionLevel(tokenEstimate: number): 'soft' | 'hard' | null {
   return null;
 }
 
-// The loop is latency-sensitive (a step per model round-trip), so it pins fast
-// tiers instead of inheriting the account default (which may be a slow reasoning
-// model). Zo Ask → Haiku (the standing Zo/Ask default for this account); if that
+// The loop is latency-sensitive (a step per model round-trip), so it prefers a
+// fast tier; when AGENT_ZOASK_MODEL is unset the Zo Ask call omits model_name
+// and uses the account default (Sonnet, sub-billed, no spend gate). If that
 // tier errors, the router falls through to DeepSeek-Flash, then NIM. Override
 // via AGENT_ZOASK_MODEL. JSON tool-routing is well within a fast model's ability.
-const AGENT_ZOASK_MODEL = process.env.AGENT_ZOASK_MODEL || 'byok:d49f5f12-5edf-4121-8079-a34a9077ae77';
+const AGENT_ZOASK_MODEL = process.env.AGENT_ZOASK_MODEL || '';
 const AGENT_OPENCODE_MODEL = 'deepseek-v4-flash';
 
 export interface AgentProposal {
@@ -336,6 +336,22 @@ function extractJson(raw: string): any | null {
  *  envelope is required to be identical (runAgent has no `emit`, so it records
  *  the line into `steps` instead of emitting it).
  */
+// Recover a human answer from a model response that is prose, or a JSON whose
+// "message" got truncated mid-string. From main: the streaming loop calls this
+// before giving up, so a cut-off final turns into the partial answer rather
+// than a generic failure. Kept in the merge because the branch's correction
+// nudge costs an extra round-trip and still fails on hard truncation.
+function salvageFinalMessage(raw: string): string | null {
+  const m = raw.match(/"message"\s*:\s*"((?:[^"\\]|\\.)*)/);
+  if (m && m[1]) {
+    try { return JSON.parse('"' + m[1].replace(/\\?$/, '') + '"'); }
+    catch { return m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').trim(); }
+  }
+  const stripped = raw.replace(/```json|```/g, '').trim();
+  if (stripped && !stripped.startsWith('{')) return stripped;
+  return null;
+}
+
 function narrationFor(parsed: any): string | undefined {
   const n = parsed?.narration;
   if (typeof n === 'string' && n.trim() !== '') return n;
@@ -769,7 +785,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
     let raw: string;
     try {
       raw = await generateChat({
-        system, messages, temperature: 0.2, maxOutputTokens: 700, zoAskModel: AGENT_ZOASK_MODEL, model: AGENT_OPENCODE_MODEL,
+        system, messages, temperature: 0.2, maxOutputTokens: 2048, zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
         // Only threaded through when a persona with a model override is active,
         // so the no-persona path calls generateChat with EXACTLY the same
         // options object shape as before this change.
@@ -791,6 +807,8 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
         messages.push({ role: 'user', content: 'Respond with ONLY one JSON object using the "tool" or "final" shape.' });
         continue;
       }
+      const salv = salvageFinalMessage(raw);
+      if (salv) return { status: 'done', message: salv, transcript: messages, steps };
       return { status: 'error', message: "I couldn't complete that request. Please rephrase and try again.", transcript: messages, steps };
     }
     corrected = false;
@@ -868,7 +886,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
   try {
     messages.push({ role: 'user', content: 'Stop calling tools. Using the information above, answer the user now. Respond with ONLY {"action":"final","message":"..."}.' });
     const raw = await generateChat({
-      system, messages, temperature: 0.2, maxOutputTokens: 500, zoAskModel: AGENT_ZOASK_MODEL, model: AGENT_OPENCODE_MODEL,
+      system, messages, temperature: 0.2, maxOutputTokens: 2048, zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
       ...(personaModelId ? { accountId, modelId: personaModelId } : {}),
     });
     const p = extractJson(raw);
@@ -884,6 +902,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
 // sensitive tool it emits `needs_approval` with the transcript to resume from.
 
 export type AgentEvent =
+  | { type: 'step_start'; text: string }
   | { type: 'thought'; text: string }
   | { type: 'tool'; tool: string; title: string; args: Record<string, any> }
   | { type: 'observation'; text: string; ok: boolean; tool?: string; metrics?: Record<string, number> }
@@ -896,7 +915,31 @@ export type AgentEvent =
   | { type: 'final'; message: string; transcript: ChatMessage[]; tokenEstimate?: number }
   | { type: 'needs_approval'; proposal: AgentProposal; message: string; transcript: ChatMessage[] }
   | { type: 'compaction_suggested'; level: 'soft' | 'hard'; tokenEstimate: number }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string; transcript?: ChatMessage[] };
+
+// Stream an already-complete final answer as incremental `token` events so the
+// UI can type it out, Claude-desktop style, instead of it popping in as one
+// blob. Purely a presentation delay on top of a string we already have — no
+// model-provider changes. Chunks on whitespace boundaries (keeps words whole)
+// and paces itself so a long answer never adds more than ~1.5s of latency.
+async function streamTokens(message: string, emit: (e: AgentEvent) => void): Promise<void> {
+  if (!message) return;
+  const chunks = message.split(/(\s+)/).filter((c) => c.length > 0);
+  if (!chunks.length) return;
+  const MAX_TOTAL_DELAY_MS = 1500;
+  const PER_CHUNK_MS = 12;
+  // If pacing every chunk at PER_CHUNK_MS would blow the total budget, batch
+  // multiple chunks per emitted event so we still finish in time.
+  const batchSize = Math.max(1, Math.ceil((chunks.length * PER_CHUNK_MS) / MAX_TOTAL_DELAY_MS));
+  for (let i = 0; i < chunks.length; i += batchSize) {
+    const batch = chunks.slice(i, i + batchSize).join('');
+    // 'final_delta' is the merged event name for progressive answer text
+    // (main called it 'token'). The union and AgentConsole both use
+    // 'final_delta'; the 'final' event remains authoritative.
+    emit({ type: 'final_delta', text: batch });
+    if (i + batchSize < chunks.length) await new Promise((r) => setTimeout(r, PER_CHUNK_MS));
+  }
+}
 
 // LOOP-CONTROL INVARIANT (Packet 1.3): runAgentStream and runAgent must keep
 // IDENTICAL loop control — the step cap (MAX_STEPS), the executed-signature
@@ -959,10 +1002,14 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
   // report what it was reacting to (failures after a tool differ from cold ones).
   let lastToolName: string | undefined;
   for (let i = 0; i < stepCap; i++) {
+    // Live "working" step BEFORE the blocking model call (from main): without
+    // it the first event of a step only lands after generateChat returns, so the
+    // trace renders in a burst at the end instead of showing motion.
+    emit({ type: 'step_start', text: i === 0 ? 'Thinking through your request…' : 'Working through the next step…' });
     let raw: string;
     try {
       raw = await generateChat({
-        system, messages, temperature: 0.2, maxOutputTokens: 700, zoAskModel: AGENT_ZOASK_MODEL, model: AGENT_OPENCODE_MODEL,
+        system, messages, temperature: 0.2, maxOutputTokens: 2048, zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
         ...(personaModelId ? { accountId, modelId: personaModelId } : {}),
       });
     } catch (e: unknown) {
@@ -985,7 +1032,9 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
         messages.push({ role: 'user', content: 'Respond with ONLY one JSON object using the "tool" or "final" shape.' });
         continue;
       }
-      emit({ type: 'error', message: "I couldn't complete that request. Please rephrase and try again." });
+      const salv = salvageFinalMessage(raw);
+      if (salv) { await streamTokens(salv, emit); emit({ type: 'final', message: salv, transcript: messages }); return; }
+      emit({ type: 'error', message: "I couldn't complete that request. Please rephrase and try again.", transcript: messages });
       return;
     }
     corrected = false;
@@ -1070,14 +1119,20 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
   // Forced final rather than a "too many steps" error.
   try {
     messages.push({ role: 'user', content: 'Stop calling tools. Using the information above, answer the user now. Respond with ONLY {"action":"final","message":"..."}.' });
+    emit({ type: 'step_start', text: 'Putting the answer together…' });
     const raw = await generateChat({
-      system, messages, temperature: 0.2, maxOutputTokens: 500, zoAskModel: AGENT_ZOASK_MODEL, model: AGENT_OPENCODE_MODEL,
+      system, messages, temperature: 0.2, maxOutputTokens: 2048, zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
       ...(personaModelId ? { accountId, modelId: personaModelId } : {}),
     });
     const p = extractJson(raw);
-    if (p?.action === 'final' && p.message) { emit({ type: 'final', message: String(p.message), transcript: messages }); return; }
+    if (p?.action === 'final' && p.message) {
+      const finalMessage = String(p.message);
+      await streamTokens(finalMessage, emit);
+      emit({ type: 'final', message: finalMessage, transcript: messages });
+      return;
+    }
   } catch { /* fall through */ }
-  emit({ type: 'error', message: 'I gathered the details but had trouble summarizing. Please ask again a bit more specifically.' });
+  emit({ type: 'error', message: 'I gathered the details but had trouble summarizing. Please ask again a bit more specifically.', transcript: messages });
 }
 
 // --- Long-chat handoff: carryover generation -------------------------------
@@ -1109,7 +1164,7 @@ export async function generateCarryover(transcript: ChatMessage[]): Promise<Carr
       messages: [{ role: 'user', content: `Transcript to compress:\n${convo}` }],
       temperature: 0.1,
       maxOutputTokens: 700,
-      zoAskModel: AGENT_ZOASK_MODEL,
+      zoAskModel: AGENT_ZOASK_MODEL || undefined,
       model: AGENT_OPENCODE_MODEL,
     });
     const parsed = extractJson(raw);
