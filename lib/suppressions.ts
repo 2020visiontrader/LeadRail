@@ -66,3 +66,60 @@ export async function addSuppression(input: {
     { onConflict: email ? 'account_id,email' : 'account_id,domain', ignoreDuplicates: true },
   );
 }
+
+// ============================================================
+// Social-identity suppression (Packet 7.3 — automation runner).
+// migration 045 extends this SAME table with nullable platform/external_id
+// columns rather than forking a parallel concept — one place a person's
+// "don't contact me" ever lives, one place that checks it.
+//
+// isSuppressed() above is deliberately FAIL-OPEN: it backs sends a human
+// already reviewed and approved, where an infra hiccup should not block a
+// legitimate, already-decided send. isSocialSuppressed() is the opposite on
+// purpose — it backs the ONLY fully-autonomous send path in the product
+// (social_automations rules firing off a webhook with no human in the loop),
+// where a read failure must never be interpreted as "not suppressed". Never
+// change this function to fail-open; that would silently reopen the CASL gap
+// packet 7.3 exists to close.
+// ============================================================
+
+/** True when this social identity is suppressed OR the check itself failed —
+ * callers must treat both as "do not send". Never throws. */
+export async function isSocialSuppressed(accountId: string, platform: string, externalId: string): Promise<boolean> {
+  if (!accountId || !platform || !externalId) return true; // fail closed on malformed input too
+  try {
+    const { data, error } = await supabase
+      .from('suppressions')
+      .select('id')
+      .eq('account_id', accountId)
+      .eq('platform', platform)
+      .eq('external_id', externalId)
+      .limit(1);
+    if (error) return true; // fail CLOSED — the opposite of isSuppressed() above, deliberately
+    return Boolean(data && data.length);
+  } catch {
+    return true;
+  }
+}
+
+/** Suppress a social identity (e.g. someone who asked to stop hearing from an
+ * automated rule) for this account. Upserts; safe to call repeatedly. */
+export async function addSocialSuppression(input: {
+  accountId: string;
+  platform: string;
+  externalId: string;
+  reason?: string;
+  source?: string;
+}): Promise<void> {
+  if (!input.accountId || !input.platform || !input.externalId) return;
+  await supabase.from('suppressions').upsert(
+    [{
+      account_id: input.accountId,
+      platform: input.platform,
+      external_id: input.externalId,
+      reason: input.reason || 'manual',
+      source: input.source || null,
+    }],
+    { onConflict: 'account_id,platform,external_id', ignoreDuplicates: true },
+  );
+}

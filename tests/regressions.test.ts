@@ -93,7 +93,7 @@ describe('Regression Guard 1: Sensitive Baseline', () => {
   // 2. It was a mistake: restore the gate value.
   // Derived from CAPABILITIES where isSensitive(c) is true. Sensitivity means
   // gate is one of: 'spend', 'external_send', 'destructive', 'standing_rule'.
-  // Currently 18 sensitive capabilities (as of Packet D3).
+  // Currently 19 sensitive capabilities (as of Packet 7.3).
   const SENSITIVE_BASELINE = [
     // Packet D2 added this deliberately. A scheduled task runs an agent
     // unattended and REPEATEDLY with no further human in the loop, which is
@@ -113,6 +113,13 @@ describe('Regression Guard 1: Sensitive Baseline', () => {
     'publishSocialPost',
     'replyToSocialComment',
     'replyToThread',
+    // Packet 7.3: turning the account-level automation kill switch back ON
+    // restores unattended sending capacity (though no single rule is
+    // re-armed by it alone) — same risk class as enableSocialAutomation, so
+    // it is 'standing_rule' too. pauseAllSocialAutomations is deliberately
+    // NOT here: pausing only ever reduces unattended sending (gate:
+    // 'internal_write'), mirroring disableSocialAutomation's omission above.
+    'resumeAllSocialAutomations',
     'scheduleSocialPost',
     'sendEmail',
     'sendSocialMessage',

@@ -96,6 +96,7 @@ const CATALOG_ORDER: string[] = [
   'listScheduledSocialPosts', 'getAdBreakdown', 'setAdStatus',
   'listSocialAutomations', 'createSocialAutomation', 'enableSocialAutomation',
   'disableSocialAutomation', 'deleteSocialAutomation',
+  'pauseAllSocialAutomations', 'resumeAllSocialAutomations',
   // --- appended by Packet 10.3 (two-stage catalog). Appended, never sorted.
   // Present only when staging is on, matching the ALL filter above; the
   // missing/unknown checks below still hold in both modes.

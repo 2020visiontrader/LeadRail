@@ -194,4 +194,51 @@ export const SOCIAL_AUTOMATION_CAPABILITIES: Capability[] = [
     },
     summarize: (a) => `Permanently delete automatic rule ${a.id}. This cannot be undone.`,
   },
+  {
+    // Packet 7.3 kill switch — one account-level flag that stops every
+    // enabled rule at once (accounts.social_automations_paused, migration
+    // 045), on top of the per-rule enabled bit. This is the "stop everything
+    // right now" lever; it does not touch any individual rule's enabled
+    // state, so turning it back off (resumeAllSocialAutomations) does not by
+    // itself re-arm anything that wasn't already enabled.
+    name: 'pauseAllSocialAutomations',
+    domain: 'social',
+    title: 'Pause all automatic social rules',
+    // Mirrors disableSocialAutomation's reasoning: pausing only ever reduces
+    // what happens without a human, so it is ungated — an emergency stop
+    // should never wait on an approval.
+    description: 'Immediately stop every automatic social rule for this account from firing, without changing or deleting any individual rule. Use this as an emergency stop. Turning it back on with resumeAllSocialAutomations does not by itself switch any rule on — rules that were off stay off.',
+    gate: 'internal_write',
+    inputSchema: obj({}),
+    zod: z.object({}),
+    run: async (accountId) => {
+      const { data, error } = await supabase
+        .from('accounts')
+        .update({ social_automations_paused: true })
+        .eq('id', accountId)
+        .select('id, social_automations_paused');
+      if (error) throw error;
+      return data?.[0];
+    },
+    summarize: () => 'Pause ALL automatic social rules for this account immediately.',
+  },
+  {
+    name: 'resumeAllSocialAutomations',
+    domain: 'social',
+    title: 'Resume automatic social rules',
+    description: 'Allow automatic social rules to fire again after a pause. Only rules that are individually switched on will actually resume acting — this does not turn any rule back on by itself. Requires explicit confirmation since it restores unattended sending.',
+    gate: 'standing_rule',
+    inputSchema: obj({}),
+    zod: z.object({}),
+    run: async (accountId) => {
+      const { data, error } = await supabase
+        .from('accounts')
+        .update({ social_automations_paused: false })
+        .eq('id', accountId)
+        .select('id, social_automations_paused');
+      if (error) throw error;
+      return data?.[0];
+    },
+    summarize: () => 'Resume automatic social rules for this account (only rules that are individually switched on will actually act again).',
+  },
 ];

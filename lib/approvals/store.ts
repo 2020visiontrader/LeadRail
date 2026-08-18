@@ -125,6 +125,47 @@ export async function createApproval(accountId: string, input: ApprovalProposalI
   return toSafe(data);
 }
 
+export interface AutomatedExecutionInput {
+  tool: string;
+  title: string;
+  summary: string;
+  args: Record<string, any>;
+  /** e.g. 'automation:<social_automations.id>' — never a human email, so this
+   * row is unambiguously distinguishable in the audit trail from a
+   * human-approved send. */
+  requestedBy: string;
+}
+
+/** Packet 7.3 — the automation runner's audit trail. Unlike createApproval
+ * (always 'pending', waiting on a human decision), this writes a row that is
+ * ALREADY terminal: the send already happened with no human in the loop, and
+ * this row is the record of it, not a request for permission. Every
+ * automated send must call this — an automated send that leaves no trace is
+ * unacceptable (COPILOT_REMEDIATION_PLAN.md Packet 7.3). Best-effort by
+ * design at the call site (the send cannot be undone if the audit write
+ * fails), but callers must still log a failure, never swallow it silently. */
+export async function recordExecutedApproval(accountId: string, input: AutomatedExecutionInput): Promise<SafeApproval> {
+  const redacted = redactArgs(input.args);
+  const hash = hashArgs(input.args);
+  const row: Record<string, any> = {
+    account_id: accountId,
+    tool: input.tool,
+    title: input.title,
+    summary: input.summary,
+    args_redacted: redacted,
+    args_hash: hash,
+    state: 'executed',
+    requested_by: input.requestedBy,
+    executed_at: new Date().toISOString(),
+  };
+  if (vaultConfigured()) {
+    row.args_encrypted = encryptSecret(JSON.stringify(input.args || {}));
+  }
+  const { data, error } = await supabase.from('approvals').insert([row]).select().single();
+  if (error) throw error;
+  return toSafe(data);
+}
+
 export async function listApprovals(accountId: string, opts?: { state?: ApprovalState }): Promise<SafeApproval[]> {
   let query = supabase.from('approvals').select('*').eq('account_id', accountId);
   if (opts?.state) query = query.eq('state', opts.state);

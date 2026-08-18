@@ -51,6 +51,8 @@ const TOOL_VERB: Record<string, string> = {
   enableSocialAutomation: 'Preparing to switch on an automatic rule',
   disableSocialAutomation: 'Switching off that automatic rule',
   deleteSocialAutomation: 'Preparing to delete that automatic rule',
+  pauseAllSocialAutomations: 'Pausing all automatic social rules',
+  resumeAllSocialAutomations: 'Preparing to resume automatic social rules',
   // --- added by Packet 1.3 (verb coverage) ---
   // INVARIANT: every capability in CATALOG_ORDER (lib/capabilities/registry.ts)
   // — including the staged-catalog-only ones — has a key here. verbFor() falls

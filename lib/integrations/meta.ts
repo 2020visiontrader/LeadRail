@@ -1,6 +1,11 @@
 import { withRetry } from '@/lib/integrations/retry';
 import { getConnection, getConnectionByExternalId } from '@/lib/db';
 import { recordConversationMessage } from '@/lib/conversations';
+// Packet 7.3 — fires social_automations rules for inbound events. Dynamic
+// dependency shape: this IS a static import (safe — automation-runner.ts
+// only reaches back into meta-engagement.ts via a dynamic import at call
+// time, never statically, so there is no import cycle back to this file).
+import { runSocialAutomationsForEvent } from '@/lib/social/automation-runner';
 
 // Instagram Content Publishing runs on the Facebook Graph host, NOT graph.instagram.com.
 const META_API_URL = 'https://graph.facebook.com/v18.0';
@@ -161,12 +166,13 @@ export async function handleMetaWebhook(event: any) {
     if (Array.isArray(item.messaging)) {
       for (const messaging of item.messaging) {
         if (messaging?.message?.is_echo) continue; // our own outbound send, not new inbound content
+        const dmExternalId = messaging?.message?.mid || `${item.id}:${messaging?.timestamp}`;
         try {
           await recordConversationMessage({
             accountId,
             channel: 'instagram',
             direction: 'inbound',
-            externalId: messaging?.message?.mid || `${item.id}:${messaging?.timestamp}`,
+            externalId: dmExternalId,
             fromAddr: messaging?.sender?.id ?? null,
             toAddr: messaging?.recipient?.id ?? null,
             body: messaging?.message?.text ?? null,
@@ -175,6 +181,21 @@ export async function handleMetaWebhook(event: any) {
           });
         } catch (e) {
           console.warn('handleMetaWebhook: failed to record IG message', e);
+        }
+        // Packet 7.3: fire any enabled dm_received rules for this account.
+        // Awaited (not fire-and-forget) so a serverless invocation cannot be
+        // torn down before the send/cap/audit sequence completes; the runner
+        // itself never throws, so this can't fail the webhook response.
+        if (messaging?.sender?.id && messaging?.message?.text) {
+          await runSocialAutomationsForEvent(accountId, {
+            platform: 'instagram',
+            trigger: 'dm_received',
+            externalId: String(item.id),
+            externalEventId: String(dmExternalId),
+            authorId: String(messaging.sender.id),
+            authorUsername: null,
+            text: String(messaging.message.text),
+          }).catch((e) => console.warn('handleMetaWebhook: automation runner failed for DM', e));
         }
       }
     }
@@ -195,6 +216,18 @@ export async function handleMetaWebhook(event: any) {
           });
         } catch (e) {
           console.warn('handleMetaWebhook: failed to record IG comment', e);
+        }
+        // Packet 7.3: fire any enabled comment_received rules for this account.
+        if (change.value?.id && change.value?.from?.id) {
+          await runSocialAutomationsForEvent(accountId, {
+            platform: 'instagram',
+            trigger: 'comment_received',
+            externalId: String(item.id),
+            externalEventId: String(change.value.id),
+            authorId: String(change.value.from.id),
+            authorUsername: change.value.from.username ?? null,
+            text: String(change.value?.text || ''),
+          }).catch((e) => console.warn('handleMetaWebhook: automation runner failed for comment', e));
         }
       }
     }
