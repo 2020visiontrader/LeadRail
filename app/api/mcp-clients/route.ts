@@ -43,6 +43,9 @@ async function POST__impl(request: NextRequest) {
       url,
       auth_header: body?.auth_header ? String(body.auth_header) : null,
       enabled: body?.enabled !== false,
+      // Conservative default (Packet 4): only set true when the caller
+      // explicitly asks for it. See allow_auto comment in lib/mcp/clients.ts.
+      allow_auto: body?.allow_auto === true,
     });
     return NextResponse.json(client, { status: 201 });
   } catch (e: any) {

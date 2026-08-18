@@ -16,7 +16,12 @@
 // comes from the server session — never from the (round-tripped) transcript.
 
 import { generateChat, textConfigured, type ChatMessage } from '@/lib/ai/router';
-import { TOOLS, runTool, toolCatalogForPrompt, toolCatalogStaged, AGENT_STAGED_CATALOG, capabilityFor } from './tools';
+import {
+  TOOLS, runTool, toolCatalogForPrompt, toolCatalogStaged, AGENT_STAGED_CATALOG, capabilityFor,
+  toolsFromCapabilities, type AgentTool,
+} from './tools';
+import { loadExternalCapabilities } from '@/lib/capabilities/external-mcp';
+import type { Capability } from '@/lib/capabilities/types';
 import { estimateTokens, carryoverBlock, type CarryoverMemo } from './memory';
 import {
   loadPersonaForAgent, resolveMentionedPersonas, getCoordinator,
@@ -165,7 +170,10 @@ function skillsBlock(skills: { name: string; instructions: string }[]): string {
 // lib/ai/providers.ts and is deliberately out of scope here. Reordering these
 // blocks back also changes what the model attends to most strongly (recency),
 // so it is a behaviour change, not a cosmetic one — do not do it casually.
-function systemPrompt(brandName?: string, agentContext?: string, carryover?: CarryoverMemo | null, personaBlock?: string, skillsGuidance?: string): string {
+// `externalTools` (Packet 4) folds an account's connected-MCP-client tools
+// into the catalog for THIS turn. Optional and additive: every call site that
+// predates Packet 4 omits it, so the prompt is byte-identical to before.
+function systemPrompt(brandName?: string, agentContext?: string, carryover?: CarryoverMemo | null, personaBlock?: string, skillsGuidance?: string, externalTools?: Record<string, AgentTool>): string {
   return [
     // ---- STATIC (stable across every turn for an account) -------------------
     'You are LeadRail AI — the operator copilot built into the LeadRail platform. Think of yourself the way a great chief-of-staff works: you understand the whole platform, you know this account and its ventures, you reason things through in plain language, and you actually DO the work by using LeadRail\'s tools. You are conversational and intellectually engaged — you can discuss strategy, weigh options, and explain your thinking, not just fire off tool calls.',
@@ -203,11 +211,11 @@ function systemPrompt(brandName?: string, agentContext?: string, carryover?: Car
     ...(AGENT_STAGED_CATALOG
       ? [
           'AVAILABLE TOOLS — grouped by domain, names only. Before calling a tool whose arguments you have not been shown, call describeTools with that domain to get its full signatures. Tools marked [needs approval] still pause for the user to confirm.',
-          toolCatalogStaged(),
+          toolCatalogStaged(externalTools),
         ]
       : [
           'AVAILABLE TOOLS:',
-          toolCatalogForPrompt(),
+          toolCatalogForPrompt(externalTools),
         ]),
     // ---- VOLATILE (changes per turn — nothing static may follow) ------------
     // Both blocks below are per-turn grounding. They are LAST on purpose; see
@@ -218,14 +226,19 @@ function systemPrompt(brandName?: string, agentContext?: string, carryover?: Car
   ].filter(Boolean).join('\n');
 }
 
-function summarizeProposal(tool: string, args: Record<string, any>): string {
+function summarizeProposal(tool: string, args: Record<string, any>, extraCaps?: Record<string, Capability>, extraTools?: Record<string, AgentTool>): string {
   // A capability may supply its own summary (Packet 2.1). None do today, so
   // every existing branch below still fires and output is unchanged; later
   // packets add `summarize` so this branch list stops growing.
-  const cap = capabilityFor(tool);
+  const cap = capabilityFor(tool, extraCaps);
   if (cap?.summarize) return cap.summarize(args);
-  const t = TOOLS[tool];
+  const t = TOOLS[tool] ?? extraTools?.[tool];
   const title = t?.title || tool;
+  // External MCP tools (Packet 4) have no bespoke branch below — a third
+  // party's action can't be summarized from a known verb the way
+  // launchCampaign/sendEmail/etc. can. Say plainly that it reaches outside
+  // LeadRail so the approval card doesn't understate what's being confirmed.
+  if (cap?.domain === 'external') return `Run "${title}" on a connected external tool with these details: ${JSON.stringify(args)}.`;
   if (tool === 'launchCampaign') {
     const budget = args.dailyBudget != null ? ` at $${args.dailyBudget}/day` : '';
     return `Launch a live paid campaign${budget}. This will start spending on Meta.`;
@@ -306,11 +319,11 @@ function observation(text: string): ChatMessage {
 // A digest that throws is treated as absent. This is a best-effort presentation
 // hook, never a gate: a bad digest must degrade to today's raw-JSON behaviour,
 // not fail the tool call whose result the user is waiting on.
-function successObservation(tool: string, args: any, result: any): string {
+function successObservation(tool: string, args: any, result: any, extraCaps?: Record<string, Capability>): string {
   const raw = JSON.stringify(result);
   let digest = '';
   try {
-    digest = (capabilityFor(tool)?.digest?.(args, result) || '').trim();
+    digest = (capabilityFor(tool, extraCaps)?.digest?.(args, result) || '').trim();
   } catch {
     digest = '';
   }
@@ -318,9 +331,12 @@ function successObservation(tool: string, args: any, result: any): string {
 }
 
 /** The single observation-building path shared by runAgent and runAgentStream.
- *  Both loops MUST call this — they are required to stay identical here. */
-function observationFor(tool: string, args: any, res: { ok: boolean; result?: any; error?: string }): string {
-  return res.ok ? successObservation(tool, args, res.result) : `ERROR: ${res.error}`;
+ *  Both loops MUST call this — they are required to stay identical here.
+ *  `extraCaps` (Packet 4) is threaded through so an external tool's result
+ *  gets the same treatment as a first-party one (today: none declare a
+ *  digest, so this is raw JSON — same as any first-party tool without one). */
+function observationFor(tool: string, args: any, res: { ok: boolean; result?: any; error?: string }, extraCaps?: Record<string, Capability>): string {
+  return res.ok ? successObservation(tool, args, res.result, extraCaps) : `ERROR: ${res.error}`;
 }
 
 // PORTED (Packet 2.1 step 5): the per-tool deriveMetrics switch that used to
@@ -654,7 +670,13 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
   }
   const { systemBlock: personaBlock, modelId: personaModelId } = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
   const enabledSkills = await loadEnabledSkillsForAgent(accountId);
-  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills));
+  // Packet 4: this account's connected, enabled external-MCP-client tools for
+  // THIS turn only — a pure cached DB read (see lib/capabilities/external-mcp.ts),
+  // never a network call, so it cannot add hot-path latency or hang the turn.
+  const externalCaps = await loadExternalCapabilities(accountId);
+  const extraTools = toolsFromCapabilities(externalCaps);
+  const extraCapsByName: Record<string, Capability> = Object.fromEntries(externalCaps.map((c) => [c.name, c]));
+  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools);
   const messages: ChatMessage[] = capTranscript(input.transcript || []);
   const steps: AgentStep[] = [];
 
@@ -665,18 +687,22 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
   // account scope is the server session's, never the client's.
   if (input.approve) {
     const { approvalId, tool, args } = input.approve;
-    if (!TOOLS[tool]?.sensitive) {
+    const approveDef = TOOLS[tool] ?? extraTools[tool];
+    if (!approveDef?.sensitive) {
       return { status: 'error', message: 'That action can no longer be approved.', transcript: messages, steps };
     }
     // HARD GATE (Packet 0.1): consume a persisted, approved, args-matching,
     // not-yet-executed approval. Failure MUST refuse — never fall through.
+    // Applies identically to an external-MCP tool (Packet 4) — its approvals
+    // row was created the same way as any sensitive first-party tool's, so it
+    // consumes through the exact same gate.
     try {
       await consumeApprovalForExecution(accountId, approvalId, tool, args);
     } catch (e: any) {
       return { status: 'error', message: approvalRefusal(e), transcript: messages, steps };
     }
-    const res = await runTool(tool, accountId, args);
-    const obs = observationFor(tool, args, res);
+    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName);
+    const obs = observationFor(tool, args, res, extraCapsByName);
     steps.push({ tool, args, observation: truncate(obs) });
     messages.push(observation(obs));
   }
@@ -732,7 +758,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
     // action === 'tool'
     const tool = String(parsed.tool || '');
     const args = (parsed.args && typeof parsed.args === 'object') ? parsed.args : {};
-    const def = TOOLS[tool];
+    const def = TOOLS[tool] ?? extraTools[tool]; // Packet 4: fall back to this turn's external-MCP tools
 
     if (!def) {
       steps.push({ thought: narrationFor(parsed), tool });
@@ -741,7 +767,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
     }
 
     if (def.sensitive) {
-      const proposal: AgentProposal = { tool, title: def.title, args, summary: summarizeProposal(tool, args) };
+      const proposal: AgentProposal = { tool, title: def.title, args, summary: summarizeProposal(tool, args, extraCapsByName, extraTools) };
       // Additive: persist the proposal so it survives a closed tab and gets an
       // actor trail (migration 028_approvals.sql). Best-effort — a failure
       // here (e.g. DB unavailable) must never block the existing
@@ -774,8 +800,8 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
     seen.add(sig);
     toolCalls[tool] = (toolCalls[tool] || 0) + 1;
 
-    const res = await runTool(tool, accountId, args);
-    const obs = observationFor(tool, args, res);
+    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName);
+    const obs = observationFor(tool, args, res, extraCapsByName);
     steps.push({ thought: narrationFor(parsed), tool, args, observation: truncate(obs) });
     messages.push(observation(obs));
   }
@@ -836,14 +862,19 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
   }
   const { systemBlock: personaBlock, modelId: personaModelId } = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
   const enabledSkills = await loadEnabledSkillsForAgent(accountId);
-  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills));
+  // Packet 4 — see the matching comment in runAgent above.
+  const externalCaps = await loadExternalCapabilities(accountId);
+  const extraTools = toolsFromCapabilities(externalCaps);
+  const extraCapsByName: Record<string, Capability> = Object.fromEntries(externalCaps.map((c) => [c.name, c]));
+  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools);
   const messages: ChatMessage[] = capTranscript(input.transcript || []);
 
   if (input.message) messages.push({ role: 'user', content: input.message });
 
   if (input.approve) {
     const { approvalId, tool, args } = input.approve;
-    if (!TOOLS[tool]?.sensitive) { emit({ type: 'error', message: 'That action can no longer be approved.' }); return; }
+    const approveDef = TOOLS[tool] ?? extraTools[tool];
+    if (!approveDef?.sensitive) { emit({ type: 'error', message: 'That action can no longer be approved.' }); return; }
     // HARD GATE (Packet 0.1) — see the matching comment in runAgent.
     try {
       await consumeApprovalForExecution(accountId, approvalId, tool, args);
@@ -851,10 +882,10 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
       emit({ type: 'error', message: approvalRefusal(e) });
       return;
     }
-    emit({ type: 'tool', tool, title: TOOLS[tool].title, args });
-    const res = await runTool(tool, accountId, args);
-    const obs = observationFor(tool, args, res);
-    emit({ type: 'observation', text: truncate(obs), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool)?.metrics?.(args, res.result) ?? {}) : {} });
+    emit({ type: 'tool', tool, title: approveDef.title, args });
+    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName);
+    const obs = observationFor(tool, args, res, extraCapsByName);
+    emit({ type: 'observation', text: truncate(obs), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
     messages.push(observation(obs));
   }
 
@@ -920,7 +951,7 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
 
     const tool = String(parsed.tool || '');
     const args = (parsed.args && typeof parsed.args === 'object') ? parsed.args : {};
-    const def = TOOLS[tool];
+    const def = TOOLS[tool] ?? extraTools[tool]; // Packet 4: fall back to this turn's external-MCP tools
 
     if (!def) {
       emit({ type: 'observation', text: `Unknown tool "${tool}".`, ok: false });
@@ -929,7 +960,7 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
     }
 
     if (def.sensitive) {
-      const proposal: AgentProposal = { tool, title: def.title, args, summary: summarizeProposal(tool, args) };
+      const proposal: AgentProposal = { tool, title: def.title, args, summary: summarizeProposal(tool, args, extraCapsByName, extraTools) };
       // Additive persistence — see the matching comment in runAgent above.
       // Best-effort; never blocks the existing needs_approval/resume flow.
       // REQUIRED, not best-effort — see the matching comment in runAgent.
@@ -960,9 +991,9 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
     toolCalls[tool] = (toolCalls[tool] || 0) + 1;
 
     emit({ type: 'tool', tool, title: def.title, args });
-    const res = await runTool(tool, accountId, args);
-    const obs = observationFor(tool, args, res);
-    emit({ type: 'observation', text: truncate(obs), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool)?.metrics?.(args, res.result) ?? {}) : {} });
+    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName);
+    const obs = observationFor(tool, args, res, extraCapsByName);
+    emit({ type: 'observation', text: truncate(obs), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
     messages.push(observation(obs));
   }
 

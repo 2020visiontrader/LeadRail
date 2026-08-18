@@ -45,13 +45,13 @@ Route by *failure cost*, not size. Anything touching `account_id`, approval stat
 | 2.2-S | Social capabilities | A | ☑ merged |
 | 2.3 | API=MCP parity test | B | ☑ merged |
 | 3.1 | Ground the background agents | A | ☑ merged |
-| 4 | External MCP client bridge | A | ☐ |
+| 4 | External MCP client bridge | A | ☑ merged |
 | 5.1 | Re-clone + finish skills harvest | C | ☑ merged (341 skills) |
 | 5.2 | Agent roles → persona templates | C | ☑ merged (24 templates) |
 | 6.1 | Persona picker UI | C | ☑ merged |
 | 6.2 | Coordinator fan-out | A | ☑ merged (real fan-out + synthesis) |
 | 7.1b | Fix misleading Connections UI | C | ☑ merged |
-| 7.1 | OAuth: LinkedIn / TikTok / X (×3) | A | ☐ |
+| 7.1 | OAuth: LinkedIn / TikTok / X (×3) | A | ☑ merged |
 | 7.2 | Per-account Buffer/GHL credentials | A | ☑ merged |
 | 7.3 | Automation runner | A | ☐ do LAST |
 | 8.1 | Split the loop: route ≠ compose | A | ☑ merged |

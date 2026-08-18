@@ -16,6 +16,11 @@ export interface McpClientRow {
   url: string;
   auth_header_encrypted: string | null;
   enabled: boolean;
+  // Packet 4 / migration 044: operator opt-in that lets this client's tools
+  // run WITHOUT an approval card. Defaults false — a newly connected server's
+  // tools are approval-required (gate:'external_send') until the operator
+  // explicitly flips this. See lib/capabilities/external-mcp.ts.
+  allow_auto: boolean;
   last_status: string | null;
   last_checked_at: string | null;
   discovered_tools: { name: string; description?: string }[];
@@ -65,7 +70,7 @@ async function getMcpClientRaw(accountId: string, id: string): Promise<McpClient
 }
 
 export async function createMcpClient(accountId: string, input: {
-  name: string; transport: McpTransport; url: string; auth_header?: string | null; enabled?: boolean;
+  name: string; transport: McpTransport; url: string; auth_header?: string | null; enabled?: boolean; allow_auto?: boolean;
 }): Promise<SafeMcpClient> {
   const row: Record<string, any> = {
     account_id: accountId,
@@ -73,6 +78,8 @@ export async function createMcpClient(accountId: string, input: {
     transport: input.transport,
     url: input.url,
     enabled: input.enabled ?? true,
+    // Conservative default — see the allow_auto comment on McpClientRow above.
+    allow_auto: input.allow_auto === true,
   };
   if (input.auth_header) {
     if (!vaultConfigured()) {
@@ -88,13 +95,14 @@ export async function createMcpClient(accountId: string, input: {
 }
 
 export async function updateMcpClient(accountId: string, id: string, patch: {
-  name?: string; transport?: McpTransport; url?: string; auth_header?: string | null; enabled?: boolean;
+  name?: string; transport?: McpTransport; url?: string; auth_header?: string | null; enabled?: boolean; allow_auto?: boolean;
 }): Promise<SafeMcpClient> {
   const row: Record<string, any> = { updated_at: new Date().toISOString() };
   if (patch.name !== undefined) row.name = patch.name;
   if (patch.transport !== undefined) row.transport = patch.transport;
   if (patch.url !== undefined) row.url = patch.url;
   if (patch.enabled !== undefined) row.enabled = patch.enabled;
+  if (patch.allow_auto !== undefined) row.allow_auto = patch.allow_auto;
   if (patch.auth_header) {
     if (!vaultConfigured()) {
       const err: any = new Error('AI_VAULT_KEY is not set on this deployment; cannot store an auth header');

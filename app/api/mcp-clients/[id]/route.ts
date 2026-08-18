@@ -36,6 +36,7 @@ async function PATCH__impl(request: NextRequest, { params }: { params: { id: str
       url: body?.url !== undefined ? String(body.url) : undefined,
       auth_header: body?.auth_header ? String(body.auth_header) : undefined,
       enabled: body?.enabled !== undefined ? Boolean(body.enabled) : undefined,
+      allow_auto: body?.allow_auto !== undefined ? Boolean(body.allow_auto) : undefined,
     });
     return NextResponse.json(client);
   } catch (e: any) {

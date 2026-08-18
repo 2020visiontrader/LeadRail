@@ -31,14 +31,39 @@ export const TOOLS: Record<string, AgentTool> = Object.fromEntries(
   }]),
 );
 
-/** Compact catalog for the agent system prompt — name, purpose, args, gate. */
-export function toolCatalogForPrompt(): string {
-  return Object.entries(TOOLS).map(([name, t]) => {
-    const args = Object.keys(t.inputSchema.properties || {});
-    const req = new Set<string>(t.inputSchema.required || []);
-    const sig = args.map((a) => (req.has(a) ? a : `${a}?`)).join(', ') || '—';
-    return `${name}(${sig})${t.sensitive ? ' [needs approval]' : ''} — ${t.description}`;
-  }).join('\n');
+/** Build an AgentTool map from an arbitrary capability list — the same shape
+ *  TOOLS is built with above, but for a per-account, per-turn capability set
+ *  that cannot live in the static registry (Packet 4: an account's connected
+ *  external MCP tools, lib/capabilities/external-mcp.ts). Pure mapping, no
+ *  side effects, so callers can freely merge the result with TOOLS. */
+export function toolsFromCapabilities(caps: Capability[]): Record<string, AgentTool> {
+  return Object.fromEntries(
+    caps.map((c) => [c.name, {
+      title: c.title,
+      description: c.description,
+      inputSchema: c.inputSchema,
+      zod: c.zod,
+      sensitive: isSensitive(c),
+      run: c.run,
+    }]),
+  );
+}
+
+function catalogLine(name: string, t: AgentTool): string {
+  const args = Object.keys(t.inputSchema.properties || {});
+  const req = new Set<string>(t.inputSchema.required || []);
+  const sig = args.map((a) => (req.has(a) ? a : `${a}?`)).join(', ') || '—';
+  return `${name}(${sig})${t.sensitive ? ' [needs approval]' : ''} — ${t.description}`;
+}
+
+/** Compact catalog for the agent system prompt — name, purpose, args, gate.
+ *  `extraTools` (Packet 4) folds in a per-account, per-turn set — today only
+ *  the external-MCP bridge — that cannot live in the static TOOLS map. Omit
+ *  it and this is byte-identical to every call site that predates Packet 4. */
+export function toolCatalogForPrompt(extraTools?: Record<string, AgentTool>): string {
+  const base = Object.entries(TOOLS).map(([name, t]) => catalogLine(name, t));
+  const extra = extraTools ? Object.entries(extraTools).map(([name, t]) => catalogLine(name, t)) : [];
+  return [...base, ...extra].join('\n');
 }
 
 /** Two-stage catalog flag (Packet 10.3). Re-exported from the registry so the
@@ -49,9 +74,19 @@ export { AGENT_STAGED_CATALOG } from '@/lib/capabilities/registry';
  *  approval markers preserved. Roughly an order of magnitude smaller than
  *  toolCatalogForPrompt(), which it does NOT replace: the full form stays the
  *  default and this is used only when AGENT_STAGED_CATALOG=1. The model expands
- *  a domain on demand with the describeTools capability. */
-export function toolCatalogStaged(): string {
-  return stagedCatalogText();
+ *  a domain on demand with the describeTools capability.
+ *
+ *  `extraTools` (Packet 4) appends one more "external" domain line, names
+ *  only, same approval-marker convention as every other domain — so a
+ *  connected MCP client's tools are visible even in staged mode. Omit it and
+ *  this is identical to the pre-Packet-4 behaviour. */
+export function toolCatalogStaged(extraTools?: Record<string, AgentTool>): string {
+  const base = stagedCatalogText();
+  if (!extraTools || !Object.keys(extraTools).length) return base;
+  const names = Object.entries(extraTools)
+    .map(([name, t]) => `${name}${t.sensitive ? ' [needs approval]' : ''}`)
+    .join(', ');
+  return `${base}\nexternal (${Object.keys(extraTools).length}): ${names}`;
 }
 
 /** Tool specs for MCP tools/list. */
@@ -62,9 +97,21 @@ export function toolSpecs() {
 export interface ToolRunResult { ok: boolean; result?: any; error?: string }
 
 /** Validate + execute a tool by name. Never throws — errors are returned so
- *  both the loop and the MCP layer can feed them back to the model. */
-export async function runTool(name: string, accountId: string, rawArgs: unknown): Promise<ToolRunResult> {
-  const tool = TOOLS[name];
+ *  both the loop and the MCP layer can feed them back to the model.
+ *
+ *  `extraTools`/`extraCaps` (Packet 4) let a caller fold in a per-account,
+ *  per-turn set — today only the external-MCP bridge — that isn't in the
+ *  static registry. They are consulted ONLY when `name` isn't a first-party
+ *  tool, so every existing call site (both agent routes without a Packet-4
+ *  change, the MCP server) behaves exactly as before this packet. */
+export async function runTool(
+  name: string,
+  accountId: string,
+  rawArgs: unknown,
+  extraTools?: Record<string, AgentTool>,
+  extraCaps?: Record<string, Capability>,
+): Promise<ToolRunResult> {
+  const tool = TOOLS[name] ?? extraTools?.[name];
   if (!tool) return { ok: false, error: `Unknown tool: ${name}` };
   const parsed = tool.zod.safeParse(rawArgs ?? {});
   if (!parsed.success) return { ok: false, error: `Invalid arguments: ${parsed.error.message}` };
@@ -83,7 +130,7 @@ export async function runTool(name: string, accountId: string, rawArgs: unknown)
   // fail-closed decision and produced a user-facing reason; this only converts
   // its throw into runTool's never-throws {ok,error} contract, preserving the
   // message so it reaches the model and the user intact.
-  const cap = CAPABILITY_BY_NAME[name];
+  const cap = CAPABILITY_BY_NAME[name] ?? extraCaps?.[name];
   if (cap && (cap.gate === 'spend' || cap.spendsMoney?.(parsed.data) === true)) {
     try {
       await assertWithinBudget(accountId, cap.title);
@@ -100,7 +147,9 @@ export async function runTool(name: string, accountId: string, rawArgs: unknown)
 }
 
 /** Reach the full Capability (metrics, summarize, gate) behind a tool name.
- *  CAPABILITY_BY_NAME is a Record, not a Map — index it. */
-export function capabilityFor(name: string): Capability | undefined {
-  return CAPABILITY_BY_NAME[name];
+ *  CAPABILITY_BY_NAME is a Record, not a Map — index it. `extraCaps` (Packet 4)
+ *  is consulted only when `name` isn't a first-party capability, so every call
+ *  site that doesn't pass it behaves exactly as before this packet. */
+export function capabilityFor(name: string, extraCaps?: Record<string, Capability>): Capability | undefined {
+  return CAPABILITY_BY_NAME[name] ?? extraCaps?.[name];
 }

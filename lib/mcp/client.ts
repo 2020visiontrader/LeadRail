@@ -12,6 +12,10 @@
 // request indefinitely, no matter how the remote server behaves.
 
 const HANDSHAKE_TIMEOUT_MS = 8_000;
+// Packet 4: a tool call can legitimately take longer than a handshake (the
+// remote server is doing real work), so it gets its own, longer hard timeout.
+// Still bounded — this must never be able to hang a turn indefinitely.
+const CALL_TIMEOUT_MS = 20_000;
 
 export interface McpToolSummary {
   name: string;
@@ -118,4 +122,33 @@ export async function connect(url: string, authHeader?: string | null): Promise<
     .map((t: any) => ({ name: t.name, description: typeof t.description === 'string' ? t.description : undefined }));
 
   return { ok: true, tools };
+}
+
+export interface McpCallResult {
+  ok: boolean;
+  result?: any;
+  error?: string;
+}
+
+/**
+ * Call one tool on an external MCP server (Packet 4 — the bridge that lets the
+ * agent actually USE a connected server's tools, not just discover them).
+ *
+ * Same shape as `connect()`: pure transport, hard-timeout bounded, never
+ * throws — a dead or slow remote server degrades to { ok:false, error } so the
+ * caller (lib/capabilities/external-mcp.ts) can turn it into a normal
+ * ERROR observation instead of failing the whole agent turn.
+ */
+export async function callTool(
+  url: string,
+  authHeader: string | null | undefined,
+  name: string,
+  args: Record<string, any>,
+): Promise<McpCallResult> {
+  if (!url || !/^https?:\/\//i.test(url)) {
+    return { ok: false, error: 'A valid http(s) URL is required' };
+  }
+  const res = await rpcCall(url, authHeader, 'tools/call', { name, arguments: args ?? {} }, CALL_TIMEOUT_MS);
+  if (!res.ok) return { ok: false, error: res.error };
+  return { ok: true, result: res.result };
 }

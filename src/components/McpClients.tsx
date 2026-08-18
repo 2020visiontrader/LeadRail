@@ -12,8 +12,14 @@ import { apiGet, apiSend } from '@/lib/api';
 // Settings -> MCP servers. Registry of EXTERNAL MCP servers this account has
 // connected (migration 026_mcp_clients.sql) — the inverse of LeadRail's own
 // MCP server (app/api/mcp/route.ts). Test performs an initialize + tools/list
-// handshake (lib/mcp/client.ts) and stores the discovered tool list. Registry
-// only: tools discovered here are not yet wired into the agent loop.
+// handshake (lib/mcp/client.ts) and stores the discovered tool list.
+//
+// Packet 4: an enabled server's discovered tools ARE now bridged into the
+// agent's catalog (lib/capabilities/external-mcp.ts) — they show up as
+// approval-required tools the assistant can call, not just a registry. There
+// is no UI yet for the per-client `allow_auto` opt-in (migration 044) that
+// would let an operator mark a specific server's tools as safe to auto-run;
+// today that flag can only be set via a direct PATCH to /api/mcp-clients/:id.
 
 interface McpClient {
   id: string;
