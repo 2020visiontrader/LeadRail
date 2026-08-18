@@ -27,6 +27,7 @@ import type { ChatMessage } from './opencode';
 import * as opencode from './opencode';
 import { zoAskConfigured, zoAskText, zoAskChat } from './zoask';
 import { nimConfigured, nimText, nimChat, nimStreamChat } from './nim';
+import { log } from '@/lib/logger';
 import { registryConfigured, resolveChain, resolveChainForTask, callModel, callModelStream, type ResolvedModel } from './providers';
 
 export type { ChatMessage };
@@ -109,6 +110,11 @@ export async function generateText(opts: {
     try {
       return await zoAskText({ system: opts.system, prompt: opts.prompt, maxOutputTokens: opts.maxOutputTokens });
     } catch (err: any) {
+      // Attribute the failure to its TIER before the next one overwrites
+      // lastErr. Without this the ladder reports only the final tier's
+      // error — a NIM 403 with no hint that Ask Zo and OpenCode were
+      // tried first and why they declined.
+      log.warn('ai router: tier failed', { tier: 'zoask', error: String(err?.message || err) });
       lastErr = err;
     }
   }
@@ -116,6 +122,11 @@ export async function generateText(opts: {
     try {
       return await opencode.generateText(opts);
     } catch (err: any) {
+      // Attribute the failure to its TIER before the next one overwrites
+      // lastErr. Without this the ladder reports only the final tier's
+      // error — a NIM 403 with no hint that Ask Zo and OpenCode were
+      // tried first and why they declined.
+      log.warn('ai router: tier failed', { tier: 'opencode', error: String(err?.message || err) });
       lastErr = err;
     }
   }
@@ -123,6 +134,11 @@ export async function generateText(opts: {
     try {
       return await nimText(opts);
     } catch (err: any) {
+      // Attribute the failure to its TIER before the next one overwrites
+      // lastErr. Without this the ladder reports only the final tier's
+      // error — a NIM 403 with no hint that Ask Zo and OpenCode were
+      // tried first and why they declined.
+      log.warn('ai router: tier failed', { tier: 'nim', error: String(err?.message || err) });
       lastErr = err;
     }
   }
@@ -163,6 +179,11 @@ export async function generateChat(opts: {
     try {
       return await zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel });
     } catch (err: any) {
+      // Attribute the failure to its TIER before the next one overwrites
+      // lastErr. Without this the ladder reports only the final tier's
+      // error — a NIM 403 with no hint that Ask Zo and OpenCode were
+      // tried first and why they declined.
+      log.warn('ai router: tier failed', { tier: 'zoask', error: String(err?.message || err) });
       lastErr = err;
     }
   }
@@ -170,6 +191,11 @@ export async function generateChat(opts: {
     try {
       return await opencode.generateChat(opts);
     } catch (err: any) {
+      // Attribute the failure to its TIER before the next one overwrites
+      // lastErr. Without this the ladder reports only the final tier's
+      // error — a NIM 403 with no hint that Ask Zo and OpenCode were
+      // tried first and why they declined.
+      log.warn('ai router: tier failed', { tier: 'opencode', error: String(err?.message || err) });
       lastErr = err;
     }
   }
@@ -177,6 +203,11 @@ export async function generateChat(opts: {
     try {
       return await nimChat(opts);
     } catch (err: any) {
+      // Attribute the failure to its TIER before the next one overwrites
+      // lastErr. Without this the ladder reports only the final tier's
+      // error — a NIM 403 with no hint that Ask Zo and OpenCode were
+      // tried first and why they declined.
+      log.warn('ai router: tier failed', { tier: 'nim', error: String(err?.message || err) });
       lastErr = err;
     }
   }
@@ -223,6 +254,11 @@ export async function streamChat(
       if (text) onDelta(text);
       return text;
     } catch (err: any) {
+      // Attribute the failure to its TIER before the next one overwrites
+      // lastErr. Without this the ladder reports only the final tier's
+      // error — a NIM 403 with no hint that Ask Zo and OpenCode were
+      // tried first and why they declined.
+      log.warn('ai router: tier failed', { tier: 'zoask', error: String(err?.message || err) });
       lastErr = err;
     }
   }
@@ -230,6 +266,11 @@ export async function streamChat(
     try {
       return await opencode.streamChat(opts, onDelta);
     } catch (err: any) {
+      // Attribute the failure to its TIER before the next one overwrites
+      // lastErr. Without this the ladder reports only the final tier's
+      // error — a NIM 403 with no hint that Ask Zo and OpenCode were
+      // tried first and why they declined.
+      log.warn('ai router: tier failed', { tier: 'opencode', error: String(err?.message || err) });
       lastErr = err;
     }
   }
@@ -237,6 +278,11 @@ export async function streamChat(
     try {
       return await nimStreamChat(opts, onDelta);
     } catch (err: any) {
+      // Attribute the failure to its TIER before the next one overwrites
+      // lastErr. Without this the ladder reports only the final tier's
+      // error — a NIM 403 with no hint that Ask Zo and OpenCode were
+      // tried first and why they declined.
+      log.warn('ai router: tier failed', { tier: 'nim', error: String(err?.message || err) });
       lastErr = err;
     }
   }
