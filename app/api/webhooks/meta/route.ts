@@ -6,6 +6,11 @@ import { log } from '@/lib/logger';
 import { errorResponse } from '@/lib/http';
 
 export const dynamic = 'force-dynamic';
+// Explicit: this route MUST run on Node. It reads the raw body and HMACs it with
+// node:crypto; on the edge runtime createHmac does not exist. The node:crypto
+// import already forces this in practice — pinning it stops a future default
+// change from silently breaking signature verification.
+export const runtime = 'nodejs';
 
 // Meta subscription verification handshake.
 async function GET__impl(request: NextRequest) {
@@ -41,11 +46,20 @@ async function POST__impl(request: NextRequest) {
       // from "our META_APP_SECRET no longer matches the app that is sending".
       // sigPresent + length are enough to tell those apart: absent header =
       // stray traffic; present-but-mismatched = a real delivery we are refusing.
+      // secretFingerprint is a ONE-WAY sha256 prefix of the configured app
+      // secret — never the secret, not reversible. It exists so the mismatch can
+      // be proved rather than guessed: run
+      //   printf %s "<App Secret from Meta > Settings > Basic>" | shasum -a 256
+      // and compare the first 8 characters. Same fingerprint = the key is right
+      // and the problem is elsewhere; different = the env var belongs to another
+      // app (or was rotated), which is the actual fix.
       log.warn('meta webhook: signature mismatch', {
         sigPresent: Boolean(sig),
         sigLength: sig.length,
         expectedLength: expected.length,
         bodyBytes: raw.length,
+        rawBodyHashed: true,
+        secretFingerprint: crypto.createHash('sha256').update(appSecret).digest('hex').slice(0, 8),
       });
       return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
     }
