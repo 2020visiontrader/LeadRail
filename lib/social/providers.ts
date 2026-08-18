@@ -1,7 +1,8 @@
 // Social platform registry — single source of truth for the client Connections UI
 // AND backend routing. Multi-account by design: a user may connect several
-// accounts per platform (e.g. 6 Instagram accounts). Platforms marked live:false
-// are scaffolded in the backend now; their OAuth + UI ship later (future reference).
+// accounts per platform (e.g. 6 Instagram accounts). A new platform is added
+// scaffolded (live:false) until its OAuth + PUBLISHERS entry (see
+// lib/capabilities/social.ts) actually ship — flip live:true only then.
 
 export type SocialKey = 'facebook' | 'instagram' | 'threads' | 'linkedin' | 'tiktok' | 'x';
 
@@ -19,9 +20,9 @@ export const SOCIAL_PROVIDERS: SocialProvider[] = [
   { key: 'facebook',  label: 'Facebook',    desc: 'Connect Facebook Pages to publish and manage posts',            brand: '#1877F2', live: true,  connectPath: '/api/social/meta/connect',      multi: true },
   { key: 'instagram', label: 'Instagram',   desc: 'Connect Instagram Business accounts — add as many as you manage', brand: '#E4405F', live: true,  connectPath: '/api/social/instagram/connect', multi: true },
   { key: 'threads',   label: 'Threads',     desc: 'Post and reply on Threads',                                     brand: '#111111', live: true,  connectPath: '/api/social/threads/connect', multi: true },
-  { key: 'linkedin',  label: 'LinkedIn',    desc: 'Publish to your profile or company pages',                      brand: '#0A66C2', live: false, multi: true },
-  { key: 'tiktok',    label: 'TikTok',      desc: 'Publish video content and read analytics',                      brand: '#111111', live: false, multi: true },
-  { key: 'x',         label: 'X (Twitter)', desc: 'Post and engage on X',                                          brand: '#111111', live: false, multi: true },
+  { key: 'linkedin',  label: 'LinkedIn',    desc: 'Publish to your profile or company pages',                      brand: '#0A66C2', live: true,  connectPath: '/api/social/linkedin/connect', multi: true },
+  { key: 'tiktok',    label: 'TikTok',      desc: 'Push video drafts to your TikTok inbox for review and posting', brand: '#111111', live: true,  connectPath: '/api/social/tiktok/connect',   multi: true },
+  { key: 'x',         label: 'X (Twitter)', desc: 'Post and engage on X (requires a paid X API tier)',             brand: '#111111', live: true,  connectPath: '/api/social/x/connect',        multi: true },
 ];
 
 export const LIVE_SOCIALS = SOCIAL_PROVIDERS.filter((p) => p.live);

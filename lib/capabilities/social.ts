@@ -38,6 +38,9 @@ import { getInsightsByLevel, updateStatus } from '@/lib/social/meta-ads';
 import { getIntegrations } from '@/lib/social/index';
 import { createPost as bufferCreatePost, listPosts as bufferListPosts } from '@/lib/social/buffer';
 import { requireSocialCredential } from '@/lib/social/credentials';
+import { publishLinkedinPost } from '@/lib/social/linkedin-oauth';
+import { publishTiktokDraft } from '@/lib/social/tiktok-oauth';
+import { publishXPost } from '@/lib/social/x-oauth';
 import { generateContentPost } from '@/lib/ai/generation';
 import { LIVE_SOCIALS, SOCIAL_KEYS, type SocialKey } from '@/lib/social/providers';
 import { obj, S, type Capability, rowsOf, plural, samples, tally, present, digestLine } from './types';
@@ -100,7 +103,32 @@ const PUBLISHERS: Partial<Record<SocialKey, Dispatch>> = {
     publishToFacebookPage(accountId, { message: a.message || '', link: a.link, imageUrl: a.imageUrl }, externalId),
   instagram: (accountId, a, externalId) =>
     publishToInstagramForAccount(accountId, { caption: a.message || '', imageUrl: a.imageUrl, videoUrl: a.videoUrl }, externalId),
-  // threads / linkedin / tiktok / x land here as their publishers are written.
+  linkedin: async (accountId, a, externalId) => {
+    const conn = await getConnection(accountId, 'linkedin', externalId);
+    const token = conn?.meta?.access_token;
+    const memberId = conn?.meta?.member_id;
+    if (!token || !memberId) throw new Error('No LinkedIn account connected — connect LinkedIn in Settings first');
+    return publishLinkedinPost(String(token), String(memberId), { text: a.message || '', link: a.link });
+  },
+  // Packet 7.1: TikTok's unaudited Content Posting API can only push a video
+  // to the creator's TikTok inbox as a draft — see lib/social/tiktok-oauth.ts.
+  // publishSocialPost's schema still requires a video for TikTok (below) so
+  // this never silently "posts" a text-only message.
+  tiktok: async (accountId, a, externalId) => {
+    const conn = await getConnection(accountId, 'tiktok', externalId);
+    const token = conn?.meta?.access_token;
+    if (!token) throw new Error('No TikTok account connected — connect TikTok in Settings first');
+    if (!a.videoUrl) throw new Error('TikTok posts require a video URL.');
+    return publishTiktokDraft(String(token), { videoUrl: a.videoUrl, title: a.message });
+  },
+  x: async (accountId, a, externalId) => {
+    const conn = await getConnection(accountId, 'x', externalId);
+    const token = conn?.meta?.access_token;
+    if (!token) throw new Error('No X account connected — connect X in Settings first');
+    if (!a.message) throw new Error('X posts require text.');
+    return publishXPost(String(token), a.message);
+  },
+  // threads lands here as its publisher is written.
 };
 
 const MESSENGERS: Partial<Record<SocialKey, Dispatch>> = {
