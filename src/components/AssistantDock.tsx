@@ -174,7 +174,9 @@ export default function AssistantDock() {
       </div>
 
       <div className="flex min-h-0 flex-1">
-        <div className="min-w-0 flex-1 overflow-y-auto">
+        {/* min-h-0, not overflow-y-auto: AgentConsole is h-full and scrolls its
+            own message list. A scroller here would nest two scrollbars. */}
+        <div className="min-w-0 min-h-0 flex-1">
           <AgentConsole
             key={`${brandId || 'none'}:${activeConversationId || 'new'}:${chatNonce}`}
             brandId={brandId}

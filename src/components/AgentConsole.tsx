@@ -375,7 +375,12 @@ export default function AgentConsole({ brandId, conversationId, onSteps }: { bra
   };
 
   return (
-    <div className="flex h-[calc(100vh-9rem)] flex-col rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] shadow-[var(--shadow-card)]">
+    // h-full, not a hardcoded calc(100vh-9rem). The fixed height did not account
+    // for the page heading or <main>'s padding, so the console overflowed the
+    // viewport and the PAGE scrolled — the workspace shifted while you typed.
+    // The parent now owns the height; the message list below is the only
+    // scroller, so the composer stays put.
+    <div className="flex h-full min-h-0 flex-col rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] shadow-[var(--shadow-card)]">
       <div className="flex-1 space-y-4 overflow-y-auto p-5">
         {turns.length === 0 && (
           <div className="mx-auto mt-10 max-w-md text-center text-sm text-[var(--text-muted)]">

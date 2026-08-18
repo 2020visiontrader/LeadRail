@@ -91,6 +91,13 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener(DOCK_EVENT, onDock);
   }, []);
   const isActive = (href: string) => (href === '/' ? pathname === '/' : pathname.startsWith(href));
+  // '/assistant' IS the assistant, full-page. Rendering the dock there too gave
+  // two live consoles on one screen — two composers, two step traces — and
+  // because `docked` hides <main>, the page's own console was the one that
+  // disappeared, leaving the dock's narrow panel as the whole workspace. On this
+  // route the dock is suppressed and the layout is never treated as docked.
+  const onAssistantPage = pathname === '/assistant';
+  const dockOpen = docked && !onAssistantPage;
   // '/welcome' (Packet 11.2) joins the existing bare routes: it is the public
   // landing page and brings its own <header>/<main>/<footer>, so wrapping it in
   // the authenticated nav rail would show a logged-out visitor a dashboard
@@ -113,11 +120,11 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
         <div className="px-3 pb-1">
           <button
             onClick={toggleDockMode}
-            aria-pressed={docked}
+            aria-pressed={dockOpen}
             className={`flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-[13px] transition ${
-              docked ? 'bg-[var(--ink)] font-semibold text-[var(--ink-fg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-raised)] hover:text-[var(--text-primary)]'
+              dockOpen ? 'bg-[var(--ink)] font-semibold text-[var(--ink-fg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-raised)] hover:text-[var(--text-primary)]'
             }`}
-            style={!docked ? { background: 'color-mix(in srgb, var(--ink) 12%, transparent)' } : undefined}
+            style={!dockOpen ? { background: 'color-mix(in srgb, var(--ink) 12%, transparent)' } : undefined}
           >
             <span aria-hidden className="text-[13px] leading-none">✦</span>
             <span className="truncate">Assistant</span>
@@ -149,8 +156,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <AccountFooter />
         </div>
       </aside>
-      <AssistantDock />
-      <div className={`min-w-0 flex-1 flex-col ${docked ? 'hidden' : 'flex'}`}>
+      {!onAssistantPage && <AssistantDock />}
+      <div className={`min-w-0 flex-1 flex-col ${dockOpen ? 'hidden' : 'flex'}`}>
         <header className="flex h-14 items-center gap-4 overflow-x-auto border-b border-[var(--border-default)] bg-[var(--bg-surface)] px-4 md:hidden">
           <Wordmark />
           {nav.map((n) => (
