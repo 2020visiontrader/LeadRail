@@ -113,7 +113,14 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
   const nav = isOwner ? [...NAV, ...OWNER_NAV] : NAV;
   return (
     <div className="flex min-h-screen bg-[var(--bg-canvas)] text-[var(--text-primary)]">
-      <aside className="hidden w-52 shrink-0 flex-col border-r border-[var(--border-default)] bg-[var(--bg-surface)] md:flex">
+      {/* h-screen + sticky, not auto height. As a flex sibling with no height
+          constraint the rail grew to fit its ~22 nav items (1107px) and, being
+          the tallest child, stretched the whole row — so EVERY page inherited
+          1107px of document height against a 722px viewport and picked up ~385px
+          of dead scroll it had no content for. The inner <nav> already scrolls
+          (console-rail-scroll), so pinning the rail to the viewport costs
+          nothing and lets each page own its own height. */}
+      <aside className="sticky top-0 hidden h-screen w-52 shrink-0 flex-col border-r border-[var(--border-default)] bg-[var(--bg-surface)] md:flex">
         <div className="flex h-16 shrink-0 items-center px-4">
           <Wordmark />
         </div>
