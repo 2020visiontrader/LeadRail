@@ -122,6 +122,12 @@ export interface RunAgentInput {
   /** Optional persisted-conversation id to associate with a durable approval
    *  row, when the caller already has one (e.g. a follow-up turn). */
   conversationId?: string;
+  /** Optional override of MAX_STEPS for THIS call only (Packet 6.2). Used
+   *  exclusively to give each delegate in a coordinator fan-out a smaller
+   *  step budget than a normal top-level turn — never set by ordinary
+   *  callers, so every existing caller keeps the unchanged MAX_STEPS cap.
+   *  Clamped to [1, MAX_STEPS]; never allows a LARGER budget than default. */
+  maxSteps?: number;
 }
 
 export function agentConfigured(): boolean {
@@ -331,9 +337,19 @@ function observationFor(tool: string, args: any, res: { ok: boolean; result?: an
 // default. Returns at most one "active" persona: an explicit personaId always
 // wins; otherwise a single @mention match is used directly; multiple mentions
 // resolve to the account's coordinator (if enabled) so the reply is framed by
-// one voice rather than several. This is the "lightweight synthesis" called
-// for in the spec — the coordinator's instructions are what get prepended,
-// not a separate multi-agent fan-out/merge pass (see TODO below).
+// one voice rather than several.
+//
+// Packet 6.2 added the REAL multi-agent fan-out (runCoordinatorFanout /
+// runCoordinatorFanoutStream, above runAgent/runAgentStream): runAgent and
+// runAgentStream check resolveCoordinatorFanout() BEFORE ever calling this
+// function, and take that path instead whenever it applies. The
+// matched.length > 1 branch below is what still runs when that primary path
+// declines — no coordinator configured, or a lookup error inside
+// resolveCoordinatorFanout — so it stays a lightweight framing-only fallback,
+// not the real thing: it does NOT run each persona independently, it only
+// tells the coordinator model which names were mentioned and asks it to
+// answer as if synthesizing them. That fallback intentionally does not
+// fabricate more than it already did — it is the pre-6.2 behavior, unchanged.
 async function resolvePersonaForTurn(
   accountId: string,
   personaId?: string,
@@ -404,8 +420,235 @@ function capTranscript(transcript: ChatMessage[]): ChatMessage[] {
   return messages;
 }
 
+// --- Coordinator fan-out (Packet 6.2) ---------------------------------------
+//
+// `personas.is_coordinator` (migration 024) has existed since Packet 5.x with
+// nothing reading it. This is that reader: when a turn @mentions 2+ enabled
+// personas AND the account has an enabled coordinator, the turn is no longer
+// framed by a single persona — it is answered by running each mentioned
+// persona as its OWN independent runAgent() call (a "delegate"), then having
+// the coordinator persona synthesize their actual outputs into one reply.
+//
+// Design constraints (binding, see COPILOT_REMEDIATION_PLAN.md Packet 6.2):
+//   1. Delegation must not multiply spend or approvals. Every delegate is a
+//      normal runAgent() call, so every tool it invokes still funnels through
+//      runTool() (lib/agent/tools.ts) — the SAME sensitive-tool approval gate
+//      (0.1) and the SAME monthly spend gate (1.4) apply, unmodified. If any
+//      delegate proposes a sensitive tool, the WHOLE fan-out stops right there
+//      and that one proposal is returned as the turn's result — no other
+//      delegate keeps running while a human decision is outstanding, so one
+//      coordinator turn can never produce more than one pending approval.
+//   2. Bounded fan-out. MAX_FANOUT_DELEGATES caps how many personas one turn
+//      may delegate to; MAX_FANOUT_TOTAL_STEPS is a hard ceiling on the SUM of
+//      every delegate's own step budget (each delegate gets its own slice via
+//      the `maxSteps` override added above — never more than MAX_STEPS, never
+//      more than what's left of the shared budget). An account cannot turn a
+//      single message into an unbounded number of model/tool round-trips by
+//      mentioning many personas.
+//   3. Synthesis must not fabricate. The coordinator's synthesis pass is given
+//      ONLY the delegates' actual returned messages and is explicitly told not
+//      to invent a result a delegate did not produce (mirrors the OBSERVATION
+//      discipline from Packet 10.1's digest hook). A delegate that errors is
+//      reported as a failure, never silently dropped or guessed at.
+//   4. No scope widening. Every delegate call passes the SAME accountId as the
+//      coordinator turn — there is no parameter by which a delegate could
+//      target a different account.
+
+/** One delegate's finished run — enough to attribute + synthesize honestly. */
+interface DelegateOutcome {
+  persona: PersonaRow;
+  status: AgentStatus;
+  message: string;
+  stepsUsed: number;
+}
+
+const MAX_FANOUT_DELEGATES = 3;
+const MAX_FANOUT_STEPS_PER_DELEGATE = 4;
+const MAX_FANOUT_TOTAL_STEPS = MAX_FANOUT_DELEGATES * MAX_FANOUT_STEPS_PER_DELEGATE; // hard ceiling, constraint (2) above
+
+/** Detect a fan-out turn: 2+ @mentioned enabled personas AND an enabled
+ *  coordinator configured for the account. Returns null (never throws) for
+ *  every other case, so the caller falls back to today's single-persona /
+ *  framing-only behavior in resolvePersonaForTurn unchanged. */
+async function resolveCoordinatorFanout(
+  accountId: string,
+  personaMentions?: string[],
+): Promise<{ coordinator: PersonaRow; delegates: PersonaRow[] } | null> {
+  if (!personaMentions || personaMentions.length < 2) return null;
+  try {
+    const matched = await resolveMentionedPersonas(accountId, personaMentions);
+    if (matched.length < 2) return null;
+    const coordinator = await getCoordinator(accountId);
+    if (!coordinator) return null;
+    return { coordinator, delegates: matched };
+  } catch {
+    return null;
+  }
+}
+
+/** Run each delegate persona as its own bounded runAgent() call, sequentially,
+ *  stopping immediately (constraint 1) if any delegate needs approval. Every
+ *  delegate shares the same accountId, message, and agentContext as the
+ *  coordinator turn — each reasons independently and does not see the others'
+ *  tool calls, only the same starting request. */
+async function runFanoutDelegates(
+  accountId: string,
+  personas: PersonaRow[],
+  input: RunAgentInput,
+): Promise<{ outcomes: DelegateOutcome[]; needsApproval?: AgentResult }> {
+  const delegates = personas.slice(0, MAX_FANOUT_DELEGATES); // constraint (2)
+  const outcomes: DelegateOutcome[] = [];
+  let stepsUsed = 0;
+
+  for (const persona of delegates) {
+    const remaining = MAX_FANOUT_TOTAL_STEPS - stepsUsed;
+    if (remaining <= 0) break; // shared step budget exhausted — stop, do not exceed it
+    const stepBudget = Math.min(MAX_FANOUT_STEPS_PER_DELEGATE, remaining);
+
+    const result = await runAgent({
+      accountId,                 // constraint (4) — never a different account
+      message: input.message,
+      agentContext: input.agentContext,
+      personaId: persona.id,
+      maxSteps: stepBudget,
+      requestedBy: input.requestedBy,
+      conversationId: input.conversationId,
+      // Deliberately no `transcript`/`carryover`/`approve` here: a delegate
+      // is a fresh, self-contained sub-turn, not a resume of the coordinator's
+      // own conversation.
+    });
+    stepsUsed += result.steps.length;
+
+    if (result.status === 'needs_approval') {
+      return { outcomes, needsApproval: result }; // constraint (1) — stop the whole fan-out
+    }
+    outcomes.push({
+      persona,
+      status: result.status,
+      message: result.message,
+      stepsUsed: result.steps.length,
+    });
+  }
+  return { outcomes };
+}
+
+/** Synthesize the coordinator's final reply strictly from what the delegates
+ *  actually returned (constraint 3). Falls back to a plain concatenation of
+ *  the delegate outputs on any synthesis failure — never drops a delegate's
+ *  result, never invents one. */
+async function synthesizeCoordinatorAnswer(
+  accountId: string,
+  coordinator: PersonaRow,
+  outcomes: DelegateOutcome[],
+  userMessage?: string,
+): Promise<string> {
+  if (!outcomes.length) {
+    return "None of the mentioned team members were able to respond, so I don't have anything grounded to report.";
+  }
+  const block = outcomes
+    .map((o) => `### ${o.persona.name}${o.status === 'error' ? ' — FAILED' : ''}\n${o.message}`)
+    .join('\n\n');
+  const system = [
+    buildCoordinatorSystemBlock(coordinator),
+    '',
+    'CRITICAL — grounding rule: base this synthesis ONLY on the delegate responses below. Never invent, assume, or add a result a delegate did not actually produce. If a delegate failed, say so honestly instead of guessing what they would have said. Reconcile overlaps and disagreements; do not just concatenate.',
+  ].join('\n');
+  try {
+    const raw = await generateChat({
+      system,
+      messages: [{
+        role: 'user',
+        content: `User's request: ${userMessage || '(none)'}\n\nDelegate responses:\n${block}\n\nWrite the single unified final answer for the user now. Plain language, no JSON, no markdown headers.`,
+      }],
+      temperature: 0.3,
+      maxOutputTokens: 800,
+      zoAskModel: AGENT_ZOASK_MODEL,
+      model: AGENT_OPENCODE_MODEL,
+      ...(coordinator.model_id ? { accountId, modelId: coordinator.model_id } : {}),
+    });
+    const trimmed = raw.trim();
+    return trimmed || block;
+  } catch {
+    return block; // never silently drop the delegates' actual outputs
+  }
+}
+
+/** The runAgent-side fan-out path: gather delegate outcomes, then synthesize
+ *  or bubble up a pending approval, and return exactly the AgentResult shape
+ *  runAgent already promises callers. */
+async function runCoordinatorFanout(
+  accountId: string,
+  fanout: { coordinator: PersonaRow; delegates: PersonaRow[] },
+  input: RunAgentInput,
+): Promise<AgentResult> {
+  const messages: ChatMessage[] = capTranscript(input.transcript || []);
+  const steps: AgentStep[] = [];
+  if (input.message) messages.push({ role: 'user', content: input.message });
+
+  const { outcomes, needsApproval } = await runFanoutDelegates(accountId, fanout.delegates, input);
+  for (const o of outcomes) {
+    steps.push({
+      thought: `${o.persona.name} ${o.status === 'error' ? 'ran into an error' : 'responded'}.`,
+      observation: truncate(o.message),
+    });
+  }
+  if (needsApproval) return needsApproval; // constraint (1) — a delegate's own pending approval IS the turn's result
+
+  const answer = await synthesizeCoordinatorAnswer(accountId, fanout.coordinator, outcomes, input.message);
+  messages.push({ role: 'assistant', content: answer });
+  const tokenEstimate = estimateTokens(messages);
+  return { status: 'done', message: answer, transcript: messages, steps, tokenEstimate, compaction: compactionLevel(tokenEstimate) };
+}
+
+/** The runAgentStream-side fan-out path: same delegate/synthesis logic as
+ *  runCoordinatorFanout, but emits live events instead of accumulating
+ *  `steps`, matching the emit-channel divergence already documented on the
+ *  LOOP-CONTROL INVARIANT above (delegates are not sub-streamed — a fan-out
+ *  turn does not get token-by-token deltas from each delegate's own internal
+ *  loop, only a "consulting X" thought and X's finished observation; the
+ *  synthesis itself is emitted as one final message, not streamed token by
+ *  token — a deliberate simplification, not a divergence in loop control). */
+async function runCoordinatorFanoutStream(
+  accountId: string,
+  fanout: { coordinator: PersonaRow; delegates: PersonaRow[] },
+  input: RunAgentInput,
+  emit: (e: AgentEvent) => void,
+): Promise<void> {
+  const messages: ChatMessage[] = capTranscript(input.transcript || []);
+  if (input.message) messages.push({ role: 'user', content: input.message });
+
+  const delegates = fanout.delegates.slice(0, MAX_FANOUT_DELEGATES);
+  for (const p of delegates) emit({ type: 'thought', text: `Consulting ${p.name}…` });
+
+  const { outcomes, needsApproval } = await runFanoutDelegates(accountId, fanout.delegates, input);
+  for (const o of outcomes) {
+    emit({ type: 'observation', text: truncate(o.message), ok: o.status !== 'error' });
+  }
+  if (needsApproval) {
+    emit({ type: 'needs_approval', proposal: needsApproval.proposal!, message: needsApproval.message, transcript: needsApproval.transcript });
+    return;
+  }
+
+  emit({ type: 'thought', text: 'Synthesizing a unified answer…' });
+  const answer = await synthesizeCoordinatorAnswer(accountId, fanout.coordinator, outcomes, input.message);
+  messages.push({ role: 'assistant', content: answer });
+  const tokenEstimate = estimateTokens(messages);
+  emit({ type: 'final', message: answer, transcript: messages, tokenEstimate });
+  const level = compactionLevel(tokenEstimate);
+  if (level) emit({ type: 'compaction_suggested', level, tokenEstimate });
+}
+
 export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
   const { accountId, brandContext } = input;
+  // Packet 6.2: only ever enter fan-out on a fresh turn — never mid-resume
+  // (input.approve set) and never when the caller already pinned a single
+  // explicit personaId. A resumed approval always finishes as one ordinary
+  // step in the normal single-persona loop below, never a fresh fan-out —
+  // that is what keeps "approve one action" from ever re-triggering N more.
+  if (!input.approve && !input.personaId) {
+    const fanout = await resolveCoordinatorFanout(accountId, input.personaMentions);
+    if (fanout) return runCoordinatorFanout(accountId, fanout, input);
+  }
   const { systemBlock: personaBlock, modelId: personaModelId } = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
   const enabledSkills = await loadEnabledSkillsForAgent(accountId);
   const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills));
@@ -439,7 +682,10 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
   const seen = new Set<string>();   // executed (tool+args) signatures — guards against re-calling the same read.
   let dupNudges = 0;
   const toolCalls: Record<string, number> = {};
-  for (let i = 0; i < MAX_STEPS; i++) {
+  // Packet 6.2: clamp, never extend, the per-call step cap. Ordinary callers
+  // never set maxSteps, so stepCap === MAX_STEPS for every call today.
+  const stepCap = input.maxSteps && input.maxSteps > 0 ? Math.min(input.maxSteps, MAX_STEPS) : MAX_STEPS;
+  for (let i = 0; i < stepCap; i++) {
     let raw: string;
     try {
       raw = await generateChat({
@@ -580,6 +826,11 @@ export type AgentEvent =
 // "harmonize" the streaming/compose paths.
 export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent) => void): Promise<void> {
   const { accountId, brandContext } = input;
+  // Packet 6.2 — same fan-out gate as runAgent above; see the comment there.
+  if (!input.approve && !input.personaId) {
+    const fanout = await resolveCoordinatorFanout(accountId, input.personaMentions);
+    if (fanout) { await runCoordinatorFanoutStream(accountId, fanout, input, emit); return; }
+  }
   const { systemBlock: personaBlock, modelId: personaModelId } = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
   const enabledSkills = await loadEnabledSkillsForAgent(accountId);
   const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills));
@@ -608,7 +859,10 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
   const seen = new Set<string>();
   let dupNudges = 0;
   const toolCalls: Record<string, number> = {};
-  for (let i = 0; i < MAX_STEPS; i++) {
+  // Packet 6.2 — identical clamp to runAgent's, per the LOOP-CONTROL INVARIANT
+  // above: both variants must derive the same step cap from the same field.
+  const stepCap = input.maxSteps && input.maxSteps > 0 ? Math.min(input.maxSteps, MAX_STEPS) : MAX_STEPS;
+  for (let i = 0; i < stepCap; i++) {
     let raw: string;
     try {
       raw = await generateChat({
