@@ -8,8 +8,35 @@
 import { readSseDeltas } from './opencode';
 
 const KEY = process.env.NVIDIA_API_KEY || process.env.NIM_API_KEY || '';
+import { log } from '@/lib/logger';
+
 const BASE = 'https://integrate.api.nvidia.com/v1';
-const MODEL = process.env.NIM_MODEL || 'meta/llama-3.1-8b-instruct';
+// Ordered fallback chain, not a single pinned model. NIM_MODEL still wins when
+// set, so the operator keeps full control.
+//
+// WHY A CHAIN: build.nvidia.com rotates its free tier. A model that was free
+// last quarter can lose entitlement, and the request then fails 403 — which
+// reads exactly like a bad API key. That is precisely how this broke: NIM is the
+// LAST tier in the router ladder, so when it 403s the assistant has nothing left
+// and returns "temporarily unavailable" with no clue that a single retired model
+// id was the cause.
+//
+// Order is deliberate: a current long-context agentic model first, then two
+// widely-available fallbacks that have outlived several catalog rotations. The
+// chain only advances on a 403/404 (entitlement or model-not-found) — never on a
+// 401 (key is genuinely bad, trying another model cannot help) and never on 429
+// or 5xx (transient; retrying a different model just burns the rate limit).
+const MODEL_CHAIN = (process.env.NIM_MODEL
+  ? [process.env.NIM_MODEL]
+  : ['z-ai/glm-5.2', 'meta/llama-3.3-70b-instruct', 'meta/llama-3.1-8b-instruct']);
+const MODEL = MODEL_CHAIN[0];
+
+/** Status codes where trying the NEXT model in the chain is worth doing.
+ *  403 = no entitlement for THIS model, 404 = model id retired. Both are
+ *  per-model and survivable. 401 is the key itself and is not. */
+function shouldTryNextModel(status: number): boolean {
+  return status === 403 || status === 404;
+}
 
 // Hard timeout on the last-resort tier so a stalled NIM call aborts and the
 // caller gets a fast, honest failure instead of a request that hangs until the
@@ -25,7 +52,28 @@ interface OpenAIMessage {
   content: string;
 }
 
+/** Try each model in the chain until one answers, or the failure is one that a
+ *  different model cannot fix. Logs every skipped model so a retired id shows up
+ *  in /logs as a warning instead of silently degrading the last tier. */
 async function complete(messages: OpenAIMessage[], temperature: number, maxTokens: number): Promise<string> {
+  let lastErr: any = null;
+  for (let i = 0; i < MODEL_CHAIN.length; i++) {
+    const model = MODEL_CHAIN[i];
+    try {
+      return await completeWith(model, messages, temperature, maxTokens);
+    } catch (err: any) {
+      lastErr = err;
+      const status = Number(err?.status) || 0;
+      if (!shouldTryNextModel(status) || i === MODEL_CHAIN.length - 1) throw err;
+      log.warn('nim: model unavailable, falling back', {
+        model, status, next: MODEL_CHAIN[i + 1], detail: String(err?.detail || '').slice(0, 200),
+      });
+    }
+  }
+  throw lastErr;
+}
+
+async function completeWith(MODEL: string, messages: OpenAIMessage[], temperature: number, maxTokens: number): Promise<string> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   let res: Response;
@@ -48,8 +96,16 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
   }
   if (!res.ok) {
     const detail = (await res.text().catch(() => '')).slice(0, 300);
-    const err: any = new Error(`NIM failed (${res.status})`);
+    // Put the MODEL and NVIDIA's own reason in the message, not just the status.
+    // `err.detail` carried the reason already, but the error serializer keeps
+    // only name/message/stack — so a production 403 logged as a bare
+    // "NIM failed (403)" with the actual cause discarded. A 403 here is usually
+    // per-model entitlement rather than a bad key, so the model id is the single
+    // most useful thing to know: the same key can succeed on one model and 403
+    // on another that has left the free tier.
+    const err: any = new Error(`NIM failed (${res.status}) model=${MODEL}${detail ? ` — ${detail}` : ''}`);
     err.code = res.status === 401 || res.status === 403 ? 'auth' : 'upstream';
+    err.status = res.status;   // read by shouldTryNextModel() to decide on fallback
     err.detail = detail;
     throw err;
   }
@@ -67,6 +123,33 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
  *  in `complete()`). An empty stream throws the same `upstream` error shape so
  *  the router can fall through rather than hand back a blank answer. */
 async function completeStream(
+  messages: OpenAIMessage[],
+  temperature: number,
+  maxTokens: number,
+  onDelta: (chunk: string) => void,
+): Promise<string> {
+  // Same chain as complete(). Safe to fall back here because a 403/404 arrives
+  // on the response STATUS, before any delta has been emitted — so no partial
+  // answer has reached the client when we switch models.
+  let lastErr: any = null;
+  for (let i = 0; i < MODEL_CHAIN.length; i++) {
+    const model = MODEL_CHAIN[i];
+    try {
+      return await completeStreamWith(model, messages, temperature, maxTokens, onDelta);
+    } catch (err: any) {
+      lastErr = err;
+      const status = Number(err?.status) || 0;
+      if (!shouldTryNextModel(status) || i === MODEL_CHAIN.length - 1) throw err;
+      log.warn('nim: model unavailable (stream), falling back', {
+        model, status, next: MODEL_CHAIN[i + 1],
+      });
+    }
+  }
+  throw lastErr;
+}
+
+async function completeStreamWith(
+  MODEL: string,
   messages: OpenAIMessage[],
   temperature: number,
   maxTokens: number,
@@ -94,8 +177,16 @@ async function completeStream(
   }
   if (!res.ok) {
     const detail = (await res.text().catch(() => '')).slice(0, 300);
-    const err: any = new Error(`NIM failed (${res.status})`);
+    // Put the MODEL and NVIDIA's own reason in the message, not just the status.
+    // `err.detail` carried the reason already, but the error serializer keeps
+    // only name/message/stack — so a production 403 logged as a bare
+    // "NIM failed (403)" with the actual cause discarded. A 403 here is usually
+    // per-model entitlement rather than a bad key, so the model id is the single
+    // most useful thing to know: the same key can succeed on one model and 403
+    // on another that has left the free tier.
+    const err: any = new Error(`NIM failed (${res.status}) model=${MODEL}${detail ? ` — ${detail}` : ''}`);
     err.code = res.status === 401 || res.status === 403 ? 'auth' : 'upstream';
+    err.status = res.status;   // read by shouldTryNextModel() to decide on fallback
     err.detail = detail;
     throw err;
   }
