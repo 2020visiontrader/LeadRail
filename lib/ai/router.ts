@@ -9,7 +9,8 @@
 //      1. Ask Zo  (user's Claude subscription — Haiku when set as the Zo account
 //         default model; billed to the user's own Anthropic subscription)
 //      2. OpenCode Go (deepseek-v4-pro — fast + accurate; used when Ask Zo fails)
-//      3. NVIDIA NIM (last resort — free tier, weaker instruction-following)
+//      3. NVIDIA NIM (free tier, weaker instruction-following)
+//      4. OpenRouter (last resort — free models, deepseek-v4-flash as final fallback)
 //
 // This makes the registry ADDITIVE and backward-compatible: an account with
 // zero providers configured (i.e. every account today) skips step 0 entirely
@@ -17,23 +18,28 @@
 // because it runs on the user's Claude subscription: with the Zo default
 // model set to Haiku it is fast AND accurate on structured extraction. If the
 // subscription tier errors/times out we fall through to OpenCode Go, then to
-// NIM. To pin a specific model for this app regardless of the Zo account
-// default, set ZOASK_MODEL to a `byok:` id. Each tier is skipped when
-// unconfigured; on any error/timeout we catch and fall through. If every tier
-// fails (or none are configured), the last error is re-thrown.
+// NIM, then to OpenRouter. To pin a specific model for this app regardless of
+// the Zo account default, set ZOASK_MODEL to a `byok:` id. Each tier is
+// skipped when unconfigured; on any error/timeout we catch and fall through.
+// If every tier fails (or none are configured), the last error is re-thrown.
+// Four independent tiers exist specifically so a single provider's outage or
+// stale credential can never take the assistant down completely — verified
+// live on 2026-08-18 when Ask Zo (timeout), OpenCode (billing), and NIM
+// (stale key) all failed at once with no working fallback left.
 // Image generation stays on Gemini.
 
 import type { ChatMessage } from './opencode';
 import * as opencode from './opencode';
 import { zoAskConfigured, zoAskText, zoAskChat } from './zoask';
 import { nimConfigured, nimText, nimChat, nimStreamChat } from './nim';
+import { openrouterConfigured, openrouterText, openrouterChat, openrouterStreamChat } from './openrouter';
 import { log } from '@/lib/logger';
 import { registryConfigured, resolveChain, resolveChainForTask, callModel, callModelStream, type ResolvedModel } from './providers';
 
 export type { ChatMessage };
 
 export function textConfigured(): boolean {
-  return zoAskConfigured() || opencode.opencodeConfigured() || nimConfigured();
+  return zoAskConfigured() || opencode.opencodeConfigured() || nimConfigured() || openrouterConfigured();
 }
 
 // Best-effort usage logging; imported lazily inside the try so a circular
@@ -142,6 +148,14 @@ export async function generateText(opts: {
       lastErr = err;
     }
   }
+  if (openrouterConfigured()) {
+    try {
+      return await openrouterText(opts);
+    } catch (err: any) {
+      log.warn('ai router: tier failed', { tier: 'openrouter', error: String(err?.message || err) });
+      lastErr = err;
+    }
+  }
   throw lastErr || new Error('No AI tier configured');
 }
 
@@ -208,6 +222,14 @@ export async function generateChat(opts: {
       // error — a NIM 403 with no hint that Ask Zo and OpenCode were
       // tried first and why they declined.
       log.warn('ai router: tier failed', { tier: 'nim', error: String(err?.message || err) });
+      lastErr = err;
+    }
+  }
+  if (openrouterConfigured()) {
+    try {
+      return await openrouterChat(opts);
+    } catch (err: any) {
+      log.warn('ai router: tier failed', { tier: 'openrouter', error: String(err?.message || err) });
       lastErr = err;
     }
   }
@@ -283,6 +305,15 @@ export async function streamChat(
       // error — a NIM 403 with no hint that Ask Zo and OpenCode were
       // tried first and why they declined.
       log.warn('ai router: tier failed', { tier: 'nim', error: String(err?.message || err) });
+      lastErr = err;
+    }
+  }
+  if (openrouterConfigured()) {
+    try {
+      // OpenRouter's free-tier models stream just like NIM/OpenCode.
+      return await openrouterStreamChat(opts, onDelta);
+    } catch (err: any) {
+      log.warn('ai router: tier failed', { tier: 'openrouter', error: String(err?.message || err) });
       lastErr = err;
     }
   }
