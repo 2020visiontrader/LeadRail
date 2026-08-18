@@ -56,23 +56,61 @@ async function POST__impl(request: NextRequest) {
       inspired_by: s.inspiredBy,
     })).filter((r) => r.slug && r.name && r.instructions);
 
-    // Batch: a single 3.5MB statement risks the request body limit and gives no
-    // partial progress. 50 keeps each round-trip well under a megabyte.
-    const BATCH = 50;
-    let upserted = 0;
-    const failures: { batch: number; error: string }[] = [];
-
-    for (let i = 0; i < rows.length; i += BATCH) {
-      const chunk = rows.slice(i, i + BATCH);
-      const { error: upsertErr } = await supabase
-        .from('skills')
-        .upsert(chunk, { onConflict: 'slug', ignoreDuplicates: false });
-      if (upsertErr) {
-        failures.push({ batch: i / BATCH, error: upsertErr.message });
-      } else {
-        upserted += chunk.length;
-      }
+    // NO upsert/onConflict here. The catalog's uniqueness is enforced by a
+    // PARTIAL index — idx_skills_global_slug ON skills(slug) WHERE account_id
+    // IS NULL (migration 025) — and ON CONFLICT cannot target a partial index
+    // without restating its predicate, which PostgREST's `onConflict` has no way
+    // to express. Attempting it fails every batch with "no unique or exclusion
+    // constraint matching the ON CONFLICT specification".
+    //
+    // Delete-then-insert is NOT an option either: account_skills references
+    // skills(id) ON DELETE CASCADE, so dropping catalog rows would silently
+    // delete every account's enabled-skill selections.
+    //
+    // So: read the global slugs that already exist, then INSERT the new ones and
+    // UPDATE the rest by slug. Both halves stay scoped to account_id IS NULL, so
+    // an account's own custom skills are never touched even if they share a slug.
+    const { data: existingRows, error: readErr } = await supabase
+      .from('skills')
+      .select('slug')
+      .is('account_id', null);
+    if (readErr) {
+      return NextResponse.json({ error: `Could not read catalog: ${readErr.message}` }, { status: 500 });
     }
+    const existing = new Set((existingRows || []).map((r: any) => r.slug as string));
+
+    const toInsert = rows.filter((r) => !existing.has(r.slug));
+    const toUpdate = rows.filter((r) => existing.has(r.slug));
+
+    const BATCH = 50;
+    let inserted = 0;
+    let updated = 0;
+    const failures: { stage: string; batch: number; error: string }[] = [];
+
+    for (let i = 0; i < toInsert.length; i += BATCH) {
+      const chunk = toInsert.slice(i, i + BATCH);
+      const { error } = await supabase.from('skills').insert(chunk);
+      if (error) failures.push({ stage: 'insert', batch: i / BATCH, error: error.message });
+      else inserted += chunk.length;
+    }
+
+    // Updates go one row at a time: there is no bulk-update-by-key in PostgREST
+    // that does not route through the same ON CONFLICT problem. Only rows whose
+    // content actually changed matter, and on a steady-state re-run this loop is
+    // the whole cost — acceptable for an owner-triggered, occasional sync.
+    for (const r of toUpdate) {
+      const { error } = await supabase
+        .from('skills')
+        .update({
+          name: r.name, category: r.category, description: r.description,
+          instructions: r.instructions, source: r.source, inspired_by: r.inspired_by,
+        })
+        .eq('slug', r.slug)
+        .is('account_id', null);
+      if (error) failures.push({ stage: 'update', batch: -1, error: error.message });
+      else updated += 1;
+    }
+    const upserted = inserted + updated;
 
     const { count } = await supabase
       .from('skills')
@@ -82,6 +120,8 @@ async function POST__impl(request: NextRequest) {
     return NextResponse.json({
       ok: failures.length === 0,
       candidates: rows.length,
+      inserted,
+      updated,
       upserted,
       globalCatalogSize: count ?? null,
       failures,
