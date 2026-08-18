@@ -9,14 +9,34 @@ const DIALOG = 'https://www.facebook.com/v18.0/dialog/oauth';
 // FB Page posting + Instagram publishing. Dev-mode apps grant these to the app
 // admin/testers without review. Trim the instagram_* pair if the consent screen
 // errors before the Instagram product is configured.
+// Each scope below is here because a shipped capability calls an edge that
+// REQUIRES it. Adding a scope you do not call is a review liability; calling an
+// edge whose scope you did not request is a runtime failure the user sees as
+// "the integration is broken". Keep this list and lib/capabilities/social.ts in
+// step.
 const SCOPES = [
+  // Pages: list, read engagement, publish, manage settings.
   'pages_show_list',
   'pages_read_engagement',
   'pages_manage_posts',
   'pages_manage_metadata',
+  // Facebook Page DMs. `me/conversations` on a Page returns 400 without this —
+  // listSocialMessages(platform:'facebook') cannot work otherwise.
+  'pages_messaging',
+  // Instagram: profile/media reads, publishing, DMs.
   'instagram_basic',
   'instagram_content_publish',
   'instagram_manage_messages',
+  // Instagram comments. instagram_basic does NOT cover reading or writing
+  // comments — listSocialComments / replyToSocialComment / hideSocialComment /
+  // deleteSocialComment all fail on Instagram media without this.
+  'instagram_manage_comments',
+  // Ads. lib/social/meta-ads.ts calls me/adaccounts, /campaigns, /adsets, /ads
+  // and /insights (ads_read), and setAdStatus + launchCampaign + pauseCampaign
+  // write campaign status (ads_management). Neither was requested, so every ad
+  // capability in the registry was unreachable regardless of connection state.
+  'ads_read',
+  'ads_management',
 ].join(',');
 
 export function metaConfigured(): boolean {
