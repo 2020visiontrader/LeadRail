@@ -11,43 +11,42 @@
    Status = 3 signals: active(blue) / positive(green) / negative(red) + neutral.
    ========================================================================= */
 :root {
-  --bg-canvas: #F8FAFC;          /* cool slate-50 — the page */
-  --bg-surface: #FFFFFF;         /* cards, chrome */
-  --bg-raised: #F1F5F9;          /* nested tiles, hover rows */
+  --bg-canvas: #F4EFE4;          /* warm paper — the page */
+  --bg-surface: #FBF7EF;         /* cards, chrome — warm off-white */
+  --bg-raised: #EAE1D0;          /* nested tiles, hover rows */
 
-  --text-primary: #0F172A;       /* slate-900 ink */
-  --text-secondary: #475569;     /* slate-600 */
-  --text-muted: #94A3B8;         /* slate-400 */
+  --text-primary: #2B2418;       /* warm near-black ink */
+  --text-secondary: #5B5241;
+  --text-muted: #8C8170;
 
-  --border-default: #E2E8F0;     /* slate-200 */
-  --border-strong: #CBD5E1;      /* slate-300 */
+  --border-default: #E1D7C4;
+  --border-strong: #CDBFA6;
 
-  /* PRIMARY = indigo, per OSS_INTEGRATION_PLAN §2a (the adclaw/Legora visual
-     language). The slate neutral scale above was already Legora-shaped
-     (#0F172A ink on #F8FAFC canvas); the primary was the one token still on
-     generic blue, so this is the whole palette change — not a redesign.
-     DAY THEME ONLY. The .dark block below is deliberately untouched: dark keeps
-     its operator-teal identity. */
-  --ink: #615CED;                /* PRIMARY action = indigo */
-  --ink-hover: #4F46E5;
-  --ink-fg: #FFFFFF;             /* text on primary */
+  /* PRIMARY = espresso on warm paper. Supersedes the earlier cool-slate +
+     indigo scheme: the blue/teal palette read as generic product-UI chrome and
+     made the marketing site look like a dashboard. Both themes are now warm and
+     share one definition — see the .dark block below for the dark counterpart,
+     and the .marketing note at the end of this file. */
+  --ink: #3E3527;                /* PRIMARY action = espresso */
+  --ink-hover: #2B2418;
+  --ink-fg: #FBF7EF;             /* cream text on espresso */
 
-  --brand: #615CED;              /* brand indigo */
-  --brand-hover: #4F46E5;
-  --brand-soft: rgba(97, 92, 237, 0.10);
+  --brand: #9A6B34;              /* muted ochre — links, accents */
+  --brand-hover: #7E5628;
+  --brand-soft: rgba(154, 107, 52, 0.10);
 
   --accent: #DC2626;             /* red tint — destructive only, sparing */
   --accent-soft: rgba(220, 38, 38, 0.10);
 
-  --status-active: #2563EB;      /* new, outreaching */
-  --status-positive: #059669;    /* deal-green — replied, qualified, won */
+  --status-active: #9A6B34;      /* new, outreaching — ochre, not blue */
+  --status-positive: #4F7A45;    /* muted moss — replied, qualified, won */
   --status-negative: #DC2626;    /* not responded, unsubscribed, dead */
   --status-neutral: #94A3B8;
 
-  --scrim: rgba(15, 23, 42, 0.35);
-  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.05), 0 4px 16px rgba(15, 23, 42, 0.04);
-  --shadow-pop: 0 12px 32px rgba(15, 23, 42, 0.14);
-  --focus-ring: 0 0 0 3px rgba(37, 99, 235, 0.18);
+  --scrim: rgba(43, 36, 24, 0.35);
+  --shadow-card: 0 1px 2px rgba(43, 36, 24, 0.06), 0 4px 16px rgba(43, 36, 24, 0.05);
+  --shadow-pop: 0 12px 32px rgba(43, 36, 24, 0.16);
+  --focus-ring: 0 0 0 3px rgba(154, 107, 52, 0.22);
 
   --radius-sm: 6px; --radius-md: 10px; --radius-lg: 14px; --radius-full: 9999px;
 
@@ -56,43 +55,41 @@
 }
 
 .dark {
-  /* Dark operator console (DESIGN.md): near-black navy canvas, teal-leaning
-     blue as the working "ink"/brand color, disciplined surfaces stepped by
-     one perceptual level each. Values pulled toward DESIGN.md's
-     --bg-canvas/#0A0F1F, --bg-surface/#0F1A2E, --bg-raised/#16233D family
-     while keeping these token *names* (--bg-canvas etc.) so existing
-     consumers keep compiling unchanged. */
-  --bg-canvas: #0A0F1F;          /* near-black navy — the only full-page bg */
-  --bg-surface: #0F1A2E;         /* cards, chrome — one level above canvas */
-  --bg-raised: #16233D;          /* nested tiles, hover rows */
+  /* Dark console, warm: espresso-brown canvas with sand as the working
+     "ink"/brand colour, surfaces stepped one perceptual level each — the same
+     discipline as the previous navy/teal scheme, minus the blue. Token *names*
+     are unchanged, so every consumer keeps compiling untouched. */
+  --bg-canvas: #171310;          /* warm near-black — the only full-page bg */
+  --bg-surface: #201B16;         /* cards, chrome — one level above canvas */
+  --bg-raised: #2B241D;          /* nested tiles, hover rows */
 
-  --text-primary: #F5F7FA;       /* near-white, slightly warmer than pure white */
-  --text-secondary: #A0AEC0;     /* labels, meta, inactive nav */
-  --text-muted: #6B7B93;         /* timestamps, hints only */
+  --text-primary: #F2EBDF;       /* warm near-white */
+  --text-secondary: #B9AE9C;     /* labels, meta, inactive nav */
+  --text-muted: #8B8071;         /* timestamps, hints only */
 
-  --border-default: rgba(255, 255, 255, 0.08);
-  --border-strong: rgba(255, 255, 255, 0.14);
+  --border-default: rgba(242, 235, 223, 0.10);
+  --border-strong: rgba(242, 235, 223, 0.18);
 
-  --ink: #2DD4BF;                /* PRIMARY = operator teal, not generic blue */
-  --ink-hover: #5EEAD4;
-  --ink-fg: #06111F;             /* dark text on the bright teal primary */
+  --ink: #D9C29A;                /* PRIMARY = warm sand */
+  --ink-hover: #E8D5B2;
+  --ink-fg: #1B1611;             /* dark text on the sand primary */
 
-  --brand: #3B82F6;              /* links / secondary focus accent stays blue */
-  --brand-hover: #60A5FA;
-  --brand-soft: rgba(59, 130, 246, 0.16);
+  --brand: #C9A87C;              /* links / secondary focus — warm tan */
+  --brand-hover: #DCBF95;
+  --brand-soft: rgba(201, 168, 124, 0.16);
 
   --accent: #F0574B;             /* destructive-only red */
   --accent-soft: rgba(240, 87, 75, 0.16);
 
-  --status-active: #3B82F6;
-  --status-positive: #10B981;
+  --status-active: #C9A87C;
+  --status-positive: #7FA46F;
   --status-negative: #F0574B;
-  --status-neutral: #64748B;
+  --status-neutral: #8B8071;
 
-  --scrim: rgba(6, 10, 20, 0.72);
+  --scrim: rgba(15, 12, 9, 0.72);
   --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.35), 0 4px 12px rgba(0, 0, 0, 0.15);
   --shadow-pop: 0 8px 24px rgba(0, 0, 0, 0.35), 0 16px 48px rgba(0, 0, 0, 0.25);
-  --focus-ring: 0 0 0 3px rgba(45, 212, 191, 0.22);
+  --focus-ring: 0 0 0 3px rgba(217, 194, 154, 0.24);
 
   /* 4px spacing scale (operator console rhythm) */
   --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
@@ -152,67 +149,15 @@
 .console-rail-scroll::-webkit-scrollbar-track { background: transparent; }
 
 /* =========================================================================
-   MARKETING SURFACE — warm beige. Scoped to the public pages only.
+   MARKETING SURFACE — .marketing
    =========================================================================
-   The app console is a cool slate/navy tool; the marketing site should not
-   look like the tool. This block re-binds the SAME token names inside
-   `.marketing`, so every existing class on those pages (bg-[var(--bg-canvas)],
-   text-[var(--text-primary)], …) picks up the warm palette with no markup
-   change and, critically, no effect on the authenticated app.
+   This block used to re-bind the design tokens to a warm palette, because the
+   app console was cool slate/navy and the marketing site should not look like
+   the tool. The console has since adopted the SAME warm palette at :root, so
+   the override is gone: one palette, defined once, and the two surfaces cannot
+   drift apart.
 
-   Palette: warm paper neutrals, espresso ink, muted ochre accent. No blue,
-   no red — those read as "product UI status colors" and are what made the
-   landing page feel like a dashboard.
-
-   Both modes are defined. Editing a colour here changes ONLY /welcome/*.
+   The `marketing` class stays on WelcomeShell as the hook to re-introduce a
+   marketing-only override if the two identities ever need to diverge again.
+   Add token declarations here and they will apply to /welcome/* only.
    ========================================================================= */
-.marketing {
-  --bg-canvas: #F4EFE4;          /* warm paper — the page */
-  --bg-surface: #FBF7EF;         /* cards, chrome — lighter than canvas */
-  --bg-raised: #EAE1D0;          /* nested tiles, hover rows */
-
-  --text-primary: #2B2418;       /* warm near-black, not slate */
-  --text-secondary: #5B5241;
-  --text-muted: #8C8170;
-
-  --border-default: #E1D7C4;
-  --border-strong: #CDBFA6;
-
-  --ink: #3E3527;                /* PRIMARY action = espresso */
-  --ink-hover: #2B2418;
-  --ink-fg: #FBF7EF;             /* cream text on espresso */
-
-  --brand: #9A6B34;              /* muted ochre — links, eyebrow text */
-  --brand-hover: #7E5628;
-  --brand-soft: rgba(154, 107, 52, 0.10);
-}
-
-.dark .marketing {
-  /* Warm dark: espresso-brown canvas, sand ink. Deliberately NOT the console's
-     navy/teal — a visitor in dark mode should still land somewhere warm. */
-  --bg-canvas: #171310;
-  --bg-surface: #201B16;
-  --bg-raised: #2B241D;
-
-  --text-primary: #F2EBDF;
-  --text-secondary: #B9AE9C;
-  --text-muted: #8B8071;
-
-  --border-default: rgba(242, 235, 223, 0.10);
-  --border-strong: rgba(242, 235, 223, 0.18);
-
-  --ink: #D9C29A;                /* PRIMARY = warm sand */
-  --ink-hover: #E8D5B2;
-  --ink-fg: #1B1611;             /* dark text on sand */
-
-  --brand: #C9A87C;
-  --brand-hover: #DCBF95;
-  --brand-soft: rgba(201, 168, 124, 0.16);
-}
-
-/* The .marketing div is min-h-screen, but <body> sits behind it and still
-   carries the console's cool slate canvas — visible as a blue-grey flash when
-   you overscroll (macOS rubber-banding). Paint the body warm on marketing
-   pages too. :has() keeps this scoped without touching the app. */
-html:has(.marketing) body { background: #F4EFE4; }
-html.dark:has(.marketing) body { background: #171310; }
