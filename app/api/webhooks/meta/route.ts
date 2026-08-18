@@ -2,6 +2,7 @@ import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import crypto from 'node:crypto';
 import { handleMetaWebhook } from '@/lib/integrations/meta';
+import { log } from '@/lib/logger';
 import { errorResponse } from '@/lib/http';
 
 export const dynamic = 'force-dynamic';
@@ -33,6 +34,19 @@ async function POST__impl(request: NextRequest) {
     const a = Buffer.from(sig);
     const b = Buffer.from(expected);
     if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+      // Log WHY, without ever logging the secret or the expected digest. A
+      // rejected Meta webhook means real events — comments, DMs, mentions — are
+      // being dropped on the floor, and previously the only trace was a bare 401
+      // in the request log with nothing to distinguish "someone probed the URL"
+      // from "our META_APP_SECRET no longer matches the app that is sending".
+      // sigPresent + length are enough to tell those apart: absent header =
+      // stray traffic; present-but-mismatched = a real delivery we are refusing.
+      log.warn('meta webhook: signature mismatch', {
+        sigPresent: Boolean(sig),
+        sigLength: sig.length,
+        expectedLength: expected.length,
+        bodyBytes: raw.length,
+      });
       return NextResponse.json({ error: 'Invalid signature' }, { status: 401 });
     }
   }
