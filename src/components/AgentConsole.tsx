@@ -159,7 +159,20 @@ export default function AgentConsole({ brandId, conversationId, onSteps }: { bra
   // would re-inject the same carryover block into an already-seeded chat.
   const pendingFromRef = useRef<string | undefined>(undefined);
   const endRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [turns, busy]);
+  // Auto-scroll to the newest turn — but NOT on mount, and never by moving the
+  // PAGE. Two bugs lived in the old one-liner:
+  //   1. it ran on first render with zero turns, so opening /assistant landed the
+  //      viewport at the bottom of the document and you had to scroll up to see
+  //      the composer you were about to type into;
+  //   2. plain scrollIntoView() walks up to the nearest scrollable ancestor,
+  //      which here is the document, so it dragged the whole page (nav rail
+  //      included) instead of just the message list.
+  // `block: 'nearest'` scrolls the message list only, and the length guard means
+  // an empty chat never scrolls at all.
+  useEffect(() => {
+    if (turns.length === 0) return;
+    endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }, [turns, busy]);
 
   // Mount-time rehydration. The transcript is already on the server (0.2); this
   // just repaints it, so a refresh no longer looks like the chat is gone.
@@ -485,7 +498,10 @@ function StepRow({ step }: { step: Step }) {
           <span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--brand)]" />
         </span>
       )}
-      <span className={done ? '' : 'text-[var(--text-primary)]'}>{text}{!done && '…'}</span>
+      {/* Only append the trailing ellipsis when the label does not already end
+          in one — step_start texts ship with their own ("Thinking through your
+          request…"), which produced "request……". */}
+      <span className={done ? '' : 'text-[var(--text-primary)]'}>{text}{!done && !/[.…]$/.test(text) && '…'}</span>
     </div>
   );
 }

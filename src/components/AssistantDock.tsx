@@ -143,7 +143,11 @@ export default function AssistantDock() {
     return acc;
   }, {} as Record<string, number>);
   const domainTiles = Object.entries(metrics).filter(([, v]) => v > 0);
-  const showContext = width >= 820;
+  // The "This run" context panel is gone. It showed step/tool/approval counts and
+  // an activity list beside the chat, but AgentConsole already renders the same
+  // step trace inline, so it was a second copy of one truth competing for the
+  // width the conversation needs. The chat now fills the dock.
+  const showContext = false;
 
   return (
     <aside
