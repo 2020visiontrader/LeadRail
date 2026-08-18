@@ -1,4 +1,5 @@
 import type { ApolloQuery } from '@/lib/types';
+import { assertWithinBudget } from '@/lib/budgets/store';
 
 const APOLLO_BASE = 'https://api.apollo.io/api/v1';
 
@@ -88,8 +89,18 @@ function normalize(p: any): ApolloCandidate {
  * People Search against Apollo. Describe an ICP (industry, titles, seniority,
  * location, size, keywords) → normalized candidates. Throws a typed error the
  * route maps to a clean 4xx/5xx; never returns fabricated data.
+ *
+ * BUDGET GATE (Packet D1): this call costs Apollo credits, but it does not run
+ * through runTool() from every entrance — app/api/leads/apollo/search/route.ts
+ * calls it directly. So the same fail-closed gate packet 1.4 put in runTool()
+ * (lib/agent/tools.ts) is asserted here too, BEFORE the fetch — the one place
+ * every caller (capability, HTTP route, or future one) funnels through. Not a
+ * second gate: it's the same assertWithinBudget(), reused, at the actual
+ * external-call boundary. A capability-path caller may see this fire twice
+ * (once in runTool, once here); that's a redundant read, not a redundant rule.
  */
 export async function searchPeople(
+  accountId: string,
   query: ApolloQuery
 ): Promise<{ candidates: ApolloCandidate[]; total: number }> {
   const key = apolloKey();
@@ -98,6 +109,8 @@ export async function searchPeople(
     err.code = 'not_configured';
     throw err;
   }
+
+  await assertWithinBudget(accountId, 'this lead search');
 
   const perPage = Math.min(Math.max(query.limit ?? 25, 1), 100);
 
@@ -202,8 +215,13 @@ export interface ApolloEnrichment {
 /**
  * Enrich a single person via Apollo People Match. Match keys (any subset):
  * email, linkedin_url, name + company. Returns a deep profile or throws typed.
+ *
+ * BUDGET GATE (Packet D1): same rationale as searchPeople() above — this
+ * spends Apollo credits and is reachable outside runTool() (directly from
+ * app/api/leads/[id]/enrich/route.ts and lib/enrichment-jobs.ts), so the
+ * fail-closed assertWithinBudget() check is asserted here, before the fetch.
  */
-export async function matchPerson(keys: {
+export async function matchPerson(accountId: string, keys: {
   id?: string | null;
   email?: string | null;
   linkedin_url?: string | null;
@@ -216,6 +234,7 @@ export async function matchPerson(keys: {
     err.code = 'not_configured';
     throw err;
   }
+  await assertWithinBudget(accountId, 'this lead enrichment');
   // Prefer the Apollo person id (captured at import). Matching by the exact id and
   // asking Apollo to reveal is the ONLY reliable way to unlock a masked preview
   // contact — matching by the obfuscated name ("Andrew Ja***n") returns a still-
@@ -293,8 +312,15 @@ export interface ApolloOrg {
   raw: Record<string, any>;
 }
 
-/** Enrich a company by domain (preferred) or name via Apollo Organization Enrichment. */
-export async function enrichOrganization(keys: { domain?: string | null; name?: string | null }): Promise<ApolloOrg | null> {
+/** Enrich a company by domain (preferred) or name via Apollo Organization Enrichment.
+ *
+ *  Takes accountId for the SAME reason searchPeople and matchPerson do: this
+ *  endpoint consumes Apollo credits, and its only caller (runCompanyJob in
+ *  lib/enrichment-jobs.ts) runs unattended off a queue, so nothing else is
+ *  watching the spend. The budget assert fires BEFORE the fetch — money already
+ *  spent cannot be un-spent — and is fail-closed, matching packet 1.4.
+ */
+export async function enrichOrganization(accountId: string, keys: { domain?: string | null; name?: string | null }): Promise<ApolloOrg | null> {
   const key = apolloKey();
   if (!key) {
     const err: any = new Error('Apollo is not connected');
@@ -303,6 +329,10 @@ export async function enrichOrganization(keys: { domain?: string | null; name?: 
   }
   const domain = (keys.domain || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '').trim();
   if (!domain && !keys.name) return null;
+
+  // Gate after the cheap no-op returns above, so a job with nothing to look up
+  // does not consume budget headroom it never needed.
+  await assertWithinBudget(accountId, 'this company enrichment');
 
   const params = new URLSearchParams();
   if (domain) params.set('domain', domain);

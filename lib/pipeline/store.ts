@@ -12,8 +12,17 @@
 // records an error and stops the run gracefully instead of crashing.
 
 import { supabase } from '@/lib/db';
-import { runAgent } from '@/lib/agent/loop';
 import { loadAgentContext } from '@/lib/agent/context';
+
+// runAgent is imported lazily (inside the stage loop below, not here at
+// module top level) — same reasoning as logUsage's lazy `@/lib/credits`
+// import in lib/ai/router.ts. lib/capabilities/registry.ts -> lib/capabilities/
+// scheduled.ts -> lib/scheduled/store.ts -> lib/agent/loop.ts -> lib/agent/
+// tools.ts -> lib/capabilities/registry.ts is a cycle, and this file carries
+// the identical top-level-import hazard even though it isn't itself in that
+// cycle. A dynamic import deferred until the function that actually runs an
+// agent executes avoids the hazard without changing anything about how
+// runAgent's result is used.
 
 export type PipelineStageKey = 'scout' | 'planner' | 'creator' | 'reviewer' | 'publisher' | 'analyst';
 export type PipelineStatus = 'running' | 'completed' | 'failed';
@@ -229,6 +238,7 @@ export async function runPipeline(accountId: string, topic: string): Promise<Con
   // Grounding once for the whole run (Packet 3.1) — before, every stage ran
   // with no platform/venture/memory context at all.
   const { agentContext, brandName } = await groundingForRun(run);
+  const { runAgent } = await import('@/lib/agent/loop');
   let stages: PipelineStageResult[] = PIPELINE_STAGES.map((s) => ({ key: s.key, status: 'pending' }));
   let prior = '';
   let failed = false;

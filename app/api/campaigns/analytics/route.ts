@@ -1,12 +1,14 @@
 import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { getCampaignAnalytics } from '@/lib/crm';
-import { errorResponse, badRequest } from '@/lib/http';
+import { requireSession, errorResponse, badRequest } from '@/lib/http';
 export const dynamic = 'force-dynamic';
 async function GET__impl(request: NextRequest) {
+  const { session, error: sessionError } = await requireSession(request);
+  if (sessionError) return sessionError;
   const brandId = request.nextUrl.searchParams.get('brandId');
   if (!brandId) return badRequest('brandId is required');
-  try { return NextResponse.json(await getCampaignAnalytics(brandId)); }
+  try { return NextResponse.json(await getCampaignAnalytics(brandId, session.accountId)); }
   catch (error) { return errorResponse(error); }
 }
 

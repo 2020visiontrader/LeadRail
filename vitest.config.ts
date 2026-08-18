@@ -25,5 +25,6 @@ export default defineConfig({
     include: ['tests/**/*.test.ts'],
     exclude: ['node_modules/**', 'tests/e2e/**', '.next/**'],
     environment: 'node',
+    hookTimeout: 30000,
   },
 });

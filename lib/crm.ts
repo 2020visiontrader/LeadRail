@@ -455,8 +455,8 @@ export async function updateCampaignAsset(id: string, updates: Record<string, an
   return data;
 }
 // Roll up spend/budget across a brand's campaigns (real analytics land once Meta/Google connect).
-export async function getCampaignAnalytics(brandId: string) {
-  const { data, error } = await supabase.from('ad_campaigns').select('id,name,status,channel,budget,spend').eq('brand_id', brandId);
+export async function getCampaignAnalytics(brandId: string, accountId: string) {
+  const { data, error } = await supabase.from('ad_campaigns').select('id,name,status,channel,budget,spend').eq('brand_id', brandId).eq('account_id', accountId);
   if (error) throw error;
   const rows = data ?? [];
   const totalBudget = rows.reduce((s, r: any) => s + (Number(r.budget) || 0), 0);

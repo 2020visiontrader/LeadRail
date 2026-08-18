@@ -7,9 +7,18 @@
 // external scheduler) and, if wired, the existing hermes tick handler.
 
 import { supabase } from '@/lib/db';
-import { runAgent } from '@/lib/agent/loop';
 import { loadAgentContext } from '@/lib/agent/context';
 import { createNotification } from '@/lib/notifications/store';
+
+// runAgent is imported lazily (inside runDueScheduledTasks, not here at
+// module top level) — same reasoning as logUsage's lazy `@/lib/credits`
+// import in lib/ai/router.ts. lib/capabilities/registry.ts -> this module ->
+// lib/agent/loop.ts -> lib/agent/tools.ts -> lib/capabilities/registry.ts is
+// a cycle; a top-level import here makes it live the moment scheduled.ts is
+// registered, and under vitest's resetModules()+dynamic-import
+// (tests/parity.test.ts) that leaves CAPABILITIES undefined mid-import. A
+// dynamic import deferred until the function actually runs breaks the cycle
+// at load time without changing anything about how runAgent's result is used.
 
 export type ScheduledInterval = 'hourly' | 'daily' | 'weekly';
 
@@ -192,6 +201,8 @@ export async function runDueScheduledTasks(): Promise<{
   if (error) throw error;
 
   const results: { id: string; ok: boolean; status?: string; error?: string }[] = [];
+
+  const { runAgent } = await import('@/lib/agent/loop');
 
   for (const task of (due || []) as ScheduledTaskRow[]) {
     try {

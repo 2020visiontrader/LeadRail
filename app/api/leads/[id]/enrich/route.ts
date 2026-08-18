@@ -2,6 +2,7 @@ import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { getContact, updateContact, dbReady } from '@/lib/db';
 import { matchPerson, apolloConfigured } from '@/lib/integrations/apollo';
+import { BudgetBlockedError } from '@/lib/budgets/store';
 import { computeFitVerdict } from '@/lib/enrichment';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 
@@ -49,7 +50,7 @@ async function POST__impl(request: NextRequest, ctx: { params: { id: string } })
         ? contact.email.split('@')[0]
         : null;
     const apolloId = contact?.enriched?.apollo_id || lockedLocalPart || null;
-    const enr = await matchPerson({
+    const enr = await matchPerson(accountId, {
       id: apolloId,
       email: contact.email,
       linkedin_url: contact.linkedin_url,
@@ -79,6 +80,12 @@ async function POST__impl(request: NextRequest, ctx: { params: { id: string } })
     const updated = await updateContact(id, accountId, updates);
     return NextResponse.json({ contact: updated, fit });
   } catch (error: any) {
+    // Budget gate (Packet D1): refused before any Apollo call ran, so this is
+    // not an enrichment failure — leave enrichment_status untouched and return
+    // a clear, named reason instead of a generic 500.
+    if (error instanceof BudgetBlockedError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: 402 });
+    }
     await updateContact(id, accountId, { enrichment_status: 'failed' }).catch(() => {});
     if (error?.code === 'auth') return errorResponse(error, 401, 'Apollo rejected the API key');
     return errorResponse(error, 502, 'Apollo enrichment failed');

@@ -46,7 +46,10 @@ export async function enqueueCompanyEnrichment(accountId: string, companyId: str
 async function runPersonJob(job: any): Promise<void> {
   const { data: contact } = await supabase.from('contacts').select('*').eq('id', job.contact_id).single();
   if (!contact) throw new Error('contact gone');
-  const enr = await matchPerson({
+  // Budget gate (Packet D1): matchPerson() now asserts the account's spend
+  // budget before calling Apollo. job.account_id is stamped at enqueue time
+  // (enqueuePersonEnrichment above) — server-derived, never client-supplied.
+  const enr = await matchPerson(job.account_id, {
     email: contact.email,
     linkedin_url: contact.linkedin_url,
     name: contact.name,
@@ -69,7 +72,7 @@ async function runPersonJob(job: any): Promise<void> {
 async function runCompanyJob(job: any): Promise<void> {
   const { data: company } = await supabase.from('companies').select('*').eq('id', job.company_id).single();
   if (!company) throw new Error('company gone');
-  const org = await enrichOrganization({ domain: company.domain || company.website, name: company.name });
+  const org = await enrichOrganization(job.account_id, { domain: company.domain || company.website, name: company.name });
   if (!org) throw new Error('no org match');
   const updates: Record<string, any> = {
     industry: company.industry || org.industry || null,

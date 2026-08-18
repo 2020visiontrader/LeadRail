@@ -72,7 +72,7 @@ export const LEAD_CAPABILITIES: Capability[] = [
     gate: 'spend',
     inputSchema: obj({ titles: { type: 'array', items: { type: 'string' } }, seniority: { type: 'array', items: { type: 'string' } }, location: S.string, industry: S.string, keywords: S.string, companySize: S.string, limit: S.number }),
     zod: z.object({ titles: z.array(z.string()).optional(), seniority: z.array(z.string()).optional(), location: z.string().optional(), industry: z.string().optional(), keywords: z.string().optional(), companySize: z.string().optional(), limit: z.number().max(25).optional() }),
-    run: (_accountId, a) => searchPeople({ titles: a.titles, seniority: a.seniority, location: a.location, industry: a.industry, keywords: a.keywords, company_size: a.companySize, limit: a.limit ?? 10 }),
+    run: (accountId, a) => searchPeople(accountId, { titles: a.titles, seniority: a.seniority, location: a.location, industry: a.industry, keywords: a.keywords, company_size: a.companySize, limit: a.limit ?? 10 }),
   },
   {
     name: 'enrichLead',
@@ -88,7 +88,7 @@ export const LEAD_CAPABILITIES: Capability[] = [
         const c: any = await getLeadOwned(accountId, a.contactId);
         keys = { id: c.apollo_person_id || null, email: c.email || a.email, name: c.name || a.name, company: c.company || a.company, linkedin_url: c.linkedin_url || a.linkedinUrl };
       }
-      return matchPerson(keys);
+      return matchPerson(accountId, keys);
     },
   },
   {

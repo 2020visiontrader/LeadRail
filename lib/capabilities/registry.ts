@@ -16,16 +16,14 @@ import { COMPANY_CAPABILITIES } from './companies';
 import { ANALYTICS_CAPABILITIES } from './analytics';
 import { FORM_CAPABILITIES } from './forms';
 import { BUDGET_CAPABILITIES } from './budgets';
-// './scheduled' (SCHEDULED_CAPABILITIES) is INTENTIONALLY not imported here.
-// lib/scheduled/store.ts imports runAgent from lib/agent/loop.ts at module
-// top level; lib/agent/loop.ts imports lib/agent/tools.ts, which imports
-// THIS file. Registering it closes that cycle: CAPABILITIES comes back
-// undefined when the graph is re-evaluated (reproduced under vitest's
-// resetModules + dynamic import — tests/parity.test.ts). Fixing it means
-// breaking that cycle inside lib/scheduled/store.ts (e.g. a lazy import of
-// runAgent inside runDueScheduledTasks instead of a top-level one), which is
-// outside this packet's file list. capabilities/scheduled.ts is written and
-// complete; it is reported as blocked rather than wired in. See its header.
+// Packet D2: SCHEDULED_CAPABILITIES is now registered. lib/scheduled/store.ts
+// used to import runAgent from lib/agent/loop.ts at module top level, closing a
+// cycle back through lib/agent/tools.ts into THIS file — CAPABILITIES came back
+// undefined when the graph was re-evaluated (reproduced under vitest's
+// resetModules + dynamic import, see tests/parity.test.ts). That import is now
+// lazy, inside the function that actually runs an agent, so the cycle no longer
+// resolves at module-load time.
+import { SCHEDULED_CAPABILITIES } from './scheduled';
 import { TEMPLATE_CAPABILITIES } from './templates';
 import { SEARCH_CAPABILITIES } from './search';
 import { SUPPRESSION_CAPABILITIES } from './suppressions';
@@ -64,6 +62,7 @@ const ALL: Capability[] = [
   ...ANALYTICS_CAPABILITIES,
   ...FORM_CAPABILITIES,
   ...BUDGET_CAPABILITIES,
+  ...SCHEDULED_CAPABILITIES,
   ...TEMPLATE_CAPABILITIES,
   ...SEARCH_CAPABILITIES,
   ...SUPPRESSION_CAPABILITIES,
@@ -116,6 +115,12 @@ const CATALOG_ORDER: string[] = [
   'globalSearch',
   'addSuppression',
   'getThread', 'replyToThread', 'markRead',
+  // --- appended by Packet D1 (getCampaignAnalytics tenant-scope fix). ---
+  'getCampaignAnalytics',
+  // --- appended by Packet D2 (scheduled tasks, unblocked once the circular
+  // import was broken). Appended, never sorted: every name above keeps its
+  // exact order, because toolCatalogForPrompt() must stay byte-stable.
+  'listScheduledTasks', 'createScheduledTask', 'disableScheduledTask',
 ];
 
 const byName = new Map(ALL.map((c) => [c.name, c]));

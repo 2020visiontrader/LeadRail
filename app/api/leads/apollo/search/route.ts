@@ -1,6 +1,7 @@
 import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { searchPeople, apolloConfigured } from '@/lib/integrations/apollo';
+import { BudgetBlockedError } from '@/lib/budgets/store';
 import { logApolloSearch, dbReady, assertBrandOwned } from '@/lib/db';
 import { recordIcpRun } from '@/lib/icp';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
@@ -36,7 +37,7 @@ async function POST__impl(request: NextRequest) {
   }
 
   try {
-    const { candidates, total } = await searchPeople(query);
+    const { candidates, total } = await searchPeople(accountId, query);
     if (dbReady()) {
       logApolloSearch({ account_id: accountId, brand_id: brandId, query, result_count: candidates.length })
         .catch((e) => console.error('[apollo-log]', e?.message || e));
@@ -45,6 +46,10 @@ async function POST__impl(request: NextRequest) {
     }
     return NextResponse.json({ candidates, total, returned: candidates.length });
   } catch (error: any) {
+    // Budget gate (Packet D1): a clear, named refusal — not a generic 500.
+    if (error instanceof BudgetBlockedError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: 402 });
+    }
     if (error?.code === 'auth') return errorResponse(error, 401, 'Apollo rejected the API key');
     if (error?.code === 'not_configured') {
       return NextResponse.json({ error: 'Lead search is temporarily unavailable', code: 'not_configured' }, { status: 409 });

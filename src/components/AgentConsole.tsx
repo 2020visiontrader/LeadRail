@@ -123,6 +123,8 @@ const TOOL_VERB: Record<string, string> = {
   getThread: 'Opening that conversation',
   replyToThread: 'Preparing a reply',
   markRead: 'Marking that conversation',
+  // --- added by Packet D1 ---
+  getCampaignAnalytics: 'Rolling up campaign spend',
 };
 const verbFor = (tool: string, title: string) => TOOL_VERB[tool] || title || 'Working';
 
