@@ -49,6 +49,27 @@ export const MODEL_CHAIN = (process.env.HF_MODEL
       'moonshotai/Kimi-K2-Instruct',
       'deepseek-ai/DeepSeek-V3.2-Exp',
       'deepseek-ai/DeepSeek-V3.1',
+      // ── Verified 2026-08-19 against the provider's OWN live catalog, not a blog post.
+      // Every id below was present in GET https://router.huggingface.co/v1/models, live providers with tool support at the time of writing.
+      //
+      // An earlier attempt at this used ids from web search — llama-4-maverick:free,
+      // deepseek-r1-zero:free, mistral-small-3.1:free — and NOT ONE of them was in
+      // OpenRouter's actual free list. Articles about free models go stale within
+      // weeks. Fetch the catalog.
+      //
+      // Catalogued does NOT mean serving: nemotron-nano-12b-v2-vl is listed and was
+      // returning 500s and timeouts all the same. POST /api/admin/model-probe walks
+      // every entry and is what tells you which of these actually answer.
+      // Appended BELOW the proven entries so a new id never leads the chain.
+      'deepseek-ai/DeepSeek-V4-Pro-0813',
+      'deepseek-ai/DeepSeek-V4-Flash-0731',
+      'moonshotai/Kimi-K3',
+      'zai-org/GLM-5.2',
+      'deepseek-ai/DeepSeek-V4-Pro',
+      'deepseek-ai/DeepSeek-V4-Flash',
+      'thinkingmachines/Inkling-Small',
+      'thinkingmachines/Inkling',
+      'XiaomiMiMo/MiMo-V2.5-Pro',
     ]);
 
 // 20s: this is a fallback tier, and a slow tier that eventually answers is worse

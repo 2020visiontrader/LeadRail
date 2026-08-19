@@ -64,6 +64,27 @@ export const MODEL_CHAIN = (process.env.OPENROUTER_MODEL
       'dots-studio/dots-3-note-preview:free',
       'nvidia/nemotron-3-nano-30b-a3b:free',
       'deepseek/deepseek-v4-flash',
+      // ── Verified 2026-08-19 against the provider's OWN live catalog, not a blog post.
+      // Every id below was present in GET https://openrouter.ai/api/v1/models, filtered to :free (17 of 414) at the time of writing.
+      //
+      // An earlier attempt at this used ids from web search — llama-4-maverick:free,
+      // deepseek-r1-zero:free, mistral-small-3.1:free — and NOT ONE of them was in
+      // OpenRouter's actual free list. Articles about free models go stale within
+      // weeks. Fetch the catalog.
+      //
+      // Catalogued does NOT mean serving: nemotron-nano-12b-v2-vl is listed and was
+      // returning 500s and timeouts all the same. POST /api/admin/model-probe walks
+      // every entry and is what tells you which of these actually answer.
+      // Appended BELOW the proven entries so a new id never leads the chain.
+      'liquid/lfm-2.5-2.6b:free',
+      'poolside/laguna-s-2.1:free',
+      'poolside/laguna-xs-2.1:free',
+      'cohere/north-mini-code:free',
+      'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+      'google/gemma-4-31b-it:free',
+      'nvidia/nemotron-3-super-120b-a12b:free',
+      'nvidia/nemotron-nano-12b-v2-vl:free',
+      'nvidia/nemotron-nano-9b-v2:free',
     ]);
 const MODEL = MODEL_CHAIN[0];
 

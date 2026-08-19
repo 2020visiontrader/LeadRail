@@ -77,6 +77,27 @@ export const MODEL_CHAIN = (process.env.NIM_MODEL
       'meta/llama-3.3-70b-instruct',
       'z-ai/glm-5.2',
       'meta/llama-3.1-8b-instruct',
+      // ── Verified 2026-08-19 against the provider's OWN live catalog, not a blog post.
+      // Every id below was present in GET https://integrate.api.nvidia.com/v1/models (102 models) at the time of writing.
+      //
+      // An earlier attempt at this used ids from web search — llama-4-maverick:free,
+      // deepseek-r1-zero:free, mistral-small-3.1:free — and NOT ONE of them was in
+      // OpenRouter's actual free list. Articles about free models go stale within
+      // weeks. Fetch the catalog.
+      //
+      // Catalogued does NOT mean serving: nemotron-nano-12b-v2-vl is listed and was
+      // returning 500s and timeouts all the same. POST /api/admin/model-probe walks
+      // every entry and is what tells you which of these actually answer.
+      // Appended BELOW the proven entries so a new id never leads the chain.
+      'openai/gpt-oss-120b',
+      'google/gemma-4-31b-it',
+      'nvidia/llama-3.1-nemotron-ultra-253b-v1',
+      'nvidia/nemotron-nano-3-30b-a3b',
+      'nvidia/llama-3.3-nemotron-super-49b-v1',
+      'mistralai/mistral-large-2-instruct',
+      'nvidia/llama-3.1-nemotron-70b-instruct',
+      'google/gemma-3-12b-it',
+      'nv-mistralai/mistral-nemo-12b-instruct',
     ]);
 const MODEL = MODEL_CHAIN[0];
 
