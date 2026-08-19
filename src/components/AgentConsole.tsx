@@ -137,7 +137,13 @@ interface PersonaOption { id: string; name: string; avatar?: string | null }
 export default function AgentConsole({ brandId, conversationId, onSteps, onConversationId }: { brandId?: string; conversationId?: string; onSteps?: (steps: Step[], busy: boolean, pendingApproval: boolean) => void; onConversationId?: (id: string | undefined) => void }) {
   const [turns, setTurns] = useState<Array<any>>([]);
   const [input, setInput] = useState('');
-  const [busy, setBusy] = useState(false);
+  // Set of in-flight run ids. `busy` is derived from it rather than being its own
+  // flag: with concurrent prompts "is something running" is a count, not a
+  // boolean, and a single flag would be cleared by whichever run finished first
+  // while others were still streaming.
+  const [activeRuns, setActiveRuns] = useState<Set<string>>(new Set());
+  const busy = activeRuns.size > 0;
+  const endRun = (id: string) => setActiveRuns((prev) => { const n = new Set(prev); n.delete(id); return n; });
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [compaction, setCompaction] = useState<{ level: 'soft' | 'hard'; tokenEstimate: number } | null>(null);
   const [handingOver, setHandingOver] = useState(false);
@@ -220,20 +226,47 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [turns, busy, proposal]);
 
-  // Append/patch the trailing assistant turn as events stream in.
-  const patchAssistant = (fn: (t: any) => void) =>
+  // Patch ONE assistant turn by id.
+  //
+  // This used to patch whichever assistant turn was last in the list, which is
+  // correct only while exactly one run exists. With concurrent prompts two runs
+  // stream at the same time and both would write into the same trailing turn —
+  // the second task's steps would appear under the first task's answer and the
+  // texts would interleave. Addressing the turn by id is what makes concurrency
+  // safe; every event handler below now patches the turn its own run created.
+  const patchTurn = (id: string, fn: (t: any) => void) =>
+    setTurns((prev) => prev.map((t) => {
+      if (t.id !== id || t.role !== 'assistant') return t;
+      const copy = { ...t, steps: [...(t.steps || [])] };
+      fn(copy);
+      return copy;
+    }));
+
+  /** For call sites outside a run (approve/handoff errors), which have no turn
+   *  of their own: patch the newest assistant turn — the one on screen. */
+  const patchLatestAssistant = (fn: (t: any) => void) =>
     setTurns((prev) => {
+      const idx = [...prev].reverse().findIndex((t) => t.role === 'assistant');
+      if (idx === -1) return prev;
+      const real = prev.length - 1 - idx;
       const next = [...prev];
-      const last = next[next.length - 1];
-      if (last && last.role === 'assistant') fn(last);
+      next[real] = { ...next[real], steps: [...(next[real].steps || [])] };
+      fn(next[real]);
       return next;
     });
 
+  const turnSeq = useRef(0);
+
   async function run(payload: { message?: string; approve?: any }) {
-    setBusy(true);
+    // Id for THIS run's assistant turn. Every patch below is scoped to it, so a
+    // second prompt started mid-flight cannot overwrite this one's output.
+    const turnId = `turn-${Date.now()}-${turnSeq.current++}`;
+    const patchAssistant = (fn: (t: any) => void) => patchTurn(turnId, fn);
+
+    setActiveRuns((prev) => new Set(prev).add(turnId));
     setProposal(null);
-    if (payload.message) setTurns((p) => [...p, { role: 'user', text: payload.message }]);
-    setTurns((p) => [...p, { role: 'assistant', text: '', steps: [] }]);
+    if (payload.message) setTurns((p) => [...p, { id: `${turnId}-u`, role: 'user', text: payload.message }]);
+    setTurns((p) => [...p, { id: turnId, role: 'assistant', text: '', steps: [] }]);
 
     // Consumed here, cleared once the request is actually on the wire (below) —
     // so `from` reaches the server at most once. A connection failure leaves it
@@ -256,10 +289,10 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
       if (from) pendingFromRef.current = undefined;
     } catch {
       patchAssistant((t) => t.steps.push({ kind: 'error', text: 'Connection failed. Try again.' }));
-      setBusy(false); return;
+      endRun(turnId); return;
     }
     if (res.status === 401) { window.location.href = '/login'; return; }
-    if (!res.body) { patchAssistant((t) => t.steps.push({ kind: 'error', text: 'No response stream.' })); setBusy(false); return; }
+    if (!res.body) { patchAssistant((t) => t.steps.push({ kind: 'error', text: 'No response stream.' })); endRun(turnId); return; }
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -278,13 +311,16 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
         if (data === '[DONE]') continue;
         let e: any;
         try { e = JSON.parse(data); } catch { continue; }
-        handleEvent(e);
+        handleEvent(e, turnId);
       }
     }
-    setBusy(false);
+    endRun(turnId);
   }
 
-  function handleEvent(e: any) {
+  // Takes the owning run's turnId: with concurrent runs there is no longer a
+  // single "current" turn to infer, so the caller passes the one it created.
+  function handleEvent(e: any, turnId: string) {
+    const patchAssistant = (fn: (t: any) => void) => patchTurn(turnId, fn);
     // Progressive preview of the answer being written. Handled BEFORE the
     // pending-step resolution below on purpose: the "Writing up the answer…"
     // thought must stay pending (spinning) until `final` arrives, so a delta
@@ -358,14 +394,34 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     });
   }
 
-  const send = () => { const m = input.trim(); if (!m || busy) return; setInput(''); run({ message: m }); };
+  // The composer NO LONGER blocks while a run is in flight — that is the whole
+  // point: start "find grants in this area", then type "analyse my script for the
+  // right festival" while the first is still thinking, and both stream side by
+  // side in one thread.
+  //
+  // ONE guard remains, and it is a real race rather than caution. Until the first
+  // turn completes there is no conversationId yet; two runs fired before it
+  // exists would each be treated as a NEW conversation by the server, silently
+  // splitting one thread into two. So the very first prompt is serialised, and
+  // everything after it is free. `canSend` drives the disabled state so the UI
+  // explains itself instead of appearing broken.
+  const awaitingFirstConversation = busy && !conversationIdRef.current;
+  const canSend = input.trim().length > 0 && !awaitingFirstConversation;
+  const send = () => {
+    const m = input.trim();
+    if (!m || awaitingFirstConversation) return;
+    setInput('');
+    run({ message: m });
+  };
   // approvalId is required by the server gate (Packet 0.1). If the proposal
   // arrived without one, persistence failed upstream — refuse locally rather
   // than firing a request the server will reject.
   const approve = () => {
     if (!proposal) return;
     if (!proposal.approvalId) {
-      patchAssistant((t) => t.steps.push({ kind: 'error', text: 'This action could not be recorded for approval, so it was not run.' }));
+      // Not inside a run, so there is no turnId — attach to the most recent
+      // assistant turn, which is the one showing the proposal.
+      patchLatestAssistant((t) => t.steps.push({ kind: 'error', text: 'This action could not be recorded for approval, so it was not run.' }));
       setProposal(null);
       return;
     }
@@ -385,7 +441,7 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
       // The memo could not be written; carrying `from` forward would seed the
       // new chat with nothing. Tell the user rather than silently degrading.
       setHandingOver(false);
-      patchAssistant((t) => t.steps.push({ kind: 'error', text: 'Could not prepare the handoff. Your chat is unchanged — try again.' }));
+      patchLatestAssistant((t) => t.steps.push({ kind: 'error', text: 'Could not prepare the handoff. Your chat is unchanged — try again.' }));
       return;
     }
     pendingFromRef.current = fromId;
@@ -503,7 +559,9 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
           className="flex-1 resize-none rounded-lg border border-[var(--border-default)] bg-[var(--bg-canvas)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--brand)] focus:outline-none"
         />
-        <Button loading={busy} onClick={send}>Send</Button>
+        <Button loading={false} disabled={!canSend} onClick={send}>
+          {activeRuns.size > 1 ? `Send (${activeRuns.size} running)` : activeRuns.size === 1 ? 'Send (1 running)' : 'Send'}
+        </Button>
       </div>
     </div>
   );
