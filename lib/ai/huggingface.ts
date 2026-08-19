@@ -17,12 +17,25 @@ const KEY = process.env.HUGGINGFACE_API_KEY || process.env.HF_TOKEN || '';
 
 // Ordered chain, same reasoning as NIM's: providers rotate what they serve, and
 // a model that 404s today should not take the whole tier down. HF_MODEL wins.
+//
+// Verified live against HuggingFace's Inference Providers router (2026-08-19):
+// smoke-tested each candidate with a real chat completion. Several plausible
+// ids 400'd as "does not exist" for this provider route (Mistral-Small-24B,
+// gemma-2-27b-it, Phi-4, Hermes-3, QwQ-32B, Llama-3.2-3B, zephyr-7b-beta,
+// Yi-1.5-34B) and were excluded rather than guessed back in. Spans DeepSeek,
+// Qwen, Meta, and Moonshot so one upstream provider rotation can't take the
+// whole tier down.
 const MODEL_CHAIN = (process.env.HF_MODEL
   ? [process.env.HF_MODEL]
   : [
-      'deepseek-ai/DeepSeek-V3.2-Exp',
       'Qwen/Qwen3-235B-A22B-Instruct-2507',
       'meta-llama/Llama-3.3-70B-Instruct',
+      'meta-llama/Llama-4-Scout-17B-16E-Instruct',
+      'meta-llama/Llama-3.1-8B-Instruct',
+      'Qwen/Qwen2.5-Coder-32B-Instruct',
+      'moonshotai/Kimi-K2-Instruct',
+      'deepseek-ai/DeepSeek-V3.2-Exp',
+      'deepseek-ai/DeepSeek-V3.1',
     ]);
 
 // 20s: this is a fallback tier, and a slow tier that eventually answers is worse

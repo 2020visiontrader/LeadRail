@@ -26,7 +26,7 @@
 // stale credential can never take the assistant down completely — verified
 // live on 2026-08-18 when Ask Zo (timeout), OpenCode (billing), and NIM
 // (stale key) all failed at once with no working fallback left.
-// Image generation stays on Gemini.
+// Image generation is a separate ladder — see ./image-router.
 
 import type { ChatMessage } from './opencode';
 import * as opencode from './opencode';

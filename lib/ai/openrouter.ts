@@ -1,6 +1,8 @@
 // OpenRouter client — OpenAI-compatible Chat Completions. Fourth tier of the
 // AI routing ladder (see ./router): reached only when Ask Zo, OpenCode Go, and
-// NVIDIA NIM all fail or are unconfigured. Text/chat only; images stay on Gemini.
+// NVIDIA NIM all fail or are unconfigured. Also exposes a single image-output
+// model (see openrouterGenerateImage below) used as a fallback tier by
+// ./image-router when Gemini and NIM are both down or unconfigured.
 
 // readSseDeltas is shared from opencode.ts, a dependency-free leaf module —
 // both are OpenAI-compatible Chat Completions transports.
@@ -22,16 +24,19 @@ const BASE = 'https://openrouter.ai/api/v1';
 // OpenRouter model here routes through a different upstream provider, so a
 // 429/error on one is NOT evidence the next will also fail — worth trying.
 //
-// Verified live against OpenRouter's current catalog (2026-08-18): pulled
-// GET /models, filtered to ":free", smoke-tested every candidate with a real
-// chat completion. Deliberately spans multiple upstream providers so a
-// single vendor incident (like the NIM stale-key outage this chain exists to
-// prevent) can't take out the whole tier:
+// Verified live against OpenRouter's current catalog (2026-08-19): pulled
+// GET /models (17 total ":free" models right now), smoke-tested every
+// candidate with a real chat completion. Deliberately spans multiple
+// upstream providers so a single vendor incident (like the NIM stale-key
+// outage this chain exists to prevent) can't take out the whole tier:
 //   nvidia/nemotron-3-ultra-550b-a55b:free  200 OK, 1M ctx  (Nvidia)
 //   openai/gpt-oss-20b:free                 200 OK          (OpenAI OSS weights)
-//   z-ai/glm-5.2:free                       200 OK          (Zhipu — 429'd earlier, fine now)
+//   z-ai/glm-5.2:free                       200 OK          (Zhipu)
 //   nvidia/nemotron-3.5-lightning:free      200 OK          (Nvidia, fast)
-//   google/gemma-4-31b-it:free              400 provider error — excluded
+//   google/gemma-4-26b-a4b-it:free          200 OK          (Google)
+//   dots-studio/dots-3-note-preview:free    200 OK          (dots.llm)
+//   nvidia/nemotron-3-nano-30b-a3b:free     200 OK          (Nvidia, smaller/fast)
+//   google/gemma-4-31b-it:free              429 rate-limited upstream — excluded
 // Order: strongest general-purpose free model first, then providers rotate,
 // then deepseek-v4-flash as a paid-but-fractional-cent last resort so the
 // tier still answers if every free model is down at once.
@@ -42,6 +47,9 @@ const MODEL_CHAIN = (process.env.OPENROUTER_MODEL
       'openai/gpt-oss-20b:free',
       'z-ai/glm-5.2:free',
       'nvidia/nemotron-3.5-lightning:free',
+      'google/gemma-4-26b-a4b-it:free',
+      'dots-studio/dots-3-note-preview:free',
+      'nvidia/nemotron-3-nano-30b-a3b:free',
       'deepseek/deepseek-v4-flash',
     ]);
 const MODEL = MODEL_CHAIN[0];
@@ -277,4 +285,71 @@ export async function openrouterChat(opts: {
     if (m.content?.trim()) messages.push({ role: m.role, content: m.content });
   }
   return complete(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? 2048);
+}
+
+// ---------------------------------------------------------------------------
+// Image generation — fallback tier for ./image-router, not the router ladder.
+// ---------------------------------------------------------------------------
+
+// OpenRouter serves a handful of image-output chat models: request them with
+// `modalities: ["image", "text"]` and the image comes back as a data URL on
+// `message.images`, not as a normal chat completion. Verified live
+// (2026-08-19): google/gemini-2.5-flash-image returned a real image at
+// ~$0.00003/output-token — cheap, not free, so this is a paid fallback tier
+// (same trade-off as deepseek-v4-flash in the text chain).
+const IMAGE_MODEL = process.env.OPENROUTER_IMAGE_MODEL || 'google/gemini-2.5-flash-image';
+const IMAGE_TIMEOUT_MS = Number(process.env.OPENROUTER_IMAGE_TIMEOUT_MS) || 40_000;
+
+export interface OpenRouterImage { mimeType: string; base64: string }
+
+/** Generate a static image via an OpenRouter image-output chat model. */
+export async function openrouterGenerateImage(opts: { prompt: string }): Promise<OpenRouterImage> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), IMAGE_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${KEY}`,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://app.leadrail.xyz',
+        'X-Title': 'LeadRail',
+      },
+      body: JSON.stringify({
+        model: IMAGE_MODEL,
+        messages: [{ role: 'user', content: opts.prompt }],
+        modalities: ['image', 'text'],
+      }),
+      signal: ctrl.signal,
+    });
+  } catch (e: any) {
+    const err: any = new Error(e?.name === 'AbortError' ? `OpenRouter image timed out after ${IMAGE_TIMEOUT_MS}ms` : 'OpenRouter image request failed');
+    err.code = 'upstream';
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!res.ok) {
+    const detail = (await res.text().catch(() => '')).slice(0, 300);
+    const err: any = new Error(`OpenRouter image failed (${res.status}) model=${IMAGE_MODEL}${detail ? ` — ${detail}` : ''}`);
+    err.code = res.status === 401 || res.status === 403 ? 'auth' : 'upstream';
+    err.status = res.status;
+    throw err;
+  }
+  const json = await res.json();
+  // OpenRouter returns images as data URLs: message.images[0].image_url.url
+  const dataUrl = json?.choices?.[0]?.message?.images?.[0]?.image_url?.url;
+  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) {
+    const err: any = new Error('OpenRouter returned no image');
+    err.code = 'upstream';
+    throw err;
+  }
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) {
+    const err: any = new Error('OpenRouter image data URL was malformed');
+    err.code = 'upstream';
+    throw err;
+  }
+  return { mimeType: match[1], base64: match[2] };
 }
