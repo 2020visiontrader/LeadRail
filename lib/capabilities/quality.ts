@@ -1,5 +1,8 @@
 import { z } from 'zod';
 import { violatesWhiteLabel } from '@/lib/ai/marketing';
+import { generateChat } from '@/lib/ai/router';
+import { loadVentureContext } from '@/lib/ai/venture-context';
+import { getVenture, getVentures } from '@/lib/db';
 import { obj, S, type Capability } from './types';
 
 // Content quality gate.
@@ -144,6 +147,70 @@ export const QUALITY_CAPABILITIES: Capability[] = [
         return warns ? `PASS with ${warns} warning${warns === 1 ? '' : 's'}.` : 'PASS — no issues found.';
       }
       return `FAIL — ${(result.failedRules || []).join(', ')}.`;
+    },
+  },
+  {
+    name: 'judgeVoice',
+    domain: 'quality',
+    title: 'Judge copy on voice and substance',
+    description:
+      'A subjective editorial review of drafted copy: does it sound like this brand, does it earn its claims, does it open well. Run this AFTER reviewContent passes — mechanical rules first, judgment only on what survives them. Returns severity-ranked issues quoting the offending line, plus a rewrite of the weakest sentence.',
+    gate: 'read',
+    inputSchema: obj({ text: S.string, brandId: S.string, kind: S.string }, ['text']),
+    zod: z.object({ text: z.string().min(1), brandId: z.string().optional(), kind: z.string().optional() }),
+    run: async (accountId, a) => {
+      const v: any = a.brandId ? await getVenture(a.brandId) : (await getVentures(accountId))[0];
+      if (v?.account_id && v.account_id !== accountId) return { error: 'Brand not found' };
+      const ctx = v ? await loadVentureContext(v.id, accountId) : undefined;
+
+      const voice = [
+        ctx?.name && `Brand: ${ctx.name}`,
+        ctx?.description && `What it does: ${ctx.description}`,
+        ctx?.pitch && `Pitch: ${ctx.pitch}`,
+        v?.tone && `Tone: ${v.tone}`,
+      ].filter(Boolean).join('\n');
+
+      const raw = await generateChat({
+        // The judge is told it is NOT the author. Without that framing a model
+        // asked to review copy tends to praise it — the same instinct that makes
+        // self-review worthless is what this separation exists to defeat.
+        system: [
+          'You are a line editor reviewing someone ELSE\'s draft. You did not write it and you gain nothing from it being good.',
+          'Quote the exact text you are objecting to. An objection without a quote is not actionable.',
+          'Rank by severity. If the copy is genuinely fine, say so in one line rather than inventing issues.',
+        ].join(' '),
+        messages: [{
+          role: 'user',
+          content: [
+            voice ? `BRAND VOICE:\n${voice}\n` : 'No stored brand voice — judge on general craft only, and say that.',
+            `FORMAT: ${a.kind || 'unspecified'}`,
+            '',
+            'DRAFT:',
+            String(a.text),
+            '',
+            'Respond with ONLY this JSON:',
+            '{"verdict":"strong|acceptable|weak","issues":[{"severity":"high|medium|low","quote":"the exact offending text","problem":"...","fix":"..."}],"weakestSentence":"...","rewrite":"your rewrite of that one sentence"}',
+          ].join('\n'),
+        }],
+        temperature: 0.3,
+        maxOutputTokens: 900,
+      });
+
+      const cleaned = String(raw).replace(/```json|```/g, '').trim();
+      const start = cleaned.indexOf('{');
+      const end = cleaned.lastIndexOf('}');
+      if (start === -1 || end <= start) return { review: cleaned };
+      try { return JSON.parse(cleaned.slice(start, end + 1)); }
+      catch { return { review: cleaned }; }
+    },
+    digest: (_a, result: any) => {
+      if (!result || result.review) return 'Reviewed the copy.';
+      const issues = Array.isArray(result.issues) ? result.issues : [];
+      const high = issues.filter((i: any) => i.severity === 'high').length;
+      return [
+        `Verdict: ${result.verdict || 'unclear'}.`,
+        issues.length ? `${issues.length} issue${issues.length === 1 ? '' : 's'}${high ? `, ${high} high` : ''}.` : 'No issues raised.',
+      ].join(' ');
     },
   },
 ];

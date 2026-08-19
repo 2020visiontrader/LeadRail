@@ -8,6 +8,7 @@ import { KNOWLEDGE_CAPABILITIES } from './knowledge';
 import { CREATIVE_CAPABILITIES } from './creative';
 import { STRATEGY_CAPABILITIES } from './strategy';
 import { QUALITY_CAPABILITIES } from './quality';
+import { GOAL_CAPABILITIES } from './goals';
 import { MEMORY_CAPABILITIES } from './memory';
 import { SOCIAL_CAPABILITIES } from './social';
 import { SOCIAL_AUTOMATION_CAPABILITIES } from './social-automations';
@@ -56,6 +57,7 @@ const ALL: Capability[] = [
   ...CREATIVE_CAPABILITIES,
   ...STRATEGY_CAPABILITIES,
   ...QUALITY_CAPABILITIES,
+  ...GOAL_CAPABILITIES,
   ...MEMORY_CAPABILITIES,
   ...SOCIAL_CAPABILITIES,
   ...SOCIAL_AUTOMATION_CAPABILITIES,
@@ -87,7 +89,7 @@ const CATALOG_ORDER: string[] = [
   'searchDrive', 'readNotionPage', 'readDriveFile', 'sourceLeads', 'enrichLead',
   'draftOutreach', 'sendEmail', 'listSequences', 'enrollInSequence', 'listStages',
   'createDeal', 'moveDeal', 'addNote', 'updateLeadStatus', 'listTags', 'tagLead',
-  'getPersona', 'updatePersona', 'generateAdCopy', 'analyzeBrand', 'getBrandStrategy', 'reviewContent',
+  'getPersona', 'updatePersona', 'generateAdCopy', 'analyzeBrand', 'getBrandStrategy', 'reviewContent', 'judgeVoice', 'createGoal', 'listGoals', 'logGoalProgress',
   // --- appended by Packet 1.1 (durable memory). Appended, never sorted: the
   // 37 names above must keep their exact order or the prompt catalog changes.
   'rememberFact', 'forgetFact', 'listFacts',
