@@ -30,7 +30,7 @@ import {
 import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
 import { composeAnswer } from './compose';
 import { stripAiMarkers } from '@/lib/ai/humanizer';
-import { createApproval, consumeApprovalForExecution, ApprovalExecutionError } from '@/lib/approvals/store';
+import { createApproval, consumeApprovalForExecution, markApprovedByToolAndArgs, ApprovalExecutionError } from '@/lib/approvals/store';
 import { log } from '@/lib/logger';
 import { hermesRoute } from '@/lib/ai/hermes';
 
@@ -756,6 +756,17 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
     if (!approveDef?.sensitive) {
       return { status: 'error', message: 'That action can no longer be approved.', transcript: messages, steps };
     }
+    // The user clicking "Approve & run" in chat IS the decision — this is
+    // self-service confirmation of the agent's own proposal, not a second
+    // operator's peer review (that's what decideApproval + the standalone
+    // Approvals page are for), so flip the row pending -> approved here.
+    // Best-effort by design: consumeApprovalForExecution below is the HARD
+    // GATE and will refuse if this didn't actually land.
+    try {
+      await markApprovedByToolAndArgs(accountId, tool, args, input.requestedBy ?? null);
+    } catch {
+      // ignored — see comment above
+    }
     // HARD GATE (Packet 0.1): consume a persisted, approved, args-matching,
     // not-yet-executed approval. Failure MUST refuse — never fall through.
     // Applies identically to an external-MCP tool (Packet 4) — its approvals
@@ -989,6 +1000,12 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
     const { approvalId, tool, args } = input.approve;
     const approveDef = TOOLS[tool] ?? extraTools[tool];
     if (!approveDef?.sensitive) { emit({ type: 'error', message: 'That action can no longer be approved.' }); return; }
+    // Self-service confirm — see the matching comment in runAgent.
+    try {
+      await markApprovedByToolAndArgs(accountId, tool, args, input.requestedBy ?? null);
+    } catch {
+      // ignored — see comment in runAgent
+    }
     // HARD GATE (Packet 0.1) — see the matching comment in runAgent.
     try {
       await consumeApprovalForExecution(accountId, approvalId, tool, args);
