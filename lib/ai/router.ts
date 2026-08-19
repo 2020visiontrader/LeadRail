@@ -37,6 +37,62 @@ import { openrouterConfigured, openrouterText, openrouterChat, openrouterStreamC
 import { log } from '@/lib/logger';
 import { registryConfigured, resolveChain, resolveChainForTask, callModel, callModelStream, type ResolvedModel } from './providers';
 
+// ─────────────────────────────────────────────────────────────────────────────
+// LADDER ORDER
+// ─────────────────────────────────────────────────────────────────────────────
+// The order below was hardcoded, and a live probe showed why that is a problem:
+//
+//   zoask       ok   22,718ms   <- tried FIRST
+//   opencode    401       91ms
+//   nim         ok        413ms
+//   openrouter  ok        770ms
+//
+// Ask Zo answers correctly but ~55x slower than NIM, and it sat first, so every
+// call paid 22s before a fast tier was ever reached. The agent loop makes up to
+// MAX_STEPS (10) model calls per run — that is the difference between a run
+// finishing in ~4s and one taking almost four minutes.
+//
+// Order is now data, not control flow. AI_TIER_ORDER (comma-separated) lets the
+// operator reorder without a deploy, which matters because the RIGHT order is an
+// empirical fact that changes: quota runs out, a provider slows down, a key is
+// rotated. Run POST /api/admin/ai-probe to measure, then set this.
+//
+// Unknown names are ignored and any tier missing from the list is appended in
+// its default position, so a typo degrades to today's behaviour instead of
+// silently disabling a tier.
+const DEFAULT_TIER_ORDER = ['zoask', 'opencode', 'nim', 'huggingface', 'openrouter'] as const;
+type TierName = (typeof DEFAULT_TIER_ORDER)[number];
+
+function tierOrder(): TierName[] {
+  const raw = (process.env.AI_TIER_ORDER || '').split(',').map((t) => t.trim().toLowerCase()).filter(Boolean);
+  const known = raw.filter((t): t is TierName => (DEFAULT_TIER_ORDER as readonly string[]).includes(t));
+  const rest = DEFAULT_TIER_ORDER.filter((t) => !known.includes(t));
+  return [...known, ...rest];
+}
+
+/** Walk the tiers in configured order, logging which one answered and why the
+ *  others declined. Returns the first successful result. */
+async function runLadder(
+  fn: string,
+  runners: Partial<Record<TierName, { configured: boolean; run: () => Promise<string> }>>,
+): Promise<{ text?: string; lastErr: any }> {
+  let lastErr: any = null;
+  for (const tier of tierOrder()) {
+    const r = runners[tier];
+    if (!r || !r.configured) continue;
+    try {
+      const text = await r.run();
+      log.info('ai router: tier succeeded', { tier, fn });
+      return { text, lastErr: null };
+    } catch (err: any) {
+      log.warn('ai router: tier failed', { tier, error: String(err?.message || err) });
+      lastErr = err;
+    }
+  }
+  return { lastErr };
+}
+
+
 export type { ChatMessage };
 
 export function textConfigured(): boolean {
@@ -112,67 +168,16 @@ export async function generateText(opts: {
   );
   if (registryResult) return registryResult;
 
-  let lastErr: any = null;
-  if (zoAskConfigured()) {
-    try {
-      const text = await zoAskText({ system: opts.system, prompt: opts.prompt, maxOutputTokens: opts.maxOutputTokens });
-      log.info('ai router: tier succeeded', { tier: 'zoask', fn: 'generateText' });
-      return text;
-    } catch (err: any) {
-      // Attribute the failure to its TIER before the next one overwrites
-      // lastErr. Without this the ladder reports only the final tier's
-      // error — a NIM 403 with no hint that Ask Zo and OpenCode were
-      // tried first and why they declined.
-      log.warn('ai router: tier failed', { tier: 'zoask', error: String(err?.message || err) });
-      lastErr = err;
-    }
-  }
-  if (opencode.opencodeConfigured()) {
-    try {
-      const text = await opencode.generateText(opts);
-      log.info('ai router: tier succeeded', { tier: 'opencode', fn: 'generateText' });
-      return text;
-    } catch (err: any) {
-      // Attribute the failure to its TIER before the next one overwrites
-      // lastErr. Without this the ladder reports only the final tier's
-      // error — a NIM 403 with no hint that Ask Zo and OpenCode were
-      // tried first and why they declined.
-      log.warn('ai router: tier failed', { tier: 'opencode', error: String(err?.message || err) });
-      lastErr = err;
-    }
-  }
-  if (nimConfigured()) {
-    try {
-      const text = await nimText(opts);
-      log.info('ai router: tier succeeded', { tier: 'nim', fn: 'generateText' });
-      return text;
-    } catch (err: any) {
-      // Attribute the failure to its TIER before the next one overwrites
-      // lastErr. Without this the ladder reports only the final tier's
-      // error — a NIM 403 with no hint that Ask Zo and OpenCode were
-      // tried first and why they declined.
-      log.warn('ai router: tier failed', { tier: 'nim', error: String(err?.message || err) });
-      lastErr = err;
-    }
-  }
-  if (huggingfaceConfigured()) {
-    try {
-      return await hfText(opts);
-    } catch (err: any) {
-      log.warn('ai router: tier failed', { tier: 'huggingface', error: String(err?.message || err) });
-      lastErr = err;
-    }
-  }
-  if (openrouterConfigured()) {
-    try {
-      const text = await openrouterText(opts);
-      log.info('ai router: tier succeeded', { tier: 'openrouter', fn: 'generateText' });
-      return text;
-    } catch (err: any) {
-      log.warn('ai router: tier failed', { tier: 'openrouter', error: String(err?.message || err) });
-      lastErr = err;
-    }
-  }
+
+  const ladder = await runLadder('generateText', {
+      zoask: { configured: zoAskConfigured(), run: () => zoAskText({ system: opts.system, prompt: opts.prompt, maxOutputTokens: opts.maxOutputTokens }) },
+      opencode: { configured: opencode.opencodeConfigured(), run: () => opencode.generateText(opts) },
+      nim: { configured: nimConfigured(), run: () => nimText(opts) },
+      huggingface: { configured: huggingfaceConfigured(), run: () => hfText(opts) },
+      openrouter: { configured: openrouterConfigured(), run: () => openrouterText(opts) },
+    });
+  if (ladder.text !== undefined) return ladder.text;
+  const lastErr = ladder.lastErr;
   throw lastErr || new Error('No AI tier configured');
 }
 
@@ -205,67 +210,15 @@ export async function generateChat(opts: {
   );
   if (registryResult) return registryResult;
 
-  let lastErr: any = null;
-  if (zoAskConfigured()) {
-    try {
-      const text = await zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel });
-      log.info('ai router: tier succeeded', { tier: 'zoask', fn: 'generateChat' });
-      return text;
-    } catch (err: any) {
-      // Attribute the failure to its TIER before the next one overwrites
-      // lastErr. Without this the ladder reports only the final tier's
-      // error — a NIM 403 with no hint that Ask Zo and OpenCode were
-      // tried first and why they declined.
-      log.warn('ai router: tier failed', { tier: 'zoask', error: String(err?.message || err) });
-      lastErr = err;
-    }
-  }
-  if (opencode.opencodeConfigured()) {
-    try {
-      const text = await opencode.generateChat(opts);
-      log.info('ai router: tier succeeded', { tier: 'opencode', fn: 'generateChat' });
-      return text;
-    } catch (err: any) {
-      // Attribute the failure to its TIER before the next one overwrites
-      // lastErr. Without this the ladder reports only the final tier's
-      // error — a NIM 403 with no hint that Ask Zo and OpenCode were
-      // tried first and why they declined.
-      log.warn('ai router: tier failed', { tier: 'opencode', error: String(err?.message || err) });
-      lastErr = err;
-    }
-  }
-  if (nimConfigured()) {
-    try {
-      const text = await nimChat(opts);
-      log.info('ai router: tier succeeded', { tier: 'nim', fn: 'generateChat' });
-      return text;
-    } catch (err: any) {
-      // Attribute the failure to its TIER before the next one overwrites
-      // lastErr. Without this the ladder reports only the final tier's
-      // error — a NIM 403 with no hint that Ask Zo and OpenCode were
-      // tried first and why they declined.
-      log.warn('ai router: tier failed', { tier: 'nim', error: String(err?.message || err) });
-      lastErr = err;
-    }
-  }
-  if (huggingfaceConfigured()) {
-    try {
-      return await hfChat(opts);
-    } catch (err: any) {
-      log.warn('ai router: tier failed', { tier: 'huggingface', error: String(err?.message || err) });
-      lastErr = err;
-    }
-  }
-  if (openrouterConfigured()) {
-    try {
-      const text = await openrouterChat(opts);
-      log.info('ai router: tier succeeded', { tier: 'openrouter', fn: 'generateChat' });
-      return text;
-    } catch (err: any) {
-      log.warn('ai router: tier failed', { tier: 'openrouter', error: String(err?.message || err) });
-      lastErr = err;
-    }
-  }
+  const ladder = await runLadder('generateChat', {
+      zoask: { configured: zoAskConfigured(), run: () => zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel }) },
+      opencode: { configured: opencode.opencodeConfigured(), run: () => opencode.generateChat(opts) },
+      nim: { configured: nimConfigured(), run: () => nimChat(opts) },
+      huggingface: { configured: huggingfaceConfigured(), run: () => hfChat(opts) },
+      openrouter: { configured: openrouterConfigured(), run: () => openrouterChat(opts) },
+    });
+  if (ladder.text !== undefined) return ladder.text;
+  const lastErr = ladder.lastErr;
   throw lastErr || new Error('No AI tier configured');
 }
 
@@ -301,69 +254,14 @@ export async function streamChat(
   );
   if (registryResult) return registryResult;
 
-  let lastErr: any = null;
-  if (zoAskConfigured()) {
-    try {
-      // Zo Ask has no streaming transport — emit the whole answer as one delta.
-      const text = await zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel });
-      if (text) onDelta(text);
-      log.info('ai router: tier succeeded', { tier: 'zoask', fn: 'streamChat' });
-      return text;
-    } catch (err: any) {
-      // Attribute the failure to its TIER before the next one overwrites
-      // lastErr. Without this the ladder reports only the final tier's
-      // error — a NIM 403 with no hint that Ask Zo and OpenCode were
-      // tried first and why they declined.
-      log.warn('ai router: tier failed', { tier: 'zoask', error: String(err?.message || err) });
-      lastErr = err;
-    }
-  }
-  if (opencode.opencodeConfigured()) {
-    try {
-      const text = await opencode.streamChat(opts, onDelta);
-      log.info('ai router: tier succeeded', { tier: 'opencode', fn: 'streamChat' });
-      return text;
-    } catch (err: any) {
-      // Attribute the failure to its TIER before the next one overwrites
-      // lastErr. Without this the ladder reports only the final tier's
-      // error — a NIM 403 with no hint that Ask Zo and OpenCode were
-      // tried first and why they declined.
-      log.warn('ai router: tier failed', { tier: 'opencode', error: String(err?.message || err) });
-      lastErr = err;
-    }
-  }
-  if (nimConfigured()) {
-    try {
-      const text = await nimStreamChat(opts, onDelta);
-      log.info('ai router: tier succeeded', { tier: 'nim', fn: 'streamChat' });
-      return text;
-    } catch (err: any) {
-      // Attribute the failure to its TIER before the next one overwrites
-      // lastErr. Without this the ladder reports only the final tier's
-      // error — a NIM 403 with no hint that Ask Zo and OpenCode were
-      // tried first and why they declined.
-      log.warn('ai router: tier failed', { tier: 'nim', error: String(err?.message || err) });
-      lastErr = err;
-    }
-  }
-  if (huggingfaceConfigured()) {
-    try {
-      return await hfStreamChat(opts, onDelta);
-    } catch (err: any) {
-      log.warn('ai router: tier failed', { tier: 'huggingface', error: String(err?.message || err) });
-      lastErr = err;
-    }
-  }
-  if (openrouterConfigured()) {
-    try {
-      // OpenRouter's free-tier models stream just like NIM/OpenCode.
-      const text = await openrouterStreamChat(opts, onDelta);
-      log.info('ai router: tier succeeded', { tier: 'openrouter', fn: 'streamChat' });
-      return text;
-    } catch (err: any) {
-      log.warn('ai router: tier failed', { tier: 'openrouter', error: String(err?.message || err) });
-      lastErr = err;
-    }
-  }
+  const ladder = await runLadder('streamChat', {
+      zoask: { configured: zoAskConfigured(), run: () => zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel }) },
+      opencode: { configured: opencode.opencodeConfigured(), run: () => opencode.streamChat(opts, onDelta) },
+      nim: { configured: nimConfigured(), run: () => nimStreamChat(opts, onDelta) },
+      huggingface: { configured: huggingfaceConfigured(), run: () => hfStreamChat(opts, onDelta) },
+      openrouter: { configured: openrouterConfigured(), run: () => openrouterStreamChat(opts, onDelta) },
+    });
+  if (ladder.text !== undefined) return ladder.text;
+  const lastErr = ladder.lastErr;
   throw lastErr || new Error('No AI tier configured');
 }
