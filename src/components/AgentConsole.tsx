@@ -72,6 +72,7 @@ const TOOL_VERB: Record<string, string> = {
   readDriveFile: 'Reading that file',
   sourceLeads: 'Preparing to find new leads',
   enrichLead: 'Preparing to fill in that lead’s details',
+  createLead: 'Adding that lead to your list',
   draftOutreach: 'Writing the outreach',
   sendEmail: 'Preparing to send the email',
   listSequences: 'Checking your follow-up sequences',
@@ -134,6 +135,55 @@ const verbFor = (tool: string, title: string) => TOOL_VERB[tool] || title || 'Wo
 
 interface PersonaOption { id: string; name: string; avatar?: string | null }
 
+
+/**
+ * Rebuild displayable turns from a stored transcript.
+ *
+ * The transcript is the MODEL's message array, not a chat log, and painting it
+ * verbatim leaks the protocol: assistant rows are raw JSON envelopes
+ * ({"thought":…,"action":"tool","tool":"listLeads"}) and several user rows are
+ * machine content — "OBSERVATION: …" carrying full lead records including email
+ * addresses, plus the loop's own correction nudges. On reload that was rendered
+ * to the user as if it were conversation.
+ *
+ * So: keep real user messages, drop machine ones, and for assistant rows parse
+ * the envelope and keep ONLY the final answer. A row that will not parse is
+ * dropped rather than shown — an unreadable JSON blob is worse than a gap.
+ *
+ * Steps are deliberately not reconstructed: they are live-run telemetry and are
+ * not persisted, so a rehydrated turn shows its answer without a trace.
+ */
+function transcriptToTurns(transcript: Array<{ role: string; content: string }>): any[] {
+  // Mirrors the nudges pushed in lib/agent/loop.ts — these are instructions to
+  // the model, never anything the user typed.
+  const NUDGES = ['Respond with ONLY', 'You already ran', 'You have enough', 'Stop calling tools'];
+  const out: any[] = [];
+  let seq = 0;
+  for (const m of transcript || []) {
+    const content = typeof m?.content === 'string' ? m.content : '';
+    if (!content) continue;
+    if (m.role === 'user') {
+      if (content.startsWith('OBSERVATION:')) continue;
+      if (NUDGES.some((n) => content.startsWith(n))) continue;
+      out.push({ id: `rh-u-${seq++}`, role: 'user', text: content });
+    } else if (m.role === 'assistant') {
+      try {
+        const p = JSON.parse(content);
+        if (p && p.action === 'final' && p.message) {
+          out.push({ id: `rh-a-${seq++}`, role: 'assistant', text: String(p.message), steps: [] });
+        }
+      } catch {
+        // Non-JSON assistant content: a compose-pass answer that was stored as
+        // plain prose. That IS displayable, unlike a half-written envelope.
+        if (!content.trimStart().startsWith('{')) {
+          out.push({ id: `rh-a-${seq++}`, role: 'assistant', text: content, steps: [] });
+        }
+      }
+    }
+  }
+  return out;
+}
+
 export default function AgentConsole({ brandId, conversationId, onSteps, onConversationId }: { brandId?: string; conversationId?: string; onSteps?: (steps: Step[], busy: boolean, pendingApproval: boolean) => void; onConversationId?: (id: string | undefined) => void }) {
   const [turns, setTurns] = useState<Array<any>>([]);
   const [input, setInput] = useState('');
@@ -193,9 +243,7 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
       .then((d) => {
         if (cancelled) return;
         const rows = Array.isArray(d.transcript) ? d.transcript : [];
-        setTurns(rows.map((m) => (m.role === 'user'
-          ? { role: 'user', text: m.content }
-          : { role: 'assistant', text: m.content, steps: [] })));
+        setTurns(transcriptToTurns(rows));
       })
       .catch(() => { /* best-effort: an empty console is still usable */ });
     return () => { cancelled = true; };
