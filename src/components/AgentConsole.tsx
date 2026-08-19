@@ -36,6 +36,7 @@ const TOOL_VERB: Record<string, string> = {
   getSocialStatus: 'Checking your social integrations',
   listSocialComments: 'Reading the comments on that post',
   listSocialMessages: 'Reading your direct messages',
+  webSearch: 'Searching the web',
   getSocialInsights: 'Pulling that post’s performance',
   draftSocialPost: 'Writing your post',
   publishSocialPost: 'Preparing to publish your post',
@@ -133,7 +134,7 @@ const verbFor = (tool: string, title: string) => TOOL_VERB[tool] || title || 'Wo
 
 interface PersonaOption { id: string; name: string; avatar?: string | null }
 
-export default function AgentConsole({ brandId, conversationId, onSteps }: { brandId?: string; conversationId?: string; onSteps?: (steps: Step[], busy: boolean, pendingApproval: boolean) => void }) {
+export default function AgentConsole({ brandId, conversationId, onSteps, onConversationId }: { brandId?: string; conversationId?: string; onSteps?: (steps: Step[], busy: boolean, pendingApproval: boolean) => void; onConversationId?: (id: string | undefined) => void }) {
   const [turns, setTurns] = useState<Array<any>>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -299,7 +300,14 @@ export default function AgentConsole({ brandId, conversationId, onSteps }: { bra
     // request below always has it. Handled before patchAssistant so it never
     // resolves a pending step.
     if (e.type === 'conversation') {
-      if (typeof e.conversationId === 'string' && e.conversationId) conversationIdRef.current = e.conversationId;
+      if (typeof e.conversationId === 'string' && e.conversationId) {
+        conversationIdRef.current = e.conversationId;
+        // Lift the id to the parent. It used to live ONLY in this ref, so the
+        // owning page never learned which conversation was in play and could not
+        // put it in the URL or restore it — which is why a reload looked like the
+        // chat had been wiped even though the transcript was safe on the server.
+        onConversationId?.(e.conversationId);
+      }
       return;
     }
     // Trailing event emitted after `final` once the transcript crosses
@@ -382,6 +390,7 @@ export default function AgentConsole({ brandId, conversationId, onSteps }: { bra
     }
     pendingFromRef.current = fromId;
     conversationIdRef.current = undefined;
+    onConversationId?.(undefined);
     compactionShownRef.current = false; // fresh chat, fresh (future) offer
     setTurns([]);
     setProposal(null);
