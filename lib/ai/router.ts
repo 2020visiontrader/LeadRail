@@ -114,7 +114,9 @@ export async function generateText(opts: {
   let lastErr: any = null;
   if (zoAskConfigured()) {
     try {
-      return await zoAskText({ system: opts.system, prompt: opts.prompt, maxOutputTokens: opts.maxOutputTokens });
+      const text = await zoAskText({ system: opts.system, prompt: opts.prompt, maxOutputTokens: opts.maxOutputTokens });
+      log.info('ai router: tier succeeded', { tier: 'zoask', fn: 'generateText' });
+      return text;
     } catch (err: any) {
       // Attribute the failure to its TIER before the next one overwrites
       // lastErr. Without this the ladder reports only the final tier's
@@ -126,7 +128,9 @@ export async function generateText(opts: {
   }
   if (opencode.opencodeConfigured()) {
     try {
-      return await opencode.generateText(opts);
+      const text = await opencode.generateText(opts);
+      log.info('ai router: tier succeeded', { tier: 'opencode', fn: 'generateText' });
+      return text;
     } catch (err: any) {
       // Attribute the failure to its TIER before the next one overwrites
       // lastErr. Without this the ladder reports only the final tier's
@@ -138,7 +142,9 @@ export async function generateText(opts: {
   }
   if (nimConfigured()) {
     try {
-      return await nimText(opts);
+      const text = await nimText(opts);
+      log.info('ai router: tier succeeded', { tier: 'nim', fn: 'generateText' });
+      return text;
     } catch (err: any) {
       // Attribute the failure to its TIER before the next one overwrites
       // lastErr. Without this the ladder reports only the final tier's
@@ -150,7 +156,9 @@ export async function generateText(opts: {
   }
   if (openrouterConfigured()) {
     try {
-      return await openrouterText(opts);
+      const text = await openrouterText(opts);
+      log.info('ai router: tier succeeded', { tier: 'openrouter', fn: 'generateText' });
+      return text;
     } catch (err: any) {
       log.warn('ai router: tier failed', { tier: 'openrouter', error: String(err?.message || err) });
       lastErr = err;
@@ -191,7 +199,9 @@ export async function generateChat(opts: {
   let lastErr: any = null;
   if (zoAskConfigured()) {
     try {
-      return await zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel });
+      const text = await zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel });
+      log.info('ai router: tier succeeded', { tier: 'zoask', fn: 'generateChat' });
+      return text;
     } catch (err: any) {
       // Attribute the failure to its TIER before the next one overwrites
       // lastErr. Without this the ladder reports only the final tier's
@@ -203,7 +213,9 @@ export async function generateChat(opts: {
   }
   if (opencode.opencodeConfigured()) {
     try {
-      return await opencode.generateChat(opts);
+      const text = await opencode.generateChat(opts);
+      log.info('ai router: tier succeeded', { tier: 'opencode', fn: 'generateChat' });
+      return text;
     } catch (err: any) {
       // Attribute the failure to its TIER before the next one overwrites
       // lastErr. Without this the ladder reports only the final tier's
@@ -215,7 +227,9 @@ export async function generateChat(opts: {
   }
   if (nimConfigured()) {
     try {
-      return await nimChat(opts);
+      const text = await nimChat(opts);
+      log.info('ai router: tier succeeded', { tier: 'nim', fn: 'generateChat' });
+      return text;
     } catch (err: any) {
       // Attribute the failure to its TIER before the next one overwrites
       // lastErr. Without this the ladder reports only the final tier's
@@ -227,7 +241,9 @@ export async function generateChat(opts: {
   }
   if (openrouterConfigured()) {
     try {
-      return await openrouterChat(opts);
+      const text = await openrouterChat(opts);
+      log.info('ai router: tier succeeded', { tier: 'openrouter', fn: 'generateChat' });
+      return text;
     } catch (err: any) {
       log.warn('ai router: tier failed', { tier: 'openrouter', error: String(err?.message || err) });
       lastErr = err;
@@ -274,6 +290,7 @@ export async function streamChat(
       // Zo Ask has no streaming transport — emit the whole answer as one delta.
       const text = await zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel });
       if (text) onDelta(text);
+      log.info('ai router: tier succeeded', { tier: 'zoask', fn: 'streamChat' });
       return text;
     } catch (err: any) {
       // Attribute the failure to its TIER before the next one overwrites
@@ -286,7 +303,9 @@ export async function streamChat(
   }
   if (opencode.opencodeConfigured()) {
     try {
-      return await opencode.streamChat(opts, onDelta);
+      const text = await opencode.streamChat(opts, onDelta);
+      log.info('ai router: tier succeeded', { tier: 'opencode', fn: 'streamChat' });
+      return text;
     } catch (err: any) {
       // Attribute the failure to its TIER before the next one overwrites
       // lastErr. Without this the ladder reports only the final tier's
@@ -298,7 +317,9 @@ export async function streamChat(
   }
   if (nimConfigured()) {
     try {
-      return await nimStreamChat(opts, onDelta);
+      const text = await nimStreamChat(opts, onDelta);
+      log.info('ai router: tier succeeded', { tier: 'nim', fn: 'streamChat' });
+      return text;
     } catch (err: any) {
       // Attribute the failure to its TIER before the next one overwrites
       // lastErr. Without this the ladder reports only the final tier's
@@ -311,7 +332,9 @@ export async function streamChat(
   if (openrouterConfigured()) {
     try {
       // OpenRouter's free-tier models stream just like NIM/OpenCode.
-      return await openrouterStreamChat(opts, onDelta);
+      const text = await openrouterStreamChat(opts, onDelta);
+      log.info('ai router: tier succeeded', { tier: 'openrouter', fn: 'streamChat' });
+      return text;
     } catch (err: any) {
       log.warn('ai router: tier failed', { tier: 'openrouter', error: String(err?.message || err) });
       lastErr = err;
