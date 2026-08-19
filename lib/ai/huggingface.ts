@@ -38,7 +38,7 @@ const KEY = process.env.HUGGINGFACE_API_KEY || process.env.HF_TOKEN || '';
 // Yi-1.5-34B) and were excluded rather than guessed back in. Spans DeepSeek,
 // Qwen, Meta, and Moonshot so one upstream provider rotation can't take the
 // whole tier down.
-const MODEL_CHAIN = (process.env.HF_MODEL
+export const MODEL_CHAIN = (process.env.HF_MODEL
   ? [process.env.HF_MODEL]
   : [
       'Qwen/Qwen3-235B-A22B-Instruct-2507',
@@ -179,4 +179,15 @@ export async function hfStreamChat(
     throw err;
   }
   return full;
+}
+
+/** Call ONE specific model directly, bypassing the chain (see probeNimModel). */
+export async function probeHfModel(model: string): Promise<string> {
+  const res = await callHF(model, [{ role: 'user', content: 'Reply with one word: ok' }], 0, 16, false);
+  if (!res.ok) {
+    const detail = (await res.text().catch(() => '')).slice(0, 200);
+    throwForResponse(res, model, detail);
+  }
+  const json: any = await res.json();
+  return String(json?.choices?.[0]?.message?.content ?? '').trim();
 }

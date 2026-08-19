@@ -63,7 +63,7 @@ const BASE = 'https://integrate.api.nvidia.com/v1';
 // entitlement on their own catalog) plus Mistral, DeepSeek, OpenAI OSS, and
 // Meta for provider diversity, so one vendor's rotation can't take the whole
 // tier down.
-const MODEL_CHAIN = (process.env.NIM_MODEL
+export const MODEL_CHAIN = (process.env.NIM_MODEL
   ? [process.env.NIM_MODEL]
   : [
       'nvidia/nemotron-nano-12b-v2-vl',
@@ -366,4 +366,11 @@ export async function nimGenerateImage(opts: { prompt: string }): Promise<NimIma
     throw err;
   }
   return { mimeType: 'image/png', base64: b64 };
+}
+/** Call ONE specific model directly, bypassing the chain. Used by
+ *  /api/admin/ai-probe to test every entry rather than only whichever the chain
+ *  happens to land on — a tier reporting "ok" tells you nothing about the ten
+ *  models behind the one that answered. */
+export async function probeNimModel(model: string): Promise<string> {
+  return completeWith(model, [{ role: 'user', content: 'Reply with one word: ok' }], 0, 16);
 }

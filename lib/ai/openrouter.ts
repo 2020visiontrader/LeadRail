@@ -53,7 +53,7 @@ const BASE = 'https://openrouter.ai/api/v1';
 // Order: strongest general-purpose free model first, then providers rotate,
 // then deepseek-v4-flash as a paid-but-fractional-cent last resort so the
 // tier still answers if every free model is down at once.
-const MODEL_CHAIN = (process.env.OPENROUTER_MODEL
+export const MODEL_CHAIN = (process.env.OPENROUTER_MODEL
   ? [process.env.OPENROUTER_MODEL]
   : [
       'nvidia/nemotron-3-ultra-550b-a55b:free',
@@ -365,4 +365,9 @@ export async function openrouterGenerateImage(opts: { prompt: string }): Promise
     throw err;
   }
   return { mimeType: match[1], base64: match[2] };
+}
+
+/** Call ONE specific model directly, bypassing the chain (see probeNimModel). */
+export async function probeOpenrouterModel(model: string): Promise<string> {
+  return completeWith(model, [{ role: 'user', content: 'Reply with one word: ok' }], 0, 16);
 }
