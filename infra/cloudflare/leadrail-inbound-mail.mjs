@@ -13,6 +13,10 @@ const FORWARD_MAP = {
   'francksayshello@leadrail.xyz': 'leadrailos@gmail.com',
   'rentahub@leadrail.xyz': 'therentahub@gmail.com',
   'retentionrail@leadrail.xyz': 'francklrail@gmail.com',
+  // filmopsai.com is a separate zone; this entry only takes effect once that
+  // zone's Email Routing rule for franck@filmopsai.com is repointed to this
+  // worker (not done automatically — see infra/cloudflare/README.md).
+  'franck@filmopsai.com': 'franckf.bdbpro@gmail.com',
 };
 const DEFAULT_FORWARD = 'leadrailos@gmail.com';
 

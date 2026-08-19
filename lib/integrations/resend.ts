@@ -17,6 +17,7 @@ const ENV_RESEND_API_KEY = process.env.LEADRAIL_RESEND_API_KEY;
 // To onboard a new brand's own Resend account, add one line here.
 const BRAND_RESEND_ENV_KEYS: Record<string, string | undefined> = {
   rentahub: process.env.RENTAHUB_RESEND_API_KEY,
+  filmops: process.env.FILMOPS_RESEND_API_KEY,
 };
 
 /**
