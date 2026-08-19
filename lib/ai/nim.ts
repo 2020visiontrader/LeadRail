@@ -90,7 +90,12 @@ function shouldTryNextModel(status: number): boolean {
 // Hard timeout on the last-resort tier so a stalled NIM call aborts and the
 // caller gets a fast, honest failure instead of a request that hangs until the
 // platform kills it. Override with NIM_TIMEOUT_MS.
-const TIMEOUT_MS = Number(process.env.NIM_TIMEOUT_MS) || 30_000;
+// 12s, not 30s. A timeout is paid IN FULL on every call before the ladder moves
+// on, so a long one on a dead tier is the most expensive failure mode there is —
+// observed live at 30s per call while NIM was down upstream. The circuit breaker
+// now caps how often that happens, but the first failure still costs this, so it
+// should be short enough to absorb. Override with NIM_TIMEOUT_MS.
+const TIMEOUT_MS = Number(process.env.NIM_TIMEOUT_MS) || 12_000;
 
 export function nimConfigured(): boolean {
   return KEY.length > 0;

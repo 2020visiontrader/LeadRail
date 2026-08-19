@@ -6,7 +6,7 @@ import * as opencode from '@/lib/ai/opencode';
 import { nimConfigured, nimText } from '@/lib/ai/nim';
 import { huggingfaceConfigured, hfText } from '@/lib/ai/huggingface';
 import { openrouterConfigured, openrouterText } from '@/lib/ai/openrouter';
-import { tierOrder } from '@/lib/ai/router';
+import { tierOrder, breakerState } from '@/lib/ai/router';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -86,6 +86,8 @@ async function POST__impl(request: NextRequest) {
       // changed to put nim first. A diagnostic that lies about the thing it
       // exists to measure is worse than no diagnostic.
       tierOrder: order,
+      // Which tiers the router is currently skipping, and for how long.
+      breakers: breakerState(),
       servingTier: order.find((t) => working.includes(t)) ?? null,
       results,
     });

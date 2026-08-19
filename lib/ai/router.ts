@@ -70,6 +70,71 @@ export function tierOrder(): TierName[] {
   return [...known, ...rest];
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// CIRCUIT BREAKER
+// ─────────────────────────────────────────────────────────────────────────────
+// A tier that TIMES OUT is far more expensive than a slow one: it burns its full
+// timeout on every call before yielding. Observed live — NIM was ordered first
+// on measured 413ms latency, then went down upstream, and every model call
+// started paying 30s waiting for it to fail before OpenRouter answered in 500ms.
+// On a 10-step agent run that is five minutes of pure waiting.
+//
+// So: after OPEN_AFTER consecutive failures a tier is skipped entirely for
+// COOLDOWN_MS, then allowed exactly one trial call. Success closes it; failure
+// re-opens it for another cooldown. A provider outage costs ONE timeout instead
+// of one per call, and recovery is automatic rather than waiting for a human to
+// notice and re-order the ladder.
+//
+// Deliberately in-memory: a breaker is a short-lived latency optimisation, not
+// state worth persisting. Losing it on restart just means one extra trial call.
+const BREAKER_OPEN_AFTER = Number(process.env.AI_BREAKER_OPEN_AFTER) || 2;
+const BREAKER_COOLDOWN_MS = Number(process.env.AI_BREAKER_COOLDOWN_MS) || 60_000;
+
+const breakers = new Map<string, { fails: number; openedAt: number }>();
+
+/** True when this tier should be skipped right now. */
+function breakerOpen(tier: string): boolean {
+  const b = breakers.get(tier);
+  if (!b || b.fails < BREAKER_OPEN_AFTER) return false;
+  if (Date.now() - b.openedAt >= BREAKER_COOLDOWN_MS) {
+    // Cooldown elapsed — allow ONE trial call through. Reset to the threshold
+    // minus one so a failed trial immediately re-opens rather than needing to
+    // fail the full count again.
+    b.fails = BREAKER_OPEN_AFTER - 1;
+    return false;
+  }
+  return true;
+}
+
+function breakerRecordFailure(tier: string): void {
+  const b = breakers.get(tier) || { fails: 0, openedAt: 0 };
+  b.fails += 1;
+  if (b.fails >= BREAKER_OPEN_AFTER) b.openedAt = Date.now();
+  breakers.set(tier, b);
+  if (b.fails === BREAKER_OPEN_AFTER) {
+    log.warn('ai router: tier circuit opened', { tier, cooldownMs: BREAKER_COOLDOWN_MS });
+  }
+}
+
+function breakerRecordSuccess(tier: string): void {
+  if (breakers.has(tier)) {
+    log.info('ai router: tier circuit closed', { tier });
+    breakers.delete(tier);
+  }
+}
+
+/** Read-only snapshot for diagnostics (see /api/admin/ai-probe). */
+export function breakerState(): Record<string, { fails: number; openFor: number }> {
+  const out: Record<string, { fails: number; openFor: number }> = {};
+  for (const [tier, b] of breakers) {
+    out[tier] = {
+      fails: b.fails,
+      openFor: b.fails >= BREAKER_OPEN_AFTER ? Math.max(0, BREAKER_COOLDOWN_MS - (Date.now() - b.openedAt)) : 0,
+    };
+  }
+  return out;
+}
+
 /** Walk the tiers in configured order, logging which one answered and why the
  *  others declined. Returns the first successful result. */
 async function runLadder(
@@ -80,13 +145,36 @@ async function runLadder(
   for (const tier of tierOrder()) {
     const r = runners[tier];
     if (!r || !r.configured) continue;
+    // Skip a tier whose circuit is open — this is the whole point: a dead tier
+    // must not cost its timeout on every subsequent call.
+    if (breakerOpen(tier)) continue;
     try {
       const text = await r.run();
+      breakerRecordSuccess(tier);
       log.info('ai router: tier succeeded', { tier, fn });
       return { text, lastErr: null };
     } catch (err: any) {
+      breakerRecordFailure(tier);
       log.warn('ai router: tier failed', { tier, error: String(err?.message || err) });
       lastErr = err;
+    }
+  }
+  // Every tier skipped or failed. If breakers hid ALL of them, the cooldown is
+  // worse than a slow answer — try each once ignoring the breaker rather than
+  // returning "no tier available" while a provider is merely degraded.
+  if (!lastErr) {
+    for (const tier of tierOrder()) {
+      const r = runners[tier];
+      if (!r || !r.configured) continue;
+      try {
+        const text = await r.run();
+        breakerRecordSuccess(tier);
+        log.info('ai router: tier succeeded (breaker override)', { tier, fn });
+        return { text, lastErr: null };
+      } catch (err: any) {
+        log.warn('ai router: tier failed (breaker override)', { tier, error: String(err?.message || err) });
+        lastErr = err;
+      }
     }
   }
   return { lastErr };
