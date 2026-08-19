@@ -125,6 +125,12 @@ const CATALOG_ORDER: string[] = [
   // --- appended by Packet W1 (open-web search, Tavily/SerpAPI). Appended,
   // never sorted, same reason as every entry above.
   'webSearch',
+  // --- appended 2026-08-19: enrichLead only looks up a person, it never
+  // persisted a contacts row, so draftOutreach/sendEmail had no lead to point
+  // at for anyone not already in the CRM (reproduced live: enrichLead
+  // succeeded, draftOutreach then failed "Lead not found"). createLead closes
+  // that gap. Appended, never sorted, same reason as every entry above.
+  'createLead',
 ];
 
 const byName = new Map(ALL.map((c) => [c.name, c]));

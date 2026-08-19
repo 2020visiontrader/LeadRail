@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { supabase, getContacts, updateContact } from '@/lib/db';
+import { supabase, getContacts, updateContact, createContact } from '@/lib/db';
 import { searchPeople, matchPerson } from '@/lib/integrations/apollo';
 import { listTags, addTagToContact } from '@/lib/tags';
 import {
@@ -78,7 +78,7 @@ export const LEAD_CAPABILITIES: Capability[] = [
     name: 'enrichLead',
     domain: 'leads',
     title: 'Reveal lead details (uses credits)',
-    description: "Reveal a lead's verified email and full profile. Pass a lead id (an existing contact) OR identity hints (email/linkedinUrl/name+company). Uses sourcing credits.",
+    description: "Reveal a lead's verified email and full profile. Pass a lead id (an existing contact) OR identity hints (email/linkedinUrl/name+company). Uses sourcing credits. Does NOT save a contact record — if this person isn't already a lead id you passed in, call createLead with the result before draftOutreach/sendEmail.",
     gate: 'spend',
     inputSchema: obj({ contactId: S.string, email: S.string, linkedinUrl: S.string, name: S.string, company: S.string }),
     zod: z.object({ contactId: z.string().optional(), email: z.string().optional(), linkedinUrl: z.string().optional(), name: z.string().optional(), company: z.string().optional() }),
@@ -89,6 +89,35 @@ export const LEAD_CAPABILITIES: Capability[] = [
         keys = { id: c.apollo_person_id || null, email: c.email || a.email, name: c.name || a.name, company: c.company || a.company, linkedin_url: c.linkedin_url || a.linkedinUrl };
       }
       return matchPerson(accountId, keys);
+    },
+  },
+  {
+    name: 'createLead',
+    domain: 'leads',
+    title: 'Create lead',
+    description: "Add a new lead/contact to the CRM. Use this after enrichLead reveals a new person's details — enrichLead only looks the profile up, it does not save a contact record, and draftOutreach/sendEmail require one. If a contact with this email already exists, returns the existing record instead of creating a duplicate.",
+    gate: 'internal_write',
+    inputSchema: obj({ name: S.string, email: S.string, company: S.string, title: S.string, linkedinUrl: S.string, brandId: S.string, source: S.string }, ['name', 'email']),
+    zod: z.object({ name: z.string(), email: z.string(), company: z.string().optional(), title: z.string().optional(), linkedinUrl: z.string().optional(), brandId: z.string().optional(), source: z.string().optional() }),
+    run: async (accountId, a) => {
+      const { data: existing } = await supabase.from('contacts').select('*').eq('account_id', accountId).ilike('email', a.email).maybeSingle();
+      if (existing) return existing;
+      return createContact({
+        account_id: accountId,
+        name: a.name,
+        email: a.email,
+        company: a.company || null,
+        title: a.title || null,
+        linkedin_url: a.linkedinUrl || null,
+        brand_id: a.brandId || null,
+        source: a.source || 'manual',
+        status: 'new',
+      });
+    },
+    digest: (_args, result) => {
+      if (!result || typeof result !== 'object') return '';
+      const who = firstField(result, ['name', 'email']);
+      return digestLine(`Lead${who ? ` ${who}` : ''} created.`);
     },
   },
   {
