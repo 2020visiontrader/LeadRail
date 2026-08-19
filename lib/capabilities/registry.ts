@@ -85,7 +85,7 @@ const CATALOG_ORDER: string[] = [
   'searchDrive', 'readNotionPage', 'readDriveFile', 'sourceLeads', 'enrichLead',
   'draftOutreach', 'sendEmail', 'listSequences', 'enrollInSequence', 'listStages',
   'createDeal', 'moveDeal', 'addNote', 'updateLeadStatus', 'listTags', 'tagLead',
-  'getPersona', 'updatePersona', 'generateAdCopy', 'analyzeBrand',
+  'getPersona', 'updatePersona', 'generateAdCopy', 'analyzeBrand', 'getBrandStrategy',
   // --- appended by Packet 1.1 (durable memory). Appended, never sorted: the
   // 37 names above must keep their exact order or the prompt catalog changes.
   'rememberFact', 'forgetFact', 'listFacts',

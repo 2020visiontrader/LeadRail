@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { getVenture, getVentures } from '@/lib/db';
+import { supabase, getVenture, getVentures } from '@/lib/db';
 import { generateChat } from '@/lib/ai/router';
 import { loadVentureContext } from '@/lib/ai/venture-context';
 import { marketingGuidance } from '@/lib/ai/marketing';
@@ -96,7 +96,17 @@ export const STRATEGY_CAPABILITIES: Capability[] = [
       const end = cleaned.lastIndexOf('}');
       if (start === -1 || end <= start) return { strategy: cleaned };
       try {
-        return { brand: v.name, strategy: JSON.parse(cleaned.slice(start, end + 1)) };
+        const parsed = JSON.parse(cleaned.slice(start, end + 1));
+        // Persist (migration 047). Best-effort: a storage failure must not lose
+        // the strategy the user is waiting on — they still get it in the reply.
+        let saved = false;
+        try {
+          const { error } = await supabase.from('brand_strategies').insert({
+            account_id: accountId, brand_id: v.id, goal: a.goal ?? null, strategy: parsed,
+          });
+          saved = !error;
+        } catch { /* keep the answer */ }
+        return { brand: v.name, strategy: parsed, saved };
       } catch {
         // Unparseable JSON is still a readable strategy — hand back the prose
         // rather than failing the turn over formatting.
@@ -115,6 +125,36 @@ export const STRATEGY_CAPABILITIES: Capability[] = [
         angles ? `${angles} messaging angles.` : null,
         unknowns ? `${unknowns} open questions to sharpen it.` : null,
       ].filter(Boolean).join(' ');
+    },
+  },
+  {
+    name: 'getBrandStrategy',
+    domain: 'strategy',
+    title: 'Get the saved strategy',
+    description:
+      'Read the most recent saved marketing strategy for a brand (migration 047). Use this BEFORE analyzeBrand when the user refers to "the strategy" or "our plan" — regenerating loses the one they already agreed to, and costs a model call.',
+    gate: 'read',
+    inputSchema: obj({ brandId: S.string }, []),
+    zod: z.object({ brandId: z.string().optional() }),
+    run: async (accountId, a) => {
+      const v: any = a.brandId ? await getVenture(a.brandId) : (await getVentures(accountId))[0];
+      if (!v) return { error: 'No brand found.' };
+      if (v.account_id && v.account_id !== accountId) return { error: 'Brand not found' };
+      const { data } = await supabase
+        .from('brand_strategies')
+        .select('id, goal, strategy, created_at')
+        .eq('account_id', accountId)
+        .eq('brand_id', v.id)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      if (!data) return { brand: v.name, strategy: null, note: 'No saved strategy yet — run analyzeBrand to create one.' };
+      return { brand: v.name, ...data };
+    },
+    digest: (_a, result: any) => {
+      if (!result?.strategy) return 'No saved strategy for that brand yet.';
+      const when = result.created_at ? String(result.created_at).slice(0, 10) : null;
+      return `Saved strategy for ${result.brand}${when ? ` from ${when}` : ''}${result.goal ? ` (goal: ${result.goal})` : ''}.`;
     },
   },
 ];
