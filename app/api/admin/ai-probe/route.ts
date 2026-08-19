@@ -6,6 +6,7 @@ import * as opencode from '@/lib/ai/opencode';
 import { nimConfigured, nimText } from '@/lib/ai/nim';
 import { huggingfaceConfigured, hfText } from '@/lib/ai/huggingface';
 import { openrouterConfigured, openrouterText } from '@/lib/ai/openrouter';
+import { tierOrder } from '@/lib/ai/router';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -75,11 +76,17 @@ async function POST__impl(request: NextRequest) {
     ]);
 
     const working = results.filter((r) => r.ok).map((r) => r.tier);
+    const order = tierOrder();
     return NextResponse.json({
       ok: working.length > 0,
       working,
-      // The first working tier in LADDER order is what a real request will use.
-      servingTier: ['zoask', 'opencode', 'nim', 'huggingface', 'openrouter'].find((t) => working.includes(t)) ?? null,
+      // The first working tier in the LIVE ladder order — read from tierOrder()
+      // so AI_TIER_ORDER is reflected. This was a hardcoded array, which meant
+      // the probe kept reporting servingTier: "zoask" after the order was
+      // changed to put nim first. A diagnostic that lies about the thing it
+      // exists to measure is worse than no diagnostic.
+      tierOrder: order,
+      servingTier: order.find((t) => working.includes(t)) ?? null,
       results,
     });
   } catch (e) {

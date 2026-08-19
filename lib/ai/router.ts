@@ -60,10 +60,10 @@ import { registryConfigured, resolveChain, resolveChainForTask, callModel, callM
 // Unknown names are ignored and any tier missing from the list is appended in
 // its default position, so a typo degrades to today's behaviour instead of
 // silently disabling a tier.
-const DEFAULT_TIER_ORDER = ['zoask', 'opencode', 'nim', 'huggingface', 'openrouter'] as const;
+export const DEFAULT_TIER_ORDER = ['zoask', 'opencode', 'nim', 'huggingface', 'openrouter'] as const;
 type TierName = (typeof DEFAULT_TIER_ORDER)[number];
 
-function tierOrder(): TierName[] {
+export function tierOrder(): TierName[] {
   const raw = (process.env.AI_TIER_ORDER || '').split(',').map((t) => t.trim().toLowerCase()).filter(Boolean);
   const known = raw.filter((t): t is TierName => (DEFAULT_TIER_ORDER as readonly string[]).includes(t));
   const rest = DEFAULT_TIER_ORDER.filter((t) => !known.includes(t));
