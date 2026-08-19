@@ -265,6 +265,9 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
 
     setActiveRuns((prev) => new Set(prev).add(turnId));
     setProposal(null);
+    // Queue behind the first run until the thread has an id (see the note on
+    // awaitConversationId). No-op for every run after the first.
+    const mustWait = !conversationIdRef.current && activeRuns.size > 0;
     if (payload.message) setTurns((p) => [...p, { id: `${turnId}-u`, role: 'user', text: payload.message }]);
     setTurns((p) => [...p, { id: turnId, role: 'assistant', text: '', steps: [] }]);
 
@@ -272,6 +275,14 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     // so `from` reaches the server at most once. A connection failure leaves it
     // set, because nothing was sent.
     const from = pendingFromRef.current;
+
+    // Hold here — not in send() — so the user's message is already on screen as a
+    // queued turn while it waits. Blocking in send() would have made the prompt
+    // vanish until the first run finished.
+    if (mustWait) {
+      patchAssistant((t) => t.steps.push({ kind: 'thought', text: 'Queued — starting once the first task has a thread…', done: false, synthetic: true }));
+      await awaitConversationId();
+    }
 
     let res: Response;
     try {
@@ -405,14 +416,41 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
   // splitting one thread into two. So the very first prompt is serialised, and
   // everything after it is free. `canSend` drives the disabled state so the UI
   // explains itself instead of appearing broken.
-  const awaitingFirstConversation = busy && !conversationIdRef.current;
-  const canSend = input.trim().length > 0 && !awaitingFirstConversation;
+  // A second prompt sent before the FIRST run has produced a conversationId is
+  // queued, not refused. Blocking it (the first version of this) defeated the
+  // whole feature: on a brand-new chat there is no id until the first run ends,
+  // so the two-prompts-in-a-row case — the exact thing this exists for — was the
+  // one case that still made you wait.
+  //
+  // The queue exists because of a real server constraint: a run with no
+  // conversationId is treated as a NEW conversation, so firing two would split
+  // one thread into two. Waiting for the id preserves the thread while keeping
+  // the composer live.
+  const canSend = input.trim().length > 0;
   const send = () => {
     const m = input.trim();
-    if (!m || awaitingFirstConversation) return;
+    if (!m) return;
     setInput('');
     run({ message: m });
   };
+
+  /** Resolves once this conversation has a server-assigned id, so queued runs
+   *  join the existing thread instead of forking a new one. Polls a ref rather
+   *  than subscribing to state because the id is set inside a stream handler. */
+  function awaitConversationId(): Promise<void> {
+    if (conversationIdRef.current) return Promise.resolve();
+    return new Promise((resolve) => {
+      const started = Date.now();
+      const tick = setInterval(() => {
+        // Give up after 60s and proceed anyway: a forked thread is a far better
+        // outcome than a prompt that silently never runs.
+        if (conversationIdRef.current || Date.now() - started > 60_000) {
+          clearInterval(tick);
+          resolve();
+        }
+      }, 150);
+    });
+  }
   // approvalId is required by the server gate (Packet 0.1). If the proposal
   // arrived without one, persistence failed upstream — refuse locally rather
   // than firing a request the server will reject.
