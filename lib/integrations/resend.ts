@@ -31,6 +31,35 @@ export function resendApiKeyForBrand(brandId?: string | null): string | undefine
   return ENV_RESEND_API_KEY;
 }
 
+/**
+ * Venture-scoped Resend key from integration_connections (migration 046).
+ *
+ * This is what lets ANY venture have its own verified sending domain without a
+ * code change. The BRAND_RESEND_ENV_KEYS map above needed a new line plus a
+ * redeploy per venture — fine for two, wrong for a product whose premise is
+ * "plug in any brand". A venture-scoped row takes precedence; falling back
+ * through account-wide, then the legacy map, then LeadRail's own key means no
+ * existing sender changes behaviour.
+ */
+export async function ventureResendKey(accountId: string, brandId?: string | null): Promise<string | undefined> {
+  if (!brandId) return undefined;
+  try {
+    const { data } = await supabase
+      .from('integration_connections')
+      .select('meta, status')
+      .eq('account_id', accountId)
+      .eq('brand_id', brandId)
+      .eq('provider', 'resend')
+      .eq('status', 'connected')
+      .maybeSingle();
+    const token = (data as any)?.meta?.access_token;
+    return typeof token === 'string' && token ? token : undefined;
+  } catch {
+    // Never let a lookup failure block a send — fall through to the wider scopes.
+    return undefined;
+  }
+}
+
 export interface ResendEmail {
   from: string;
   to: string[];
@@ -48,6 +77,18 @@ export interface ResendEmail {
  * account (e.g. rentahub), then LeadRail's own env key.
  */
 export async function getResendApiKey(accountId?: string, brandId?: string | null): Promise<string> {
+  // Resolution order, most specific first:
+  //   1. this VENTURE's own Resend connection (migration 046)
+  //   2. the account-wide Resend connection
+  //   3. the legacy hardcoded brand -> env map (rentahub, filmops)
+  //   4. LeadRail's own leadrail.xyz key
+  // A venture identity must beat the account-wide one, otherwise connecting a
+  // second brand's domain would silently keep sending from the first.
+  if (accountId) {
+    const ventureKey = await ventureResendKey(accountId, brandId);
+    if (ventureKey) return ventureKey;
+  }
+
   if (accountId) {
     try {
       const conns = await getConnections(accountId);
@@ -57,6 +98,7 @@ export async function getResendApiKey(accountId?: string, brandId?: string | nul
       // fall through to brand/env
     }
   }
+
   const key = resendApiKeyForBrand(brandId);
   if (!key) throw new Error('LEADRAIL_RESEND_API_KEY not set — connect LeadRail\'s Resend (leadrail.xyz) in Settings → Integrations');
   return key;
