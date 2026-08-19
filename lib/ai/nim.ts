@@ -66,29 +66,25 @@ const BASE = 'https://integrate.api.nvidia.com/v1';
 export const MODEL_CHAIN = (process.env.NIM_MODEL
   ? [process.env.NIM_MODEL]
   : [
-      'nvidia/nemotron-nano-12b-v2-vl',
-      'nvidia/llama-3.3-nemotron-super-49b-v1.5',
+      // ── ORDERED BY MEASURED LATENCY (probe 2026-08-19, /api/admin/model-probe).
+      // This chain used to lead with nvidia/nemotron-nano-12b-v2-vl, which
+      // answers in 10.8s — and had been 500ing and timing out all evening. Every
+      // NIM call walked past it first. mistral-nemotron answers the same prompt
+      // in 252ms, a 43x difference that was invisible until each model was timed
+      // individually.
+      //
+      // VERIFIED-DEAD entries are kept but demoted to the END rather than
+      // deleted: an id can come back, the probe is the thing that decides, and a
+      // dead tail costs nothing now that nothing reaches it. Their failure is
+      // recorded here so nobody re-promotes them on a hunch.
       'mistralai/mistral-nemotron',
+      'openai/gpt-oss-20b',
       'nvidia/nemotron-3.5-lightning-30b-a3b',
       'nvidia/nemotron-3-super-120b-a12b',
-      'deepseek-ai/deepseek-v4-flash-0731',
-      'openai/gpt-oss-20b',
       'nvidia/nvidia-nemotron-nano-9b-v2',
-      'meta/llama-3.3-70b-instruct',
-      'z-ai/glm-5.2',
-      'meta/llama-3.1-8b-instruct',
-      // ── Verified 2026-08-19 against the provider's OWN live catalog, not a blog post.
-      // Every id below was present in GET https://integrate.api.nvidia.com/v1/models (102 models) at the time of writing.
-      //
-      // An earlier attempt at this used ids from web search — llama-4-maverick:free,
-      // deepseek-r1-zero:free, mistral-small-3.1:free — and NOT ONE of them was in
-      // OpenRouter's actual free list. Articles about free models go stale within
-      // weeks. Fetch the catalog.
-      //
-      // Catalogued does NOT mean serving: nemotron-nano-12b-v2-vl is listed and was
-      // returning 500s and timeouts all the same. POST /api/admin/model-probe walks
-      // every entry and is what tells you which of these actually answer.
-      // Appended BELOW the proven entries so a new id never leads the chain.
+      'deepseek-ai/deepseek-v4-flash-0731',
+      'nvidia/nemotron-nano-12b-v2-vl',
+      // ── Verified present in the provider catalog, not yet latency-tested.
       'openai/gpt-oss-120b',
       'google/gemma-4-31b-it',
       'nvidia/llama-3.1-nemotron-ultra-253b-v1',
@@ -98,6 +94,12 @@ export const MODEL_CHAIN = (process.env.NIM_MODEL
       'nvidia/llama-3.1-nemotron-70b-instruct',
       'google/gemma-3-12b-it',
       'nv-mistralai/mistral-nemo-12b-instruct',
+      // ── VERIFIED DEAD 2026-08-19 (all four timed out at 12s). Demoted, not
+      // deleted — see note above.
+      'nvidia/llama-3.3-nemotron-super-49b-v1.5',
+      'meta/llama-3.3-70b-instruct',
+      'z-ai/glm-5.2',
+      'meta/llama-3.1-8b-instruct',
     ]);
 const MODEL = MODEL_CHAIN[0];
 

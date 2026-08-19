@@ -41,26 +41,18 @@ const KEY = process.env.HUGGINGFACE_API_KEY || process.env.HF_TOKEN || '';
 export const MODEL_CHAIN = (process.env.HF_MODEL
   ? [process.env.HF_MODEL]
   : [
-      'Qwen/Qwen3-235B-A22B-Instruct-2507',
+      // ── ORDERED BY MEASURED LATENCY (probe 2026-08-19). 8/8 answered.
+      // Led with Qwen3-235B (386ms); Llama-3.3-70B answers in 223ms.
+      // The whole tier is healthy, so this is pure ordering, not triage.
       'meta-llama/Llama-3.3-70B-Instruct',
-      'meta-llama/Llama-4-Scout-17B-16E-Instruct',
       'meta-llama/Llama-3.1-8B-Instruct',
+      'Qwen/Qwen3-235B-A22B-Instruct-2507',
+      'meta-llama/Llama-4-Scout-17B-16E-Instruct',
       'Qwen/Qwen2.5-Coder-32B-Instruct',
       'moonshotai/Kimi-K2-Instruct',
       'deepseek-ai/DeepSeek-V3.2-Exp',
       'deepseek-ai/DeepSeek-V3.1',
-      // ── Verified 2026-08-19 against the provider's OWN live catalog, not a blog post.
-      // Every id below was present in GET https://router.huggingface.co/v1/models, live providers with tool support at the time of writing.
-      //
-      // An earlier attempt at this used ids from web search — llama-4-maverick:free,
-      // deepseek-r1-zero:free, mistral-small-3.1:free — and NOT ONE of them was in
-      // OpenRouter's actual free list. Articles about free models go stale within
-      // weeks. Fetch the catalog.
-      //
-      // Catalogued does NOT mean serving: nemotron-nano-12b-v2-vl is listed and was
-      // returning 500s and timeouts all the same. POST /api/admin/model-probe walks
-      // every entry and is what tells you which of these actually answer.
-      // Appended BELOW the proven entries so a new id never leads the chain.
+      // ── Verified present in the provider catalog, not yet latency-tested.
       'deepseek-ai/DeepSeek-V4-Pro-0813',
       'deepseek-ai/DeepSeek-V4-Flash-0731',
       'moonshotai/Kimi-K3',
