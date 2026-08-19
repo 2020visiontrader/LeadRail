@@ -6,6 +6,7 @@ import { OUTREACH_CAPABILITIES } from './outreach';
 import { CRM_CAPABILITIES } from './crm';
 import { KNOWLEDGE_CAPABILITIES } from './knowledge';
 import { CREATIVE_CAPABILITIES } from './creative';
+import { STRATEGY_CAPABILITIES } from './strategy';
 import { MEMORY_CAPABILITIES } from './memory';
 import { SOCIAL_CAPABILITIES } from './social';
 import { SOCIAL_AUTOMATION_CAPABILITIES } from './social-automations';
@@ -52,6 +53,7 @@ const ALL: Capability[] = [
   ...CRM_CAPABILITIES,
   ...KNOWLEDGE_CAPABILITIES,
   ...CREATIVE_CAPABILITIES,
+  ...STRATEGY_CAPABILITIES,
   ...MEMORY_CAPABILITIES,
   ...SOCIAL_CAPABILITIES,
   ...SOCIAL_AUTOMATION_CAPABILITIES,
@@ -83,7 +85,7 @@ const CATALOG_ORDER: string[] = [
   'searchDrive', 'readNotionPage', 'readDriveFile', 'sourceLeads', 'enrichLead',
   'draftOutreach', 'sendEmail', 'listSequences', 'enrollInSequence', 'listStages',
   'createDeal', 'moveDeal', 'addNote', 'updateLeadStatus', 'listTags', 'tagLead',
-  'getPersona', 'updatePersona', 'generateAdCopy',
+  'getPersona', 'updatePersona', 'generateAdCopy', 'analyzeBrand',
   // --- appended by Packet 1.1 (durable memory). Appended, never sorted: the
   // 37 names above must keep their exact order or the prompt catalog changes.
   'rememberFact', 'forgetFact', 'listFacts',

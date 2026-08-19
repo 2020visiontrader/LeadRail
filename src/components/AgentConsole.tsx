@@ -73,6 +73,7 @@ const TOOL_VERB: Record<string, string> = {
   sourceLeads: 'Preparing to find new leads',
   enrichLead: 'Preparing to fill in that lead’s details',
   createLead: 'Adding that lead to your list',
+  analyzeBrand: 'Working out a marketing strategy for that brand',
   draftOutreach: 'Writing the outreach',
   sendEmail: 'Preparing to send the email',
   listSequences: 'Checking your follow-up sequences',
