@@ -63,6 +63,20 @@ async function GET__impl(request: NextRequest) {
   try {
     const env = validateEnv();
     envPresence = Object.keys(env).map((key) => ({ key, present: Boolean((env as Record<string, any>)[key]) }));
+    // AI provider keys are reported separately from validateEnv()'s list, which
+    // only covers keys the app REQUIRES. A provider tier with no key is skipped
+    // silently by the router — openrouterConfigured() simply returns false — so
+    // a missing key looks identical to a tier that was never wired. Surfacing
+    // presence here is what makes "why did that tier never appear in the logs"
+    // answerable. Values are never read, only presence.
+    const AI_KEYS = [
+      'NIM_API_KEY', 'OPENCODE_API_KEY', 'OPENROUTER_API_KEY',
+      'HUGGINGFACE_API_KEY', 'ZOASK_API_KEY', 'GEMINI_API_KEY',
+    ];
+    for (const key of AI_KEYS) {
+      if (envPresence.some((e) => e.key === key)) continue;
+      envPresence.push({ key, present: Boolean(process.env[key]) });
+    }
     checks.push({ name: 'env', status: 'ok', detail: `${envPresence.filter((e) => e.present).length}/${envPresence.length} keys present` });
   } catch (e: any) {
     checks.push({ name: 'env', status: 'error', detail: String(e?.message || e).slice(0, 300) });

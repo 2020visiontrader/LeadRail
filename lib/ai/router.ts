@@ -32,6 +32,7 @@ import type { ChatMessage } from './opencode';
 import * as opencode from './opencode';
 import { zoAskConfigured, zoAskText, zoAskChat } from './zoask';
 import { nimConfigured, nimText, nimChat, nimStreamChat } from './nim';
+import { huggingfaceConfigured, hfText, hfChat, hfStreamChat } from './huggingface';
 import { openrouterConfigured, openrouterText, openrouterChat, openrouterStreamChat } from './openrouter';
 import { log } from '@/lib/logger';
 import { registryConfigured, resolveChain, resolveChainForTask, callModel, callModelStream, type ResolvedModel } from './providers';
@@ -39,7 +40,7 @@ import { registryConfigured, resolveChain, resolveChainForTask, callModel, callM
 export type { ChatMessage };
 
 export function textConfigured(): boolean {
-  return zoAskConfigured() || opencode.opencodeConfigured() || nimConfigured() || openrouterConfigured();
+  return zoAskConfigured() || opencode.opencodeConfigured() || nimConfigured() || huggingfaceConfigured() || openrouterConfigured();
 }
 
 // Best-effort usage logging; imported lazily inside the try so a circular
@@ -154,6 +155,14 @@ export async function generateText(opts: {
       lastErr = err;
     }
   }
+  if (huggingfaceConfigured()) {
+    try {
+      return await hfText(opts);
+    } catch (err: any) {
+      log.warn('ai router: tier failed', { tier: 'huggingface', error: String(err?.message || err) });
+      lastErr = err;
+    }
+  }
   if (openrouterConfigured()) {
     try {
       const text = await openrouterText(opts);
@@ -236,6 +245,14 @@ export async function generateChat(opts: {
       // error — a NIM 403 with no hint that Ask Zo and OpenCode were
       // tried first and why they declined.
       log.warn('ai router: tier failed', { tier: 'nim', error: String(err?.message || err) });
+      lastErr = err;
+    }
+  }
+  if (huggingfaceConfigured()) {
+    try {
+      return await hfChat(opts);
+    } catch (err: any) {
+      log.warn('ai router: tier failed', { tier: 'huggingface', error: String(err?.message || err) });
       lastErr = err;
     }
   }
@@ -326,6 +343,14 @@ export async function streamChat(
       // error — a NIM 403 with no hint that Ask Zo and OpenCode were
       // tried first and why they declined.
       log.warn('ai router: tier failed', { tier: 'nim', error: String(err?.message || err) });
+      lastErr = err;
+    }
+  }
+  if (huggingfaceConfigured()) {
+    try {
+      return await hfStreamChat(opts, onDelta);
+    } catch (err: any) {
+      log.warn('ai router: tier failed', { tier: 'huggingface', error: String(err?.message || err) });
       lastErr = err;
     }
   }

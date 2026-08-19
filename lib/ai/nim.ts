@@ -28,7 +28,18 @@ const BASE = 'https://integrate.api.nvidia.com/v1';
 // or 5xx (transient; retrying a different model just burns the rate limit).
 const MODEL_CHAIN = (process.env.NIM_MODEL
   ? [process.env.NIM_MODEL]
-  : ['z-ai/glm-5.2', 'meta/llama-3.3-70b-instruct', 'meta/llama-3.1-8b-instruct']);
+  : [
+      // Nemotron first: NVIDIA's own models are the ones least likely to lose
+      // entitlement on NVIDIA's own catalog, and the -lightning variant is built
+      // for exactly this workload — short, structured, latency-sensitive routing
+      // calls. GLM-5.2 was leading this chain and timed out at 30s; a 1M-context
+      // model is the wrong tool for a 700-token JSON envelope.
+      'nvidia/llama-3.3-nemotron-super-49b-v1.5',
+      'nvidia/nemotron-3.5-lightning',
+      'meta/llama-3.3-70b-instruct',
+      'z-ai/glm-5.2',
+      'meta/llama-3.1-8b-instruct',
+    ]);
 const MODEL = MODEL_CHAIN[0];
 
 /** Status codes where trying the NEXT model in the chain is worth doing.
