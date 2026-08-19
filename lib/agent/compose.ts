@@ -19,7 +19,10 @@ import { stripAiMarkers, HUMANIZE_RULES } from '@/lib/ai/humanizer';
 // Upper bound on the compose budget. The model's own ceiling is used when it is
 // lower; this only stops an enormous-output model from being asked for far more
 // than a chat answer ever needs.
-const COMPOSE_CEILING = Number(process.env.AGENT_COMPOSE_CEILING || 8000);
+// Ceiling, not a budget: resolveMaxOutputTokens takes min(model capability,
+// this). Raised from 8000 so the answer the user reads is bounded by what the
+// model can actually produce rather than by a number we picked.
+const COMPOSE_CEILING = Number(process.env.AGENT_COMPOSE_CEILING || 32000);
 
 // Second, independent kill switch (Packet 8.1c). AGENT_COMPOSE=0 disables the
 // compose pass entirely; AGENT_COMPOSE_STREAM=0 keeps compose but takes the

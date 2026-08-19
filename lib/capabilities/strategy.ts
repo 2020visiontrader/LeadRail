@@ -86,7 +86,9 @@ export const STRATEGY_CAPABILITIES: Capability[] = [
         ].join('\n\n'),
         messages: [{ role: 'user', content: buildPrompt(ctx, v.name || 'this brand', a.goal) }],
         temperature: 0.4,
-        maxOutputTokens: 1400,
+        // No explicit cap: a strategy with campaign ideas, risks and open
+        // questions was being truncated at 1400 tokens, which read as the model
+        // trailing off rather than a budget we imposed.
       });
 
       // Tolerate a fenced or prose-wrapped envelope: the ladder spans several

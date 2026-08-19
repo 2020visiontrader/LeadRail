@@ -335,7 +335,7 @@ export async function sequenceChat(messages: ChatMessage[], opts: { ventureName?
     format:
       'Return ONLY JSON: {"reply": string, "ready": boolean, "sequence": {"name": string, "steps": [{"step_order": number, "delay_hours": number, "subject": string, "body": string}]} | null}',
   });
-  const raw = await generateChat({ system, messages, temperature: 0.6, maxOutputTokens: 2048 });
+  const raw = await generateChat({ system, messages, temperature: 0.6 });
   const parsed = parseJson<Partial<SequenceChatResult>>(raw, { reply: raw, ready: false, sequence: null });
   const seq = parsed.sequence && Array.isArray(parsed.sequence.steps)
     ? {
@@ -383,7 +383,7 @@ export async function inboxReplyChat(
       `Base everything on this context:\n${contextBlock}`,
     format: 'Return ONLY JSON: {"reply": string, "draft": {"subject": string, "body": string} | null}',
   });
-  const raw = await generateChat({ system, messages, temperature: 0.6, maxOutputTokens: 1536 });
+  const raw = await generateChat({ system, messages, temperature: 0.6 });
   const parsed = parseJson<Partial<ReplyChatResult>>(raw, { reply: raw, draft: null });
   const draft = parsed.draft && (parsed.draft.subject || parsed.draft.body)
     ? { subject: stripAiMarkers(parsed.draft.subject || `Re: ${context.incomingSubject || ''}`), body: stripAiMarkers(parsed.draft.body || '') }

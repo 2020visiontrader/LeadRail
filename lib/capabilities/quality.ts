@@ -193,7 +193,8 @@ export const QUALITY_CAPABILITIES: Capability[] = [
           ].join('\n'),
         }],
         temperature: 0.3,
-        maxOutputTokens: 900,
+        // No explicit cap: an editorial review quotes the offending lines, so
+        // its length scales with the draft under review.
       });
 
       const cleaned = String(raw).replace(/```json|```/g, '').trim();

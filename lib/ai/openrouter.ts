@@ -9,6 +9,19 @@
 import { readSseDeltas } from './opencode';
 import { log } from '@/lib/logger';
 
+// Default output budget when a caller does not specify one.
+//
+// This used to be a per-file literal (2048 here, 900 in huggingface.ts), which
+// silently capped long-form work: a strategy or an editorial review would stop
+// mid-sentence and look like a model failure rather than a budget we chose.
+//
+// The registry path has a proper per-model resolver (resolveMaxOutputTokens,
+// migration 038) that asks the selected model for its real ceiling — but
+// ai_providers is empty, so that path never runs and these literals ARE the hard
+// limit today. Set high enough to mean "as much as the model will give", and
+// override with AI_MAX_OUTPUT_TOKENS.
+const DEFAULT_MAX_OUT = Number(process.env.AI_MAX_OUTPUT_TOKENS) || 16000;
+
 const KEY = process.env.OPENROUTER_API_KEY || '';
 
 const BASE = 'https://openrouter.ai/api/v1';
@@ -256,7 +269,7 @@ export async function openrouterStreamChat(
   for (const m of opts.messages) {
     if (m.content?.trim()) messages.push({ role: m.role, content: m.content });
   }
-  return completeStream(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? 2048, onDelta);
+  return completeStream(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, onDelta);
 }
 
 /** Generate text. Returns the model's plain-text completion. */
@@ -269,7 +282,7 @@ export async function openrouterText(opts: {
   const messages: OpenAIMessage[] = [];
   if (opts.system) messages.push({ role: 'system', content: opts.system });
   messages.push({ role: 'user', content: opts.prompt });
-  return complete(messages, opts.temperature ?? 0.7, opts.maxOutputTokens ?? 2048);
+  return complete(messages, opts.temperature ?? 0.7, opts.maxOutputTokens ?? DEFAULT_MAX_OUT);
 }
 
 /** Multi-turn chat completion. Passes the whole conversation through. */
@@ -284,7 +297,7 @@ export async function openrouterChat(opts: {
   for (const m of opts.messages) {
     if (m.content?.trim()) messages.push({ role: m.role, content: m.content });
   }
-  return complete(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? 2048);
+  return complete(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT);
 }
 
 // ---------------------------------------------------------------------------

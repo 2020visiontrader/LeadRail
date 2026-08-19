@@ -10,6 +10,19 @@
 // returns 402, which is per-KEY and not survivable by switching models — so it
 // is NOT in the retry set below.
 
+// Default output budget when a caller does not specify one.
+//
+// This used to be a per-file literal (2048 here, 900 in huggingface.ts), which
+// silently capped long-form work: a strategy or an editorial review would stop
+// mid-sentence and read as a model failure rather than a budget we chose.
+//
+// The registry path has a proper per-model resolver (resolveMaxOutputTokens,
+// migration 038) that asks the selected model for its real ceiling — but
+// ai_providers is empty, so that path never runs and these literals ARE the hard
+// limit today. Set high enough to mean "as much as the model will give", and
+// override with AI_MAX_OUTPUT_TOKENS.
+const DEFAULT_MAX_OUT = Number(process.env.AI_MAX_OUTPUT_TOKENS) || 16000;
+
 import { readSseDeltas } from './opencode';
 
 const BASE = 'https://router.huggingface.co/v1';
@@ -122,14 +135,14 @@ export async function hfText(opts: { system?: string; prompt: string; temperatur
   const messages: Msg[] = [];
   if (opts.system) messages.push({ role: 'system', content: opts.system });
   messages.push({ role: 'user', content: opts.prompt });
-  return complete(messages, opts.temperature ?? 0.4, opts.maxOutputTokens ?? 900);
+  return complete(messages, opts.temperature ?? 0.4, opts.maxOutputTokens ?? DEFAULT_MAX_OUT);
 }
 
 export async function hfChat(opts: { system?: string; messages: Msg[]; temperature?: number; maxOutputTokens?: number }): Promise<string> {
   const messages: Msg[] = [];
   if (opts.system) messages.push({ role: 'system', content: opts.system });
   messages.push(...opts.messages);
-  return complete(messages, opts.temperature ?? 0.4, opts.maxOutputTokens ?? 900);
+  return complete(messages, opts.temperature ?? 0.4, opts.maxOutputTokens ?? DEFAULT_MAX_OUT);
 }
 
 export async function hfStreamChat(
@@ -143,7 +156,7 @@ export async function hfStreamChat(
   // Falls back to the first model only for streaming: switching models mid-stream
   // after deltas have been emitted would splice two different answers together.
   const model = MODEL_CHAIN[0];
-  const res = await callHF(model, messages, opts.temperature ?? 0.4, opts.maxOutputTokens ?? 900, true);
+  const res = await callHF(model, messages, opts.temperature ?? 0.4, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, true);
   if (!res.ok) {
     const detail = (await res.text().catch(() => '')).slice(0, 300);
     throwForResponse(res, model, detail);

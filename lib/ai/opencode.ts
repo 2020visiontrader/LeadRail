@@ -4,6 +4,19 @@
 // only; a route handler invokes it on explicit request. Image generation stays
 // on Gemini (see ./gemini) — OpenCode returns text, not image bytes.
 
+// Default output budget when a caller does not specify one.
+//
+// This used to be a per-file literal (2048 here, 900 in huggingface.ts), which
+// silently capped long-form work: a strategy or an editorial review would stop
+// mid-sentence and read as a model failure rather than a budget we chose.
+//
+// The registry path has a proper per-model resolver (resolveMaxOutputTokens,
+// migration 038) that asks the selected model for its real ceiling — but
+// ai_providers is empty, so that path never runs and these literals ARE the hard
+// limit today. Set high enough to mean "as much as the model will give", and
+// override with AI_MAX_OUTPUT_TOKENS.
+const DEFAULT_MAX_OUT = Number(process.env.AI_MAX_OUTPUT_TOKENS) || 16000;
+
 const KEY =
   process.env.OPENCODE_API_KEY ||
   process.env.OpenCode_Api_Key ||
@@ -243,7 +256,7 @@ export async function streamChat(
   for (const m of opts.messages) {
     if (m.content?.trim()) messages.push({ role: m.role, content: m.content });
   }
-  return completeStream(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? 2048, opts.model, onDelta);
+  return completeStream(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.model, onDelta);
 }
 
 /** Generate text. Returns the model's plain-text completion. Pass `model` to
@@ -258,7 +271,7 @@ export async function generateText(opts: {
   const messages: OpenAIMessage[] = [];
   if (opts.system) messages.push({ role: 'system', content: opts.system });
   messages.push({ role: 'user', content: opts.prompt });
-  return complete(messages, opts.temperature ?? 0.7, opts.maxOutputTokens ?? 2048, opts.model);
+  return complete(messages, opts.temperature ?? 0.7, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.model);
 }
 
 /**
@@ -277,7 +290,7 @@ export async function generateChat(opts: {
   for (const m of opts.messages) {
     if (m.content?.trim()) messages.push({ role: m.role, content: m.content });
   }
-  return complete(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? 2048, opts.model);
+  return complete(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.model);
 }
 
 export const opencodeModel = TEXT_MODEL;
