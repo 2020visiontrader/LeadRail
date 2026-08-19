@@ -72,7 +72,7 @@ export default function SequencesPage() {
   // Multi-turn AI builder: sends the whole transcript so the model can ask
   // clarifying questions and refine the cadence across turns.
   const sendChat = async (text: string) => {
-    if (!venture) { notify('Pick a venture first', 'error'); return; }
+    if (!venture) { notify('Pick a brand first', 'error'); return; }
     const next: ChatMsg[] = [...chat, { role: 'user', content: text }];
     setChat(next); setChatLoading(true);
     try {

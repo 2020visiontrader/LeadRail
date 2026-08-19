@@ -19,7 +19,7 @@ interface Bubble { role: 'user' | 'ai'; text: string }
 
 const EXAMPLES = [
   'How many leads do I have?',
-  'Create a lead-ad campaign for this venture',
+  'Create a lead-ad campaign for this brand',
   'Show my active campaigns',
 ];
 
@@ -41,7 +41,7 @@ export default function CommandBar({ ventureName }: { ventureName?: string }) {
 
   useEffect(() => { logRef.current?.scrollTo({ top: logRef.current.scrollHeight }); }, [log, busy, proposal]);
 
-  const brandName = ventureName && ventureName !== 'All Ventures' ? ventureName : undefined;
+  const brandName = ventureName && ventureName !== 'All Brands' ? ventureName : undefined;
 
   const handle = (res: AgentResult) => {
     if (typeof res.conversationId === 'string' && res.conversationId) conversationIdRef.current = res.conversationId;
@@ -120,7 +120,7 @@ export default function CommandBar({ ventureName }: { ventureName?: string }) {
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') send(); }}
           disabled={busy}
-          placeholder={busy ? 'Working…' : 'Ask LeadRail AI — e.g. “create a lead-ad campaign for this venture”'}
+          placeholder={busy ? 'Working…' : 'Ask LeadRail AI — e.g. “create a lead-ad campaign for this brand”'}
           className="min-w-0 flex-1 bg-transparent text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none disabled:opacity-60"
         />
         {log.length > 0 && !busy && (

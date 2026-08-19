@@ -171,7 +171,7 @@ export default function SequenceDetail() {
         <div className="space-y-4">
           <div className="space-y-3 rounded-xl border border-slate-200 bg-white p-4">
             <h2 className="font-semibold">Enroll leads</h2>
-            <Input placeholder="Search this venture's leads by name/email/company…" value={pickerSearch} onChange={(e) => setPickerSearch(e.target.value)} />
+            <Input placeholder="Search this brand's leads by name/email/company…" value={pickerSearch} onChange={(e) => setPickerSearch(e.target.value)} />
             <div className="max-h-56 overflow-auto rounded border border-slate-200 divide-y divide-slate-100">
               {leads.length === 0 && <div className="p-3 text-sm text-slate-500">No leads found.</div>}
               {leads.map((l) => {

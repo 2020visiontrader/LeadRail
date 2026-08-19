@@ -68,10 +68,10 @@ function deltaEvents(text: string, size = 26): ReplayEvent[] {
 // Step labels are the real plain-language verbs from AgentConsole's TOOL_VERB
 // map, for the real capability names in lib/capabilities/*.
 const SCRIPT: ReplayEvent[] = [
-  { type: 'thought', text: 'Finding which venture that campaign belongs to.' },
-  { type: 'tool', label: 'Checking your ventures' },
+  { type: 'thought', text: 'Finding which brand that campaign belongs to.' },
+  { type: 'tool', label: 'Checking your brands' },
   { type: 'observation', ok: true },
-  { type: 'thought', text: 'Pulling the campaign list for that venture.' },
+  { type: 'thought', text: 'Pulling the campaign list for that brand.' },
   { type: 'tool', label: 'Pulling up your campaigns' },
   { type: 'observation', ok: true },
   { type: 'thought', text: 'Refreshing live spend and results before changing anything.' },

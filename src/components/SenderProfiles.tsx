@@ -117,10 +117,10 @@ function VentureCard({ venture, onSaved }: { venture: Venture; onSaved: (v: Vent
         <div className="mt-4 space-y-4">
           <div className="grid gap-3 sm:grid-cols-2">
             <Input label="Your name" placeholder="e.g. Franck Fon" value={d.senderName} onChange={(e) => set({ senderName: e.target.value })} />
-            <Input label="Your role at this venture" placeholder="e.g. Co-founder" value={d.senderRole} onChange={(e) => set({ senderRole: e.target.value })} />
+            <Input label="Your role at this brand" placeholder="e.g. Co-founder" value={d.senderRole} onChange={(e) => set({ senderRole: e.target.value })} />
           </div>
           <Input label="Sender / reply-to email" type="email" placeholder="you@yourbrand.com" value={d.senderEmail} onChange={(e) => set({ senderEmail: e.target.value })} />
-          <Textarea label="One-line pitch (what the AI grounds on)" rows={2} placeholder="For [audience] who [need], [venture] is a [category] that [benefit]." value={d.pitch} onChange={(e) => set({ pitch: e.target.value })} />
+          <Textarea label="One-line pitch (what the AI grounds on)" rows={2} placeholder="For [audience] who [need], [brand] is a [category] that [benefit]." value={d.pitch} onChange={(e) => set({ pitch: e.target.value })} />
           <div className="grid gap-3 sm:grid-cols-2">
             <Dropdown label="Default tone" options={TONE_OPTIONS} value={d.tone} onChange={(e) => set({ tone: e.target.value })} />
             <Input label="Default ask (CTA)" placeholder="e.g. a 15-min intro call" value={d.defaultCta} onChange={(e) => set({ defaultCta: e.target.value })} />
@@ -190,7 +190,7 @@ export default function SenderProfiles() {
       {ventures === null ? (
         <LoadingSpinner />
       ) : ventures.length === 0 ? (
-        <p className="text-sm text-[var(--text-muted)]">No ventures yet. Create a venture first, then set its sender profile here.</p>
+        <p className="text-sm text-[var(--text-muted)]">No brands yet. Create a brand first, then set its sender profile here.</p>
       ) : (
         <div className="space-y-3">
           {ventures.map((v) => <VentureCard key={v.id} venture={v} onSaved={onSaved} />)}

@@ -62,7 +62,7 @@ function LoginInner() {
         </div>
 
         <h1 className="text-lg font-semibold text-[var(--text-primary)]">Operator sign in</h1>
-        <p className="mb-6 text-sm text-[var(--text-secondary)]">Multi-venture lead command center.</p>
+        <p className="mb-6 text-sm text-[var(--text-secondary)]">Multi-brand lead command center.</p>
 
         {expired && !error && (
           <p className="mb-4 flex items-start gap-1.5 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">

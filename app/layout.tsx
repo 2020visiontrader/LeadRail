@@ -4,7 +4,7 @@ import ToastProvider from '@/components/ToastProvider';
 
 export const metadata = {
   title: 'LeadRail',
-  description: 'Multi-venture lead CRM — pipeline, outreach & campaigns command center',
+  description: 'Multi-brand lead CRM — pipeline, outreach & campaigns command center',
 };
 
 // Apply saved theme before paint to avoid a flash of the wrong mode.

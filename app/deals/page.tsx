@@ -119,7 +119,7 @@ export default function DealsPage() {
       {loading ? (
         <p className="text-[var(--text-muted)]">Loading…</p>
       ) : ordered.length === 0 ? (
-        <EmptyState icon="📊" title="No pipeline stages" hint="Configure pipeline stages for this venture to start tracking deals." />
+        <EmptyState icon="📊" title="No pipeline stages" hint="Configure pipeline stages for this brand to start tracking deals." />
       ) : (
         <div className="flex gap-4 overflow-x-auto pb-4">
           {ordered.map((stage) => {

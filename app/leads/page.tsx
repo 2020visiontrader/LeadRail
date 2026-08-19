@@ -189,7 +189,7 @@ export default function LeadsPage() {
 
   const handleAdd = async () => {
     if (!form.name || !form.email) { notify('Name and email required', 'error'); return; }
-    if (!venture) { notify('Select a venture first', 'error'); return; }
+    if (!venture) { notify('Select a brand first', 'error'); return; }
     setSaving(true);
     try {
       const created = await apiSend<Contact>('/api/leads', 'POST', { brand_id: venture.id, ...form });
@@ -202,7 +202,7 @@ export default function LeadsPage() {
 
   // USER-TRIGGERED Apollo search. Fires only from the Search button click.
   const handleApolloSearch = async () => {
-    if (!venture) { notify('Select a venture first', 'error'); return; }
+    if (!venture) { notify('Select a brand first', 'error'); return; }
     const query: any = {
       industry: icp.industry.trim() || undefined,
       titles: icp.titles.split(',').map((t) => t.trim()).filter(Boolean),
@@ -283,21 +283,21 @@ export default function LeadsPage() {
             onChange={(e) => {
               const val = e.target.value;
               if (val === 'all') {
-                setVenture({ id: 'all', name: 'All Ventures', account_id: ventures[0]?.account_id || '' } as Venture);
+                setVenture({ id: 'all', name: 'All Brands', account_id: ventures[0]?.account_id || '' } as Venture);
               } else {
                 setVenture(ventures.find((v) => v.id === val) || null);
               }
               setPage(0);
             }}
-            options={[{ value: 'all', label: '🌐 All Ventures' }, ...ventures.map((v) => ({ value: v.id, label: v.name }))]}
+            options={[{ value: 'all', label: '🌐 All Brands' }, ...ventures.map((v) => ({ value: v.id, label: v.name }))]}
           />
-          <Button variant="secondary" disabled={isAll} title={isAll ? 'Pick a specific venture to source leads' : undefined} onClick={() => setSourceOpen((o) => !o)}>Find Leads</Button>
-          <Button disabled={isAll} title={isAll ? 'Pick a specific venture to add a lead' : undefined} onClick={() => setAddOpen(true)}>+ Add Lead</Button>
+          <Button variant="secondary" disabled={isAll} title={isAll ? 'Pick a specific brand to source leads' : undefined} onClick={() => setSourceOpen((o) => !o)}>Find Leads</Button>
+          <Button disabled={isAll} title={isAll ? 'Pick a specific brand to add a lead' : undefined} onClick={() => setAddOpen(true)}>+ Add Lead</Button>
         </div>
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2">
-        <span className="text-xs text-[var(--text-muted)]">{isAll ? 'Viewing all ventures — pick a specific venture to import or export.' : 'Bulk: import a CSV/Excel list, or export the current venture’s leads.'}</span>
+        <span className="text-xs text-[var(--text-muted)]">{isAll ? 'Viewing all brands — pick a specific brand to import or export.' : 'Bulk: import a CSV/Excel list, or export the current brand’s leads.'}</span>
         {!isAll && <ImportExport exportPath="/api/leads/export" importPath="/api/leads/import" brandId={venture?.id} accountId={venture?.account_id} onImported={load} />}
       </div>
 
@@ -307,7 +307,7 @@ export default function LeadsPage() {
             <h2 className="font-semibold">Source leads from LeadRail</h2>
             <div className="flex items-center gap-2">
               {hasProfile && (
-                <Button variant="secondary" onClick={applyVentureProfile} title="Fill filters from this venture's pitch-deck profile">
+                <Button variant="secondary" onClick={applyVentureProfile} title="Fill filters from this brand's pitch-deck profile">
                   ✨ Use {venture?.name} profile
                 </Button>
               )}

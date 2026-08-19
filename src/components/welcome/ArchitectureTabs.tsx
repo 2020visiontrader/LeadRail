@@ -50,7 +50,7 @@ const TABS: Tab[] = [
     label: 'Capability registry',
     heading: 'One declaration per platform action',
     body:
-      'Each thing the assistant can do is declared once, in a single registry, across nine domains: ventures, campaigns, leads, outreach, CRM, knowledge, creative, memory and social.',
+      'Each thing the assistant can do is declared once, in a single registry, across nine domains: brands, campaigns, leads, outreach, CRM, knowledge, creative, memory and social.',
     points: [
       'The chat tool catalog, the external tool list, the approval gate and the audit trail all derive from the same declarations.',
       'Capability names are stable once shipped, because external clients bind to them.',

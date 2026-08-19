@@ -62,7 +62,7 @@ export default function Overview() {
 
   useEffect(() => {
     loadVentures().then((vs) => {
-      // Default: wide "All Ventures" preview when >1 venture, else the single one.
+      // Default: wide "All Brands" preview when >1 venture, else the single one.
       setScopeId((cur) => (cur !== ALL ? cur : vs.length === 1 ? vs[0].id : ALL));
     });
   }, []);
@@ -84,7 +84,7 @@ export default function Overview() {
   // venture (+ upload/profile the deck if one was chosen).
   const wizardNext = async () => {
     if (step === 1) {
-      if (!wName.trim()) { notify('Give the venture a name', 'error'); return; }
+      if (!wName.trim()) { notify('Give the brand a name', 'error'); return; }
       setStep(2); return;
     }
     if (step === 2) { setStep(3); return; }
@@ -128,22 +128,22 @@ export default function Overview() {
             await loadVentures();
             setProfileResult({ summary: data?.profile?.summary, note: 'Profiled from your description — its lead search and AI boxes are now tailored. Add a pitch deck anytime for a deeper profile.' });
           } else {
-            setProfileResult({ note: 'Venture created. Add a pitch deck later to auto-tailor its lead search.' });
+            setProfileResult({ note: 'Brand created. Add a pitch deck later to auto-tailor its lead search.' });
           }
         } catch {
-          setProfileResult({ note: 'Venture created. Add a pitch deck later to auto-tailor its lead search.' });
+          setProfileResult({ note: 'Brand created. Add a pitch deck later to auto-tailor its lead search.' });
         }
       }
       notify(`Created “${venture.name}”`);
       setStep(4);
-    } catch (e: any) { notify(e.message || 'Could not create venture', 'error'); }
+    } catch (e: any) { notify(e.message || 'Could not create brand', 'error'); }
     finally { setCreating(false); }
   };
 
   const stepLabel = step === 1 ? 'Next: targeting' : step === 2 ? 'Next: deck & focus'
-    : step === 3 ? (wDeck ? 'Create & profile deck' : 'Create venture') : 'Done';
+    : step === 3 ? (wDeck ? 'Create & profile deck' : 'Create brand') : 'Done';
 
-  const scopeName = scopeId === ALL ? 'All Ventures' : ventures.find((v) => v.id === scopeId)?.name || '—';
+  const scopeName = scopeId === ALL ? 'All Brands' : ventures.find((v) => v.id === scopeId)?.name || '—';
   const segEntries = stats?.segments ? Object.entries(stats.segments as Record<string, number>) : [];
 
   const firstRun = !loading && ventures.length === 0;
@@ -160,13 +160,13 @@ export default function Overview() {
               onChange={(e) => setScopeId(e.target.value)}
               className="rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface)] px-3 py-1.5 text-sm text-[var(--text-primary)]"
             >
-              <option value={ALL}>🌐 All Ventures</option>
+              <option value={ALL}>🌐 All Brands</option>
               {ventures.map((v) => (
                 <option key={v.id} value={v.id}>{v.name}{v.contact_count ? ` (${v.contact_count})` : ''}</option>
               ))}
             </select>
           </div>
-          <Button onClick={openWizard}>+ New venture</Button>
+          <Button onClick={openWizard}>+ New brand</Button>
         </div>
       )}
 
@@ -254,7 +254,7 @@ export default function Overview() {
 
       <Modal
         isOpen={addOpen}
-        title={step === 4 ? 'Venture created' : `New venture · step ${step} of 3`}
+        title={step === 4 ? 'Brand created' : `New venture · step ${step} of 3`}
         onClose={() => setAddOpen(false)}
         onSubmit={wizardNext}
         submitLabel={stepLabel}
@@ -264,15 +264,15 @@ export default function Overview() {
           {/* Step 1 — basics */}
           {step === 1 && (
             <div className="space-y-3">
-              <Input label="Venture name" placeholder="e.g. RetentionRail" value={wName} onChange={(e) => setWName(e.target.value)} />
+              <Input label="Brand name" placeholder="e.g. RetentionRail" value={wName} onChange={(e) => setWName(e.target.value)} />
               <Textarea
-                label="What is this venture about?"
+                label="What is this brand about?"
                 placeholder="One or two lines — what it does, who it's for. The AI uses this (plus your deck) to find the right leads."
                 rows={3}
                 value={wDesc}
                 onChange={(e) => setWDesc(e.target.value)}
               />
-              <p className="text-xs text-[var(--text-muted)]">A venture is a separate brand workspace — its own leads, sequences, inbox and outreach.</p>
+              <p className="text-xs text-[var(--text-muted)]">A brand is a separate brand workspace — its own leads, sequences, inbox and outreach.</p>
             </div>
           )}
 
@@ -367,7 +367,7 @@ export default function Overview() {
               </div>
               {profileResult?.summary && (
                 <div className="rounded-lg border border-[var(--brand)]/40 bg-[var(--bg-surface)] p-3">
-                  <p className="mb-1 text-xs font-semibold text-[var(--brand)]">AI venture profile</p>
+                  <p className="mb-1 text-xs font-semibold text-[var(--brand)]">AI brand profile</p>
                   <p className="text-sm text-[var(--text-secondary)]">{profileResult.summary}</p>
                 </div>
               )}
@@ -390,7 +390,7 @@ export default function Overview() {
 // yet, in place of a dead zeros dashboard. Its single job: launch the wizard.
 function FirstRunHero({ onStart }: { onStart: () => void }) {
   const steps = [
-    { n: 1, t: 'Name your venture', d: 'A venture is a self-contained brand workspace — its own leads, sequences, inbox and outreach.' },
+    { n: 1, t: 'Name your brand', d: 'A brand is a self-contained brand workspace — its own leads, sequences, inbox and outreach.' },
     { n: 2, t: 'Set the target', d: 'Tell it who you sell to and which sectors — this shapes every lead search.' },
     { n: 3, t: 'Drop a deck (optional)', d: 'The AI reads your pitch and auto-tailors your LeadRail search to the right people.' },
   ];
@@ -403,7 +403,7 @@ function FirstRunHero({ onStart }: { onStart: () => void }) {
           <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--border-strong)] bg-[var(--bg-surface)] px-3 py-1 text-xs font-medium text-[var(--text-secondary)]">
             Welcome aboard
           </span>
-          <h1 className="mt-3 text-3xl font-bold tracking-tight">Let's set up your first venture</h1>
+          <h1 className="mt-3 text-3xl font-bold tracking-tight">Let's set up your first brand</h1>
           <p className="mt-2 max-w-xl text-sm leading-relaxed text-[var(--text-secondary)]">
             Your command center is empty until it has a venture to run. Spin one up in under a minute — then find leads, build sequences, and work the pipeline for it.
           </p>

@@ -40,7 +40,7 @@ export default function ContentPage() {
   }, []);
 
   const generate = async () => {
-    if (!venture) { notify('Select a venture first', 'error'); return; }
+    if (!venture) { notify('Select a brand first', 'error'); return; }
     if (!topic.trim()) { notify('Enter a topic to generate', 'error'); return; }
     setGenerating(true);
     try {
@@ -65,7 +65,7 @@ export default function ContentPage() {
   useEffect(() => { load(); }, [load]);
 
   const create = async () => {
-    if (!venture) { notify('Select a venture first', 'error'); return; }
+    if (!venture) { notify('Select a brand first', 'error'); return; }
     if (!form.post_body) { notify('Post body required', 'error'); return; }
     setSaving(true);
     try {
@@ -99,7 +99,7 @@ export default function ContentPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold">Content</h1>
-          <p className="text-sm text-slate-500">Plan and schedule social posts for each venture.</p>
+          <p className="text-sm text-slate-500">Plan and schedule social posts for each brand.</p>
         </div>
         <div className="flex items-center gap-2">
           {ventures.length > 1 && (
@@ -115,7 +115,7 @@ export default function ContentPage() {
       </div>
 
       {!venture ? (
-        <EmptyState icon="🏢" title="Select a venture" hint="Choose a brand above to manage its content." />
+        <EmptyState icon="🏢" title="Select a brand" hint="Choose a brand above to manage its content." />
       ) : loading ? <LoadingSpinner /> : posts.length === 0 ? (
         <EmptyState icon="📱" title="No content scheduled" hint="Schedule your first post." action={<Button onClick={() => setOpen(true)}>New Post</Button>} />
       ) : (

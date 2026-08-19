@@ -18,7 +18,7 @@ const ENRICH_STAGES = [
   'Finding verified contact details…',
   'Matching work emails…',
   'Checking deliverability…',
-  'Scoring fit for your venture…',
+  'Scoring fit for your brand…',
   'Updating your leads…',
 ];
 const verdictTone = (v?: string) => (v === 'good_fit' ? 'green' : v === 'maybe' ? 'amber' : v === 'skip' ? 'red' : 'gray');

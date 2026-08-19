@@ -130,7 +130,7 @@ export default function ContactDrawer({ contact, isOpen, onClose, onUpdate, onDe
           <div className="border-t border-slate-200 pt-4">
             <h3 className="mb-2 text-sm font-semibold">Add to sequence</h3>
             {sequences.length === 0 ? (
-              <p className="text-sm text-slate-400">No sequences for this venture yet. <Link href="/sequences" className="text-indigo-600 underline">Create one</Link>.</p>
+              <p className="text-sm text-slate-400">No sequences for this brand yet. <Link href="/sequences" className="text-indigo-600 underline">Create one</Link>.</p>
             ) : (
               <div className="flex items-center gap-2">
                 <select value={seqId} onChange={(e) => setSeqId(e.target.value)}

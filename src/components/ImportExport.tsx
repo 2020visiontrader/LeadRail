@@ -15,12 +15,12 @@ export default function ImportExport({
   const [busy, setBusy] = useState(false);
 
   const download = (fmt: 'csv' | 'xlsx') => {
-    if (!brandId) { notify('Pick a venture first', 'error'); return; }
+    if (!brandId) { notify('Pick a brand first', 'error'); return; }
     window.open(`${exportPath}?brandId=${encodeURIComponent(brandId)}&format=${fmt}`, '_blank');
   };
 
   const upload = async (file: File) => {
-    if (!brandId) { notify('Pick a venture first', 'error'); return; }
+    if (!brandId) { notify('Pick a brand first', 'error'); return; }
     setBusy(true);
     try {
       const fd = new FormData();
