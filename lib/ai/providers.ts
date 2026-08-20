@@ -474,13 +474,51 @@ export async function callModel(resolved: ResolvedModel, opts: CallModelOpts): P
   }
 }
 
+// Env var that already holds each provider kind's key. The hardcoded tier
+// clients (lib/ai/nim.ts, openrouter.ts, …) read these today, so a registry row
+// can reuse the same credential instead of requiring it to be re-entered and
+// stored twice.
+const KIND_ENV_KEY: Record<string, string | undefined> = {
+  nim: process.env.NIM_API_KEY,
+  opencode: process.env.OPENCODE_API_KEY,
+  openrouter: process.env.OPENROUTER_API_KEY,
+  huggingface: process.env.HUGGINGFACE_API_KEY || process.env.HF_TOKEN,
+  zoask: process.env.ZOASK_API_KEY,
+  gemini: process.env.GEMINI_API_KEY,
+  anthropic: process.env.ANTHROPIC_API_KEY,
+};
+
 function decryptProviderKey(provider: AiProviderRow): string {
-  if (!provider.api_key_encrypted) {
-    const err: any = new Error(`Provider "${provider.name}" has no API key configured`);
-    err.code = 'not_configured';
-    throw err;
+  // A stored key always wins — that is the BYOK case, and an operator who
+  // entered a key means to use it.
+  if (provider.api_key_encrypted) return decryptSecret(provider.api_key_encrypted);
+
+  // Otherwise fall back to the env credential for this kind. Without this the
+  // registry is unusable unless every key is re-entered through the UI and
+  // encrypted — which is why ai_providers has sat empty and the whole
+  // registry path (per-model ceilings, tier routing, fallback_chain) has been
+  // dead code. A row with no key now means "use the platform credential",
+  // which is the common case.
+  const envKey = KIND_ENV_KEY[provider.kind];
+  if (envKey) return envKey;
+
+  // OpenRouter and HuggingFace are both OpenAI-compatible, so they are stored as
+  // kind 'custom' — which means `kind` alone cannot say which credential they
+  // need. Resolve those by base_url instead. Matching on host, not the full
+  // string, so a trailing slash or an /v1 suffix does not break it.
+  const host = (provider.base_url || '').toLowerCase();
+  if (host.includes('openrouter.ai')) {
+    const k = process.env.OPENROUTER_API_KEY;
+    if (k) return k;
   }
-  return decryptSecret(provider.api_key_encrypted);
+  if (host.includes('huggingface.co')) {
+    const k = process.env.HUGGINGFACE_API_KEY || process.env.HF_TOKEN;
+    if (k) return k;
+  }
+
+  const err: any = new Error(`Provider "${provider.name}" has no API key configured`);
+  err.code = 'not_configured';
+  throw err;
 }
 
 async function callOpenAiCompatible(provider: AiProviderRow, model: AiModelRow, opts: CallModelOpts, isChat: boolean): Promise<string> {
