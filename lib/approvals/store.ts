@@ -12,6 +12,10 @@
 import { createHash } from 'node:crypto';
 import { supabase } from '@/lib/db';
 import { decryptSecret, encryptSecret, vaultConfigured } from '@/lib/ai/crypto';
+// TYPE-ONLY. Erased at compile time, so this cannot re-open the registry ->
+// capabilities -> db import cycle that Packet D2 had to break (see
+// lib/capabilities/registry.ts). Never make this a value import.
+import type { GateClass } from '@/lib/capabilities/types';
 
 // 'executed' (migration 037) is TERMINAL and makes this row authoritative for
 // execution: consumeApprovalForExecution flips approved -> executed atomically,
@@ -87,6 +91,51 @@ export function hashArgs(args: Record<string, any>): string {
   return createHash('sha256').update(JSON.stringify(sortDeep(args || {}))).digest('hex');
 }
 
+// APPROVAL LIFETIME, per gate class.
+//
+// An approval is authority to do one specific thing. Authority that never
+// lapses is not a gate: a user approves a $500 ad launch, the model fails
+// before executing, and three weeks later a retry fires it against a budget
+// and a campaign that no longer exist. The args hash catches a changed
+// PAYLOAD; nothing caught a changed WORLD. This is that check.
+//
+// Scaled by how bad a stale execution is, not by how long a human might
+// reasonably take: destructive is irreversible, spend and standing_rule commit
+// money (a standing rule commits it repeatedly), external_send only reaches a
+// third party once. Expiring is cheap — the user is asked again.
+//
+// read / internal_write never reach the approval path at all; they are listed
+// so the record is total and a new gate class cannot silently inherit a
+// default. Override with APPROVAL_TTL_MINUTES.
+const TTL_MINUTES_ENV = Number(process.env.APPROVAL_TTL_MINUTES);
+const DEFAULT_TTL_MINUTES: Record<GateClass, number> = {
+  destructive: 15,
+  spend: 30,
+  standing_rule: 30,
+  external_send: 60,
+  read: 0,
+  internal_write: 0,
+};
+
+/** ISO expiry for a proposal of this gate class, or null when it never lapses.
+ *  An unknown/absent gate yields null — callers that do not declare a gate keep
+ *  exactly their previous behaviour rather than inheriting a surprise TTL. */
+export function expiryForGate(gate?: GateClass, now: Date = new Date()): string | null {
+  if (!gate) return null;
+  const mins = Number.isFinite(TTL_MINUTES_ENV) && TTL_MINUTES_ENV > 0
+    ? TTL_MINUTES_ENV
+    : DEFAULT_TTL_MINUTES[gate];
+  if (!mins || mins <= 0) return null;
+  return new Date(now.getTime() + mins * 60_000).toISOString();
+}
+
+/** True when `expiresAt` is set and already in the past. */
+export function isPastDue(expiresAt: string | null | undefined, now: Date = new Date()): boolean {
+  if (!expiresAt) return false;
+  const t = Date.parse(expiresAt);
+  return Number.isFinite(t) && t <= now.getTime();
+}
+
 export interface ApprovalProposalInput {
   tool: string;
   title: string;
@@ -94,6 +143,10 @@ export interface ApprovalProposalInput {
   args: Record<string, any>;
   conversationId?: string | null;
   requestedBy?: string | null;
+  /** Gate class of the capability being proposed. Sets the default expiry.
+   *  Omit and the approval never lapses (pre-expiry behaviour). */
+  gate?: GateClass;
+  /** Explicit override. Wins over the gate-derived default when supplied. */
   expiresAt?: string | null;
 }
 
@@ -115,7 +168,7 @@ export async function createApproval(accountId: string, input: ApprovalProposalI
     args_hash: hash,
     state: 'pending',
     requested_by: input.requestedBy ?? null,
-    expires_at: input.expiresAt ?? null,
+    expires_at: input.expiresAt ?? expiryForGate(input.gate),
   };
   if (vaultConfigured()) {
     row.args_encrypted = encryptSecret(JSON.stringify(input.args || {}));
@@ -239,6 +292,19 @@ export async function decideApproval(
     throw new ApprovalDecisionError('not_pending', `This approval is already ${existing.state} and can no longer be decided.`);
   }
 
+  // A pending row that lapsed cannot be approved into life. Rejecting one is
+  // harmless, but it is still dead, so flip it and refuse either way rather
+  // than handing back an approval that consume would immediately expire.
+  if (isPastDue(existing.expires_at)) {
+    await supabase
+      .from('approvals')
+      .update({ state: 'expired', updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .eq('account_id', accountId)
+      .eq('state', 'pending');
+    throw new ApprovalDecisionError('not_pending', 'This request lapsed before it was reviewed. Ask the agent to propose it again.');
+  }
+
   if (existing.requested_by && existing.requested_by === actor.decidedBy) {
     throw new ApprovalDecisionError('self_approval', 'You cannot approve or reject your own proposal — ask another operator to review it.');
   }
@@ -296,7 +362,7 @@ export async function markApprovedByToolAndArgs(
 
 export class ApprovalExecutionError extends Error {
   constructor(
-    public code: 'not_found' | 'not_approved' | 'args_mismatch' | 'already_executed',
+    public code: 'not_found' | 'not_approved' | 'args_mismatch' | 'already_executed' | 'expired',
     message: string,
   ) {
     super(message);
@@ -325,7 +391,7 @@ export async function consumeApprovalForExecution(
   // Scoped fetch: the approval row must belong to this account.
   const { data: row, error: fetchError } = await supabase
     .from('approvals')
-    .select('id, tool, args_hash, state')
+    .select('id, tool, args_hash, state, expires_at')
     .eq('id', approvalId)
     .eq('account_id', accountId)
     .maybeSingle();
@@ -347,6 +413,27 @@ export async function consumeApprovalForExecution(
     throw new ApprovalExecutionError(
       'already_executed',
       'This approval has already been consumed.',
+    );
+  }
+
+  // EXPIRY. Checked after 'executed' (that is the more precise answer for a
+  // row that already ran) and before 'not_approved', because a lapsed row is
+  // still sitting in state 'approved' — nothing sweeps it. The flip to
+  // 'expired' happens here, on the read that noticed, so the audit trail shows
+  // why it did not run and a second attempt gets the same verdict cheaply.
+  //
+  // Conditioned on state='approved' so this can never overwrite a terminal
+  // 'executed' row if two callers race.
+  if (isPastDue(row.expires_at)) {
+    await supabase
+      .from('approvals')
+      .update({ state: 'expired', updated_at: new Date().toISOString() })
+      .eq('id', approvalId)
+      .eq('account_id', accountId)
+      .eq('state', 'approved');
+    throw new ApprovalExecutionError(
+      'expired',
+      'This approval lapsed before it was carried out.',
     );
   }
 

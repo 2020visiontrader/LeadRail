@@ -484,6 +484,7 @@ function approvalRefusal(e: any): string {
     case 'not_approved':     return 'That action has not been approved (or was rejected), so I did not run it.';
     case 'already_executed': return 'That action was already carried out — I did not repeat it.';
     case 'args_mismatch':    return 'The details changed since you approved that, so I did not run it. Ask me to propose it again.';
+    case 'expired':          return 'That approval lapsed before I could carry it out, so I did not run it. Ask me to propose it again.';
     default:                 return 'I could not verify that this action was approved, so I did not run it.';
   }
 }
@@ -930,6 +931,10 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
           tool, title: def.title, summary: proposal.summary, args,
           conversationId: input.conversationId ?? null,
           requestedBy: input.requestedBy ?? null,
+          // Sets the approval's lifetime from the gate class. An external-MCP
+          // tool has no first-party capability, so gate is undefined and the
+          // approval does not lapse — same behaviour it had before expiry.
+          gate: capabilityFor(tool, extraCapsByName)?.gate,
         });
         proposal.approvalId = row.id;
       } catch {
@@ -1181,6 +1186,10 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
           tool, title: def.title, summary: proposal.summary, args,
           conversationId: input.conversationId ?? null,
           requestedBy: input.requestedBy ?? null,
+          // Sets the approval's lifetime from the gate class. An external-MCP
+          // tool has no first-party capability, so gate is undefined and the
+          // approval does not lapse — same behaviour it had before expiry.
+          gate: capabilityFor(tool, extraCapsByName)?.gate,
         });
         proposal.approvalId = row.id;
       } catch {
