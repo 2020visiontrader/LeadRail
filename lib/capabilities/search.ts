@@ -50,11 +50,17 @@ export const SEARCH_CAPABILITIES: Capability[] = [
     digest: (args, result) => {
       if (!result || typeof result !== 'object') return '';
       if (result.error) return digestLine(`Web search failed: ${String(result.error)}`);
-      const hits = Array.isArray(result.results) ? result.results : [];
-      const titles = samples(hits, ['title'], 5);
+      // A MISSING results array is not an empty one. Defaulting to [] here made
+      // the digest report "0 web results for X" whenever the provider returned
+      // a shape we did not expect — and the compose pass treats digest lines as
+      // fact, so the model would tell the user the web is empty on the subject
+      // when what actually happened is that the search broke. Say nothing about
+      // a count we never saw; globalSearch above already does exactly this.
+      const hits = Array.isArray(result.results) ? result.results : null;
+      const titles = hits ? samples(hits, ['title'], 5) : [];
       const q = args?.query ? ` for "${String(args.query)}"` : '';
       return digestLine(
-        `${plural(hits.length, 'web result')}${q}.`,
+        hits ? `${plural(hits.length, 'web result')}${q}.` : null,
         result.answer ? `Direct answer: ${String(result.answer)}` : null,
         titles.length ? `Titles: ${titles.join(' | ')}.` : null,
       );

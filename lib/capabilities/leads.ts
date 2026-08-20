@@ -73,6 +73,19 @@ export const LEAD_CAPABILITIES: Capability[] = [
     inputSchema: obj({ titles: { type: 'array', items: { type: 'string' } }, seniority: { type: 'array', items: { type: 'string' } }, location: S.string, industry: S.string, keywords: S.string, companySize: S.string, limit: S.number }),
     zod: z.object({ titles: z.array(z.string()).optional(), seniority: z.array(z.string()).optional(), location: z.string().optional(), industry: z.string().optional(), keywords: z.string().optional(), companySize: z.string().optional(), limit: z.number().max(25).optional() }),
     run: (accountId, a) => searchPeople(accountId, { titles: a.titles, seniority: a.seniority, location: a.location, industry: a.industry, keywords: a.keywords, company_size: a.companySize, limit: a.limit ?? 10 }),
+    // States the credit cost and the actual filters, so the reviewer can catch a
+    // search that is too broad BEFORE it is paid for.
+    summarize: (a) => {
+      const filters = [
+        a.titles?.length ? `titles ${a.titles.join('/')}` : null,
+        a.seniority?.length ? `seniority ${a.seniority.join('/')}` : null,
+        a.industry ? `industry ${a.industry}` : null,
+        a.location ? `in ${a.location}` : null,
+        a.companySize ? `company size ${a.companySize}` : null,
+        a.keywords ? `matching "${a.keywords}"` : null,
+      ].filter(Boolean);
+      return `Spend sourcing credits to find up to ${a.limit ?? 10} new leads${filters.length ? `: ${filters.join(', ')}` : ' (no filters set — this searches broadly)'}.`;
+    },
   },
   {
     name: 'enrichLead',
@@ -89,6 +102,12 @@ export const LEAD_CAPABILITIES: Capability[] = [
         keys = { id: c.apollo_person_id || null, email: c.email || a.email, name: c.name || a.name, company: c.company || a.company, linkedin_url: c.linkedin_url || a.linkedinUrl };
       }
       return matchPerson(accountId, keys);
+    },
+    // Names WHO is being revealed. "contactId: abc123" tells a reviewer nothing;
+    // a name or an email lets them notice it is the wrong person.
+    summarize: (a) => {
+      const who = a.name || a.email || a.linkedinUrl || (a.contactId ? `lead ${a.contactId}` : 'this person');
+      return `Spend a sourcing credit to reveal the verified email and full profile for ${who}${a.company ? ` at ${a.company}` : ''}.`;
     },
   },
   {

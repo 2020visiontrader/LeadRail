@@ -214,6 +214,15 @@ export const CAMPAIGN_CAPABILITIES: Capability[] = [
     inputSchema: obj({ id: S.string, message: S.string, link: S.string, dailyBudget: S.number }, ['id']),
     zod: z.object({ id: z.string(), message: z.string().optional(), link: z.string().optional(), dailyBudget: z.number().optional() }),
     run: (accountId, { id, ...opts }) => launchCampaign(accountId, id, opts),
+    // Leads with the money, because that is the decision being made. The daily
+    // budget is the number the reviewer needs and the one the raw payload buried.
+    summarize: (a) => [
+      a.dailyBudget
+        ? `Start spending ${a.dailyBudget} per day on campaign ${a.id}.`
+        : `Start spending this campaign's daily budget on campaign ${a.id}.`,
+      'The ad goes live to a real audience immediately and keeps spending until it is paused.',
+      a.link ? `It links to ${a.link}.` : null,
+    ].filter(Boolean).join(' '),
   },
   {
     name: 'pauseCampaign',

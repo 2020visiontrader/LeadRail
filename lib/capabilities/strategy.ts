@@ -116,6 +116,9 @@ export const STRATEGY_CAPABILITIES: Capability[] = [
       }
     },
     digest: (_a, result: any) => {
+      // No result at all means the call did not return — saying "drafted a
+      // marketing strategy" here would report work that never happened.
+      if (result === null || result === undefined) return '';
       const s = result?.strategy;
       if (!s || typeof s === 'string') return 'Drafted a marketing strategy.';
       const angles = Array.isArray(s.messagingAngles) ? s.messagingAngles.length : 0;
@@ -154,7 +157,11 @@ export const STRATEGY_CAPABILITIES: Capability[] = [
       return { brand: v.name, ...data };
     },
     digest: (_a, result: any) => {
-      if (!result?.strategy) return 'No saved strategy for that brand yet.';
+      // "No saved strategy yet" is a FINDING and requires a result to have come
+      // back. A null result is a failed read, and reporting it as an empty shelf
+      // would have the assistant offer to build a strategy that already exists.
+      if (result === null || result === undefined) return '';
+      if (!result.strategy) return 'No saved strategy for that brand yet.';
       const when = result.created_at ? String(result.created_at).slice(0, 10) : null;
       return `Saved strategy for ${result.brand}${when ? ` from ${when}` : ''}${result.goal ? ` (goal: ${result.goal})` : ''}.`;
     },

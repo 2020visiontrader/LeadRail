@@ -205,7 +205,12 @@ export const QUALITY_CAPABILITIES: Capability[] = [
       catch { return { review: cleaned }; }
     },
     digest: (_a, result: any) => {
-      if (!result || result.review) return 'Reviewed the copy.';
+      // A missing result means no review happened. Claiming one did lets the
+      // compose pass tell the user their copy passed an editorial check that
+      // was never run — the exact self-certification this capability exists to
+      // prevent.
+      if (result === null || result === undefined) return '';
+      if (result.review) return 'Reviewed the copy.';
       const issues = Array.isArray(result.issues) ? result.issues : [];
       const high = issues.filter((i: any) => i.severity === 'high').length;
       return [

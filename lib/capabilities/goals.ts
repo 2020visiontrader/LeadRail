@@ -91,7 +91,11 @@ export const GOAL_CAPABILITIES: Capability[] = [
       }));
     },
     digest: (_a, result: any) => {
-      const rows = Array.isArray(result) ? result : [];
+      // "No goals set" is a claim about the account. A null result is a failed
+      // query, and reporting it as an empty list would have the assistant drop
+      // cross-session work it is actually still carrying.
+      if (!Array.isArray(result)) return '';
+      const rows = result;
       if (!rows.length) return 'No goals set.';
       const active = rows.filter((g) => g.status === 'active');
       const met = rows.filter((g) => g.status === 'met').length;

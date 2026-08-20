@@ -47,6 +47,10 @@ export const OUTREACH_CAPABILITIES: Capability[] = [
     inputSchema: obj({ contactId: S.string, subject: S.string, html: S.string }, ['contactId', 'subject']),
     zod: z.object({ contactId: z.string(), subject: z.string(), html: z.string().optional() }),
     run: (accountId, { contactId, subject, html }) => sendOutreachEmail({ contactId, subject, html, accountId }),
+    // Shows the subject line — the part of an email a reviewer can actually
+    // judge. Body is deliberately omitted: it is long, it is HTML, and pasting
+    // it into the card trains people to scroll past the decision.
+    summarize: (a) => `Send a real email to lead ${a.contactId} with the subject "${String(a.subject ?? '').slice(0, 120)}". It reaches their inbox immediately and cannot be recalled.`,
   },
   {
     name: 'listSequences',
@@ -84,5 +88,11 @@ export const OUTREACH_CAPABILITIES: Capability[] = [
     inputSchema: obj({ sequenceId: S.string, contactIds: { type: 'array', items: { type: 'string' } } }, ['sequenceId', 'contactIds']),
     zod: z.object({ sequenceId: z.string(), contactIds: z.array(z.string()).min(1) }),
     run: (accountId, { sequenceId, contactIds }) => enrollContacts(sequenceId, accountId, contactIds),
+    // The count is the whole risk here: approving an enrolment is approving
+    // every scheduled follow-up to every person in the list, not one send.
+    summarize: (a) => {
+      const n = Array.isArray(a.contactIds) ? a.contactIds.length : 0;
+      return `Enrol ${n} lead${n === 1 ? '' : 's'} into sequence ${a.sequenceId}. Each one starts receiving the sequence's scheduled follow-up emails automatically, without a further check.`;
+    },
   },
 ];
