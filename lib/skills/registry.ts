@@ -13,12 +13,34 @@ import type { TaskKind } from '@/lib/ai/models';
 import { HARVESTED_SKILLS, type HarvestedSkill } from './harvested';
 
 export type SkillCategory =
+  // --- the twelve curated built-ins ---
   | 'claude' // Anthropic "Agent Skills" style structured task modules
   | 'marketing'
   | 'linkedin'
   | 'outreach'
   | 'lead-gen'
-  | 'humanizer';
+  | 'humanizer'
+  // --- the harvest's own vocabulary (Packet 5.1, 341 skills) ---
+  //
+  // These were missing, and the projection below collapsed anything it did not
+  // recognise into 'marketing'. Since the harvest uses NONE of the six names
+  // above for the bulk of its entries, that meant 341 skills sorted across ten
+  // marketing disciplines arrived as one undifferentiated bucket: 343 of 353
+  // rows in the skills table read 'marketing'. The catalog filter on the Skills
+  // page then offered a category that returned almost everything, which is the
+  // same as offering no filter at all.
+  //
+  // The harvester did the classification work per skill, from upstream
+  // frontmatter. Widening the union keeps it instead of throwing it away.
+  | 'seo'
+  | 'content'
+  | 'ads'
+  | 'analytics'
+  | 'social'
+  | 'email'
+  | 'ops'
+  | 'dev-tooling'
+  | 'other';
 
 export interface Skill {
   id: string;
@@ -171,11 +193,24 @@ export const SKILLS: Skill[] = [
 export const SKILL_CATEGORIES: { key: SkillCategory; label: string }[] = [
   { key: 'claude', label: 'Claude skills' },
   { key: 'marketing', label: 'Marketing' },
+  { key: 'seo', label: 'SEO' },
+  { key: 'content', label: 'Content' },
+  { key: 'ads', label: 'Ads' },
+  { key: 'analytics', label: 'Analytics' },
+  { key: 'social', label: 'Social' },
+  { key: 'email', label: 'Email' },
   { key: 'linkedin', label: 'LinkedIn' },
   { key: 'outreach', label: 'Outreach' },
   { key: 'lead-gen', label: 'Lead generation' },
   { key: 'humanizer', label: 'Humanizer' },
+  { key: 'ops', label: 'Ops' },
+  { key: 'dev-tooling', label: 'Dev tooling' },
+  { key: 'other', label: 'Other' },
 ];
+
+/** Every category the union admits, for validating an incoming value without
+ *  restating the list a third time. */
+const KNOWN_CATEGORIES = new Set<string>(SKILL_CATEGORIES.map((c) => c.key));
 
 /**
  * The harvested OSS catalog (Packet 5.1, 341 skills) projected into the same
@@ -199,8 +234,11 @@ export const SKILL_CATEGORIES: { key: SkillCategory; label: string }[] = [
 const HARVESTED_AS_SKILLS: Skill[] = HARVESTED_SKILLS.map((h) => ({
   id: `harvested:${h.slug}`,
   name: h.name,
-  category: (['claude', 'marketing', 'linkedin', 'outreach', 'lead-gen', 'humanizer'] as string[])
-    .includes(h.category) ? (h.category as SkillCategory) : 'marketing',
+  // 'other' — not 'marketing' — is the fallback for an unrecognised category.
+  // Defaulting an unknown to a REAL discipline is a quiet lie: it puts the skill
+  // in front of someone browsing that discipline and pushes out what belongs
+  // there. 'other' says what is actually known, which is nothing.
+  category: KNOWN_CATEGORIES.has(h.category) ? (h.category as SkillCategory) : 'other',
   when: h.description,
   systemModule: h.instructions,
   taskKind: 'draft' as TaskKind,
