@@ -219,12 +219,30 @@ export async function recordExecutedApproval(accountId: string, input: Automated
   return toSafe(data);
 }
 
+/** Report what a row IS, not merely what was last written to it.
+ *
+ *  Nothing sweeps lapsed approvals — the flip to 'expired' happens lazily, on
+ *  the decide or consume that notices. That is fine for enforcement (both paths
+ *  check) but wrong for DISPLAY: a lapsed proposal would keep rendering as
+ *  pending, with live Approve and Reject buttons whose only possible outcome is
+ *  an error. Showing a dead card as actionable teaches people the buttons are
+ *  unreliable.
+ *
+ *  So the read path resolves it. No sweeper, no migration, no UI change: the
+ *  row still flips in the database the moment anyone acts on it. */
+function withEffectiveState(row: SafeApproval): SafeApproval {
+  if ((row.state === 'pending' || row.state === 'approved') && isPastDue(row.expires_at)) {
+    return { ...row, state: 'expired' };
+  }
+  return row;
+}
+
 export async function listApprovals(accountId: string, opts?: { state?: ApprovalState }): Promise<SafeApproval[]> {
   let query = supabase.from('approvals').select('*').eq('account_id', accountId);
   if (opts?.state) query = query.eq('state', opts.state);
   const { data, error } = await query.order('created_at', { ascending: false });
   if (error) throw error;
-  return (data || []).map(toSafe);
+  return (data || []).map(toSafe).map(withEffectiveState);
 }
 
 export async function getApproval(accountId: string, id: string): Promise<SafeApproval | null> {
@@ -235,7 +253,7 @@ export async function getApproval(accountId: string, id: string): Promise<SafeAp
     .eq('account_id', accountId)
     .maybeSingle();
   if (error) throw error;
-  return data ? toSafe(data) : null;
+  return data ? withEffectiveState(toSafe(data)) : null;
 }
 
 /** Internal-only fetch including args_encrypted, for the resume path. Never

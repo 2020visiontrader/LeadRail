@@ -265,6 +265,37 @@ describe('expiry — authority lapses', () => {
   });
 });
 
+describe('what the operator is shown matches what the gate will do', () => {
+  it('a lapsed proposal is listed as expired, not as pending with live buttons', async () => {
+    // Nothing sweeps lapsed rows; the flip happens on the decide or consume that
+    // notices. Enforcement is fine either way — DISPLAY is not. A dead proposal
+    // rendering as pending gives the operator Approve and Reject buttons whose
+    // only possible outcome is an error, which teaches them the buttons lie.
+    const row = await createApproval(ACCOUNT, {
+      tool: TOOL, title: 'Send an email', summary: 'Send one email', args: ARGS,
+      requestedBy: 'user_requester', gate: 'external_send',
+    });
+    backdate(row.id);
+    const listed = (await store.listApprovals(ACCOUNT)).find((a: any) => a.id === row.id);
+    expect(listed!.state).toBe('expired');
+    expect((await store.getApproval(ACCOUNT, row.id))!.state).toBe('expired');
+  });
+
+  it('a live proposal is still shown as pending', async () => {
+    const row = await createApproval(ACCOUNT, {
+      tool: TOOL, title: 'Send an email', summary: 'Send one email', args: ARGS, gate: 'external_send',
+    });
+    expect((await store.getApproval(ACCOUNT, row.id))!.state).toBe('pending');
+  });
+
+  it('an executed approval is never relabelled by a later expiry', async () => {
+    const row = await approved();
+    await consumeApprovalForExecution(ACCOUNT, row.id, TOOL, ARGS);
+    backdate(row.id);
+    expect((await store.getApproval(ACCOUNT, row.id))!.state).toBe('executed');
+  });
+});
+
 describe('secrets never reach the stored display copy', () => {
   it('redacts secret-ish keys at the top level and one level down', () => {
     const out = redactArgs({ to: 'a@b.c', api_key: 'sk-live-123', nested: { authorization: 'Bearer x', name: 'ok' } });
