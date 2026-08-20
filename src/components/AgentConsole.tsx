@@ -611,38 +611,13 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
         <div ref={endRef} />
       </div>
 
-      {/* Persona picker — optional pill-tabs above the composer. Additive, non-breaking:
-          only appears when the account has created personas, and omits personaId from
-          the request body when the default is selected (maintaining byte-identical requests). */}
-      {personas.length > 0 && (
-        <div className="flex flex-wrap gap-2 border-t border-[var(--border-default)] bg-[var(--bg-canvas)] px-3 py-2">
-          <button
-            onClick={() => setSelectedPersonaId(undefined)}
-            className={`inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
-              !selectedPersonaId
-                ? 'bg-[var(--brand)] text-white'
-                : 'bg-[var(--bg-raised)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-            }`}
-          >
-            Default
-          </button>
-          {personas.map((persona) => (
-            <button
-              key={persona.id}
-              onClick={() => setSelectedPersonaId(persona.id)}
-              className={`inline-flex items-center px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
-                selectedPersonaId === persona.id
-                  ? 'bg-[var(--brand)] text-white'
-                  : 'bg-[var(--bg-raised)] text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-              }`}
-            >
-              {persona.avatar && <span className="mr-1.5">{persona.avatar}</span>}
-              {persona.name}
-            </button>
-          ))}
-        </div>
-      )}
-
+      {/* The persona picker lived here and has been removed on purpose.
+          Choosing between Ada, Nia and Milo asks the user to know an org chart
+          they never agreed to learn — and to guess which specialist a question
+          needs, which is the assistant's job. Selection now happens server-side
+          (selectPersonasForRequest), and who is working shows up in the STEP
+          TRACE instead: "Ada is checking the numbers…". Attribution without
+          administration. */}
       <div className="flex items-end gap-2 border-t border-[var(--border-default)] p-3">
         <textarea
           rows={2}

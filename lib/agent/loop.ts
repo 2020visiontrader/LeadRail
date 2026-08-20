@@ -24,7 +24,7 @@ import { loadExternalCapabilities } from '@/lib/capabilities/external-mcp';
 import type { Capability } from '@/lib/capabilities/types';
 import { estimateTokens, carryoverBlock, type CarryoverMemo } from './memory';
 import {
-  loadPersonaForAgent, resolveMentionedPersonas, getCoordinator,
+  loadPersonaForAgent, resolveMentionedPersonas, getCoordinator, selectPersonasForRequest,
   buildPersonaSystemBlock, buildCoordinatorSystemBlock, type PersonaRow,
 } from './personas';
 import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
@@ -555,10 +555,22 @@ const MAX_FANOUT_TOTAL_STEPS = MAX_FANOUT_DELEGATES * MAX_FANOUT_STEPS_PER_DELEG
 async function resolveCoordinatorFanout(
   accountId: string,
   personaMentions?: string[],
+  input_message?: string,
 ): Promise<{ coordinator: PersonaRow; delegates: PersonaRow[] } | null> {
-  if (!personaMentions || personaMentions.length < 2) return null;
   try {
-    const matched = await resolveMentionedPersonas(accountId, personaMentions);
+    // Explicit @mentions still win — if someone names the team, honour it.
+    // Otherwise the ASSISTANT picks, because the user has no reason to know
+    // which personas exist. Requiring "@Ada @Nia" meant the whole fan-out was
+    // unreachable for anyone who had not read the persona list.
+    let matched = personaMentions?.length
+      ? await resolveMentionedPersonas(accountId, personaMentions)
+      : [];
+    if (matched.length < 2) {
+      const auto = await selectPersonasForRequest(accountId, input_message || '', MAX_FANOUT_DELEGATES);
+      // One match is a specialist question, not a team question — let the normal
+      // single-agent path handle it rather than convening a fan-out of one.
+      if (auto.length >= 2) matched = auto;
+    }
     if (matched.length < 2) return null;
     const coordinator = await getCoordinator(accountId);
     if (!coordinator) return null;
@@ -573,10 +585,31 @@ async function resolveCoordinatorFanout(
  *  delegate shares the same accountId, message, and agentContext as the
  *  coordinator turn — each reasons independently and does not see the others'
  *  tool calls, only the same starting request. */
+/** What a persona is doing, phrased for the person watching. Derived from the
+ *  ROLE rather than hardcoded per persona, so a new persona narrates correctly
+ *  the moment it is created. */
+function personaVerb(persona: PersonaRow): string {
+  const role = `${persona.role || ''}`.toLowerCase();
+  if (/analyst/.test(role)) return 'checking the numbers';
+  if (/media|buyer/.test(role)) return 'reviewing spend and channels';
+  if (/copywriter/.test(role)) return 'working on the messaging';
+  if (/creative director|director of creative/.test(role)) return 'reviewing the work';
+  if (/strategist/.test(role)) return 'thinking about positioning';
+  if (/lifecycle/.test(role)) return 'mapping the sequence';
+  if (/social/.test(role)) return 'looking at social';
+  if (/account/.test(role)) return 'checking scope and goals';
+  return 'looking into it';
+}
+
 async function runFanoutDelegates(
   accountId: string,
   personas: PersonaRow[],
   input: RunAgentInput,
+  // Optional so the non-streaming runAgent path is unaffected. When present,
+  // each delegate announces itself BEFORE it runs — previously every
+  // "Consulting X…" line was emitted upfront and the UI then went silent for the
+  // whole fan-out, which is the longest operation in the system.
+  emit?: (e: AgentEvent) => void,
 ): Promise<{ outcomes: DelegateOutcome[]; needsApproval?: AgentResult }> {
   const delegates = personas.slice(0, MAX_FANOUT_DELEGATES); // constraint (2)
   const outcomes: DelegateOutcome[] = [];
@@ -586,6 +619,10 @@ async function runFanoutDelegates(
     const remaining = MAX_FANOUT_TOTAL_STEPS - stepsUsed;
     if (remaining <= 0) break; // shared step budget exhausted — stop, do not exceed it
     const stepBudget = Math.min(MAX_FANOUT_STEPS_PER_DELEGATE, remaining);
+
+    // Live: announce THIS delegate as it starts, so the trace moves while a
+    // multi-minute fan-out is in flight.
+    emit?.({ type: 'step_start', text: `${persona.name} is ${personaVerb(persona)}…` });
 
     const result = await runAgent({
       accountId,                 // constraint (4) — never a different account
@@ -604,6 +641,16 @@ async function runFanoutDelegates(
     if (result.status === 'needs_approval') {
       return { outcomes, needsApproval: result }; // constraint (1) — stop the whole fan-out
     }
+    // Report what this delegate actually found, attributed by name, the moment
+    // it finishes — not batched after every delegate has run.
+    emit?.({
+      type: 'observation',
+      ok: result.status !== 'error',
+      text: result.status === 'error'
+        ? `${persona.name} hit a problem: ${truncate(result.message)}`
+        : `${persona.name}: ${truncate(result.message)}`,
+    });
+
     outcomes.push({
       persona,
       status: result.status,
@@ -699,19 +746,25 @@ async function runCoordinatorFanoutStream(
   const messages: ChatMessage[] = capTranscript(input.transcript || []);
   if (input.message) messages.push({ role: 'user', content: input.message });
 
+  // Name the team ONCE, then let each delegate narrate itself as it runs. The
+  // previous version emitted every "Consulting X…" line upfront and then went
+  // silent until all delegates had finished — the longest silence in the app,
+  // during its slowest operation.
   const delegates = fanout.delegates.slice(0, MAX_FANOUT_DELEGATES);
-  for (const p of delegates) emit({ type: 'thought', text: `Consulting ${p.name}…` });
+  emit({
+    type: 'thought',
+    text: delegates.length === 1
+      ? `Bringing in ${delegates[0].name}.`
+      : `Bringing in ${delegates.slice(0, -1).map((p) => p.name).join(', ')} and ${delegates[delegates.length - 1].name}.`,
+  });
 
-  const { outcomes, needsApproval } = await runFanoutDelegates(accountId, fanout.delegates, input);
-  for (const o of outcomes) {
-    emit({ type: 'observation', text: truncate(o.message), ok: o.status !== 'error' });
-  }
+  const { outcomes, needsApproval } = await runFanoutDelegates(accountId, fanout.delegates, input, emit);
   if (needsApproval) {
     emit({ type: 'needs_approval', proposal: needsApproval.proposal!, message: needsApproval.message, transcript: needsApproval.transcript });
     return;
   }
 
-  emit({ type: 'thought', text: 'Synthesizing a unified answer…' });
+  emit({ type: 'step_start', text: `${fanout.coordinator.name} is pulling it together…` });
   const answer = await synthesizeCoordinatorAnswer(accountId, fanout.coordinator, outcomes, input.message);
   messages.push({ role: 'assistant', content: answer });
   const tokenEstimate = estimateTokens(messages);
@@ -728,7 +781,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
   // step in the normal single-persona loop below, never a fresh fan-out —
   // that is what keeps "approve one action" from ever re-triggering N more.
   if (!input.approve && !input.personaId) {
-    const fanout = await resolveCoordinatorFanout(accountId, input.personaMentions);
+    const fanout = await resolveCoordinatorFanout(accountId, input.personaMentions, input.message);
     if (fanout) return runCoordinatorFanout(accountId, fanout, input);
   }
   const { systemBlock: personaBlock, modelId: personaModelId } = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
@@ -980,7 +1033,7 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
   const { accountId, brandContext } = input;
   // Packet 6.2 — same fan-out gate as runAgent above; see the comment there.
   if (!input.approve && !input.personaId) {
-    const fanout = await resolveCoordinatorFanout(accountId, input.personaMentions);
+    const fanout = await resolveCoordinatorFanout(accountId, input.personaMentions, input.message);
     if (fanout) { await runCoordinatorFanoutStream(accountId, fanout, input, emit); return; }
   }
   const { systemBlock: personaBlock, modelId: personaModelId } = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
