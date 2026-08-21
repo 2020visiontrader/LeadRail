@@ -68,6 +68,10 @@ export const STRATEGY_CAPABILITIES: Capability[] = [
     description:
       'Analyse a brand and produce a marketing strategy: positioning, audience, messaging angles, channels with a first move each, campaign ideas with success criteria, risks, and the questions worth asking to sharpen it. Reads the stored brand profile (deck summary, pitch, lead goal, sectors, ICP). Use when the user asks how to market or position a brand, or what campaigns to run.',
     gate: 'read',
+    // The strategy IS the answer, not evidence to reason over. At the default
+    // 2000 a modest strategy lost its tail — and the tail is `unknowns`, the
+    // questions this capability exists to raise instead of inventing facts.
+    observationLimit: 6000,
     inputSchema: obj({ brandId: S.string, goal: S.string }, []),
     zod: z.object({ brandId: z.string().optional(), goal: z.string().optional() }),
     run: async (accountId, a) => {
@@ -139,6 +143,8 @@ export const STRATEGY_CAPABILITIES: Capability[] = [
     description:
       'Read the most recent saved marketing strategy for a brand (migration 047). Use this BEFORE analyzeBrand when the user refers to "the strategy" or "our plan" — regenerating loses the one they already agreed to, and costs a model call.',
     gate: 'read',
+    // Reads back a stored strategy — same deliverable, same budget.
+    observationLimit: 6000,
     inputSchema: obj({ brandId: S.string }, []),
     zod: z.object({ brandId: z.string().optional() }),
     run: async (accountId, a) => {

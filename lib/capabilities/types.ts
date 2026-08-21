@@ -53,6 +53,23 @@ export interface Capability {
   spendsMoney?: (args: any) => boolean;
   /** Optional: truthful per-run metrics derived from a REAL result. Never fabricate. */
   metrics?: (args: any, result: any) => Record<string, number>;
+  /** Optional: a larger OBSERVATION budget for this capability, in characters.
+   *
+   *  The default (OBSERVATION_CHAR_LIMIT in lib/agent/loop.ts) exists to stop a
+   *  chatty tool result from flooding the transcript, and for almost every
+   *  capability that is right — the model needs enough of the result to REASON
+   *  over, not all of it.
+   *
+   *  A few capabilities are different: their result is not evidence, it IS the
+   *  deliverable. analyzeBrand returns the marketing strategy the user asked
+   *  for; truncating it does not trim context, it destroys the answer. Worse,
+   *  truncation cuts from the END, and the end of a strategy is `unknowns` —
+   *  the questions the assistant is supposed to ask instead of inventing facts.
+   *  The honesty mechanism was the first thing being deleted.
+   *
+   *  Keep at or under compose's own 6000-char observation budget
+   *  (lib/agent/compose.ts): a value above it just gets re-clipped there. */
+  observationLimit?: number;
   /** Optional: one-sentence approval summary. Falls back to `${title}: ${JSON.stringify(args)}`.
    *  NOTE (Packet 10.1): this runs BEFORE the tool does — it renders the approval
    *  card and the audit trail, so it structurally cannot see a result. Its

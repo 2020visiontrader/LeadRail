@@ -156,6 +156,10 @@ export const QUALITY_CAPABILITIES: Capability[] = [
     description:
       'A subjective editorial review of drafted copy: does it sound like this brand, does it earn its claims, does it open well. Run this AFTER reviewContent passes — mechanical rules first, judgment only on what survives them. Returns severity-ranked issues quoting the offending line, plus a rewrite of the weakest sentence.',
     gate: 'read',
+    // An editorial review quotes the lines it objects to, so its length scales
+    // with the draft. Truncated, the reviewer's last and often most serious
+    // objections vanish silently.
+    observationLimit: 6000,
     inputSchema: obj({ text: S.string, brandId: S.string, kind: S.string }, ['text']),
     zod: z.object({ text: z.string().min(1), brandId: z.string().optional(), kind: z.string().optional() }),
     run: async (accountId, a) => {

@@ -127,6 +127,62 @@ describe('approval cards — the one moment a human can say no', () => {
   );
 });
 
+describe('observation budget — a deliverable must survive the transcript', () => {
+  // THE BUG THIS PREVENTS: analyzeBrand produced a good strategy, PERSISTED it,
+  // and the user never saw it. The observation carrying it was truncated at the
+  // shared 2000-char cap, and truncation cuts from the END — so what vanished
+  // was `unknowns`, the questions the capability exists to raise instead of
+  // inventing facts. The strategy was in the database and the assistant
+  // answered with a paraphrase of the brand description.
+  //
+  // The default cap is right for almost everything: the model needs enough of a
+  // result to REASON over, not all of it. These few are different — their
+  // result is not evidence, it is the answer.
+  const DELIVERABLES = ['analyzeBrand', 'getBrandStrategy', 'judgeVoice'];
+
+  it.each(DELIVERABLES)('%s declares a budget larger than the shared default', (name) => {
+    const c = caps.find((x) => x.name === name);
+    expect(c, `${name} is not in the registry`).toBeTruthy();
+    expect(c!.observationLimit ?? 0).toBeGreaterThan(2000);
+  });
+
+  it('no capability asks for more than compose will actually carry', () => {
+    // compose.ts caps its whole observation block at 6000. A larger budget here
+    // is not bigger, it is just re-clipped somewhere less visible.
+    for (const c of caps) {
+      if (c.observationLimit) expect(c.observationLimit).toBeLessThanOrEqual(6000);
+    }
+  });
+
+  it('a realistic strategy fits its budget with the open questions intact', () => {
+    const c = caps.find((x) => x.name === 'analyzeBrand')!;
+    const strategy = {
+      positioning: 'For independent producers who lose weeks to fragmented production admin, this is a platform that keeps schedule, budget and crew in one place, unlike general project tools.',
+      audience: { primary: 'Independent and line producers', secondary: 'Production coordinators', buyingTrigger: 'Greenlight, when admin load spikes overnight.' },
+      messagingAngles: Array.from({ length: 5 }, (_, i) => `Angle ${i + 1}: a claim specific enough that a competitor could not paste it onto their own site.`),
+      channels: Array.from({ length: 4 }, (_, i) => ({ channel: `Channel ${i + 1}`, why: 'The buyers already gather here and ask each other for help.', firstMove: 'One concrete first action, small enough to run this week.' })),
+      campaignIdeas: Array.from({ length: 3 }, (_, i) => ({ name: `Campaign ${i + 1}`, goal: 'A stated goal', format: 'A format', successLooksLike: 'A number or a decision, not a vibe.' })),
+      risks: ['Buyers are seasonal and the window is short.', 'The underlying rate data must be accurate or trust collapses.'],
+      unknowns: ['UNKNOWN-CANARY: what budget band are your current users in?', 'Which territory matters most over the next 12 months?', 'Any reference customers who would go on record?'],
+    };
+    const result = { brand: 'A Brand', strategy, saved: true };
+    const body = `${c.digest!({}, result)}\n${JSON.stringify(result)}`;
+
+    // It must not fit the OLD cap — otherwise this test proves nothing.
+    expect(body.length).toBeGreaterThan(2000);
+    expect(body.length).toBeLessThanOrEqual(c.observationLimit!);
+    // And the part truncation ate first must be present in what survives.
+    expect(body.slice(0, c.observationLimit!)).toContain('UNKNOWN-CANARY');
+  });
+
+  it('ordinary capabilities keep the shared default', () => {
+    // The budget is an exception, not a habit. If most capabilities start
+    // declaring one, the cap has stopped meaning anything.
+    const raised = caps.filter((c) => c.observationLimit);
+    expect(raised.length).toBeLessThan(caps.length * 0.1);
+  });
+});
+
 describe('gate declarations', () => {
   it('every capability declares a known gate', () => {
     const KNOWN = ['read', 'internal_write', 'spend', 'external_send', 'destructive', 'standing_rule'];

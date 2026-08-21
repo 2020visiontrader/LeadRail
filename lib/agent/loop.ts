@@ -359,12 +359,19 @@ function narrationFor(parsed: any): string | undefined {
   return parsed?.thought;
 }
 
-function truncate(s: string): string {
-  return s.length > OBSERVATION_CHAR_LIMIT ? `${s.slice(0, OBSERVATION_CHAR_LIMIT)}… [truncated]` : s;
+function truncate(s: string, limit: number = OBSERVATION_CHAR_LIMIT): string {
+  return s.length > limit ? `${s.slice(0, limit)}… [truncated]` : s;
 }
 
-function observation(text: string): ChatMessage {
-  return { role: 'user', content: `OBSERVATION: ${truncate(text)}` };
+function observation(text: string, limit?: number): ChatMessage {
+  return { role: 'user', content: `OBSERVATION: ${truncate(text, limit)}` };
+}
+
+/** The observation budget for one tool's result. Defaults to the shared cap;
+ *  a capability whose RESULT IS THE DELIVERABLE may declare a larger one (see
+ *  Capability.observationLimit). Unknown tools get the default. */
+function obsLimitFor(tool: string, extraCaps?: Record<string, Capability>): number | undefined {
+  return capabilityFor(tool, extraCaps)?.observationLimit;
 }
 
 // Build the observation body for a SUCCESSFUL tool run (Packet 10.1).
@@ -833,8 +840,9 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
     }
     const res = await runTool(tool, accountId, args, extraTools, extraCapsByName);
     const obs = observationFor(tool, args, res, extraCapsByName);
-    steps.push({ tool, args, observation: truncate(obs) });
-    messages.push(observation(obs));
+    const obsLimit = obsLimitFor(tool, extraCapsByName);
+    steps.push({ tool, args, observation: truncate(obs, obsLimit) });
+    messages.push(observation(obs, obsLimit));
   }
 
   let corrected = false;
@@ -958,8 +966,9 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
     const res = await runTool(tool, accountId, args, extraTools, extraCapsByName);
     const obs = observationFor(tool, args, res, extraCapsByName);
     lastToolName = tool;
-    steps.push({ thought: narrationFor(parsed), tool, args, observation: truncate(obs) });
-    messages.push(observation(obs));
+    const obsLimit = obsLimitFor(tool, extraCapsByName);
+    steps.push({ thought: narrationFor(parsed), tool, args, observation: truncate(obs, obsLimit) });
+    messages.push(observation(obs, obsLimit));
   }
 
   // Forced final: rather than surface a "too many steps" error, make one last
@@ -1074,8 +1083,9 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
     emit({ type: 'tool', tool, title: approveDef.title, args });
     const res = await runTool(tool, accountId, args, extraTools, extraCapsByName);
     const obs = observationFor(tool, args, res, extraCapsByName);
-    emit({ type: 'observation', text: truncate(obs), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
-    messages.push(observation(obs));
+    const obsLimit = obsLimitFor(tool, extraCapsByName);
+    emit({ type: 'observation', text: truncate(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
+    messages.push(observation(obs, obsLimit));
   }
 
   let corrected = false;
@@ -1214,8 +1224,9 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
     emit({ type: 'tool', tool, title: def.title, args });
     const res = await runTool(tool, accountId, args, extraTools, extraCapsByName);
     const obs = observationFor(tool, args, res, extraCapsByName);
-    emit({ type: 'observation', text: truncate(obs), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
-    messages.push(observation(obs));
+    const obsLimit = obsLimitFor(tool, extraCapsByName);
+    emit({ type: 'observation', text: truncate(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
+    messages.push(observation(obs, obsLimit));
   }
 
   // Forced final rather than a "too many steps" error.
