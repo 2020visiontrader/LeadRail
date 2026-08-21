@@ -10,7 +10,8 @@
 // wrapper element that would change the existing layout.
 import ExampleRun from '@/components/welcome/ExampleRun';
 import ArchitectureTabs from '@/components/welcome/ArchitectureTabs';
-import { ENTITY, ENTITY_CITY, ENTITY_REGION, ENTITY_COUNTRY, CONTACT, DEMO_MAILTO, FAQ, CAPABILITY_DOMAINS } from './content';
+import { ENTITY, ENTITY_CITY, ENTITY_REGION, ENTITY_COUNTRY, CONTACT, FAQ, CAPABILITY_DOMAINS } from './content';
+import { ContactForm } from './ContactForm';
 
 export function HeroSection() {
   return (
@@ -34,7 +35,7 @@ export function HeroSection() {
         </p>
         <div className="mt-7 flex flex-wrap gap-3">
           <a
-            href={DEMO_MAILTO}
+            href="#contact"
             className="rounded-lg bg-[var(--ink)] px-5 py-2.5 text-sm font-semibold text-[var(--ink-fg)] transition hover:opacity-90"
           >
             Book a demo
@@ -271,7 +272,7 @@ export function FaqSection() {
       {/* ---------------------------------------------------------------- */}
       {/* Closing CTA                                                       */}
       {/* ---------------------------------------------------------------- */}
-      <section aria-labelledby="cta-h" className="pb-16 sm:pb-24">
+      <section id="contact" aria-labelledby="cta-h" className="scroll-mt-24 pb-16 sm:pb-24">
         <div className="rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-8 text-center shadow-[var(--shadow-card)]">
           <h2 id="cta-h" className="text-2xl font-bold tracking-tight sm:text-3xl">
             See it on your own campaigns
@@ -279,19 +280,8 @@ export function FaqSection() {
           <p className="mx-auto mt-3 max-w-xl text-[15px] leading-relaxed text-[var(--text-secondary)]">
             We will walk through the platform with you, connect what you already use, and set up an account.
           </p>
-          <div className="mt-6 flex flex-wrap justify-center gap-3">
-            <a
-              href={DEMO_MAILTO}
-              className="rounded-lg bg-[var(--ink)] px-5 py-2.5 text-sm font-semibold text-[var(--ink-fg)] transition hover:opacity-90"
-            >
-              Book a demo
-            </a>
-            <a
-              href={`mailto:${CONTACT}?subject=${encodeURIComponent('LeadRail — request access')}`}
-              className="rounded-lg border border-[var(--border-strong)] px-5 py-2.5 text-sm font-semibold text-[var(--text-primary)] transition hover:bg-[var(--bg-raised)]"
-            >
-              Request access
-            </a>
+          <div className="mt-7">
+            <ContactForm intent="demo request" />
           </div>
         </div>
       </section>

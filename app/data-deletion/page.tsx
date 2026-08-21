@@ -4,7 +4,10 @@ export const metadata = {
 };
 
 const UPDATED = 'July 29, 2026';
-const CONTACT = 'aifranckie101@gmail.com';
+// Single source of truth. These three legal pages each held their OWN copy
+// of the address, so changing it in content.ts left them pointing at a
+// personal Gmail — the exact drift that file claims to prevent.
+import { CONTACT } from '@/components/welcome/content';
 
 export default function DataDeletionPage() {
   return (

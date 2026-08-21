@@ -11,9 +11,16 @@ export const ENTITY = 'Excalix';
 export const ENTITY_CITY = 'Toronto';
 export const ENTITY_REGION = 'Ontario';
 export const ENTITY_COUNTRY = 'Canada';
-export const CONTACT = 'aifranckie101@gmail.com';
-
-export const DEMO_MAILTO = `mailto:${CONTACT}?subject=${encodeURIComponent('LeadRail — demo request')}`;
+// The address shown on the legal pages. It was a personal Gmail, which meant a
+// private inbox was published on privacy, terms and data-deletion — pages that
+// legally MUST carry a contact route, so it could not simply be removed. It is
+// now the product's own address, overridable per environment.
+//
+// Marketing CTAs no longer use it at all: they post to /api/contact, which
+// records the request and replies from a verified domain. A mailto does nothing
+// for a visitor without a configured mail client, and fails silently when it
+// does nothing.
+export const CONTACT = process.env.NEXT_PUBLIC_CONTACT_EMAIL || 'hello@leadrail.xyz';
 
 
 export const FAQ: Array<{ q: string; a: string }> = [

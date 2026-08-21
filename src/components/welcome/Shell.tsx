@@ -10,7 +10,7 @@
 // Server component on purpose — same reason as the page itself: all copy must
 // be in the initial HTML for answer engines. Nothing here needs hydration.
 import Link from 'next/link';
-import { DEMO_MAILTO } from './content';
+
 
 export const WELCOME_NAV = [
   { href: '/welcome/example-run', label: 'Example run' },
@@ -85,7 +85,7 @@ export default function WelcomeShell({
               Sign in
             </Link>
             <a
-              href={DEMO_MAILTO}
+              href="/welcome#contact"
               className="rounded-md bg-[var(--ink)] px-3 py-1.5 text-[13px] font-semibold text-[var(--ink-fg)] transition hover:opacity-90"
             >
               Book a demo

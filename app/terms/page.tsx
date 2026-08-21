@@ -14,7 +14,10 @@ const ENTITY_LOCATION = 'Toronto, Ontario, Canada';
 // leadrail.xyz domain) once that mailbox exists and is verified to receive
 // mail. Left as the current working address deliberately — a notice address
 // that bounces is worse than an informal one.
-const CONTACT = 'aifranckie101@gmail.com';
+// Single source of truth. These three legal pages each held their OWN copy
+// of the address, so changing it in content.ts left them pointing at a
+// personal Gmail — the exact drift that file claims to prevent.
+import { CONTACT } from '@/components/welcome/content';
 
 export default function TermsPage() {
   return (

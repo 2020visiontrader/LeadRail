@@ -16,7 +16,10 @@ const ENTITY_LOCATION = 'Toronto, Ontario, Canada';
 // to receive mail. Left as the current working address deliberately: a privacy
 // contact that bounces is itself a compliance failure, so this must not be
 // swapped for an aspirational address.
-const CONTACT = 'aifranckie101@gmail.com';
+// Single source of truth. These three legal pages each held their OWN copy
+// of the address, so changing it in content.ts left them pointing at a
+// personal Gmail — the exact drift that file claims to prevent.
+import { CONTACT } from '@/components/welcome/content';
 
 export default function PrivacyPage() {
   return (

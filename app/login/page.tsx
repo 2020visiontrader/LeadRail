@@ -2,6 +2,10 @@
 import { Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
+// Mirrors the server's SIGNUPS_OPEN. The server is the authority; this only
+// decides what the page CLAIMS, so the claim cannot contradict the behaviour.
+const SIGNUPS_OPEN = process.env.NEXT_PUBLIC_SIGNUPS_OPEN === '1';
+
 export default function LoginPage() {
   return <Suspense fallback={null}><LoginInner /></Suspense>;
 }
@@ -104,10 +108,21 @@ function LoginInner() {
           </button>
         </form>
 
-        {/* Honest framing: invite-only, no public signup, no dead end when locked out */}
+        {/* Honest framing, and it must STAY honest: this said "there's no public
+            signup" unconditionally, which becomes a lie the moment SIGNUPS_OPEN
+            is set. It now tracks the same flag the signup route enforces. */}
         <p className="mt-6 border-t border-[var(--border-default)] pt-5 text-center text-xs leading-relaxed text-[var(--text-muted)]">
-          Invite-only operator console — there's no public signup.<br />
-          Locked out? Ask your workspace admin to reset your access.
+          {SIGNUPS_OPEN ? (
+            <>
+              New here? <a href="/signup" className="font-medium text-[var(--text-secondary)] underline">Create a workspace</a>.<br />
+              Locked out? Ask your workspace admin to reset your access.
+            </>
+          ) : (
+            <>
+              Invite-only operator console — <a href="/signup" className="font-medium text-[var(--text-secondary)] underline">request access</a>.<br />
+              Locked out? Ask your workspace admin to reset your access.
+            </>
+          )}
         </p>
       </div>
     </div>
