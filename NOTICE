@@ -107,6 +107,24 @@ wshuyi/x-article-publisher-skill
   Used for:  1 normalised skill entries in lib/skills/harvested.ts
   Notes:     MIT — attribution retained here as a courtesy and audit trail.
 
+growthenginenowoslawski/coldoutboundskills
+  License:   MIT
+  Commit:    f24320d4ab3ddb717402a065a3679aca5a7a8665
+  Used for:  50 normalised skill entries in lib/skills/harvested.ts
+  Notes:     MIT — attribution retained here as a courtesy and audit trail.
+
+apify/apify-mcp-server
+  License:   MIT
+  Commit:    91ee491b7337575f8ba747ad7b39d64815659d4c
+  Used for:  2 normalised skill entries in lib/skills/harvested.ts
+  Notes:     MIT — attribution retained here as a courtesy and audit trail.
+
+Graphify-Labs/graphify
+  License:   Apache-2.0
+  Commit:    b2cd36267456c166788c95be6e68574064a92a42
+  Used for:  1 normalised skill entries in lib/skills/harvested.ts
+  Notes:     Apache-2.0 §4 attribution — see the copyright line in the section above.
+
 --------------------------------------------------------------------------------
 Excluded on licence grounds
 --------------------------------------------------------------------------------

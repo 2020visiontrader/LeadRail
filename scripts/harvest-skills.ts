@@ -32,6 +32,12 @@
 //   git clone --depth 1 https://github.com/charlesdove977/re-walkthrough-pro
 //   git clone --depth 1 https://github.com/Hao0321/claude-skill-social-post
 //   git clone --depth 1 https://github.com/wshuyi/x-article-publisher-skill
+//
+// coldoutboundskills carries ~480MB of lead-list zips alongside its skills, and
+// a full clone reliably times out. Fetch only what is read:
+//   git clone --filter=blob:none --sparse --depth 1 \
+//     https://github.com/growthenginenowoslawski/coldoutboundskills
+//   cd coldoutboundskills && git sparse-checkout set skills LICENSE   # 2.7MB
 
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
@@ -156,9 +162,8 @@ const SOURCES: SourceSpec[] = [
   //   apify-mcp-server      Apache-2.0, but its only two SKILL.md files are
   //                         repo-internal dev skills (bug-triage, dig).
   //   graphify              a code-graph dev tool, not marketing.
-  //   coldoutboundskills    contains no skills at all — only a split zip of
-  //                         scraped business records whose remaining parts were
-  //                         never committed.
+  //   (coldoutboundskills was wrongly excluded here on the first pass and is
+  //    now a source below — see the correction note on its entry.)
   //   *-mcp servers         MCP servers, not skill collections; they belong in
   //                         the integrations layer, not the skill catalog.
   {
@@ -264,6 +269,64 @@ const SOURCES: SourceSpec[] = [
     priority: 12,
     requiresNotice: false,
   },
+  {
+    key: 'coldoutboundskills',
+    repo: 'growthenginenowoslawski/coldoutboundskills',
+    dir: 'coldoutboundskills',
+    licenseMode: 'root',
+    expectLicense: 'MIT',
+    // 50 skills — the largest single addition since the original four, and the
+    // deepest coverage of a discipline the catalog barely had: cold outbound.
+    // Campaign strategy and copywriting, a fourteen-document deliverability
+    // reference, list building and expansion, ICP definition, spam-word and
+    // inbox auditing, reply scoring, and twenty Clay playbooks under
+    // skills/playbooks.
+    //
+    // CORRECTION. This repo was excluded on the first pass as "no skills at
+    // all". That was wrong, and the reason is worth recording: the clone kept
+    // timing out on the zips and left an EMPTY directory, which was then
+    // inspected and believed. An empty working tree is not evidence about a
+    // repository — the source listing is. Verify against the source, not
+    // against whatever a failed command left on disk.
+    //
+    // ONLY skills/ is walked. The repo also holds ~480MB of scraped lead-list
+    // zips and a set of operational .ts scripts; neither is read — walkSkillFiles
+    // collects SKILL.md and nothing else — but a full clone times out on the
+    // zips, so the header above documents a sparse checkout.
+    skillRoots: ['skills'],
+    dialect: 'arsenal',
+    priority: 13,
+    requiresNotice: false,
+  },
+  {
+    key: 'apify-mcp-server',
+    repo: 'apify/apify-mcp-server',
+    dir: 'apify-mcp-server',
+    licenseMode: 'root',
+    expectLicense: 'MIT',
+    // Two repo-internal engineering skills (bug-triage, dig). Not marketing,
+    // and included only because the brief was to harvest everything available
+    // rather than only what fits a theme. They land in dev-tooling.
+    skillRoots: ['.claude/skills'],
+    dialect: 'arsenal',
+    priority: 14,
+    requiresNotice: false,
+  },
+  {
+    key: 'graphify',
+    repo: 'Graphify-Labs/graphify',
+    dir: 'graphify',
+    licenseMode: 'root',
+    expectLicense: 'Apache-2.0',
+    // One skill, and the only Apache-2.0 source besides adclaw — so
+    // requiresNotice is true and §4 attribution goes in NOTICE.
+    // Ships its file as lowercase `skill.md`, which is why walkSkillFiles
+    // matches case-insensitively.
+    skillRoots: ['graphify'],
+    dialect: 'arsenal',
+    priority: 15,
+    requiresNotice: true,
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -308,6 +371,21 @@ function classifySubtreeLicense(text: string, prefix: string): 'MIT' | 'unknown'
   return 'MIT';
 }
 
+/** Root licence filenames, in preference order. Upstreams disagree on the
+ *  extension (apify ships LICENSE.md); the file must still exist and must still
+ *  classify, so this changes only WHERE the gate looks, never whether it fires. */
+const LICENSE_FILENAMES = ['LICENSE', 'LICENSE.md', 'LICENSE.txt', 'LICENCE', 'LICENCE.md', 'COPYING'];
+
+/** The first root licence file that exists, or the canonical name so the error
+ *  below names something recognisable. */
+function rootLicensePath(repoPath: string): string {
+  for (const n of LICENSE_FILENAMES) {
+    const p = join(repoPath, n);
+    if (existsSync(p)) return p;
+  }
+  return join(repoPath, 'LICENSE');
+}
+
 function readLicense(path: string): string {
   try {
     return readFileSync(path, 'utf8');
@@ -320,7 +398,7 @@ function readLicense(path: string): string {
  *  prefixes (empty for whole-repo permissive sources). Throws to abort. */
 function verifyLicense(src: SourceSpec, repoPath: string): { license: string; allow: string[] } {
   if (src.licenseMode === 'root') {
-    const found = classifyLicense(readLicense(join(repoPath, 'LICENSE')));
+    const found = classifyLicense(readLicense(rootLicensePath(repoPath)));
     if (found !== src.expectLicense) {
       throw new Error(
         `[${src.key}] root LICENSE classified as ${found}, expected ${src.expectLicense} — aborting import.`,
@@ -331,7 +409,7 @@ function verifyLicense(src: SourceSpec, repoPath: string): { license: string; al
 
   // subtree-allowlist: the ROOT licence is expected NOT to be permissive, and
   // every allowlisted subtree must carry its own MIT LICENSE.
-  const rootFound = classifyLicense(readLicense(join(repoPath, 'LICENSE')));
+  const rootFound = classifyLicense(readLicense(rootLicensePath(repoPath)));
   if (rootFound !== 'Elastic-2.0') {
     throw new Error(
       `[${src.key}] root LICENSE classified as ${rootFound}; this source is configured as dual-licensed with an ` +
@@ -580,9 +658,58 @@ const DESTRUCTIVE_PATTERNS: { name: string; re: RegExp }[] = [
   { name: 'wget-pipe-shell', re: /wget[^\n]*\|\s*(sudo\s+)?sh\b/ },
 ];
 
+// Values that LOOK like a secret assignment but are documentation. A skill that
+// tells the reader to `export PROSPEO_API_KEY="your_api_key_here"` is teaching
+// setup, not leaking a key, and refusing it costs a real skill for nothing.
+//
+// This is a RULE, not a list of exceptions. Growing a list per file is how a
+// scanner quietly becomes "whatever lets today's import through" — so the test
+// is a property of the VALUE, and it is deliberately narrow:
+//
+//   1. the whole value is lowercase words joined by _ - . or spaces, and
+//   2. it contains a word that announces itself as a stand-in.
+//
+// A real credential fails (1) almost always: keys carry mixed case, digit runs,
+// or a vendor prefix like `sk-`/`AKIA`. Anything that fails either test still
+// trips the scanner and is still refused — the fail-closed default is intact,
+// and the openai-style and AWS detectors are untouched by this at all.
+const PLACEHOLDER_WORDS = [
+  'your', 'yours', 'my', 'example', 'sample', 'placeholder', 'changeme',
+  'change', 'dummy', 'fake', 'test', 'insert', 'replace', 'todo', 'here',
+  'xxx', 'xxxx', 'abc123', 'redacted', 'none',
+];
+
+/** True when a secret-shaped VALUE is self-evidently a stand-in. */
+function isPlaceholderValue(raw: string): boolean {
+  const val = raw.toLowerCase().replace(/[<>{}[\]()]/g, '').trim();
+  // (1) lowercase words only — no mixed case, no vendor-prefixed key shapes.
+  if (!/^[a-z0-9]+([_\-. ][a-z0-9]+)*$/.test(val)) return false;
+  // Long unbroken alphanumeric runs are entropy, not prose.
+  if (/[a-z0-9]{17,}/.test(val)) return false;
+  // (2) at least one token that announces itself as a stand-in.
+  const words = val.split(/[_\-. ]+/);
+  return words.some((w) => PLACEHOLDER_WORDS.includes(w));
+}
+
+/** True when EVERY secret-shaped hit for `re` in `body` is a placeholder. One
+ *  unrecognised value and the flag stands for the whole file. */
+function allHitsArePlaceholders(body: string, re: RegExp): boolean {
+  const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`);
+  const hits = body.match(g);
+  if (!hits || !hits.length) return false;
+  return hits.every((h) => {
+    const m = h.match(/["']([^"']+)["']/);
+    return isPlaceholderValue(m ? m[1] : h);
+  });
+}
+
 function scanQuality(body: string): string[] {
   const flags: string[] = [];
-  for (const p of SECRET_PATTERNS) if (p.re.test(body)) flags.push(`secret:${p.name}`);
+  for (const p of SECRET_PATTERNS) {
+    if (!p.re.test(body)) continue;
+    if (allHitsArePlaceholders(body, p.re)) continue;
+    flags.push(`secret:${p.name}`);
+  }
   for (const p of DESTRUCTIVE_PATTERNS) if (p.re.test(body)) flags.push(`destructive:${p.name}`);
   if (body.trim().length < MIN_BODY_LENGTH) flags.push('too-short');
   return flags;
@@ -633,7 +760,11 @@ function walkSkillFiles(root: string, acc: string[] = [], depth = 0): string[] {
       continue;
     }
     if (st.isDirectory()) walkSkillFiles(full, acc, depth + 1);
-    else if (entry === 'SKILL.md') acc.push(full);
+    // Case-INSENSITIVE: upstreams disagree on casing (graphify ships skill.md,
+    // everyone else SKILL.md). Still an exact filename match — nothing else is
+    // collected — so this widens which files are FOUND, never what counts as a
+    // skill. The frontmatter parser and the per-source dialect remain the gate.
+    else if (entry.toLowerCase() === 'skill.md') acc.push(full);
   }
   return acc;
 }
