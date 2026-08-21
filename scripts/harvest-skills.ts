@@ -20,6 +20,18 @@
 //   git clone --depth 1 https://github.com/Citedy/adclaw
 //   git clone --depth 1 https://github.com/cgallic/kai-cmo-harness
 //   git clone --depth 1 https://github.com/ericosiu/marketing-os-starter
+//
+// Packet 5.2 — the marketing-os-arsenal group. Eight MIT repos, each a single
+// skill collection rather than a monorepo, all verified MIT with a root LICENSE
+// before being listed here:
+//   git clone --depth 1 https://github.com/zubair-trabzada/geo-seo-claude
+//   git clone --depth 1 https://github.com/charlesdove977/UGC-Factory
+//   git clone --depth 1 https://github.com/charlesdove977/advertising-ops
+//   git clone --depth 1 https://github.com/charlesdove977/goviralbro
+//   git clone --depth 1 https://github.com/charlesdove977/linkedin-automator
+//   git clone --depth 1 https://github.com/charlesdove977/re-walkthrough-pro
+//   git clone --depth 1 https://github.com/Hao0321/claude-skill-social-post
+//   git clone --depth 1 https://github.com/wshuyi/x-article-publisher-skill
 
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
@@ -51,7 +63,7 @@ const MIN_BODY_LENGTH = 80;
 // frontmatter shapes; widening one loose parser across all of them would let a
 // malformed mapping pass silently.
 // ---------------------------------------------------------------------------
-type Dialect = 'adclaw' | 'dmp' | 'kai' | 'mos';
+type Dialect = 'adclaw' | 'dmp' | 'kai' | 'mos' | 'arsenal';
 
 interface SourceSpec {
   key: string;
@@ -129,6 +141,127 @@ const SOURCES: SourceSpec[] = [
     skillRoots: ['.claude/skills'],
     dialect: 'mos',
     priority: 4,
+    requiresNotice: false,
+  },
+
+  // --- Packet 5.2: the marketing-os-arsenal group ------------------------
+  //
+  // Appended, never interleaved: `priority` breaks a dedupe tie, so inserting
+  // above an existing source would silently change which copy of a duplicated
+  // skill wins. These are all LOWER priority than the original four, so an
+  // existing skill keeps its current body.
+  //
+  // Every entry was licence-checked before being listed — all eight carry a
+  // root MIT LICENSE. Deliberately EXCLUDED after inspection:
+  //   apify-mcp-server      Apache-2.0, but its only two SKILL.md files are
+  //                         repo-internal dev skills (bug-triage, dig).
+  //   graphify              a code-graph dev tool, not marketing.
+  //   coldoutboundskills    contains no skills at all — only a split zip of
+  //                         scraped business records whose remaining parts were
+  //                         never committed.
+  //   *-mcp servers         MCP servers, not skill collections; they belong in
+  //                         the integrations layer, not the skill catalog.
+  {
+    key: 'geo-seo-claude',
+    repo: 'zubair-trabzada/geo-seo-claude',
+    dir: 'geo-seo-claude',
+    licenseMode: 'root',
+    expectLicense: 'MIT',
+    // 16 skills: a coherent generative-engine-optimisation suite (audit,
+    // citability, schema, llms.txt, crawlers, prospect, proposal). `geo/` is the
+    // orchestrator skill; `skills/` holds the fifteen it delegates to.
+    skillRoots: ['geo', 'skills'],
+    dialect: 'arsenal',
+    priority: 5,
+    requiresNotice: false,
+  },
+  {
+    key: 'ugc-factory',
+    repo: 'charlesdove977/UGC-Factory',
+    dir: 'UGC-Factory',
+    licenseMode: 'root',
+    expectLicense: 'MIT',
+    // 16 skills: one entry point plus fifteen video-ad styles (ecommerce,
+    // social-hook, brand-story, fashion, food). Nested under skill/styles/*.
+    skillRoots: ['skill'],
+    dialect: 'arsenal',
+    priority: 6,
+    requiresNotice: false,
+  },
+  {
+    key: 'advertising-ops',
+    repo: 'charlesdove977/advertising-ops',
+    dir: 'advertising-ops',
+    licenseMode: 'root',
+    expectLicense: 'MIT',
+    // Meta Ad Library intelligence. Declares its own `category:` in frontmatter,
+    // which the 'arsenal' dialect honours rather than re-inferring.
+    skillRoots: ['skill'],
+    dialect: 'arsenal',
+    priority: 7,
+    requiresNotice: false,
+  },
+  {
+    key: 'goviralbro',
+    repo: 'charlesdove977/goviralbro',
+    dir: 'goviralbro',
+    licenseMode: 'root',
+    expectLicense: 'MIT',
+    // Social performance review. The repo also ships install/cron scripts; those
+    // are never read — walkSkillFiles only collects SKILL.md.
+    skillRoots: ['skills'],
+    dialect: 'arsenal',
+    priority: 8,
+    requiresNotice: false,
+  },
+  {
+    key: 'linkedin-automator',
+    repo: 'charlesdove977/linkedin-automator',
+    dir: 'linkedin-automator',
+    licenseMode: 'root',
+    expectLicense: 'MIT',
+    // SKILL.md sits at the repo ROOT, so the skill root is '.'. walkSkillFiles
+    // already skips .git/node_modules and matches SKILL.md exactly, so this
+    // walks the repo without pulling in anything else.
+    skillRoots: ['.'],
+    dialect: 'arsenal',
+    priority: 9,
+    requiresNotice: false,
+  },
+  {
+    key: 're-walkthrough-pro',
+    repo: 'charlesdove977/re-walkthrough-pro',
+    dir: 're-walkthrough-pro',
+    licenseMode: 'root',
+    expectLicense: 'MIT',
+    // Product walkthrough / demo recording.
+    skillRoots: ['skill'],
+    dialect: 'arsenal',
+    priority: 10,
+    requiresNotice: false,
+  },
+  {
+    key: 'claude-skill-social-post',
+    repo: 'Hao0321/claude-skill-social-post',
+    dir: 'claude-skill-social-post',
+    licenseMode: 'root',
+    expectLicense: 'MIT',
+    // Single social-post composer.
+    skillRoots: ['social-post'],
+    dialect: 'arsenal',
+    priority: 11,
+    requiresNotice: false,
+  },
+  {
+    key: 'x-article-publisher',
+    repo: 'wshuyi/x-article-publisher-skill',
+    dir: 'x-article-publisher-skill',
+    licenseMode: 'root',
+    expectLicense: 'MIT',
+    // Long-form publishing to X.
+    skillRoots: ['skills'],
+    dialect: 'arsenal',
+    priority: 12,
     requiresNotice: false,
   },
 ];
@@ -277,13 +410,21 @@ const CATEGORY_RULES: { category: string; re: RegExp }[] = [
   { category: 'seo', re: /\bseo\b|serp|keyword|backlink|sitemap|hreflang|schema[- ]markup|\bgeo\b|\baeo\b|rank/ },
   { category: 'ads', re: /\bads?\b|\bppc\b|paid[- ]advertis|retarget|creative[- ]test|media[- ]plan/ },
   { category: 'social', re: /social|twitter|instagram|reddit|tiktok|linkedin|youtube|influencer/ },
-  { category: 'email', re: /email|newsletter|drip|\bsms\b|sequence/ },
+  // `sequence` is NOT matched bare: it filed "fight scene and action sequence"
+  // under email. In marketing prose the word only implies email when something
+  // says so, so it must be qualified.
+  { category: 'email', re: /email|newsletter|drip|\bsms\b|(email|drip|nurture|outreach|follow[- ]?up)[- ]sequence/ },
   { category: 'content', re: /content|copy|blog|video|image|deck|pptx|docx|xlsx|\bpdf\b|script|story|narrative|webinar|\bpr\b/ },
   { category: 'analytics', re: /analytic|\bga4\b|\bgsc\b|attribution|cohort|dashboard|report|metric|forecast|roi|funnel|\bcro\b/ },
   { category: 'dev-tooling', re: /browser|playwright|crawl|firecrawl|sitefetch|camoufox|scrape|connector|integration|\bapi\b|\bcrm\b|import|export|sync/ },
   { category: 'ops', re: /cron|agenthub|skill-creator|self-setup|onboard|memory|quality[- ]gate|eval|status|config|setup|help|validate/ },
   { category: 'marketing', re: /marketing|brand|campaign|persona|audience|positioning|launch|growth|lead|competitor|market/ },
 ];
+
+/** Categories this harvester can emit. DERIVED from the rules above plus the
+ *  'other' fallback, so a declared upstream category is validated against the
+ *  real authority rather than a second hand-maintained list that could drift. */
+const KNOWN_HARVEST_CATEGORIES = new Set<string>([...CATEGORY_RULES.map((r) => r.category), 'other']);
 
 /** Slug evidence wins over description evidence — a description mentioning
  *  "email" in passing should not re-file a copywriting skill under `email`. */
@@ -327,6 +468,11 @@ function parseFrontmatter(raw: string): { attrs: Record<string, string>; body: s
 interface Meta {
   name: string;
   description: string;
+  /** Only when the upstream frontmatter DECLARES one. An author's own label
+   *  beats mapCategory()'s keyword inference, which is a fallback for sources
+   *  that say nothing. Validated against the known set before use — an
+   *  unrecognised upstream value is ignored, not trusted. */
+  category?: string;
 }
 
 function readDialect(dialect: Dialect, attrs: Record<string, string>, dirName: string): Meta | null {
@@ -367,6 +513,22 @@ function readDialect(dialect: Dialect, attrs: Record<string, string>, dirName: s
       const description = (attrs.description || '').trim();
       if (!name || !description) return null;
       return { name, description };
+    }
+    // marketing-os-arsenal group: `name` + `description`, same two keys as
+    // 'mos'. Kept as a SEPARATE dialect rather than reusing that one because
+    // these are eight independent repos with no shared upstream convention —
+    // folding them into an existing case would mean a future shape change in
+    // any one of them silently parses as marketing-os-starter.
+    //
+    // Additionally reads `category` where an author declares it (advertising-ops
+    // does). `allowed-tools`, `type`, `version` and `metadata` are CLI/packaging
+    // concerns and are dropped, matching every other dialect here.
+    case 'arsenal': {
+      const name = (attrs.name || dirName).trim();
+      const description = (attrs.description || '').trim();
+      if (!name || !description) return null;
+      const declared = (attrs.category || '').trim().toLowerCase();
+      return declared ? { name, description, category: declared } : { name, description };
     }
   }
 }
@@ -578,7 +740,12 @@ function main() {
         slug,
         name: meta.name,
         description: meta.description || `Imported skill: ${meta.name}`,
-        category: mapCategory(slug, meta.description),
+        // An author's own label wins, but only if it is a category this catalog
+        // actually has. Anything else falls back to inference rather than
+        // inventing a bucket nothing can filter on.
+        category: meta.category && KNOWN_HARVEST_CATEGORIES.has(meta.category)
+          ? meta.category
+          : mapCategory(slug, meta.description),
         instructions: bodyTrimmed,
         source: src.key,
         sourceRepo: src.repo,
