@@ -19,6 +19,25 @@
 
 export interface FakeTable { rows: Record<string, any>[] }
 
+/** Column defaults the real schema supplies on INSERT.
+ *
+ *  Without these the fake silently under-reports a row: `status` and
+ *  `progress_log` have DB defaults, so code that reads them straight back from
+ *  an insert works in Postgres and returns undefined here. That makes a correct
+ *  capability look broken — the fake must not be more permissive OR more
+ *  forgetful than the thing it stands in for.
+ *
+ *  Declared per table, so one table's columns never leak into another's rows. */
+const TABLE_DEFAULTS: Record<string, () => Record<string, any>> = {
+  approvals: () => ({
+    args_encrypted: null, decided_by: null, decided_at: null, comment: null,
+    expires_at: null, conversation_id: null, requested_by: null,
+  }),
+  brand_goals: () => ({
+    status: 'active', progress_log: [], last_worked_at: null, met_at: null,
+  }),
+};
+
 type Filter = [string, any];
 
 class Query implements PromiseLike<{ data: any; error: any }> {
@@ -28,7 +47,7 @@ class Query implements PromiseLike<{ data: any; error: any }> {
   private rowMode: 'one' | 'maybe' | null = null;
   private orderBy: { col: string; asc: boolean }[] = [];
 
-  constructor(private table: FakeTable, private onWrite?: () => void) {}
+  constructor(private table: FakeTable, private tableName: string, private onWrite?: () => void) {}
 
   select(_cols?: string) { if (this.op === 'select') this.op = 'select'; return this; }
   insert(rows: any) { this.op = 'insert'; this.payload = Array.isArray(rows) ? rows : [rows]; return this; }
@@ -47,11 +66,11 @@ class Query implements PromiseLike<{ data: any; error: any }> {
     let out: any[];
     if (this.op === 'insert') {
       const now = new Date().toISOString();
+      const defaults = TABLE_DEFAULTS[this.tableName]?.() ?? {};
       out = this.payload.map((r: any) => ({
-        id: r.id ?? `ap_${Math.random().toString(36).slice(2, 11)}`,
+        id: r.id ?? `row_${Math.random().toString(36).slice(2, 11)}`,
         created_at: now, updated_at: now,
-        args_encrypted: null, decided_by: null, decided_at: null, comment: null,
-        expires_at: null, conversation_id: null, requested_by: null,
+        ...defaults,
         ...r,
       }));
       this.table.rows.push(...out);
@@ -89,7 +108,7 @@ export function makeFakeSupabase() {
   const tables: Record<string, FakeTable> = {};
   const table = (n: string) => (tables[n] ??= { rows: [] });
   return {
-    client: { from: (n: string) => new Query(table(n)) },
+    client: { from: (n: string) => new Query(table(n), n) },
     tableRows: (n: string) => table(n).rows,
     reset: () => { for (const k of Object.keys(tables)) delete tables[k]; },
   };
