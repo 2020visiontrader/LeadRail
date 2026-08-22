@@ -16,7 +16,7 @@ export type Step =
   | { kind: 'error'; text: string };
 
 interface Proposal { tool: string; title: string; args: Record<string, any>; summary: string; approvalId?: string }
-type Turn = { role: 'user' } & { text: string } | { role: 'assistant'; text: string; steps: Step[] };
+type Turn = { role: 'user' } & { text: string; id?: string } | { role: 'assistant'; text: string; steps: Step[] };
 
 // Map internal tool names to plain-language present-tense actions.
 const TOOL_VERB: Record<string, string> = {
@@ -452,17 +452,17 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
       else if (e.type === 'thought') steps.push({ kind: 'thought', text: e.text, done: false });
       else if (e.type === 'tool') steps.push({ kind: 'tool', label: verbFor(e.tool, e.title), done: false });
       else if (e.type === 'observation') {
-        const last = [...t.steps].reverse().find((s: Step) => s.kind === 'tool') as any;
-        if (last) {
+        const last = [...t.steps].reverse().find((s: Step) => s.kind === 'tool');
+        if (last && last.kind === 'tool') {
           last.done = true;
           last.ok = e.ok;
           if (e.metrics && Object.keys(e.metrics).length) last.metrics = e.metrics;
           const text = typeof e.text === 'string' ? e.text.trim() : '';
           if (text) last.observation = text.length > 240 ? `${text.slice(0, 237)}…` : text;
         }
-      } else if (e.type === 'final') { t.text = e.message; }
-      else if (e.type === 'needs_approval') { setProposal(e.proposal); }
-      else if (e.type === 'error') t.steps.push({ kind: 'error', text: e.message });
+      } else if (e.type === 'final') { t.status = 'done'; t.text = e.message; }
+      else if (e.type === 'needs_approval') { t.status = 'approval'; setProposal(e.proposal); }
+      else if (e.type === 'error') { t.status = 'error'; t.steps.push({ kind: 'error', text: e.message }); }
     });
   }
 
@@ -570,16 +570,14 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
         )}
         {turns.map((t, i) =>
           t.role === 'user' ? (
-            <div key={i} className="flex justify-end">
+            <div key={t.id || i} className="flex justify-end">
               <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl bg-[var(--brand)] px-4 py-2 text-sm text-white">{t.text}</div>
             </div>
           ) : (
-            <div key={i} className="space-y-2">
+            <div key={t.id || i} className="space-y-2">
               {t.steps.length > 0 && (
                 <div className="space-y-1.5 rounded-xl bg-[var(--bg-raised)] px-4 py-3">
-                  {t.steps.map((step: Step, index: number) => (
-                    <StepRow key={index} step={step} />
-                  ))}
+                  {t.steps.map((step: Step, index: number) => <StepRow key={index} step={step} />)}
                 </div>
               )}
               {t.text && (
