@@ -6,9 +6,29 @@
       "use": "business discovery — the core of the outreach database",
       "status": "live",
       "verified": "2026-08-22",
-      "endpoints": { "search": "/searchmaps.php", "review": "/review.php" },
-      "returns": ["name", "phone_number", "website", "full_address", "latitude", "longitude", "rating", "review_count", "business_id"],
-      "countries_verified": ["us", "gb", "ca", "de", "fr", "nl"],
+      "endpoints": {
+        "search": "/searchmaps.php",
+        "review": "/review.php"
+      },
+      "returns": [
+        "name",
+        "phone_number",
+        "website",
+        "full_address",
+        "latitude",
+        "longitude",
+        "rating",
+        "review_count",
+        "business_id"
+      ],
+      "countries_verified": [
+        "us",
+        "gb",
+        "ca",
+        "de",
+        "fr",
+        "nl"
+      ],
       "_locality_note": "THE LOCALITY MUST BE IN THE QUERY, not just the country param. 'plumber' + country=ca returns NOTHING; 'plumber in Toronto' + country=ca returns results. The country code alone does not geo-fence the search, so a scrape driven only by country codes silently produces empty pages and looks like a quota problem.",
       "rate_limit": "2 req/sec observed; 20 results max per request"
     },
@@ -17,21 +37,27 @@
       "use": "Meta Ad Library — competitor creative and spend intelligence",
       "status": "live",
       "verified": "2026-08-22",
-      "endpoints": { "page_ads": "/ads/page/search" }
+      "endpoints": {
+        "page_ads": "/ads/page/search"
+      }
     },
     "twitter-api45": {
       "host": "twitter-api45.p.rapidapi.com",
       "use": "X/Twitter profile, community and timeline data",
       "status": "live",
       "verified": "2026-08-22",
-      "endpoints": { "community": "/community_info.php" }
+      "endpoints": {
+        "community": "/community_info.php"
+      }
     },
     "instagram-scraper-stable-api": {
       "host": "instagram-scraper-stable-api.p.rapidapi.com",
       "use": "Instagram followers/following — social prospecting",
       "status": "subscribed, transient error on test",
       "verified": "2026-08-22",
-      "endpoints": { "followers": "/get_ig_user_followers_v2.php" },
+      "endpoints": {
+        "followers": "/get_ig_user_followers_v2.php"
+      },
       "_note": "Returned HTTP 200 with body {\"error\":\"Please try again later. You wont be charged for this request.\"} — the provider's own soft-fail. Treat a 200 as success ONLY after checking for an `error` key; a naive status-code check would count these as real results.",
       "method": "POST form-encoded"
     },
@@ -41,6 +67,59 @@
       "status": "DEAD — do not build on this",
       "verified": "2026-08-22",
       "_note": "Returns 200 with {\"success\":false,\"message\":\"This service is no longer available at this location.\"} The subscription is still active and still billable while returning nothing. Unsubscribe, and note that HTTP 200 means nothing here either."
+    },
+    "reddit3": {
+      "host": "reddit3.p.rapidapi.com",
+      "use": "subreddit + post data (community research)",
+      "status": "live",
+      "verified": "2026-08-22",
+      "endpoints": {
+        "subreddit_info": "/v1/reddit/subreddit/info"
+      }
+    },
+    "reddit34": {
+      "host": "reddit34.p.rapidapi.com",
+      "use": "Reddit user stats",
+      "status": "subscribed, returned no data on test",
+      "verified": "2026-08-22",
+      "endpoints": {
+        "user_stats": "/getUserStats"
+      },
+      "_note": "200 with {\"success\":false,\"data\":\"data not found\"}. Another case where the status code says nothing — check `success`."
+    },
+    "instagram-downloader-stories1": {
+      "host": "instagram-downloader-download-instagram-videos-stories1.p.rapidapi.com",
+      "use": "IG profile + media download",
+      "status": "live",
+      "verified": "2026-08-22",
+      "endpoints": {
+        "userinfo": "/?Userinfo=<profile-url>"
+      }
+    },
+    "instagram-scraper-api-stories-reels": {
+      "host": "instagram-scraper-api-stories-reels-va-post.p.rapidapi.com",
+      "use": "IG stories / reels / posts",
+      "status": "subscribed, params unresolved",
+      "verified": "2026-08-22",
+      "_note": "400 'Missing required parameters' using the provider's OWN documented example (?Userinfo=<handle>). Needs the real parameter list from the RapidAPI console before anything is built on it."
     }
+  },
+  "_purpose": {
+    "business_discovery": [
+      "maps-data"
+    ],
+    "_business_note": "ONE provider builds the outreach database. Everything else below is social/content intelligence — a different product surface. Nine subscriptions bill monthly; only maps-data moves rows into `businesses`.",
+    "social_intelligence": [
+      "facebook-scraper3",
+      "twitter-api45",
+      "reddit3",
+      "reddit34",
+      "instagram-scraper-stable-api",
+      "instagram-downloader-stories1",
+      "instagram-scraper-api-stories-reels"
+    ],
+    "dead_cancel_these": [
+      "linkedin-data-api"
+    ]
   }
 }
