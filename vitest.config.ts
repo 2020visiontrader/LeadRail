@@ -26,5 +26,15 @@ export default defineConfig({
     exclude: ['node_modules/**', 'tests/e2e/**', '.next/**'],
     environment: 'node',
     hookTimeout: 30000,
+    // The registry-backed suites (parity, regressions, capability-contract)
+    // spend ~20-30s in module COLLECTION — they load 443 skills and 108
+    // capabilities. Under CPU contention (a concurrent `npm run build`, or CI)
+    // that pushes individual tests past vitest's 5s default and the run goes red
+    // with nothing actually broken.
+    //
+    // A suite that fails under load is worse than a slow one: it teaches
+    // everyone to re-run instead of read, and a real failure then looks like the
+    // flake they have learned to ignore.
+    testTimeout: 30000,
   },
 });
