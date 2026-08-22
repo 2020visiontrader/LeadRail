@@ -12,7 +12,7 @@ import { apiGet, apiSend } from '@/lib/api';
 
 export type Step =
   | { kind: 'thought'; text: string; done: boolean; synthetic?: boolean }
-  | { kind: 'tool'; label: string; done: boolean; ok?: boolean; metrics?: Record<string, number> }
+  | { kind: 'tool'; label: string; done: boolean; ok?: boolean; metrics?: Record<string, number>; observation?: string }
   | { kind: 'error'; text: string };
 
 interface Proposal { tool: string; title: string; args: Record<string, any>; summary: string; approvalId?: string }
@@ -453,7 +453,13 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
       else if (e.type === 'tool') steps.push({ kind: 'tool', label: verbFor(e.tool, e.title), done: false });
       else if (e.type === 'observation') {
         const last = [...t.steps].reverse().find((s: Step) => s.kind === 'tool') as any;
-        if (last) { last.done = true; last.ok = e.ok; if (e.metrics && Object.keys(e.metrics).length) last.metrics = e.metrics; }
+        if (last) {
+          last.done = true;
+          last.ok = e.ok;
+          if (e.metrics && Object.keys(e.metrics).length) last.metrics = e.metrics;
+          const text = typeof e.text === 'string' ? e.text.trim() : '';
+          if (text) last.observation = text.length > 240 ? `${text.slice(0, 237)}…` : text;
+        }
       } else if (e.type === 'final') { t.text = e.message; }
       else if (e.type === 'needs_approval') { setProposal(e.proposal); }
       else if (e.type === 'error') t.steps.push({ kind: 'error', text: e.message });
@@ -555,7 +561,7 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     // The parent now owns the height; the message list below is the only
     // scroller, so the composer stays put.
     <div className="flex h-full min-h-0 flex-col rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] shadow-[var(--shadow-card)]">
-      <div className="flex-1 space-y-4 overflow-y-auto p-5">
+      <div className="flex-1 space-y-4 overflow-y-auto p-5" aria-live="polite">
         {turns.length === 0 && (
           <div className="mx-auto mt-10 max-w-md text-center text-sm text-[var(--text-muted)]">
             <div className="mb-2 text-base font-semibold text-[var(--text-primary)]">LeadRail Assistant</div>
@@ -571,7 +577,9 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
             <div key={i} className="space-y-2">
               {t.steps.length > 0 && (
                 <div className="space-y-1.5 rounded-xl bg-[var(--bg-raised)] px-4 py-3">
-                  {t.steps.map((s: Step, j: number) => <StepRow key={j} step={s} />)}
+                  {t.steps.map((step: Step, index: number) => (
+                    <StepRow key={index} step={step} />
+                  ))}
                 </div>
               )}
               {t.text && (
@@ -640,24 +648,28 @@ function StepRow({ step }: { step: Step }) {
     return <div className="flex items-center gap-2 text-sm text-[var(--status-negative)]"><span>✕</span>{step.text}</div>;
   }
   const text = step.kind === 'thought' ? step.text : step.label;
-  const done = 'done' in step ? step.done : true;
+  const done = step.done;
   const failed = step.kind === 'tool' && step.ok === false;
   return (
-    <div className="flex items-center gap-2.5 text-sm text-[var(--text-secondary)]">
+    <div className="flex items-start gap-2.5 text-sm text-[var(--text-secondary)]">
       {failed ? (
-        <span className="text-[var(--status-negative)]">✕</span>
+        <span className="mt-0.5 text-[var(--status-negative)]">✕</span>
       ) : done ? (
-        <span className="text-[var(--status-positive)]">✓</span>
+        <span className="mt-0.5 text-[var(--status-positive)]">✓</span>
       ) : (
-        <span className="relative flex h-2 w-2">
+        <span className="relative mt-1 flex h-2 w-2 shrink-0">
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--brand)] opacity-70" />
           <span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--brand)]" />
         </span>
       )}
-      {/* Only append the trailing ellipsis when the label does not already end
-          in one — step_start texts ship with their own ("Thinking through your
-          request…"), which produced "request……". */}
-      <span className={done ? '' : 'text-[var(--text-primary)]'}>{text}{!done && !/[.…]$/.test(text) && '…'}</span>
+      <div className="min-w-0">
+        <span className={done ? '' : 'text-[var(--text-primary)]'}>{text}{!done && !/[.…]$/.test(text) && '…'}</span>
+        {step.kind === 'tool' && step.observation && (
+          <div className="mt-1 max-w-full truncate pl-2 text-xs text-[var(--text-muted)]" title={step.observation}>
+            {step.observation}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
