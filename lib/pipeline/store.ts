@@ -193,6 +193,7 @@ async function persistRun(accountId: string, id: string, patch: {
 async function groundingForRun(run: ContentPipelineRunRow): Promise<{
   agentContext?: string;
   brandName?: string;
+  brandId?: string;
 }> {
   let brandName: string | undefined;
   if (run.brand_id) {
@@ -215,7 +216,7 @@ async function groundingForRun(run: ContentPipelineRunRow): Promise<{
       brandName,
       query: run.topic,
     });
-    return { agentContext, brandName };
+    return { agentContext, brandName, brandId: run.brand_id ?? undefined };
   } catch {
     return { brandName };
   }
@@ -237,7 +238,7 @@ export async function runPipeline(accountId: string, topic: string): Promise<Con
   const run = await createPipelineRun(accountId, topic);
   // Grounding once for the whole run (Packet 3.1) — before, every stage ran
   // with no platform/venture/memory context at all.
-  const { agentContext, brandName } = await groundingForRun(run);
+  const { agentContext, brandName, brandId } = await groundingForRun(run);
   const { runAgent } = await import('@/lib/agent/loop');
   let stages: PipelineStageResult[] = PIPELINE_STAGES.map((s) => ({ key: s.key, status: 'pending' }));
   let prior = '';
@@ -255,7 +256,7 @@ export async function runPipeline(accountId: string, topic: string): Promise<Con
         accountId,
         message: instruction,
         agentContext,
-        brandContext: brandName ? { name: brandName } : undefined,
+        brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined,
       });
 
       // A stage that proposed a sensitive action has NOT run it. Halt here:

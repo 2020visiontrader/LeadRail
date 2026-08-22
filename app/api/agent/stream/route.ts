@@ -73,7 +73,7 @@ export async function POST(request: NextRequest) {
       let compaction: 'soft' | 'hard' | null = null;
       try {
         await runAgentStream(
-          { accountId: session.accountId, message, approve, transcript, agentContext, carryover, brandContext: brandName ? { name: brandName } : undefined, personaId, personaMentions, requestedBy: session.email, conversationId },
+          { accountId: session.accountId, message, approve, transcript, agentContext, carryover, brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined, personaId, personaMentions, requestedBy: session.email, conversationId },
           (e: AgentEvent) => {
             // Only `final`/`needs_approval` carry a transcript. Everything else,
             // including `final_delta` (a progressive preview of the answer being

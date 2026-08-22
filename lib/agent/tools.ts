@@ -110,10 +110,38 @@ export async function runTool(
   rawArgs: unknown,
   extraTools?: Record<string, AgentTool>,
   extraCaps?: Record<string, Capability>,
+  /** The brand the operator currently has selected, when there is one.
+   *
+   *  BRAND SCOPE HAS TO BE ENFORCED HERE, not asked for in the prompt. 23
+   *  capabilities declare a `brandId` parameter and the model had to remember to
+   *  pass it on every call; when it forgot, the tool ran across EVERY brand in
+   *  the account and nothing said so. With Rentahub selected, listCompanies
+   *  returned all nine companies belonging to filmops and retentionrail, and the
+   *  answer attributed them to whichever brand the question named. Nine writes
+   *  are in that set too, so records could be created under the wrong brand.
+   *
+   *  Only ever FILLS AN ABSENT value: an explicit brandId from the model always
+   *  wins, because "what about FilmOps?" while Rentahub is selected is a real
+   *  request, not a mistake.
+   *
+   *  Omitted by the MCP server on purpose — an API key has no "selected brand",
+   *  so there is nothing to default and its behaviour is unchanged. */
+  defaultBrandId?: string,
 ): Promise<ToolRunResult> {
   const tool = TOOLS[name] ?? extraTools?.[name];
   if (!tool) return { ok: false, error: `Unknown tool: ${name}` };
-  const parsed = tool.zod.safeParse(rawArgs ?? {});
+
+  // Applied BEFORE validation so the parsed args carry it — spendsMoney() and
+  // the capability itself must both see the same, scoped arguments.
+  let args: any = rawArgs ?? {};
+  if (defaultBrandId && args && typeof args === 'object' && !Array.isArray(args)) {
+    const cap0 = CAPABILITY_BY_NAME[name] ?? extraCaps?.[name];
+    const declaresBrand = Boolean(cap0?.inputSchema?.properties?.brandId);
+    const absent = args.brandId === undefined || args.brandId === null || args.brandId === '';
+    if (declaresBrand && absent) args = { ...args, brandId: defaultBrandId };
+  }
+
+  const parsed = tool.zod.safeParse(args);
   if (!parsed.success) return { ok: false, error: `Invalid arguments: ${parsed.error.message}` };
 
   // SPEND GATE (Packet 1.4). This is the one place any capability is executed —

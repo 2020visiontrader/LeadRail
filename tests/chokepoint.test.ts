@@ -138,6 +138,66 @@ describe('the spend gate cannot be walked past', () => {
   });
 });
 
+describe('brand scope is enforced, not requested', () => {
+  // THE BUG THIS PREVENTS. 23 capabilities declare a `brandId`, and the model
+  // had to remember to pass it on every call. When it forgot, the tool ran
+  // across EVERY brand in the account and nothing said so.
+  //
+  // Observed live: with Rentahub selected — which has zero companies —
+  // listCompanies returned all nine belonging to filmops and retentionrail, and
+  // the answer then attributed them to whichever brand the question named. Nine
+  // WRITES are in that set (createLead, createCampaign, createDeal…), so records
+  // could also be created under the wrong brand.
+  //
+  // Scope has to be applied at the tool boundary. A prompt asking the model to
+  // remember is not a control.
+  it('fills an absent brandId on a capability that declares one', async () => {
+    const { spy, restore } = stub('listCompanies', () => []);
+    try {
+      await runTool('listCompanies', ACCOUNT, {}, undefined, undefined, 'rentahub');
+      expect(spy).toHaveBeenCalled();
+      expect((spy.mock.calls[0] as any[])[1]).toMatchObject({ brandId: 'rentahub' });
+    } finally { restore(); }
+  });
+
+  it('an explicit brandId from the model always wins', async () => {
+    // "What about FilmOps?" while Rentahub is selected is a real request, not a
+    // mistake. The default fills a gap; it must never override an instruction.
+    const { spy, restore } = stub('listCompanies', () => []);
+    try {
+      await runTool('listCompanies', ACCOUNT, { brandId: 'filmops' }, undefined, undefined, 'rentahub');
+      expect((spy.mock.calls[0] as any[])[1]).toMatchObject({ brandId: 'filmops' });
+    } finally { restore(); }
+  });
+
+  it('scopes WRITES too, not just reads', async () => {
+    const { spy, restore } = stub('createCompany', () => ({ id: 'c1' }));
+    try {
+      await runTool('createCompany', ACCOUNT, { name: 'Acme' }, undefined, undefined, 'rentahub');
+      expect((spy.mock.calls[0] as any[])[1]).toMatchObject({ name: 'Acme', brandId: 'rentahub' });
+    } finally { restore(); }
+  });
+
+  it('leaves capabilities that declare no brandId untouched', async () => {
+    // listVentures must keep listing every brand — defaulting a scope onto it
+    // would hide the other brands from the operator entirely.
+    const { spy, restore } = stub('listVentures', () => []);
+    try {
+      await runTool('listVentures', ACCOUNT, {}, undefined, undefined, 'rentahub');
+      expect((spy.mock.calls[0] as any[])[1]).not.toHaveProperty('brandId');
+    } finally { restore(); }
+  });
+
+  it('changes nothing when no brand is selected', async () => {
+    // The MCP server passes no default — an API key has no selected brand.
+    const { spy, restore } = stub('listCompanies', () => []);
+    try {
+      await runTool('listCompanies', ACCOUNT, {}, undefined, undefined, undefined);
+      expect((spy.mock.calls[0] as any[])[1]).not.toHaveProperty('brandId');
+    } finally { restore(); }
+  });
+});
+
 describe('containment — a failing capability degrades, it does not crash the turn', () => {
   it('a throwing capability becomes {ok:false} with its message intact', async () => {
     const { restore } = stub('listVentures', () => { throw new Error('upstream exploded'); });

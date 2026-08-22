@@ -84,7 +84,7 @@ async function POST__impl(request: NextRequest) {
     transcript,
     agentContext,
     carryover,
-    brandContext: brandName ? { name: brandName } : undefined,
+    brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined,
     personaId,
     personaMentions,
     requestedBy: session.email,

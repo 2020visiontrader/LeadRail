@@ -113,7 +113,12 @@ export interface AgentResult {
 export interface RunAgentInput {
   accountId: string;
   message?: string;
-  brandContext?: { name?: string };
+  /** The brand the operator has selected in the UI.
+   *
+   *  Carried alongside the NAME because the name is only good for the prompt —
+   *  scoping a query needs the id. Its absence is why every brand-scoped tool
+   *  call ran across the whole account: the loop simply had no id to pass. */
+  brandContext?: { name?: string; id?: string };
   /** Full grounding block (platform + venture + account + memory) from loadAgentContext. */
   agentContext?: string;
   /** Carryover memo from a prior chat, injected to seed a reseeded conversation. */
@@ -850,7 +855,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
     } catch (e: any) {
       return { status: 'error', message: approvalRefusal(e), transcript: messages, steps };
     }
-    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName);
+    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
     const obs = observationFor(tool, args, res, extraCapsByName);
     const obsLimit = obsLimitFor(tool, extraCapsByName);
     steps.push({ tool, args, observation: truncate(obs, obsLimit) });
@@ -975,7 +980,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
     seen.add(sig);
     toolCalls[tool] = (toolCalls[tool] || 0) + 1;
 
-    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName);
+    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
     const obs = observationFor(tool, args, res, extraCapsByName);
     lastToolName = tool;
     const obsLimit = obsLimitFor(tool, extraCapsByName);
@@ -1093,7 +1098,7 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
       return;
     }
     emit({ type: 'tool', tool, title: approveDef.title, args });
-    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName);
+    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
     const obs = observationFor(tool, args, res, extraCapsByName);
     const obsLimit = obsLimitFor(tool, extraCapsByName);
     emit({ type: 'observation', text: truncate(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
@@ -1234,7 +1239,7 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
     toolCalls[tool] = (toolCalls[tool] || 0) + 1;
 
     emit({ type: 'tool', tool, title: def.title, args });
-    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName);
+    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
     const obs = observationFor(tool, args, res, extraCapsByName);
     const obsLimit = obsLimitFor(tool, extraCapsByName);
     emit({ type: 'observation', text: truncate(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });

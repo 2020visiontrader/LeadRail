@@ -147,6 +147,7 @@ export async function deleteScheduledTask(accountId: string, id: string): Promis
 async function groundingFor(task: ScheduledTaskRow): Promise<{
   agentContext?: string;
   brandName?: string;
+  brandId?: string;
 }> {
   let brandName: string | undefined;
   if (task.brand_id) {
@@ -169,7 +170,7 @@ async function groundingFor(task: ScheduledTaskRow): Promise<{
       brandName,
       query: task.prompt,
     });
-    return { agentContext, brandName };
+    return { agentContext, brandName, brandId: task.brand_id ?? undefined };
   } catch {
     // No context block at all — the run still happens, just ungrounded.
     return { brandName };
@@ -206,12 +207,12 @@ export async function runDueScheduledTasks(): Promise<{
 
   for (const task of (due || []) as ScheduledTaskRow[]) {
     try {
-      const { agentContext, brandName } = await groundingFor(task);
+      const { agentContext, brandName, brandId } = await groundingFor(task);
       const agentResult = await runAgent({
         accountId: task.account_id,
         message: task.prompt,
         agentContext,
-        brandContext: brandName ? { name: brandName } : undefined,
+        brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined,
       });
 
       if (agentResult?.status === 'needs_approval') {
