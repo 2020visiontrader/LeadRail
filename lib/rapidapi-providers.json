@@ -102,16 +102,59 @@
       "status": "subscribed, params unresolved",
       "verified": "2026-08-22",
       "_note": "400 'Missing required parameters' using the provider's OWN documented example (?Userinfo=<handle>). Needs the real parameter list from the RapidAPI console before anything is built on it."
+    },
+    "google-map-places-new-v2": {
+      "host": "google-map-places-new-v2.p.rapidapi.com",
+      "use": "business discovery — PREFERRED. Google Places API (New) semantics.",
+      "status": "live",
+      "verified": "2026-08-22",
+      "endpoints": {
+        "search_text": "/v1/places:searchText",
+        "autocomplete": "/v1/places:autocomplete"
+      },
+      "method": "POST JSON, header X-Goog-FieldMask: * for all fields",
+      "returns": [
+        "displayName",
+        "nationalPhoneNumber",
+        "websiteUri",
+        "formattedAddress",
+        "rating",
+        "userRatingCount",
+        "location",
+        "types",
+        "businessStatus"
+      ],
+      "_why_preferred": "PAGINATES. Returns 20 places AND a nextPageToken, so one query can be walked past the first page. maps-data caps at 20 per request with an offset and no continuation token, which means a query with 300 local roofers yields 20 unless you re-tile the geography by hand. Pagination is the difference between 100k per vertical being a query plan and being a geography problem.",
+      "verified_queries": [
+        "roofing contractor in Manchester UK",
+        "plumber in Toronto"
+      ]
+    },
+    "twitter-api47": {
+      "host": "twitter-api47.p.rapidapi.com",
+      "use": "X/Twitter — lists, timelines",
+      "status": "subscribed, endpoints unmapped",
+      "verified": "2026-08-22",
+      "_note": "404 on a guessed /v2/user/by-username. The documented example (/v3/list/create) needs a user authToken, which is a different auth model to the rest. Map the real endpoint list before building."
+    },
+    "li-data-scraper": {
+      "host": "li-data-scraper.p.rapidapi.com",
+      "use": "LinkedIn profile data",
+      "status": "DEAD — same service as linkedin-data-api",
+      "verified": "2026-08-22",
+      "_note": "Byte-identical failure to linkedin-data-api, down to the support address (professionalnetworkdata.com). These are two subscriptions to ONE dead backend, both billing."
     }
   },
   "_purpose": {
     "business_discovery": [
+      "google-map-places-new-v2",
       "maps-data"
     ],
-    "_business_note": "ONE provider builds the outreach database. Everything else below is social/content intelligence — a different product surface. Nine subscriptions bill monthly; only maps-data moves rows into `businesses`.",
+    "_business_note": "google-map-places-new-v2 is PREFERRED: it paginates (nextPageToken) and returns richer fields. maps-data stays as a fallback and a cross-check — two sources disagree usefully.",
     "social_intelligence": [
       "facebook-scraper3",
       "twitter-api45",
+      "twitter-api47",
       "reddit3",
       "reddit34",
       "instagram-scraper-stable-api",
@@ -119,7 +162,8 @@
       "instagram-scraper-api-stories-reels"
     ],
     "dead_cancel_these": [
-      "linkedin-data-api"
+      "linkedin-data-api",
+      "li-data-scraper"
     ]
   }
 }
