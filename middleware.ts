@@ -11,7 +11,11 @@ import { verifySession, SESSION_COOKIE } from '@/lib/session';
 // without this they would redirect a crawler to /login and the page would be
 // unindexable. All four are public *by definition* — they contain no account
 // data and read nothing from a session.
-const PUBLIC_PAGES = ['/login', '/privacy', '/terms', '/data-deletion', '/r/', '/welcome', '/robots.txt', '/sitemap.xml', '/llms.txt'];
+// '/signup' is public for the same reason '/login' is: it is where a visitor
+// goes BEFORE they have a session. Omitting it made the middleware redirect it
+// to /login, so the page shipped and was unreachable — a build and a green test
+// suite both pass in that state, because neither exercises middleware.
+const PUBLIC_PAGES = ['/login', '/signup', '/privacy', '/terms', '/data-deletion', '/r/', '/welcome', '/robots.txt', '/sitemap.xml', '/llms.txt'];
 // Only genuinely public endpoints: user login, provider webhooks (signature-verified),
 // the cron tick (bearer-protected), and the Meta OAuth callback. Everything else —
 // including all social read/write routes — now requires a session.
@@ -23,7 +27,11 @@ const PUBLIC_PAGES = ['/login', '/privacy', '/terms', '/data-deletion', '/r/', '
 // '/api/public/*' is the intentional public surface (e.g. embeddable web-form
 // submissions from any external site) — these routes derive tenant from the
 // resource row, never from a session, and are safe to expose unauthenticated.
-const PUBLIC_API = ['/api/auth/login', '/api/webhooks', '/api/hermes/tick', '/api/mcp', '/api/public', '/api/social/meta/callback', '/api/social/meta/connect', '/api/social/meta/deauthorize', '/api/social/meta/data-deletion', '/api/social/instagram/callback', '/api/track', '/api/unsubscribe'];
+// '/api/auth/signup' and '/api/contact' are unauthenticated BY DESIGN — they are
+// how someone with no account reaches us. Both enforce their own protection
+// (IP rate limiting, and signup additionally behind SIGNUPS_OPEN), so "public to
+// the cookie middleware" is not "unprotected".
+const PUBLIC_API = ['/api/auth/login', '/api/auth/signup', '/api/contact', '/api/webhooks', '/api/hermes/tick', '/api/mcp', '/api/public', '/api/social/meta/callback', '/api/social/meta/connect', '/api/social/meta/deauthorize', '/api/social/meta/data-deletion', '/api/social/instagram/callback', '/api/track', '/api/unsubscribe'];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
