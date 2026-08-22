@@ -15,6 +15,12 @@ export interface OptionalEnv {
   OPENCODE_API_KEY?: string;
   TAVILY_API_KEY?: string;
   SERPAPI_KEY?: string;
+  /** RapidAPI, account-wide. One key spans every API on the marketplace, but
+   *  each API needs its OWN subscription — an unsubscribed call returns 403
+   *  "You are not subscribed to this API", not 401, so a valid key that has
+   *  simply not been subscribed looks like a broken key unless you read the
+   *  body. Used for Maps Data (business discovery) and the Facebook Ad Library. */
+  RAPIDAPI_KEY?: string;
 }
 
 export function validateEnv(): RequiredEnv & OptionalEnv {
@@ -37,6 +43,7 @@ export function validateEnv(): RequiredEnv & OptionalEnv {
     'OPENCODE_API_KEY',
     'TAVILY_API_KEY',
     'SERPAPI_KEY',
+    'RAPIDAPI_KEY',
   ];
 
   const env: RequiredEnv & OptionalEnv = {

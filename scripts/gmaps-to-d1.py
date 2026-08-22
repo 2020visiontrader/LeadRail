@@ -23,10 +23,28 @@ Usage:
 Then:
   wrangler d1 execute leadrail-businesses --remote --file=/tmp/biz.sql
 """
-import argparse, csv, io, re, sys, zipfile
+import argparse, csv, io, json, re, sys, zipfile
 from pathlib import Path
 
 BATCH = 500  # rows per INSERT statement — SQLite's compiled parameter ceiling
+
+def load_verticals(repo_root: Path):
+    """Ordered (name, compiled) pairs. Order matters: specific trades must be
+    tested before the generic contractor/construction catch-alls, or a roofing
+    contractor lands in `construction` and the per-vertical counts are wrong."""
+    f = repo_root / 'lib' / 'verticals.json'
+    if not f.exists():
+        return []
+    spec = json.loads(f.read_text(encoding='utf-8'))['verticals']
+    return [(k, re.compile(v, re.I)) for k, v in spec.items()]
+
+
+def classify(cat: str, verticals) -> str:
+    for name, pat in verticals:
+        if pat.search(cat):
+            return name
+    return ''
+
 
 
 def clean_phone(v: str) -> str:
@@ -73,11 +91,18 @@ def main() -> int:
     ap.add_argument('--category', default='')
     ap.add_argument('--state', default='')
     ap.add_argument('--zip', default='')
-    ap.add_argument('--require', default='domain')
+    ap.add_argument('--require', default='')  # '' = keep every row, website or not
     ap.add_argument('--limit', type=int, default=0)
+    # One .sql per input zip. A single 2GB file is a bad unit of work: wrangler
+    # streams it as one transaction, so any failure loses the whole run and
+    # there is no way to resume from the middle. Thirteen ~150MB files load
+    # independently and a failure costs one part.
+    ap.add_argument('--split', action='store_true')
+    ap.add_argument('--dedupe-domain', action='store_true', help='one row per domain (loses multi-location businesses)')
     a = ap.parse_args()
 
     data = Path(a.data)
+    verticals = load_verticals(Path(__file__).resolve().parent.parent)
     zips = load_zips(data)
     if not zips:
         print('warning: us-zip-codes.csv not found — state/city will be blank', file=sys.stderr)
@@ -97,14 +122,18 @@ def main() -> int:
     scanned = matched = 0
     pending: list[str] = []
 
-    with open(a.out, 'w', encoding='utf-8') as fout:
+    outdir = Path(a.out)
+    if a.split:
+        outdir.mkdir(parents=True, exist_ok=True)
+
+    with open(a.out if not a.split else outdir / '_all.sql', 'w', encoding='utf-8') as fout:
         fout.write('PRAGMA defer_foreign_keys = true;\n')
 
         def flush():
             if not pending:
                 return
             fout.write(
-                'INSERT OR IGNORE INTO businesses (name,domain,website,phone,category,zip,state,source) VALUES\n'
+                'INSERT OR IGNORE INTO businesses (name,domain,website,phone,category,vertical,zip,state,country,source) VALUES\n'
                 + ',\n'.join(pending) + ';\n')
             pending.clear()
 
@@ -134,15 +163,24 @@ def main() -> int:
                         }
                         if any(not rec[f] for f in required):
                             continue
-                        if rec['domain']:
+                        # NO in-memory domain dedupe on the full load. A domain
+                        # is not a business: every branch of a multi-site
+                        # operator shares one, and dropping them loses a third
+                        # of the dataset (part 1: 1,000,000 rows -> 670,232).
+                        # The database index is non-unique for the same reason;
+                        # collapsing to one row per domain is a QUERY concern
+                        # (SELECT DISTINCT domain) and must not be baked into
+                        # the load, which is irreversible.
+                        if a.dedupe_domain and rec['domain']:
                             if rec['domain'] in seen:
                                 continue
                             seen.add(rec['domain'])
 
                         pending.append('(' + ','.join([
                             sql_str(rec['name']), sql_str(rec['domain']), sql_str(rec['website']),
-                            sql_str(rec['phone']), sql_str(rec['category']), sql_str(rec['zip']),
-                            sql_str(rec['state']), "'gmaps-12m'",
+                            sql_str(rec['phone']), sql_str(rec['category']),
+                            sql_str(classify(rec['category'], verticals)),
+                            sql_str(rec['zip']), sql_str(rec['state']), "'US'", "'gmaps-12m'",
                         ]) + ')')
                         matched += 1
                         if len(pending) >= BATCH:
