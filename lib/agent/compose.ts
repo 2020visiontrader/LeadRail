@@ -132,10 +132,25 @@ function buildUserTurn(input: ComposeInput): string {
   return parts.join('\n\n');
 }
 
+/** Total characters of OBSERVATION text handed to the compose pass, newest
+ *  first. This is the REAL ceiling on how much evidence the final answer can be
+ *  written from — a per-observation budget above it is not bigger, it is just
+ *  re-clipped here, which is precisely how analyzeBrand's strategy went missing.
+ *
+ *  Sized against MAX_STEPS (10): a turn that calls ten tools must not have its
+ *  early findings silently dropped before the answer is composed. ~32k chars is
+ *  roughly 8k tokens, which every model on the ladder carries comfortably.
+ *
+ *  EXPORTED so lib/agent/loop.ts and the capability contract test assert
+ *  against this number rather than restating it. The one thing that must never
+ *  happen again is two caps in series disagreeing in silence. */
+export const OBSERVATION_BLOCK_CHARS =
+  Number(process.env.AGENT_OBSERVATION_BLOCK_CHARS) || 32_000;
+
 function extractObservationBlock(transcript: ChatMessage[]): string {
   const lines: string[] = [];
   let totalLength = 0;
-  const MAX = 6000;
+  const MAX = OBSERVATION_BLOCK_CHARS;
 
   // Iterate from newest to oldest (end of transcript)
   for (let i = transcript.length - 1; i >= 0; i--) {

@@ -71,7 +71,7 @@ export const STRATEGY_CAPABILITIES: Capability[] = [
     // The strategy IS the answer, not evidence to reason over. At the default
     // 2000 a modest strategy lost its tail — and the tail is `unknowns`, the
     // questions this capability exists to raise instead of inventing facts.
-    observationLimit: 6000,
+    observationLimit: 16000,
     inputSchema: obj({ brandId: S.string, goal: S.string }, []),
     zod: z.object({ brandId: z.string().optional(), goal: z.string().optional() }),
     run: async (accountId, a) => {
@@ -144,7 +144,7 @@ export const STRATEGY_CAPABILITIES: Capability[] = [
       'Read the most recent saved marketing strategy for a brand (migration 047). Use this BEFORE analyzeBrand when the user refers to "the strategy" or "our plan" — regenerating loses the one they already agreed to, and costs a model call.',
     gate: 'read',
     // Reads back a stored strategy — same deliverable, same budget.
-    observationLimit: 6000,
+    observationLimit: 16000,
     inputSchema: obj({ brandId: S.string }, []),
     zod: z.object({ brandId: z.string().optional() }),
     run: async (accountId, a) => {

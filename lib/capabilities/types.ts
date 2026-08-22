@@ -67,8 +67,10 @@ export interface Capability {
    *  the questions the assistant is supposed to ask instead of inventing facts.
    *  The honesty mechanism was the first thing being deleted.
    *
-   *  Keep at or under compose's own 6000-char observation budget
-   *  (lib/agent/compose.ts): a value above it just gets re-clipped there. */
+   *  Keep at or under OBSERVATION_BLOCK_CHARS (lib/agent/compose.ts): that is
+   *  the total the compose pass receives, so a value above it is not bigger —
+   *  it is re-clipped there instead, silently. Do not restate the number here;
+   *  two caps in series disagreeing is the exact failure this field fixes. */
   observationLimit?: number;
   /** Optional: one-sentence approval summary. Falls back to `${title}: ${JSON.stringify(args)}`.
    *  NOTE (Packet 10.1): this runs BEFORE the tool does — it renders the approval

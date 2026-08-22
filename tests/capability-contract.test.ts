@@ -26,6 +26,8 @@
 import { describe, it, expect } from 'vitest';
 import { CAPABILITIES } from '@/lib/capabilities/registry';
 import { isSensitive, type Capability } from '@/lib/capabilities/types';
+import { OBSERVATION_BLOCK_CHARS } from '@/lib/agent/compose';
+import { OBSERVATION_CHAR_LIMIT } from '@/lib/agent/loop';
 
 const caps = CAPABILITIES as Capability[];
 const sensitive = caps.filter(isSensitive);
@@ -147,11 +149,34 @@ describe('observation budget — a deliverable must survive the transcript', () 
   });
 
   it('no capability asks for more than compose will actually carry', () => {
-    // compose.ts caps its whole observation block at 6000. A larger budget here
-    // is not bigger, it is just re-clipped somewhere less visible.
+    // Asserted against the EXPORTED cap, never a restated literal. The bug this
+    // guards is two limits in series disagreeing in silence — a test hardcoding
+    // 6000 stops being true the moment compose changes, and stops protecting
+    // anything at the moment it matters most.
     for (const c of caps) {
-      if (c.observationLimit) expect(c.observationLimit).toBeLessThanOrEqual(6000);
+      if (c.observationLimit) expect(c.observationLimit).toBeLessThanOrEqual(OBSERVATION_BLOCK_CHARS);
     }
+  });
+
+  it('the caps in series are coherent — no link silently re-clips another', () => {
+    // THE ACTUAL LESSON. analyzeBrand did not lose its strategy because any one
+    // number was wrong; it lost it because two limits sat in series and only one
+    // was considered. Raising a per-observation budget above the block the
+    // compose pass receives does nothing except move where the loss happens.
+    //
+    // Asserted as a RELATIONSHIP, so raising either number alone fails here
+    // rather than in production six weeks later.
+    expect(OBSERVATION_CHAR_LIMIT).toBeLessThanOrEqual(OBSERVATION_BLOCK_CHARS);
+    // And the block must hold more than a single maximal observation, or a
+    // multi-tool turn drops its early findings before the answer is written.
+    expect(OBSERVATION_BLOCK_CHARS).toBeGreaterThanOrEqual(OBSERVATION_CHAR_LIMIT * 2);
+  });
+
+  it('the default budget clears the smallest real deliverable', () => {
+    // The old 2,000 failed at 2,352 — the SMALLEST realistic strategy. A default
+    // that cannot carry the least demanding case is not a budget, it is a bug
+    // that happens to be a constant.
+    expect(OBSERVATION_CHAR_LIMIT).toBeGreaterThan(2500);
   });
 
   it('a realistic strategy fits its budget with the open questions intact', () => {

@@ -40,7 +40,19 @@ const MAX_STEPS = 10;
 // A second compose pass writes what the user actually reads. Set AGENT_COMPOSE=0
 // to revert to shipping the route pass's draft verbatim.
 const AGENT_COMPOSE = process.env.AGENT_COMPOSE !== '0';
-const OBSERVATION_CHAR_LIMIT = 2000;
+// Per-observation ceiling on what enters the transcript.
+//
+// Was 2000, which was too small for the job: the SMALLEST realistic marketing
+// strategy serialises to ~2,350 chars, so analyzeBrand was truncated on every
+// single run — and truncation cuts from the END, taking `unknowns` with it, the
+// one section that exists to stop the model inventing facts.
+//
+// A tool result is evidence the model reasons over. Starving it produces
+// confident answers built on a fragment, which is worse than a slow answer
+// built on the whole thing. Raised 4x, and bounded by the compose block cap
+// (OBSERVATION_BLOCK_CHARS) which is what ultimately reaches the final answer.
+export const OBSERVATION_CHAR_LIMIT =
+  Number(process.env.AGENT_OBSERVATION_CHARS) || 8_000;
 
 // Long-chat handoff thresholds (token estimate over the running transcript).
 // Soft → nudge the user to start a fresh chat (context carried over). Hard →

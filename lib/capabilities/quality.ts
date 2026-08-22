@@ -159,7 +159,7 @@ export const QUALITY_CAPABILITIES: Capability[] = [
     // An editorial review quotes the lines it objects to, so its length scales
     // with the draft. Truncated, the reviewer's last and often most serious
     // objections vanish silently.
-    observationLimit: 6000,
+    observationLimit: 16000,
     inputSchema: obj({ text: S.string, brandId: S.string, kind: S.string }, ['text']),
     zod: z.object({ text: z.string().min(1), brandId: z.string().optional(), kind: z.string().optional() }),
     run: async (accountId, a) => {
