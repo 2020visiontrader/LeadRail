@@ -135,14 +135,29 @@ export function breakerState(): Record<string, { fails: number; openFor: number 
   return out;
 }
 
+/** Reorder the ladder for a 'heavy' call: Ask Zo (the user's Claude
+ *  subscription) goes first regardless of the operator's measured-latency
+ *  order, because it's the one tier that is both the highest-quality model
+ *  AND has real live web access (a genuine Zo agent session — see zoask.ts).
+ *  A task marked heavy is explicitly trading latency for a better answer, so
+ *  optimizing its ladder for speed would silently undo that tradeoff.
+ *  'fast'/'balanced'/unset all return the operator's configured order
+ *  untouched — reordering is opt-in per call, not a blanket behavior change. */
+function orderForTier(preferTier?: 'fast' | 'balanced' | 'heavy'): TierName[] {
+  const base = tierOrder();
+  if (preferTier !== 'heavy') return base;
+  return ['zoask', ...base.filter((t) => t !== 'zoask')];
+}
+
 /** Walk the tiers in configured order, logging which one answered and why the
  *  others declined. Returns the first successful result. */
 async function runLadder(
   fn: string,
   runners: Partial<Record<TierName, { configured: boolean; run: () => Promise<string> }>>,
+  preferTier?: 'fast' | 'balanced' | 'heavy',
 ): Promise<{ text?: string; lastErr: any }> {
   let lastErr: any = null;
-  for (const tier of tierOrder()) {
+  for (const tier of orderForTier(preferTier)) {
     const r = runners[tier];
     if (!r || !r.configured) continue;
     // Skip a tier whose circuit is open — this is the whole point: a dead tier
@@ -163,7 +178,7 @@ async function runLadder(
   // worse than a slow answer — try each once ignoring the breaker rather than
   // returning "no tier available" while a provider is merely degraded.
   if (!lastErr) {
-    for (const tier of tierOrder()) {
+    for (const tier of orderForTier(preferTier)) {
       const r = runners[tier];
       if (!r || !r.configured) continue;
       try {
@@ -304,7 +319,7 @@ export async function generateChat(opts: {
       nim: { configured: nimConfigured(), run: () => nimChat(opts) },
       huggingface: { configured: huggingfaceConfigured(), run: () => hfChat(opts) },
       openrouter: { configured: openrouterConfigured(), run: () => openrouterChat(opts) },
-    });
+    }, opts.preferTier);
   if (ladder.text !== undefined) return ladder.text;
   const lastErr = ladder.lastErr;
   throw lastErr || new Error('No AI tier configured');
@@ -348,7 +363,7 @@ export async function streamChat(
       nim: { configured: nimConfigured(), run: () => nimStreamChat(opts, onDelta) },
       huggingface: { configured: huggingfaceConfigured(), run: () => hfStreamChat(opts, onDelta) },
       openrouter: { configured: openrouterConfigured(), run: () => openrouterStreamChat(opts, onDelta) },
-    });
+    }, opts.preferTier);
   if (ladder.text !== undefined) return ladder.text;
   const lastErr = ladder.lastErr;
   throw lastErr || new Error('No AI tier configured');
