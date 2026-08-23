@@ -172,6 +172,23 @@ export const MAX_FACT_LENGTH = 500;
 // lib/approvals/store.ts) so the two secret checks stay in one place.
 const OPAQUE_TOKEN_PATTERN = /[A-Za-z0-9_\-]{32,}/;
 
+/** Where a candidate fact came from — see the source-gated check in
+ *  factRejectionReason below. 'capability' = the model explicitly decided,
+ *  mid-turn, that this was worth remembering (rememberFact). 'carryover' =
+ *  promoted passively from an LLM-generated conversation summary, with no
+ *  human or tool-result confirmation in the loop. */
+export type FactSource = 'capability' | 'carryover';
+
+// Matches things like "64% open rate" or "12% reply rate". A carryover memo is
+// the model summarizing its OWN prior turn — it has no access to a real
+// analytics table, so a metric-shaped claim in one can only be a restated (or
+// invented) number from its own prose, not a verified read. Promoting that
+// into durable memory risks the model citing its own unverified claim back to
+// itself as established fact in every future turn — the self-referential loop
+// this guard exists to break. `rememberFact` (source: 'capability') is exempt:
+// that's the model choosing, live, with real tool access in the same turn.
+const UNVERIFIED_METRIC_PATTERN = /\b\d{1,3}(\.\d+)?%\s*(open|reply|click|conversion|response|engagement)/i;
+
 /**
  * Why this text must NOT be written to durable memory, or null if it's fine.
  *
@@ -180,12 +197,15 @@ const OPAQUE_TOKEN_PATTERN = /[A-Za-z0-9_\-]{32,}/;
  * deliberately blunt: losing a fact that merely mentions the word "password" is
  * cheaper than persisting one real key.
  */
-export function factRejectionReason(fact: string | undefined | null): string | null {
+export function factRejectionReason(fact: string | undefined | null, source: FactSource = 'capability'): string | null {
   const t = (fact || '').trim();
   if (!t) return 'empty';
   if (t.length > MAX_FACT_LENGTH) return `too long (max ${MAX_FACT_LENGTH} characters)`;
   if (SECRET_KEY_PATTERN.test(t)) return 'looks like a credential — secrets are never remembered';
   if (OPAQUE_TOKEN_PATTERN.test(t)) return 'contains what looks like a token or key — secrets are never remembered';
+  if (source === 'carryover' && UNVERIFIED_METRIC_PATTERN.test(t)) {
+    return 'reads as an unverified performance metric from a passive summary — not stored without a verified source';
+  }
   return null;
 }
 
@@ -200,9 +220,9 @@ export function factRejectionReason(fact: string | undefined | null): string | n
  * best-effort and never blocks: if it fails, the row is still written and stays
  * recall-able via the recency digest — it just won't match semantically until a
  * backfill re-embeds it. */
-export async function recordFact(accountId: string, f: MemoryFact): Promise<void> {
+export async function recordFact(accountId: string, f: MemoryFact, source: FactSource = 'capability'): Promise<void> {
   const fact = (f.fact || '').trim();
-  if (factRejectionReason(fact)) return;
+  if (factRejectionReason(fact, source)) return;
   const row: Record<string, any> = {
     account_id: accountId,
     fact,
@@ -271,7 +291,7 @@ export async function ingestCarryoverFacts(accountId: string, carryover: Carryov
   for (const f of facts.slice(0, 20)) {
     if (typeof f !== 'string') continue;
     try {
-      await recordFact(accountId, { fact: f });
+      await recordFact(accountId, { fact: f }, 'carryover');
     } catch { /* best-effort */ }
   }
 }

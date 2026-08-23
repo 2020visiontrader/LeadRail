@@ -63,7 +63,7 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
     try {
       const vc = brandId ? await loadVentureContext(brandId, accountId) : undefined;
       if (vc) {
-        const lines = ['CURRENT VENTURE (work here unless the user names another):'];
+        const lines = ['CURRENT VENTURE (source: live database — work here unless the user names another):'];
         if (vc.name) lines.push(`- Name: ${vc.name}`);
         if (vc.description) lines.push(`- What it is: ${vc.description}`);
         if (vc.pitch) lines.push(`- Pitch: ${vc.pitch}`);
@@ -99,7 +99,11 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
           ? supabase.from('ad_campaigns').select('id', { count: 'exact', head: true }).in('brand_id', brandIds)
           : Promise.resolve({ count: 0 } as any),
       ]);
-      const snap = ['ACCOUNT SNAPSHOT:'];
+      // Timestamped so the model can tell "counted seconds ago" apart from the
+      // durable-memory digest below, which can be weeks old. Bare numbers with
+      // no fetch time invite the model to treat a stale recalled fact and a
+      // live count as equally current when they conflict.
+      const snap = [`ACCOUNT SNAPSHOT (source: live database, fetched ${new Date().toISOString()}):`];
       if (ventures?.length) snap.push(`- Ventures (${ventures.length}): ${ventures.map((v: any) => v.name).filter(Boolean).join(', ')}`);
       snap.push(`- Leads on file: ${leadCount ?? 0}`);
       snap.push(`- Ad campaigns: ${campaignCount ?? 0}`);
@@ -121,7 +125,7 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
       const conns = (await getConnections(accountId))
         .filter((c: any) => c.status === 'connected' && live.has(c.provider));
       if (!conns.length) return null;
-      const lines = ['CONNECTED SOCIAL ACCOUNTS:'];
+      const lines = ['CONNECTED SOCIAL ACCOUNTS (source: live database):'];
       // Cap the block: a user with 40 connected pages must not crowd out the
       // rest of the briefing. The model can call listSocialAccounts for the full list.
       for (const c of conns.slice(0, 12)) {
@@ -142,10 +146,22 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
   })();
 
   // --- Durable memory: facts learned across sessions -----------------------
+  // Deliberately the LOWEST-authority section and placed LAST: everything
+  // above is read live from the database on this exact turn; this is recalled
+  // from past turns and can be minutes or months old, and nothing currently
+  // re-verifies it against the live sections above before handing it to the
+  // model. Without an explicit hierarchy instruction, a stale recalled fact
+  // ("Sarah's email is sarah@oldco.com") and a live count read one line
+  // earlier in the SAME prompt look equally authoritative — the model has no
+  // basis to prefer one over the other. This line gives it that basis.
   const memorySection = (async () => {
     try {
       const digest = await recallMemoryDigest(accountId, 12, input.query);
-      return digest ? `WHAT YOU'VE LEARNED (durable memory):\n${digest}` : null;
+      if (!digest) return null;
+      return [
+        "WHAT YOU'VE LEARNED (source: recalled memory — may be stale; if it conflicts with a live section above, the live section is correct):",
+        digest,
+      ].join('\n');
     } catch { return null; /* memory omitted */ }
   })();
 
