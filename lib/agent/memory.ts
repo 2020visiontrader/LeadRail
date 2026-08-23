@@ -300,7 +300,12 @@ export async function ingestCarryoverFacts(accountId: string, carryover: Carryov
  * Semantic recall: facts closest in MEANING to `query` for this account.
  * Returns `[]` when embeddings are unavailable, the table lacks the vector
  * column (migration 036 not applied), or nothing clears `minSimilarity`. Never
- * throws. `minSimilarity` filters out weak matches so recall stays relevant.
+ * throws. `minSimilarity` filters the RAW similarity floor — which facts are
+ * relevant at all. Which of those relevant facts actually make the top-`limit`
+ * cut is recency-aware (migration 049's decayed_similarity ranking in
+ * match_agent_memory): a stale fact can still pass the floor here but lose its
+ * ranking slot to a fresher, similarly-relevant one. Purely a ranking change on
+ * the DB side — nothing below needed to change to pick it up.
  */
 export async function semanticRecall(
   accountId: string,
