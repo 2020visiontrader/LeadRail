@@ -31,6 +31,34 @@ const NAV = [
 // Platform-admin (owner) only — never shown to client accounts.
 const OWNER_NAV = [{ href: '/admin', label: 'Admin' }, { href: '/logs', label: 'Logs' }];
 
+// Every account polls its own running build against the server's — same idea as
+// Zo's own "update available" indicator. No deploy trigger lives here; a deploy
+// already happened server-side, this just tells an open tab its JS is stale and
+// lets the user pick up the new build with one click.
+const VERSION_POLL_MS = 5 * 60 * 1000;
+
+function useVersionCheck() {
+  const [loadedSha, setLoadedSha] = useState<string | null>(null);
+  const [latestSha, setLatestSha] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const check = () => {
+      fetch('/api/version', { headers: { Accept: 'application/json' } })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => {
+          if (cancelled || !d?.sha) return;
+          setLatestSha(d.sha);
+          setLoadedSha((prev) => prev ?? d.sha);
+        })
+        .catch(() => {});
+    };
+    check();
+    const id = setInterval(check, VERSION_POLL_MS);
+    return () => { cancelled = true; clearInterval(id); };
+  }, []);
+  return { updateAvailable: Boolean(loadedSha && latestSha && loadedSha !== latestSha), latestSha };
+}
+
 function AccountFooter() {
   const [email, setEmail] = useState<string>('');
   useEffect(() => { fetch('/api/auth/me', { headers: { Accept: 'application/json' } }).then((r) => r.ok ? r.json() : null).then((d) => d?.email && setEmail(d.email)).catch(() => {}); }, []);
@@ -38,9 +66,19 @@ function AccountFooter() {
     await fetch('/api/auth/logout', { method: 'POST', headers: { Accept: 'application/json' } }).catch(() => {});
     window.location.href = '/login';
   };
+  const { updateAvailable, latestSha } = useVersionCheck();
   return (
     <div className="px-1">
       <div className="truncate px-2.5 pb-1 text-[11px] text-[var(--text-muted)]">{email || 'Admin'} · LeadRail</div>
+      {updateAvailable && (
+        <button
+          onClick={() => window.location.reload()}
+          title={latestSha ? `Load build ${latestSha}` : undefined}
+          className="mb-1 flex w-full items-center gap-2 rounded-md bg-[var(--status-active)]/10 px-2.5 py-2 text-[13px] font-medium text-[var(--status-active)] transition hover:bg-[var(--status-active)]/20"
+        >
+          <span aria-hidden className="text-[13px] leading-none">↻</span>Update available
+        </button>
+      )}
       <button onClick={logout} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-[13px] text-[var(--text-secondary)] transition hover:bg-[var(--bg-raised)] hover:text-[var(--text-primary)]">
         <span aria-hidden className="text-[13px] leading-none">⇥</span>Sign out
       </button>
