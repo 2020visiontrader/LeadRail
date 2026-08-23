@@ -29,9 +29,9 @@ export const SEARCH_CAPABILITIES: Capability[] = [
       );
     },
   },
-  // Packet W1 — open-web search (Tavily primary, SerpAPI fallback). Appended,
-  // never inserted above globalSearch: CATALOG_ORDER position is what matters
-  // for prompt stability, not position in this array.
+  // Packet W1 — open-web search (Tavily -> Exa -> SerpAPI -> DuckDuckGo
+  // floor). Appended, never inserted above globalSearch: CATALOG_ORDER
+  // position is what matters for prompt stability, not position in this array.
   {
     name: 'webSearch',
     domain: 'search',

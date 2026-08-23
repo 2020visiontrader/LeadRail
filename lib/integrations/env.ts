@@ -14,6 +14,7 @@ export interface OptionalEnv {
   NIM_API_KEY?: string;
   OPENCODE_API_KEY?: string;
   TAVILY_API_KEY?: string;
+  EXA_API_KEY?: string;
   SERPAPI_KEY?: string;
   /** RapidAPI, account-wide. One key spans every API on the marketplace, but
    *  each API needs its OWN subscription — an unsubscribed call returns 403
@@ -42,6 +43,7 @@ export function validateEnv(): RequiredEnv & OptionalEnv {
     'NIM_API_KEY',
     'OPENCODE_API_KEY',
     'TAVILY_API_KEY',
+    'EXA_API_KEY',
     'SERPAPI_KEY',
     'RAPIDAPI_KEY',
   ];
@@ -74,7 +76,11 @@ export function getIntegrationStatus() {
     nim: !!process.env.NIM_API_KEY,
     notion: !!(process.env.NOTION_API_KEY || process.env.NOTION_TOKEN),
     google_drive: !!(process.env.GOOGLE_SERVICE_ACCOUNT_JSON_B64 || process.env.GOOGLE_SERVICE_ACCOUNT_JSON || process.env.GOOGLE_DRIVE_ACCESS_TOKEN),
-    web_search: !!(process.env.TAVILY_API_KEY || process.env.SERPAPI_KEY),
+    // DuckDuckGo needs no key and is always available as a thin-coverage
+    // floor (see lib/integrations/websearch.ts), so this flag intentionally
+    // tracks only the keyed, full-coverage providers — it answers "is a real
+    // SERP configured", not "will webSearch return anything at all".
+    web_search: !!(process.env.TAVILY_API_KEY || process.env.EXA_API_KEY || process.env.SERPAPI_KEY),
   };
 
   return status;
