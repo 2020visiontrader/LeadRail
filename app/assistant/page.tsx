@@ -96,6 +96,16 @@ export default function AssistantPage() {
     setTabs((prev) => prev.map((t) => (t.key === key ? { ...t, conversationId: id } : t)));
   }, []);
 
+  // Rename a tab from "Chat N" to what the user actually asked, once. Only
+  // fires while the title is still the placeholder — a tab already renamed
+  // (or restored with one) is never overwritten by a later message.
+  const handleFirstMessage = useCallback((key: string, text: string) => {
+    const label = text.length > 40 ? `${text.slice(0, 40).trimEnd()}…` : text;
+    setTabs((prev) =>
+      prev.map((t) => (t.key === key && /^Chat \d+$/.test(t.title) ? { ...t, title: label } : t))
+    );
+  }, []);
+
   const addTab = () => {
     setTabs((prev) => {
       if (prev.length >= MAX_TABS) return prev;
@@ -178,6 +188,7 @@ export default function AssistantPage() {
             <AgentConsole
               conversationId={t.conversationId}
               onConversationId={(id) => handleConversationId(t.key, id)}
+              onFirstMessage={(text) => handleFirstMessage(t.key, text)}
             />
           </div>
         ))}

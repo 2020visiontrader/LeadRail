@@ -205,7 +205,7 @@ function transcriptToTurns(transcript: Array<{ role: string; content: string }>)
   return out;
 }
 
-export default function AgentConsole({ brandId, conversationId, onSteps, onConversationId }: { brandId?: string; conversationId?: string; onSteps?: (steps: Step[], busy: boolean, pendingApproval: boolean) => void; onConversationId?: (id: string | undefined) => void }) {
+export default function AgentConsole({ brandId, conversationId, onSteps, onConversationId, onFirstMessage }: { brandId?: string; conversationId?: string; onSteps?: (steps: Step[], busy: boolean, pendingApproval: boolean) => void; onConversationId?: (id: string | undefined) => void; onFirstMessage?: (text: string) => void }) {
   const [turns, setTurns] = useState<Array<any>>([]);
   const [input, setInput] = useState('');
   // Set of in-flight run ids. `busy` is derived from it rather than being its own
@@ -526,6 +526,7 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     const m = input.trim();
     if (!m) return;
     setInput('');
+    onFirstMessage?.(m);
     run({ message: m });
   };
 
