@@ -16,6 +16,10 @@ import { Contact } from '@/lib/types';
 import { LEAD_GOALS, SECTORS } from '@/lib/taxonomy';
 
 interface Venture { id: string; name: string; account_id: string; contact_count?: number }
+interface VentureProfile extends Venture {
+  description?: string; lead_goal?: string; sectors?: string[];
+  deck_name?: string; deck_summary?: string;
+}
 interface SkillMeta { id: string; name: string; category: string; when: string }
 const ALL = 'all';
 const AUTO_SKILLS = 'auto'; // let Hermes decide skills per request
@@ -43,12 +47,70 @@ export default function Overview() {
   const [profileResult, setProfileResult] = useState<{ summary?: string; note?: string; deck?: string } | null>(null);
   const deckInput = useRef<HTMLInputElement>(null);
 
+  // --- Edit an EXISTING venture — basics + replace/add its deck -------------
+  // The wizard above only ever creates a NEW venture; there was no surface at
+  // all to go back and add a deck later, or update one, even though the
+  // backend (PATCH /api/ventures/:id and POST .../deck) always supported it.
+  const [editOpen, setEditOpen] = useState(false);
+  const [editSaving, setEditSaving] = useState(false);
+  const [editVenture, setEditVenture] = useState<VentureProfile | null>(null);
+  const [eName, setEName] = useState('');
+  const [eDesc, setEDesc] = useState('');
+  const [eGoal, setEGoal] = useState('customers');
+  const [eSectors, setESectors] = useState<string[]>([]);
+  const [eDeck, setEDeck] = useState<File | null>(null);
+  const [eDeckNote, setEDeckNote] = useState<string | null>(null);
+
   const resetWizard = () => {
     setStep(1); setWName(''); setWDesc(''); setWGoal('customers');
     setWSectors([]); setWSkills([AUTO_SKILLS]); setWDeck(null); setProfileResult(null);
   };
   const openWizard = () => { resetWizard(); setAddOpen(true); };
   const toggle = (list: string[], v: string) => (list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
+
+  const openEdit = async () => {
+    if (scopeId === ALL) return;
+    setEDeck(null); setEDeckNote(null);
+    setEditOpen(true);
+    try {
+      const { venture } = await apiGet<{ venture: VentureProfile }>(`/api/ventures/${scopeId}`);
+      setEditVenture(venture);
+      setEName(venture.name || '');
+      setEDesc(venture.description || '');
+      setEGoal(venture.lead_goal || 'customers');
+      setESectors(Array.isArray(venture.sectors) ? venture.sectors : []);
+    } catch {
+      notify('Could not load brand details', 'error');
+      setEditOpen(false);
+    }
+  };
+
+  const saveEdit = async () => {
+    if (!editVenture) return;
+    if (!eName.trim()) { notify('Give the brand a name', 'error'); return; }
+    setEditSaving(true);
+    try {
+      await apiSend(`/api/ventures/${editVenture.id}`, 'PATCH', {
+        name: eName.trim(), description: eDesc.trim(), leadGoal: eGoal, sectors: eSectors,
+      });
+      if (eDeck) {
+        const fd = new FormData();
+        fd.append('file', eDeck);
+        const res = await fetch(`/api/ventures/${editVenture.id}/deck`, { method: 'POST', body: fd });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data?.error || 'deck upload failed');
+        setEDeckNote(data?.profile?.summary ? `Re-profiled from “${data.deck_name}”: ${data.profile.summary}` : (data?.note || 'Deck uploaded.'));
+        setEDeck(null);
+      }
+      await loadVentures();
+      notify(`Updated “${eName.trim()}”`);
+      if (!eDeck) setEditOpen(false); // deck upload keeps the modal open to show the result, like the wizard does
+    } catch (e: any) {
+      notify(e.message || 'Could not update brand', 'error');
+    } finally {
+      setEditSaving(false);
+    }
+  };
 
   // Load the skills catalog once so the wizard can offer real skills to enable.
   useEffect(() => {
@@ -165,6 +227,7 @@ export default function Overview() {
                 <option key={v.id} value={v.id}>{v.name}{v.contact_count ? ` (${v.contact_count})` : ''}</option>
               ))}
             </select>
+            {scopeId !== ALL && <Button variant="ghost" onClick={openEdit}>✏️ Edit brand</Button>}
           </div>
           <Button onClick={openWizard}>+ New brand</Button>
         </div>
@@ -379,6 +442,77 @@ export default function Overview() {
           {/* Back control (steps 2-3) */}
           {step > 1 && step < 4 && (
             <button type="button" onClick={() => setStep((s) => s - 1)} className="text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)]">← Back</button>
+          )}
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={editOpen}
+        title={`Edit ${editVenture?.name || 'brand'}`}
+        onClose={() => setEditOpen(false)}
+        onSubmit={saveEdit}
+        submitLabel={eDeckNote ? 'Done' : (eDeck ? 'Save & re-profile' : 'Save')}
+        loading={editSaving}
+      >
+        <div className="space-y-4">
+          <Input label="Brand name" value={eName} onChange={(e) => setEName(e.target.value)} />
+          <Textarea
+            label="What is this brand about?"
+            rows={3}
+            value={eDesc}
+            onChange={(e) => setEDesc(e.target.value)}
+          />
+          <div>
+            <span className="mb-1 block text-sm font-medium text-[var(--text-secondary)]">Who are you trying to reach?</span>
+            <select
+              value={eGoal}
+              onChange={(e) => setEGoal(e.target.value)}
+              className="w-full rounded-md border border-[var(--border-strong)] bg-[var(--bg-surface)] px-3 py-2 text-sm text-[var(--text-primary)]"
+            >
+              {LEAD_GOALS.map((g) => <option key={g.key} value={g.key}>{g.label}</option>)}
+            </select>
+          </div>
+          <div>
+            <span className="mb-1 block text-sm font-medium text-[var(--text-secondary)]">Target sectors <span className="text-[var(--text-muted)]">(pick any)</span></span>
+            <div className="flex flex-wrap gap-2">
+              {SECTORS.map((s) => {
+                const on = eSectors.includes(s.key);
+                return (
+                  <button
+                    key={s.key}
+                    type="button"
+                    onClick={() => setESectors((l) => toggle(l, s.key))}
+                    className={`rounded-full border px-3 py-1 text-xs transition ${on ? 'border-[var(--brand)] bg-[var(--brand)] text-white' : 'border-[var(--border-strong)] bg-[var(--bg-surface)] text-[var(--text-secondary)] hover:border-[var(--brand)]'}`}
+                  >
+                    {s.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div>
+            <span className="mb-1 block text-sm font-medium text-[var(--text-secondary)]">
+              Pitch deck / one-pager{' '}
+              {editVenture?.deck_name
+                ? <span className="text-[var(--text-muted)]">— current: {editVenture.deck_name}</span>
+                : <span className="text-[var(--text-muted)]">(none on file)</span>}
+            </span>
+            <input
+              type="file"
+              accept=".pdf,.pptx,.docx,.doc,.xlsx,.xls,.txt,.md"
+              onChange={(e) => setEDeck(e.target.files?.[0] || null)}
+              className="block w-full text-sm text-[var(--text-secondary)] file:mr-3 file:rounded-md file:border-0 file:bg-[var(--bg-raised)] file:px-3 file:py-1.5 file:text-sm"
+            />
+            <p className="mt-1 text-xs text-[var(--text-muted)]">
+              Uploading replaces the current deck and re-profiles the brand — its lead search and ICP update immediately.
+            </p>
+            {eDeck && <p className="mt-1 text-xs text-[var(--brand)]">Selected: {eDeck.name}</p>}
+          </div>
+          {eDeckNote && (
+            <div className="rounded-lg border border-[var(--brand)]/40 bg-[var(--bg-surface)] p-3">
+              <p className="mb-1 text-xs font-semibold text-[var(--brand)]">AI brand profile</p>
+              <p className="text-sm text-[var(--text-secondary)]">{eDeckNote}</p>
+            </div>
           )}
         </div>
       </Modal>
