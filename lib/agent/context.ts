@@ -48,51 +48,64 @@ export interface AgentContextInput {
  */
 export async function loadAgentContext(input: AgentContextInput): Promise<string> {
   const { accountId, brandId } = input;
-  const sections: string[] = [PLATFORM_BRIEF];
+
+  // The four sections below don't depend on each other, so they're fetched
+  // concurrently — sequential awaits here used to add ~4 DB round-trips (one
+  // of which, the memory digest, includes an embedding API call) before this
+  // function could even return, let alone before the SSE stream's first event.
+  // Each section still degrades independently (its own try/catch): a slow or
+  // failing one must not block or blank out the others. Final assembly below
+  // re-imposes a FIXED order regardless of which promise settled first, so the
+  // prompt's static-prefix shape (and its cacheability) is unchanged.
 
   // --- Venture grounding: ICP, pitch, positioning, lead goal ---------------
-  try {
-    const vc = brandId ? await loadVentureContext(brandId, accountId) : undefined;
-    if (vc) {
-      const lines = ['CURRENT VENTURE (work here unless the user names another):'];
-      if (vc.name) lines.push(`- Name: ${vc.name}`);
-      if (vc.description) lines.push(`- What it is: ${vc.description}`);
-      if (vc.pitch) lines.push(`- Pitch: ${vc.pitch}`);
-      if (vc.leadGoal) lines.push(`- Lead goal: ${vc.leadGoal}`);
-      if (vc.sectors?.length) lines.push(`- Sectors: ${vc.sectors.join(', ')}`);
-      if (vc.icp) {
-        const icp = vc.icp;
-        const parts: string[] = [];
-        if (icp.industry) parts.push(`industry ${icp.industry}`);
-        if (icp.titles?.length) parts.push(`titles ${icp.titles.join('/')}`);
-        if (icp.seniority?.length) parts.push(`seniority ${icp.seniority.join('/')}`);
-        if (icp.company_size) parts.push(`company size ${icp.company_size}`);
-        if (icp.keywords) parts.push(`keywords ${Array.isArray(icp.keywords) ? icp.keywords.join('/') : icp.keywords}`);
-        if (parts.length) lines.push(`- Ideal customer: ${parts.join('; ')}`);
+  const ventureSection = (async () => {
+    try {
+      const vc = brandId ? await loadVentureContext(brandId, accountId) : undefined;
+      if (vc) {
+        const lines = ['CURRENT VENTURE (work here unless the user names another):'];
+        if (vc.name) lines.push(`- Name: ${vc.name}`);
+        if (vc.description) lines.push(`- What it is: ${vc.description}`);
+        if (vc.pitch) lines.push(`- Pitch: ${vc.pitch}`);
+        if (vc.leadGoal) lines.push(`- Lead goal: ${vc.leadGoal}`);
+        if (vc.sectors?.length) lines.push(`- Sectors: ${vc.sectors.join(', ')}`);
+        if (vc.icp) {
+          const icp = vc.icp;
+          const parts: string[] = [];
+          if (icp.industry) parts.push(`industry ${icp.industry}`);
+          if (icp.titles?.length) parts.push(`titles ${icp.titles.join('/')}`);
+          if (icp.seniority?.length) parts.push(`seniority ${icp.seniority.join('/')}`);
+          if (icp.company_size) parts.push(`company size ${icp.company_size}`);
+          if (icp.keywords) parts.push(`keywords ${Array.isArray(icp.keywords) ? icp.keywords.join('/') : icp.keywords}`);
+          if (parts.length) lines.push(`- Ideal customer: ${parts.join('; ')}`);
+        }
+        return lines.length > 1 ? lines.join('\n') : null;
+      } else if (input.brandName) {
+        return `CURRENT VENTURE: ${input.brandName} (no stored profile yet).`;
       }
-      if (lines.length > 1) sections.push(lines.join('\n'));
-    } else if (input.brandName) {
-      sections.push(`CURRENT VENTURE: ${input.brandName} (no stored profile yet).`);
-    }
-  } catch { /* venture section omitted */ }
+      return null;
+    } catch { return null; /* venture section omitted */ }
+  })();
 
   // --- Account snapshot: ventures + rough scale ----------------------------
-  try {
-    const { data: ventures } = await supabase
-      .from('brands').select('id, name').eq('account_id', accountId).limit(25);
-    const brandIds = (ventures || []).map((v: any) => v.id);
-    const [{ count: leadCount }, { count: campaignCount }] = await Promise.all([
-      supabase.from('contacts').select('id', { count: 'exact', head: true }).eq('account_id', accountId),
-      brandIds.length
-        ? supabase.from('ad_campaigns').select('id', { count: 'exact', head: true }).in('brand_id', brandIds)
-        : Promise.resolve({ count: 0 } as any),
-    ]);
-    const snap = ['ACCOUNT SNAPSHOT:'];
-    if (ventures?.length) snap.push(`- Ventures (${ventures.length}): ${ventures.map((v: any) => v.name).filter(Boolean).join(', ')}`);
-    snap.push(`- Leads on file: ${leadCount ?? 0}`);
-    snap.push(`- Ad campaigns: ${campaignCount ?? 0}`);
-    sections.push(snap.join('\n'));
-  } catch { /* snapshot omitted */ }
+  const snapshotSection = (async () => {
+    try {
+      const { data: ventures } = await supabase
+        .from('brands').select('id, name').eq('account_id', accountId).limit(25);
+      const brandIds = (ventures || []).map((v: any) => v.id);
+      const [{ count: leadCount }, { count: campaignCount }] = await Promise.all([
+        supabase.from('contacts').select('id', { count: 'exact', head: true }).eq('account_id', accountId),
+        brandIds.length
+          ? supabase.from('ad_campaigns').select('id', { count: 'exact', head: true }).in('brand_id', brandIds)
+          : Promise.resolve({ count: 0 } as any),
+      ]);
+      const snap = ['ACCOUNT SNAPSHOT:'];
+      if (ventures?.length) snap.push(`- Ventures (${ventures.length}): ${ventures.map((v: any) => v.name).filter(Boolean).join(', ')}`);
+      snap.push(`- Leads on file: ${leadCount ?? 0}`);
+      snap.push(`- Ad campaigns: ${campaignCount ?? 0}`);
+      return snap.join('\n');
+    } catch { return null; /* snapshot omitted */ }
+  })();
 
   // --- Connected social accounts (Packet 2.2-S) ----------------------------
   // Without this the model has to call listSocialAccounts before it can even
@@ -101,12 +114,13 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
   // username and the public external id. NEVER secret_ref or meta, which carry
   // access tokens. Omitted entirely when nothing is connected: an empty header
   // would invite the model to claim connections that don't exist.
-  try {
-    const live = new Set(LIVE_SOCIALS.map((p) => p.key as string));
-    const labelFor = new Map(LIVE_SOCIALS.map((p) => [p.key as string, p.label]));
-    const conns = (await getConnections(accountId))
-      .filter((c: any) => c.status === 'connected' && live.has(c.provider));
-    if (conns.length) {
+  const socialSection = (async () => {
+    try {
+      const live = new Set(LIVE_SOCIALS.map((p) => p.key as string));
+      const labelFor = new Map(LIVE_SOCIALS.map((p) => [p.key as string, p.label]));
+      const conns = (await getConnections(accountId))
+        .filter((c: any) => c.status === 'connected' && live.has(c.provider));
+      if (!conns.length) return null;
       const lines = ['CONNECTED SOCIAL ACCOUNTS:'];
       // Cap the block: a user with 40 connected pages must not crowd out the
       // rest of the briefing. The model can call listSocialAccounts for the full list.
@@ -123,15 +137,23 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
           .eq('enabled', true);
         if (count) lines.push(`Active automations: ${count} (see listSocialAutomations)`);
       } catch { /* automation count omitted */ }
-      sections.push(lines.join('\n'));
-    }
-  } catch { /* social section omitted */ }
+      return lines.join('\n');
+    } catch { return null; /* social section omitted */ }
+  })();
 
   // --- Durable memory: facts learned across sessions -----------------------
-  try {
-    const digest = await recallMemoryDigest(accountId, 12, input.query);
-    if (digest) sections.push(`WHAT YOU'VE LEARNED (durable memory):\n${digest}`);
-  } catch { /* memory omitted */ }
+  const memorySection = (async () => {
+    try {
+      const digest = await recallMemoryDigest(accountId, 12, input.query);
+      return digest ? `WHAT YOU'VE LEARNED (durable memory):\n${digest}` : null;
+    } catch { return null; /* memory omitted */ }
+  })();
 
+  const [venture, snapshot, social, memory] = await Promise.all([
+    ventureSection, snapshotSection, socialSection, memorySection,
+  ]);
+
+  const sections: string[] = [PLATFORM_BRIEF];
+  for (const s of [venture, snapshot, social, memory]) if (s) sections.push(s);
   return sections.join('\n\n');
 }

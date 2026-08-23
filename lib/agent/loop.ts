@@ -1101,16 +1101,28 @@ function emitAnalysis(emit: (e: AgentEvent) => void, analysis: Analysis | null):
 export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent) => void): Promise<void> {
   const { accountId, brandContext } = input;
   // Packet 6.2 — same fan-out gate as runAgent above; see the comment there.
-  if (!input.approve && !input.personaId) {
-    const fanout = await resolveCoordinatorFanout(accountId, input.personaMentions, input.message);
-    if (fanout) { await runCoordinatorFanoutStream(accountId, fanout, input, emit); return; }
-  }
-  const { systemBlock: personaBlock, modelId: personaModelId } = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
-  const allEnabledSkills = await loadEnabledSkillsForAgent(accountId);
+  // These four reads don't depend on each other, so they run concurrently
+  // instead of as one sequential chain — on an ordinary (non-fanout) turn this
+  // is the difference between ~4 back-to-back DB round-trips and one, all of
+  // which used to happen before this loop's own step_start (below) could ever
+  // fire. The fanout check runs speculatively alongside the rest; if it comes
+  // back truthy the other three results are simply discarded for the fanout
+  // path below, which is cheap relative to the latency this saves on the
+  // common case.
+  const [fanout, personaResult, allEnabledSkills, externalCaps] = await Promise.all([
+    (!input.approve && !input.personaId)
+      ? resolveCoordinatorFanout(accountId, input.personaMentions, input.message)
+      : Promise.resolve(null),
+    resolvePersonaForTurn(accountId, input.personaId, input.personaMentions),
+    loadEnabledSkillsForAgent(accountId),
+    loadExternalCapabilities(accountId),
+  ]);
+  if (fanout) { await runCoordinatorFanoutStream(accountId, fanout, input, emit); return; }
+  const { systemBlock: personaBlock, modelId: personaModelId } = personaResult;
   // Hermes picks the 1-4 that apply to THIS request instead of injecting all.
+  // This is the one hop that must stay sequential — it genuinely depends on
+  // allEnabledSkills (which skills exist to route over).
   const enabledSkills = await selectSkillsForTurn(allEnabledSkills, input.message, brandContext?.name);
-  // Packet 4 — see the matching comment in runAgent above.
-  const externalCaps = await loadExternalCapabilities(accountId);
   const extraTools = toolsFromCapabilities(externalCaps);
   const extraCapsByName: Record<string, Capability> = Object.fromEntries(externalCaps.map((c) => [c.name, c]));
   const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools);

@@ -51,12 +51,6 @@ export async function POST(request: NextRequest) {
 
   const fromId = typeof body?.from === 'string' && body.from ? body.from : undefined;
   const conversationId = typeof body?.conversationId === 'string' && body.conversationId ? body.conversationId : undefined;
-  // Server-owned conversation state, scoped to this session's account. An id
-  // from another account (or an unknown one) yields [] — not an error, not
-  // their data. This is also the approve-resume path's context source.
-  const transcript = await loadTranscript(conversationId, session.accountId);
-  const carryover = fromId ? await loadCarryover(fromId, session.accountId) : null;
-  const agentContext = await loadAgentContext({ accountId: session.accountId, brandId, brandName, query: message });
 
   // Optional persona routing (migration 024) — no-op unless the client opts in.
   const personaId: string | undefined = typeof body?.personaId === 'string' && body.personaId ? body.personaId : undefined;
@@ -66,12 +60,32 @@ export async function POST(request: NextRequest) {
   const stream = new ReadableStream({
     async start(controller) {
       const send = (e: any) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(e)}\n\n`));
+      // Fire the instant the connection opens — before any DB work starts.
+      // Loading transcript/carryover/agentContext below used to run BEFORE the
+      // Response (and therefore the stream) was even returned, so the client's
+      // fetch() didn't resolve res.body until all of it finished: several
+      // sequential DB round-trips, one of which calls an embedding API. That
+      // produced the blank-pane symptom — "Send (1 running)" with nothing
+      // rendering until the model's first real event, sometimes seconds later.
+      // This line guarantees the UI shows motion within the connection's own
+      // round-trip time, independent of how long context assembly takes.
+      send({ type: 'step_start', text: 'Loading your workspace context…' });
       let finalTranscript: ChatMessage[] | undefined;
       // Set from the trailing compaction_suggested event (emitted after `final`),
       // so the finally block below knows whether this turn hit a compaction
       // threshold. Null on every ordinary turn.
       let compaction: 'soft' | 'hard' | null = null;
       try {
+        // Server-owned conversation state, scoped to this session's account. An
+        // id from another account (or an unknown one) yields [] — not an error,
+        // not their data. This is also the approve-resume path's context source.
+        // These three are independent reads — fetched concurrently now that
+        // they're inside the stream, instead of serially blocking the response.
+        const [transcript, carryover, agentContext] = await Promise.all([
+          loadTranscript(conversationId, session.accountId),
+          fromId ? loadCarryover(fromId, session.accountId) : Promise.resolve(null),
+          loadAgentContext({ accountId: session.accountId, brandId, brandName, query: message }),
+        ]);
         await runAgentStream(
           { accountId: session.accountId, message, approve, transcript, agentContext, carryover, brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined, personaId, personaMentions, requestedBy: session.email, conversationId },
           (e: AgentEvent) => {
