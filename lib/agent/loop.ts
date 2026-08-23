@@ -21,7 +21,7 @@ import {
   toolsFromCapabilities, type AgentTool,
 } from './tools';
 import { loadExternalCapabilities } from '@/lib/capabilities/external-mcp';
-import type { Capability } from '@/lib/capabilities/types';
+import type { Capability, Analysis, Basis } from '@/lib/capabilities/types';
 import { estimateTokens, carryoverBlock, type CarryoverMemo } from './memory';
 import {
   loadPersonaForAgent, resolveMentionedPersonas, getCoordinator, selectPersonasForRequest,
@@ -424,6 +424,22 @@ function successObservation(tool: string, args: any, result: any, extraCaps?: Re
  *  digest, so this is raw JSON — same as any first-party tool without one). */
 function observationFor(tool: string, args: any, res: { ok: boolean; result?: any; error?: string }, extraCaps?: Record<string, Capability>): string {
   return res.ok ? successObservation(tool, args, res.result, extraCaps) : `ERROR: ${res.error}`;
+}
+
+/** Best-effort structured analysis for a SUCCESSFUL tool run — see
+ *  `Capability.findings` in lib/capabilities/types.ts. Same discipline as
+ *  successObservation above: a throwing or absent `findings` degrades to no
+ *  analysis events, never fails (or even affects) the tool call itself. Only
+ *  the streaming loop calls this today — it exists to feed the live SSE
+ *  evidence/claim/finding/verdict events, which the non-streaming path has
+ *  no channel to emit. */
+function analysisFor(tool: string, args: any, res: { ok: boolean; result?: any }, extraCaps?: Record<string, Capability>): Analysis | null {
+  if (!res.ok) return null;
+  try {
+    return capabilityFor(tool, extraCaps)?.findings?.(args, res.result) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // PORTED (Packet 2.1 step 5): the per-tool deriveMetrics switch that used to
@@ -1013,6 +1029,16 @@ export type AgentEvent =
   | { type: 'thought'; text: string }
   | { type: 'tool'; tool: string; title: string; args: Record<string, any> }
   | { type: 'observation'; text: string; ok: boolean; tool?: string; metrics?: Record<string, number> }
+  // Structured analysis of a tool's result (see Capability.findings in
+  // lib/capabilities/types.ts) — emitted alongside `observation`, never
+  // instead of it. `evidence` and `claim` events may appear with no matching
+  // `finding` (a claim that didn't clear the bar is still emitted, just not
+  // surfaced as a finding). `verdict` appears at most once per tool call and
+  // only when at least one finding exists.
+  | { type: 'evidence'; id: string; label: string }
+  | { type: 'claim'; id: string; text: string; basis: Basis; evidenceIds: string[] }
+  | { type: 'finding'; id: string; claimId: string; severity: 'low' | 'medium' | 'high'; recommendation?: string }
+  | { type: 'verdict'; summary: string; findingIds: string[] }
   // Progressive preview of the compose pass, emitted token-by-token while the
   // answer is being written. Carries NO transcript and is NOT authoritative:
   // the `final` event's `message` is the truth and overwrites whatever the
@@ -1046,6 +1072,18 @@ async function streamTokens(message: string, emit: (e: AgentEvent) => void): Pro
     emit({ type: 'final_delta', text: batch });
     if (i + batchSize < chunks.length) await new Promise((r) => setTimeout(r, PER_CHUNK_MS));
   }
+}
+
+/** Emit an Analysis (see analysisFor above) as its constituent SSE events, in
+ *  citation order: evidence before the claims that cite it, claims before the
+ *  findings that reference them, verdict last. `null`/empty analyses emit
+ *  nothing — an absent finding is not itself news. */
+function emitAnalysis(emit: (e: AgentEvent) => void, analysis: Analysis | null): void {
+  if (!analysis) return;
+  for (const ev of analysis.evidence) emit({ type: 'evidence', id: ev.id, label: ev.label });
+  for (const c of analysis.claims) emit({ type: 'claim', id: c.id, text: c.text, basis: c.basis, evidenceIds: c.evidenceIds });
+  for (const f of analysis.findings) emit({ type: 'finding', id: f.id, claimId: f.claimId, severity: f.severity, recommendation: f.recommendation });
+  if (analysis.verdict) emit({ type: 'verdict', summary: analysis.verdict.summary, findingIds: analysis.verdict.findingIds });
 }
 
 // LOOP-CONTROL INVARIANT (Packet 1.3): runAgentStream and runAgent must keep
@@ -1102,6 +1140,7 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
     const obs = observationFor(tool, args, res, extraCapsByName);
     const obsLimit = obsLimitFor(tool, extraCapsByName);
     emit({ type: 'observation', text: truncate(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
+    emitAnalysis(emit, analysisFor(tool, args, res, extraCapsByName));
     messages.push(observation(obs, obsLimit));
   }
 
@@ -1243,6 +1282,7 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
     const obs = observationFor(tool, args, res, extraCapsByName);
     const obsLimit = obsLimitFor(tool, extraCapsByName);
     emit({ type: 'observation', text: truncate(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
+    emitAnalysis(emit, analysisFor(tool, args, res, extraCapsByName));
     messages.push(observation(obs, obsLimit));
   }
 

@@ -31,6 +31,7 @@ import { TEMPLATE_CAPABILITIES } from './templates';
 import { SEARCH_CAPABILITIES } from './search';
 import { SUPPRESSION_CAPABILITIES } from './suppressions';
 import { INBOX_CAPABILITIES } from './inbox';
+import { DIAGNOSTICS_CAPABILITIES } from './diagnostics';
 import { METRICS_BY_NAME } from './metrics-port';
 
 // Two-stage tool catalog (Packet 10.3). Opt-IN, never opt-out: staging changes
@@ -73,6 +74,7 @@ const ALL: Capability[] = [
   ...SEARCH_CAPABILITIES,
   ...SUPPRESSION_CAPABILITIES,
   ...INBOX_CAPABILITIES,
+  ...DIAGNOSTICS_CAPABILITIES,
 ].filter((c) => AGENT_STAGED_CATALOG || !STAGED_ONLY.includes(c.name));
 
 // CATALOG ORDER — the exact key order of the original TOOLS object literal in
@@ -137,6 +139,11 @@ const CATALOG_ORDER: string[] = [
   // succeeded, draftOutreach then failed "Lead not found"). createLead closes
   // that gap. Appended, never sorted, same reason as every entry above.
   'createLead',
+  // --- appended 2026-08-23: diagnostics domain — the first capability whose
+  // `findings` hook emits structured evidence/claim/finding/verdict events
+  // instead of leaving the model to narrate its result in prose. Appended,
+  // never sorted, same reason as every entry above.
+  'diagnosePipeline',
 ];
 
 const byName = new Map(ALL.map((c) => [c.name, c]));

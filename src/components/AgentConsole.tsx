@@ -15,8 +15,20 @@ export type Step =
   | { kind: 'tool'; label: string; done: boolean; ok?: boolean; metrics?: Record<string, number>; observation?: string }
   | { kind: 'error'; text: string };
 
+// Structured analysis of a turn's tool results — see Capability.findings in
+// lib/capabilities/types.ts and the evidence/claim/finding/verdict SSE events
+// in lib/agent/loop.ts. Mirrors that server-side shape exactly; the UI never
+// invents a field the wire event didn't carry.
+type Basis = { kind: 'direct_observation' } | { kind: 'crm_history'; n: number } | { kind: 'heuristic'; rule: string };
+interface Claim { id: string; text: string; basis: Basis; evidenceIds: string[] }
+interface Finding { id: string; claimId: string; severity: 'low' | 'medium' | 'high'; recommendation?: string }
+interface Verdict { summary: string; findingIds: string[] }
+
 interface Proposal { tool: string; title: string; args: Record<string, any>; summary: string; approvalId?: string }
-type Turn = { role: 'user' } & { text: string; id?: string } | { role: 'assistant'; text: string; steps: Step[] };
+type Turn = { role: 'user' } & { text: string; id?: string } | {
+  role: 'assistant'; text: string; steps: Step[];
+  evidence?: Record<string, string>; claims?: Claim[]; findings?: Finding[]; verdict?: Verdict;
+};
 
 // Map internal tool names to plain-language present-tense actions.
 const TOOL_VERB: Record<string, string> = {
@@ -137,6 +149,8 @@ const TOOL_VERB: Record<string, string> = {
   markRead: 'Marking that conversation',
   // --- added by Packet D1 ---
   getCampaignAnalytics: 'Rolling up campaign spend',
+  // --- added by the diagnostics domain (2026-08-23) ---
+  diagnosePipeline: 'Checking the pipeline for stalled deals',
 };
 const verbFor = (tool: string, title: string) => TOOL_VERB[tool] || title || 'Working';
 
@@ -292,7 +306,18 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
   const patchTurn = (id: string, fn: (t: any) => void) =>
     setTurns((prev) => prev.map((t) => {
       if (t.id !== id || t.role !== 'assistant') return t;
-      const copy = { ...t, steps: [...(t.steps || [])] };
+      // steps/claims/findings and the evidence map are all deep-copied here for
+      // the same reason: fn() mutates `copy` in place, and a shallow `{...t}`
+      // would leave those pointing at the SAME array/object as the previous
+      // turn state, so pushing into them would mutate state React never saw
+      // change (identical reference in and out of setTurns).
+      const copy = {
+        ...t,
+        steps: [...(t.steps || [])],
+        claims: [...(t.claims || [])],
+        findings: [...(t.findings || [])],
+        evidence: { ...(t.evidence || {}) },
+      };
       fn(copy);
       return copy;
     }));
@@ -460,7 +485,16 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
           const text = typeof e.text === 'string' ? e.text.trim() : '';
           if (text) last.observation = text.length > 240 ? `${text.slice(0, 237)}…` : text;
         }
-      } else if (e.type === 'final') { t.status = 'done'; t.text = e.message; }
+      }
+      // Structured analysis events — additive, never resolve a pending step
+      // (none of the branches above match, so the fall-through here is safe).
+      // Rendered as the findings panel, not folded into the step trace: these
+      // are the agent's grounded conclusions, not "what it's doing".
+      else if (e.type === 'evidence') { t.evidence[e.id] = e.label; }
+      else if (e.type === 'claim') { t.claims.push({ id: e.id, text: e.text, basis: e.basis, evidenceIds: e.evidenceIds || [] }); }
+      else if (e.type === 'finding') { t.findings.push({ id: e.id, claimId: e.claimId, severity: e.severity, recommendation: e.recommendation }); }
+      else if (e.type === 'verdict') { t.verdict = { summary: e.summary, findingIds: e.findingIds || [] }; }
+      else if (e.type === 'final') { t.status = 'done'; t.text = e.message; }
       else if (e.type === 'needs_approval') { t.status = 'approval'; setProposal(e.proposal); }
       else if (e.type === 'error') { t.status = 'error'; t.steps.push({ kind: 'error', text: e.message }); }
     });
@@ -580,6 +614,9 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
                   {t.steps.map((step: Step, index: number) => <StepRow key={index} step={step} />)}
                 </div>
               )}
+              {(t.findings?.length ?? 0) > 0 && (
+                <FindingsPanel evidence={t.evidence || {}} claims={t.claims || []} findings={t.findings || []} verdict={t.verdict} />
+              )}
               {t.text && (
                 <div className="max-w-[85%] animate-fade-in overflow-hidden rounded-2xl bg-[var(--bg-canvas)] px-4 py-2.5 text-sm text-[var(--text-primary)]">
                   <Markdown>{t.text}</Markdown>
@@ -667,6 +704,63 @@ function StepRow({ step }: { step: Step }) {
             {step.observation}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// Plain-language basis label — "measured over N", "read directly", or the
+// named rule — so a heuristic never LOOKS like a measurement. Mirrors the
+// Basis union in lib/capabilities/types.ts exactly; an unrecognised shape
+// (should not happen — the server is the only producer) renders nothing
+// rather than guessing.
+function basisLabel(basis: Basis): string {
+  if (basis.kind === 'crm_history') return `measured over ${basis.n} record${basis.n === 1 ? '' : 's'}`;
+  if (basis.kind === 'direct_observation') return 'read directly';
+  if (basis.kind === 'heuristic') return `rule of thumb: ${basis.rule}`;
+  return '';
+}
+
+const SEVERITY_COLOR: Record<Finding['severity'], string> = {
+  high: 'var(--status-negative)',
+  medium: '#D97706',
+  low: 'var(--status-neutral)',
+};
+
+/** Structured findings, grounded in a real tool result (see diagnosePipeline /
+ *  Capability.findings). Deliberately separate from the step trace above (that
+ *  is "what the agent did") and the prose bubble below (that is the answer) —
+ *  this is the auditable "why", one card per finding, each citing the real
+ *  evidence it came from instead of asking the user to trust a claim. Claims
+ *  that never cleared the bar to become a finding are transmitted (t.claims)
+ *  but not rendered here — a "considered but not surfaced" section is a real
+ *  follow-up, not required for the analysis to be honest today. */
+function FindingsPanel({ evidence, claims, findings, verdict }: { evidence: Record<string, string>; claims: Claim[]; findings: Finding[]; verdict?: Verdict }) {
+  const claimById = new Map(claims.map((c) => [c.id, c]));
+  return (
+    <div className="animate-fade-in space-y-2.5 rounded-xl border border-[var(--border-default)] bg-[var(--bg-raised)] px-4 py-3">
+      <div className="text-xs font-semibold uppercase tracking-wide text-[var(--text-muted)]">Findings</div>
+      {verdict && <div className="text-sm font-medium text-[var(--text-primary)]">{verdict.summary}</div>}
+      <div className="space-y-2">
+        {findings.map((f) => {
+          const claim = claimById.get(f.claimId);
+          if (!claim) return null; // server always sends the claim first; a missing one is dropped, not guessed at
+          const evidenceLabels = claim.evidenceIds.map((id) => evidence[id]).filter(Boolean);
+          return (
+            <div key={f.id} className="flex items-start gap-2.5 rounded-lg bg-[var(--bg-canvas)] px-3 py-2">
+              <span className="mt-1 h-2 w-2 shrink-0 rounded-full" style={{ background: SEVERITY_COLOR[f.severity] }} />
+              <div className="min-w-0 space-y-1">
+                <div className="text-sm text-[var(--text-primary)]">{claim.text}</div>
+                {f.recommendation && <div className="text-sm text-[var(--text-secondary)]">{f.recommendation}</div>}
+                {evidenceLabels.length > 0 && (
+                  <div className="text-xs text-[var(--text-muted)]" title={evidenceLabels.join('; ')}>
+                    {basisLabel(claim.basis)} — {evidenceLabels[0]}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );

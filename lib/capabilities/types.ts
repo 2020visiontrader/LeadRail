@@ -26,6 +26,59 @@ export type GateClass =
   // is that its `summarize` MUST state the ongoing nature and the cap.
   | 'standing_rule';
 
+// --- Diagnostic analysis (structured finding/claim/verdict/evidence) -------
+// A capability may optionally produce a grounded analysis of its OWN result,
+// surfaced to the user as structured cards instead of prose. Four layers,
+// same truthful discipline as `digest`/`metrics` below: never fabricate,
+// never infer a number the result does not contain.
+//
+//   Evidence — a real, citable data point pulled from the result.
+//   Claim    — an assertion derived from evidence, carrying its `basis` so the
+//              UI can render "measured" vs "rule of thumb" differently. EVERY
+//              claim a capability considers is emitted, whether or not it
+//              clears the bar to become a finding — a claim that didn't
+//              qualify is still true, it's just not surfaced as actionable.
+//   Finding  — a claim that cleared a minimum-evidence bar and is worth the
+//              user's attention. References its claim by id; does not repeat
+//              the text.
+//   Verdict  — one synthesis across this turn's findings. Omitted (not a
+//              fabricated "no issues found") when there is nothing to say.
+export type Basis =
+  | { kind: 'direct_observation' }               // read straight off the artifact under analysis
+  | { kind: 'crm_history'; n: number }            // measured over n real rows — n MUST be real
+  | { kind: 'heuristic'; rule: string };          // a named rule of thumb, not a measurement
+
+export interface Evidence {
+  id: string;
+  label: string;
+}
+
+export interface Claim {
+  id: string;
+  text: string;
+  basis: Basis;
+  evidenceIds: string[];
+}
+
+export interface Finding {
+  id: string;
+  claimId: string;
+  severity: 'low' | 'medium' | 'high';
+  recommendation?: string;
+}
+
+export interface Verdict {
+  summary: string;
+  findingIds: string[];
+}
+
+export interface Analysis {
+  evidence: Evidence[];
+  claims: Claim[];
+  findings: Finding[];
+  verdict?: Verdict;
+}
+
 export interface Capability {
   /** Stable id, camelCase. NEVER renamed once shipped — MCP clients bind to it. */
   name: string;
@@ -89,6 +142,13 @@ export interface Capability {
    *  Never emit a secret, token, or credential — these lines reach the model
    *  verbatim. Return '' (or omit the field) and the raw JSON is used alone. */
   digest?: (args: any, result: any) => string;
+  /** Optional: a grounded structured analysis of a REAL result (see `Analysis`
+   *  above), streamed to the UI as evidence/claim/finding/verdict events
+   *  alongside the plain observation. Same rule as `digest`: truthful only,
+   *  every number must come from `result`. A best-effort presentation hook,
+   *  never a gate — a throwing or absent `findings` degrades to no analysis
+   *  events, never blocks the tool call itself. */
+  findings?: (args: any, result: any) => Analysis | null;
 }
 
 // --- Digest helpers (Packet 10.1) -------------------------------------------
