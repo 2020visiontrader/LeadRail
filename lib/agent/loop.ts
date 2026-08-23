@@ -920,6 +920,18 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
         messages.push({ role: 'assistant', content: cleaned });
         return { status: 'done', message: cleaned, transcript: messages, steps };
       }
+      // The model answered (no exception, so the ai router logged a tier
+      // success) but never produced valid JSON even after one correction
+      // nudge, and salvage found no usable prose either. That combination is
+      // invisible everywhere else: the ai router's own log only proves SOME
+      // text came back, not that it was unusable. Without this line the raw
+      // text that broke the contract is gone the moment this function
+      // returns, and every future occurrence looks identical from the
+      // outside — "I couldn't complete that request" with no way to tell
+      // which tier answered or what it actually said.
+      log.error('agent: model output failed JSON contract after correction', undefined, {
+        accountId, step: i, afterTool: lastToolName ?? null, rawPreview: raw.slice(0, 500),
+      });
       return { status: 'error', message: "I couldn't complete that request. Please rephrase and try again.", transcript: messages, steps };
     }
     corrected = false;
@@ -1205,6 +1217,14 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
         emit({ type: 'final', message: cleaned, transcript: messages });
         return;
       }
+      // Same gap as runAgent's twin above, and it matters MORE here: the SSE
+      // route is deliberately not withApi-wrapped (see the catch block above),
+      // so before this line there was no record ANYWHERE that a run failed
+      // this way — not in app_logs, not in the ai router's own log (which only
+      // proves a tier returned text, not that the text was usable).
+      log.error('agent stream: model output failed JSON contract after correction', undefined, {
+        accountId, step: i, afterTool: lastToolName ?? null, rawPreview: raw.slice(0, 500),
+      });
       emit({ type: 'error', message: "I couldn't complete that request. Please rephrase and try again.", transcript: messages });
       return;
     }
