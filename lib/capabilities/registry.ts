@@ -33,6 +33,8 @@ import { PIPELINE_CAPABILITIES } from './pipeline';
 import { CRM_AUTOMATION_CAPABILITIES } from './crm-automations';
 import { WORKSPACE_CAPABILITIES } from './workspace';
 import { CONTENT_CAPABILITIES } from './content';
+import { DELIVERABLE_CAPABILITIES } from './deliverables';
+import { DELEGATION_CAPABILITIES } from './delegation';
 import { SUPPRESSION_CAPABILITIES } from './suppressions';
 import { INBOX_CAPABILITIES } from './inbox';
 import { DIAGNOSTICS_CAPABILITIES } from './diagnostics';
@@ -80,6 +82,8 @@ const ALL: Capability[] = [
   ...CRM_AUTOMATION_CAPABILITIES,
   ...WORKSPACE_CAPABILITIES,
   ...CONTENT_CAPABILITIES,
+  ...DELIVERABLE_CAPABILITIES,
+  ...DELEGATION_CAPABILITIES,
   ...SUPPRESSION_CAPABILITIES,
   ...INBOX_CAPABILITIES,
   ...DIAGNOSTICS_CAPABILITIES,
@@ -143,6 +147,9 @@ const CATALOG_ORDER: string[] = [
   'createCharacterRef', 'generateBrandVideo', 'getVideoStatus',
   'listContentPillars', 'createContentPillar', 'deleteContentPillar',
   'listPlatformSpecs', 'setPlatformSpec',
+  // --- appended: the assistant could produce a report and had no way to hand
+  // it over, and could not call for a specialist once a turn had started.
+  'createFile', 'listSpecialists', 'askSpecialist',
   // --- appended by Packet 10.3 (two-stage catalog). Appended, never sorted.
   // Present only when staging is on, matching the ALL filter above; the
   // missing/unknown checks below still hold in both modes.

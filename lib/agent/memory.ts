@@ -14,6 +14,7 @@ import { supabase } from '@/lib/db';
 import type { ChatMessage } from '@/lib/ai/router';
 import { SECRET_KEY_PATTERN } from '@/lib/approvals/store';
 import { embedPassage, embedQuery, toPgVector } from './embeddings';
+import { scoreFacts, packTier, tierForRequest, renderTier } from './memory-tiers';
 
 /** Cheap token estimate (~4 chars/token) over a transcript. */
 export function estimateTokens(messages: ChatMessage[]): number {
@@ -376,7 +377,20 @@ export async function recallMemoryDigest(
     }
 
     if (!facts.length) return '';
-    return facts.slice(0, limit).map((f) => `- ${f}`).join('\n');
+
+    // TIERED PACKING. Previously this returned the top `limit` facts by
+    // similarity-then-recency, the same twelve bullets whether the turn was
+    // "what's my lead count?" or "plan next quarter". Now the facts are
+    // classified by KIND and packed into the budget the request justifies, so
+    // a decision the operator made three weeks ago outranks a passing note
+    // that happens to share wording with the question. See memory-tiers.ts.
+    const tier = tierForRequest(query);
+    const packed = packTier(scoreFacts(facts), tier);
+    // Never return nothing when facts exist: if the tier admitted none (a
+    // terse question with only background on file), fall back to the plain
+    // top-N so recall degrades to the old behaviour instead of going blank.
+    const chosen = packed.length ? packed : facts.slice(0, Math.min(limit, 6));
+    return renderTier(chosen);
   } catch {
     return '';
   }

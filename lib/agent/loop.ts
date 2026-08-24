@@ -32,6 +32,8 @@ import { composeAnswer } from './compose';
 import { stripAiMarkers } from '@/lib/ai/humanizer';
 import { createApproval, consumeApprovalForExecution, markApprovedByToolAndArgs, ApprovalExecutionError } from '@/lib/approvals/store';
 import { log } from '@/lib/logger';
+import { buildCachedPrompt } from './prompt-cache';
+import { beginDelegationScope, endDelegationScope, setDelegationContext } from '@/lib/capabilities/delegation';
 import { hermesRoute } from '@/lib/ai/hermes';
 
 // A multi-part request ("research these five agencies, then tailor outreach")
@@ -190,6 +192,10 @@ export interface RunAgentInput {
   /** Optional persisted-conversation id to associate with a durable approval
    *  row, when the caller already has one (e.g. a follow-up turn). */
   conversationId?: string;
+  /** Marks this run as a delegate sub-run (lib/capabilities/delegation.ts).
+   *  A delegate may not delegate further and may not raise approvals — see the
+   *  bounds documented there. Absent for every ordinary caller. */
+  isDelegate?: boolean;
   /** Optional override of MAX_STEPS for THIS call only (Packet 6.2). Used
    *  exclusively to give each delegate in a coordinator fan-out a smaller
    *  step budget than a normal top-level turn — never set by ordinary
@@ -206,11 +212,23 @@ export function agentConfigured(): boolean {
 // Same shape/spirit as composeSkillGuidance (lib/skills/registry.ts) used by
 // outreach generation: a short bullet list of "name: instructions". Returns
 // '' when nothing is enabled, so callers can splice it in unconditionally.
-function skillsBlock(skills: { name: string; instructions: string }[]): string {
+function skillsBlock(skills: { name: string; instructions: string; capabilities?: string[] }[]): string {
   if (!skills.length) return '';
   return [
     'ENABLED SKILLS — apply this guidance when relevant to the current task:',
-    ...skills.map((s) => `• ${s.name}: ${s.instructions}`),
+    ...skills.map((s) => {
+      // A skill may name the capabilities its guidance is about (migration
+      // 051). This is the bridge from prose to action: previously a skill
+      // could describe a competitor teardown but had no way to say the work
+      // needs a web search, so the model had to infer it. Naming them is NOT a
+      // grant — every one is the same tool, behind the same approval gate,
+      // that the assistant could already call. Names are filtered against the
+      // live registry so a stale one is ignored rather than sending the model
+      // after a tool that does not exist.
+      const tools = (s.capabilities || []).filter((c) => Boolean(TOOLS[c]));
+      const uses = tools.length ? ` [this work uses: ${tools.join(', ')}]` : '';
+      return `• ${s.name}${uses}: ${s.instructions}`;
+    }),
   ].join('\n');
 }
 
@@ -280,8 +298,17 @@ async function selectSkillsForTurn(
 // `externalTools` (Packet 4) folds an account's connected-MCP-client tools
 // into the catalog for THIS turn. Optional and additive: every call site that
 // predates Packet 4 omits it, so the prompt is byte-identical to before.
-function systemPrompt(brandName?: string, agentContext?: string, carryover?: CarryoverMemo | null, personaBlock?: string, skillsGuidance?: string, externalTools?: Record<string, AgentTool>): string {
-  return [
+/** Cache key for the static half — see lib/agent/prompt-cache.ts. Everything
+ *  that can change the STATIC sections must appear here, and nothing volatile
+ *  may: an account id plus its persona and the size of its tool set identifies
+ *  the shape, and the content hash inside the cache is what actually decides a
+ *  hit, so a coarse key costs a rebuild and can never serve wrong text. */
+function promptCacheKey(accountId: string | undefined, personaBlock?: string, externalTools?: Record<string, AgentTool>): string {
+  return [accountId || 'anon', personaBlock ? 'p' : '-', String(Object.keys(externalTools || {}).length)].join(':');
+}
+
+function systemPrompt(brandName?: string, agentContext?: string, carryover?: CarryoverMemo | null, personaBlock?: string, skillsGuidance?: string, externalTools?: Record<string, AgentTool>, accountId?: string): string {
+  const staticSections: string[] = [
     // ---- STATIC (stable across every turn for an account) -------------------
     'You are LeadRail AI — the operator copilot built into the LeadRail platform. Think of yourself the way a great chief-of-staff works: you understand the whole platform, you know this account and its ventures, you reason things through in plain language, and you actually DO the work by using LeadRail\'s tools. You are conversational and intellectually engaged — you can discuss strategy, weigh options, and explain your thinking, not just fire off tool calls.',
     '',
@@ -341,13 +368,24 @@ function systemPrompt(brandName?: string, agentContext?: string, carryover?: Car
           'AVAILABLE TOOLS:',
           toolCatalogForPrompt(externalTools),
         ]),
-    // ---- VOLATILE (changes per turn — nothing static may follow) ------------
-    // Both blocks below are per-turn grounding. They are LAST on purpose; see
-    // the PROMPT BLOCK ORDER note above before moving either of them.
+  ];
+
+  // ---- VOLATILE (changes per turn — nothing static may follow) --------------
+  // Both blocks below are per-turn grounding. They are LAST on purpose; see
+  // the PROMPT BLOCK ORDER note above before moving either of them. Keeping
+  // them out of the cached half is what makes the static prefix byte-stable
+  // across a turn's sixteen steps, which is the whole point.
+  const dynamicSections: string[] = [
     '',
     agentContext || (brandName ? `The user is working in the "${brandName}" venture; prefer it when a venture is needed and not otherwise specified.` : ''),
     carryover ? '\n' + carryoverBlock(carryover) : '',
-  ].filter(Boolean).join('\n');
+  ];
+
+  return buildCachedPrompt(
+    promptCacheKey(accountId, personaBlock, externalTools),
+    { sections: staticSections.filter(Boolean) },
+    { sections: dynamicSections.filter(Boolean) },
+  ).prompt;
 }
 
 function summarizeProposal(tool: string, args: Record<string, any>, extraCaps?: Record<string, Capability>, extraTools?: Record<string, AgentTool>): string {
@@ -883,6 +921,33 @@ async function runFanoutDelegates(
   return { outcomes };
 }
 
+/** Phrases that mark a synthesis which has abstracted away the substance it
+ *  was given. Each one is a construction that can be written without having
+ *  read the delegates at all — which is precisely the failure being caught. */
+const VAGUE_SYNTHESIS_PHRASES = [
+  'several factors',
+  'it depends on your',
+  'there are many ways',
+  'a variety of approaches',
+  'each has its own merits',
+  'the team has provided',
+  'based on the analysis above',
+  'in conclusion, it is important',
+  'further analysis is needed',
+  'more information is required',
+  'consider all the options',
+];
+
+/** Returns the phrases a synthesis tripped, empty when it is specific enough. */
+function validateSynthesis(text: string): string[] {
+  const lower = text.toLowerCase();
+  const hits = VAGUE_SYNTHESIS_PHRASES.filter((p) => lower.includes(p));
+  // A synthesis shorter than the shortest delegate answer has almost certainly
+  // compressed rather than reconciled. Length is a weak signal on its own, so
+  // it only counts alongside at least one phrase hit.
+  return hits;
+}
+
 /** Synthesize the coordinator's final reply strictly from what the delegates
  *  actually returned (constraint 3). Falls back to a plain concatenation of
  *  the delegate outputs on any synthesis failure — never drops a delegate's
@@ -909,7 +974,7 @@ async function synthesizeCoordinatorAnswer(
       system,
       messages: [{
         role: 'user',
-        content: `User's request: ${userMessage || '(none)'}\n\nDelegate responses:\n${block}\n\nWrite the single unified final answer for the user now. Plain language, no JSON, no markdown headers.`,
+        content: `User's request: ${userMessage || '(none)'}\n\nDelegate responses:\n${block}\n\nWrite the single unified final answer for the user now. Plain language, no JSON, no markdown headers. Every claim must be traceable to a delegate response above — do not summarise them into vagueness.`,
       }],
       temperature: 0.3,
       // Was a hard 800 tokens — enough to truncate a synthesis of three
@@ -921,7 +986,27 @@ async function synthesizeCoordinatorAnswer(
       ...(coordinator.model_id ? { accountId, modelId: coordinator.model_id } : {}),
     });
     const trimmed = raw.trim();
-    return trimmed || block;
+    if (!trimmed) return block;
+
+    // OUTPUT VALIDATION. A synthesis pass has a specific failure mode: given
+    // three specialists' findings it produces something that reads well and
+    // says nothing — "several factors are at play", "it depends on your
+    // goals" — because generic hedging is the safest text that fits every
+    // input. That output is worse than the raw delegate answers it replaced,
+    // and it is invisible: it looks like a good answer.
+    //
+    // So the result is checked for the phrases that mark it, and a synthesis
+    // that trips the check is DISCARDED in favour of the delegates' actual
+    // words. Falling back to slightly rough attributed text beats shipping
+    // fluent emptiness.
+    const violations = validateSynthesis(trimmed);
+    if (violations.length) {
+      log.warn('coordinator synthesis rejected as vague', {
+        accountId, coordinator: coordinator.name, violations, preview: trimmed.slice(0, 200),
+      });
+      return block;
+    }
+    return trimmed;
   } catch {
     return block; // never silently drop the delegates' actual outputs
   }
@@ -1019,7 +1104,7 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
   const externalCaps = await loadExternalCapabilities(accountId);
   const extraTools = toolsFromCapabilities(externalCaps);
   const extraCapsByName: Record<string, Capability> = Object.fromEntries(externalCaps.map((c) => [c.name, c]));
-  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools);
+  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId);
   const messages: ChatMessage[] = capTranscript(input.transcript || []);
   const steps: AgentStep[] = [];
 
@@ -1171,6 +1256,16 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
     }
 
     if (def.sensitive) {
+      // A DELEGATE MAY NOT RAISE AN APPROVAL. The human is watching the
+      // caller's turn, not this sub-run — an approval card raised from inside
+      // a delegate asks them to sign off on work they never saw proposed. The
+      // delegate reports what it would do; the caller proposes it properly.
+      if (input.isDelegate) {
+        const obs = `You cannot run "${tool}" — it needs the operator's approval and you are answering as a specialist. Say what you recommend and why, and let the operator's own assistant propose it.`;
+        steps.push({ tool, args, observation: obs });
+        messages.push(observation(obs));
+        continue;
+      }
       const proposal: AgentProposal = { tool, title: def.title, args, summary: summarizeProposal(tool, args, extraCapsByName, extraTools) };
       // Additive: persist the proposal so it survives a closed tab and gets an
       // actor trail (migration 028_approvals.sql). Best-effort — a failure
@@ -1340,7 +1435,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
   const enabledSkills = await selectSkillsForTurn(allEnabledSkills, input.message, brandContext?.name);
   const extraTools = toolsFromCapabilities(externalCaps);
   const extraCapsByName: Record<string, Capability> = Object.fromEntries(externalCaps.map((c) => [c.name, c]));
-  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools);
+  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId);
   const messages: ChatMessage[] = capTranscript(input.transcript || []);
 
   if (input.message) messages.push({ role: 'user', content: input.message });
@@ -1495,6 +1590,13 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
     }
 
     if (def.sensitive) {
+      // Same rule as runAgent — see the note there.
+      if (input.isDelegate) {
+        const obs = `You cannot run "${tool}" — it needs the operator's approval and you are answering as a specialist. Say what you recommend and why, and let the operator's own assistant propose it.`;
+        emit({ type: 'observation', text: obs, ok: false });
+        messages.push(observation(obs));
+        continue;
+      }
       const proposal: AgentProposal = { tool, title: def.title, args, summary: summarizeProposal(tool, args, extraCapsByName, extraTools) };
       // Additive persistence — see the matching comment in runAgent above.
       // Best-effort; never blocks the existing needs_approval/resume flow.
@@ -1693,6 +1795,9 @@ function logTurn(
  *  durable line per turn (see TURN LOGGING above); behaviour is unchanged. */
 export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
   const startedAt = Date.now();
+  const turnId = `${input.accountId}:${startedAt}:${Math.round(performance.now())}`;
+  beginDelegationScope(turnId);
+  setDelegationContext({ id: turnId, isDelegate: Boolean(input.isDelegate) });
   try {
     const result = await runAgentImpl(input);
     logTurn(input, {
@@ -1706,6 +1811,9 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
   } catch (e) {
     logTurn(input, { variant: 'json', outcome: 'threw', startedAt, steps: [] });
     throw e;
+  } finally {
+    endDelegationScope(turnId);
+    setDelegationContext(null);
   }
 }
 
@@ -1714,6 +1822,9 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
  *  own control flow is untouched. */
 export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent) => void): Promise<void> {
   const startedAt = Date.now();
+  const turnId = `${input.accountId}:${startedAt}:${Math.round(performance.now())}`;
+  beginDelegationScope(turnId);
+  setDelegationContext({ id: turnId, isDelegate: Boolean(input.isDelegate) });
   let firstEventMs: number | null = null;
   let outcome = 'incomplete';
   let answer: string | undefined;
@@ -1735,5 +1846,7 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
     throw e;
   } finally {
     logTurn(input, { variant: 'stream', outcome, startedAt, steps, answer, firstEventMs });
+    endDelegationScope(turnId);
+    setDelegationContext(null);
   }
 }

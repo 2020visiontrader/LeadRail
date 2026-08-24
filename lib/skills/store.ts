@@ -13,6 +13,8 @@
 // of throwing, so a missing DB config never breaks the default agent path.
 
 import { supabase, dbReady } from '@/lib/db';
+import { screenSkills } from './security';
+import { log } from '@/lib/logger';
 
 export interface SkillRow {
   id: string;
@@ -201,6 +203,11 @@ export interface EnabledSkillInstruction {
   slug: string;
   name: string;
   instructions: string;
+  /** Capability names this skill's guidance is about (migration 051). Named in
+   *  the prompt so the assistant knows which tools the guidance concerns —
+   *  never a grant: every one is the same capability, behind the same gate,
+   *  that it could already call. */
+  capabilities?: string[];
 }
 
 /** Enabled skills for this account, with any per-account instructions
@@ -212,18 +219,40 @@ export async function loadEnabledSkillsForAgent(accountId: string): Promise<Enab
   try {
     const { data, error } = await supabase
       .from('account_skills')
-      .select('enabled, overridden_instructions, skills(slug, name, instructions, account_id)')
+      .select('enabled, overridden_instructions, skills(slug, name, instructions, account_id, capabilities)')
       .eq('account_id', accountId)
       .eq('enabled', true);
     if (error) throw error;
-    return (data || [])
+    const candidates = (data || [])
       .filter((row: any) => row.skills)
       .map((row: any) => ({
         slug: row.skills.slug as string,
         name: row.skills.name as string,
         instructions: (row.overridden_instructions?.trim() || row.skills.instructions || '').trim(),
+        capabilities: Array.isArray(row.skills.capabilities) ? row.skills.capabilities : [],
       }))
       .filter((s: EnabledSkillInstruction) => s.instructions.length > 0);
+
+    // SCREEN BEFORE INJECTION. These instructions go into the SYSTEM prompt,
+    // above the user's own message, and 341 of the 353 skills in the catalog
+    // were harvested from third-party repositories. Nothing read that text
+    // before it reached the model. See lib/skills/security.ts.
+    //
+    // A blocked skill is logged, never silently dropped: a skill quietly
+    // vanishing from an account's prompt is exactly the kind of change nobody
+    // notices until the behaviour has already drifted.
+    const { allowed, blocked, flagged } = screenSkills(candidates);
+    for (const b of blocked) {
+      log.error('skill blocked by content screen', undefined, {
+        accountId, slug: b.skill.slug, rules: b.findings.map((f) => f.rule), excerpt: b.findings[0]?.excerpt,
+      });
+    }
+    for (const f of flagged) {
+      log.warn('skill flagged by content screen', {
+        accountId, slug: f.skill.slug, rules: f.findings.map((x) => x.rule),
+      });
+    }
+    return allowed;
   } catch {
     return [];
   }
