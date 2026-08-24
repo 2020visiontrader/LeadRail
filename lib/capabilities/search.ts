@@ -3,6 +3,7 @@
 import { z } from 'zod';
 import { searchEntities } from '@/lib/search';
 import { webSearch as runWebSearch } from '@/lib/integrations/websearch';
+import { researchInstagramProfile, apifyConfigured } from '@/lib/integrations/apify';
 import { obj, S, type Capability, plural, samples, digestLine } from './types';
 
 export const SEARCH_CAPABILITIES: Capability[] = [
@@ -63,6 +64,53 @@ export const SEARCH_CAPABILITIES: Capability[] = [
         hits ? `${plural(hits.length, 'web result')}${q}.` : null,
         result.answer ? `Direct answer: ${String(result.answer)}` : null,
         titles.length ? `Titles: ${titles.join(' | ')}.` : null,
+      );
+    },
+  },
+  // Packet: public social research. webSearch above reads the open web; this
+  // reads a specific public Instagram profile directly — bio, audience size,
+  // category, and what they have actually been posting. That is the material
+  // "learn everything on what they do, how they operate and what they have
+  // done before" needs, and no first-party Meta credential can supply it: the
+  // Graph API only ever sees accounts the user has connected, never a
+  // prospect's.
+  //
+  // Public data only, by construction — the connector refuses the
+  // cookie/session-based actors on purpose (see lib/integrations/apify.ts).
+  {
+    name: 'researchSocialProfile',
+    domain: 'search',
+    title: 'Research a public social profile',
+    description: "Look up any PUBLIC Instagram profile by handle or URL — bio, follower count, category, website, and their recent posts with engagement. Use for researching a prospect, lead, competitor or partner account that is NOT connected to this workspace. For the user's own connected accounts use getSocialProfile instead, which is richer and needs no third party.",
+    gate: 'read',
+    inputSchema: obj({ handle: S.string, postLimit: S.number }, ['handle']),
+    zod: z.object({ handle: z.string().min(1), postLimit: z.number().int().min(1).max(50).optional() }),
+    run: async (_accountId, { handle, postLimit = 12 }) => {
+      if (!apifyConfigured()) {
+        return { error: 'Public profile research is not connected for this workspace.' };
+      }
+      try {
+        return await researchInstagramProfile(handle, postLimit);
+      } catch (e: any) {
+        return { error: e?.message || 'Public profile research failed.' };
+      }
+    },
+    digest: (_args, result) => {
+      if (!result || typeof result !== 'object') return '';
+      const r: any = result;
+      if (r.error) return digestLine(`Could not research @${r.handle || '?'}: ${r.error}`);
+      const bits = [
+        typeof r.followers === 'number' ? `${r.followers} followers` : null,
+        typeof r.postCount === 'number' ? `${r.postCount} posts` : null,
+        r.category || null,
+      ].filter(Boolean).join(', ');
+      const captions = Array.isArray(r.recentPosts)
+        ? r.recentPosts.slice(0, 3).map((m: any) => (m.caption ? `"${String(m.caption).slice(0, 90)}"` : null)).filter(Boolean)
+        : [];
+      return digestLine(
+        `@${r.handle}${r.fullName ? ` (${r.fullName})` : ''}${bits ? ` — ${bits}` : ''}.`,
+        r.bio ? `Bio: "${String(r.bio).slice(0, 200)}"` : null,
+        captions.length ? `Recent posts: ${captions.join(' | ')}` : null,
       );
     },
   },

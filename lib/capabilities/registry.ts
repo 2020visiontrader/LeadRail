@@ -103,7 +103,7 @@ const CATALOG_ORDER: string[] = [
   // catalog could produce a post id, so listSocialComments and
   // getSocialInsights (both above) were unreachable in practice — the model
   // had no way to answer "how did my last post do?".
-  'listSocialPosts', 'getSocialProfile',
+  'listSocialPosts', 'getSocialProfile', 'researchSocialProfile',
   'draftSocialPost', 'publishSocialPost', 'replyToSocialComment', 'hideSocialComment',
   'deleteSocialComment', 'sendSocialMessage', 'scheduleSocialPost',
   'listScheduledSocialPosts', 'getAdBreakdown', 'setAdStatus',

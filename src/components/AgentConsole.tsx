@@ -52,6 +52,7 @@ const TOOL_VERB: Record<string, string> = {
   getSocialInsights: 'Pulling that post’s performance',
   listSocialPosts: 'Reading what that account has posted',
   getSocialProfile: 'Looking at that profile',
+  researchSocialProfile: 'Researching that profile',
   draftSocialPost: 'Writing your post',
   publishSocialPost: 'Preparing to publish your post',
   replyToSocialComment: 'Preparing a public reply',
