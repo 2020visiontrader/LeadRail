@@ -46,9 +46,31 @@ function buildPrompt(opts: { prompt: string; caption?: string; aspect?: string }
   return prompt;
 }
 
-export async function generateImage(opts: { prompt: string; caption?: string; aspect?: string }): Promise<GeneratedImage> {
+export async function generateImage(opts: {
+  prompt: string;
+  caption?: string;
+  aspect?: string;
+  /** Anchor images the subject's identity must match. Gemini-only — see below. */
+  referenceUrls?: string[];
+  styleLock?: string;
+}): Promise<GeneratedImage> {
   const prompt = buildPrompt(opts);
   let lastErr: any = null;
+
+  // REFERENCE CONDITIONING IS NOT OPTIONAL WHEN ASKED FOR.
+  //
+  // Only the Gemini tier accepts reference images; NIM and OpenRouter below
+  // take a prompt string and nothing else. Falling through to them with
+  // references requested would produce a plausible image of the WRONG
+  // character and report success — the exact drift the reference exists to
+  // prevent, now invisible. So a conditioned request either runs on Gemini or
+  // fails loudly, and never silently degrades to text-to-image.
+  if (opts.referenceUrls?.length) {
+    if (!gemini.geminiConfigured()) {
+      throw new Error('Reference-conditioned image generation needs the Gemini tier, which is not configured.');
+    }
+    return gemini.generateImage(opts);
+  }
 
   if (gemini.geminiConfigured()) {
     try {

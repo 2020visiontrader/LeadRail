@@ -111,6 +111,11 @@ describe('Regression Guard 1: Sensitive Baseline', () => {
     'createScheduledTask',
     'createSocialAutomation',
     'deleteAutomation',
+    // Content engine. Both destroy work a person may have written or approved,
+    // and neither is recoverable — the board offers ARCHIVED for the reversible
+    // case, which is why the capability descriptions push toward it.
+    'deleteContentItem',
+    'deleteContentPillar',
     'deleteDeal',
     'deleteSocialAutomation',
     'deleteSocialComment',

@@ -1,0 +1,429 @@
+// Content engine capabilities — the board, the pillars, the platform specs,
+// the character references, and the generator that uses all four.
+//
+// The through-line: before this, "write me a LinkedIn post" produced a blob
+// from a model that knew the platform only as a string, knew the brand only as
+// a name, and left nothing behind. Now it produces a grounded piece that lands
+// on a board with a lifecycle, a pillar, and an angle — and the constraints it
+// obeyed are facts stored in the workspace rather than guesses.
+
+import { z } from 'zod';
+import {
+  listPillars, createPillar, deletePillar,
+  listPlatformSpecs, getPlatformSpec, upsertPlatformSpec,
+  listCharacterRefs, getCharacterRef, createCharacterRef,
+  createContentItem, listContentItems, getContentItem, updateContentItem,
+  setContentStatus, deleteContentItem, contentBoardSummary,
+  CONTENT_STATUSES, FUNNEL_STAGES,
+} from '@/lib/content/store';
+import { generateContent } from '@/lib/content/engine';
+import { generateImage as routeImage } from '@/lib/ai/image-router';
+import { generateVideo, higgsfieldConfigured, getVideoStatus } from '@/lib/integrations/higgsfield';
+import { obj, S, type Capability, rowsOf, plural, samples, tally, digestLine } from './types';
+
+/** Persist generated image bytes and hand back a URL. Shared by the two image
+ *  capabilities so a generated asset always has the same URL shape. */
+async function storeImage(base64: string, mimeType: string): Promise<string> {
+  const { writeFile, mkdir } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const { randomUUID } = await import('node:crypto');
+  const ext = mimeType.includes('jpeg') ? 'jpg' : 'png';
+  const filename = `${randomUUID()}.${ext}`;
+  const dir = join(process.cwd(), 'public', 'generated');
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, filename), Buffer.from(base64, 'base64'));
+  return `/generated/${filename}`;
+}
+
+export const CONTENT_CAPABILITIES: Capability[] = [
+  // ------------------------------------------------------------- the board
+  {
+    name: 'listContentItems',
+    domain: 'content',
+    title: 'List content items',
+    description: `Read the content board — every planned, drafted and published piece, newest first. Filter by status (${CONTENT_STATUSES.join(', ')}), by venture, or by platform. Use whenever the user asks what content exists, what is in draft, or what is ready to go out.`,
+    gate: 'read',
+    inputSchema: obj({ status: S.string, brandId: S.string, platform: S.string, limit: S.number }),
+    zod: z.object({
+      status: z.enum(CONTENT_STATUSES as [string, ...string[]]).optional(),
+      brandId: z.string().optional(),
+      platform: z.string().optional(),
+      limit: z.number().int().min(1).max(200).optional(),
+    }),
+    run: (accountId, a) => listContentItems(accountId, a),
+    digest: (_a, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      if (!rows.length) return 'Nothing on the content board.';
+      return digestLine(
+        `${plural(rows.length, 'content item')}.`,
+        tally(rows, 'status') ? `${tally(rows, 'status')}.` : null,
+        `Titles: ${samples(rows, ['title'], 5).join(', ')}`,
+      );
+    },
+  },
+  {
+    name: 'getContentBoard',
+    domain: 'content',
+    title: 'Summarise the content board',
+    description: 'Counts per stage across the content board — how much is in ideation, draft, approved, queued, published. Use to answer "where does content stand?" without pulling every piece.',
+    gate: 'read',
+    inputSchema: obj({ brandId: S.string }),
+    zod: z.object({ brandId: z.string().optional() }),
+    run: (accountId, a) => contentBoardSummary(accountId, a?.brandId),
+  },
+  {
+    name: 'getContentItem',
+    domain: 'content',
+    title: 'Read a content item',
+    description: 'Read one piece of content in full — hook, body, CTA, hashtags, pillar, angle, and where it stands. Needs the id from listContentItems.',
+    gate: 'read',
+    inputSchema: obj({ itemId: S.string }, ['itemId']),
+    zod: z.object({ itemId: z.string().min(1) }),
+    run: async (accountId, a) => {
+      const row = await getContentItem(accountId, a.itemId);
+      if (!row) throw new Error('No content item with that id for this account.');
+      return row;
+    },
+  },
+  {
+    name: 'createContentItem',
+    domain: 'content',
+    title: 'Add a content item',
+    description: 'Put a piece of content on the board by hand — an idea, an outline, or copy the user has already written. For generating one, use generateContentPiece instead, which grounds it in the brand and platform.',
+    gate: 'internal_write',
+    inputSchema: obj({
+      title: S.string, brandId: S.string, status: S.string, contentType: S.string,
+      platforms: { type: 'array', items: S.string }, funnelStage: S.string,
+      keyAngle: S.string, hook: S.string, body: S.string, cta: S.string,
+    }, ['title']),
+    zod: z.object({
+      title: z.string().min(1).max(200),
+      brandId: z.string().optional(),
+      status: z.enum(CONTENT_STATUSES as [string, ...string[]]).optional(),
+      contentType: z.string().optional(),
+      platforms: z.array(z.string()).optional(),
+      funnelStage: z.enum(FUNNEL_STAGES as unknown as [string, ...string[]]).optional(),
+      keyAngle: z.string().optional(),
+      hook: z.string().optional(),
+      body: z.string().optional(),
+      cta: z.string().optional(),
+    }),
+    run: (accountId, a) => createContentItem(accountId, a as any),
+  },
+  {
+    name: 'updateContentItem',
+    domain: 'content',
+    title: 'Edit a content item',
+    description: 'Change a piece of content on the board — its copy, its platforms, its angle, when it is scheduled. To move it between stages use setContentStatus.',
+    gate: 'internal_write',
+    inputSchema: obj({
+      itemId: S.string, title: S.string, hook: S.string, body: S.string, cta: S.string,
+      keyAngle: S.string, platforms: { type: 'array', items: S.string },
+      hashtags: { type: 'array', items: S.string }, scheduledFor: S.string,
+    }, ['itemId']),
+    zod: z.object({
+      itemId: z.string().min(1),
+      title: z.string().max(200).optional(),
+      hook: z.string().optional(),
+      body: z.string().optional(),
+      cta: z.string().optional(),
+      keyAngle: z.string().optional(),
+      platforms: z.array(z.string()).optional(),
+      hashtags: z.array(z.string()).optional(),
+      scheduledFor: z.string().optional(),
+    }),
+    run: async (accountId, a) => {
+      const { itemId, scheduledFor, keyAngle, ...rest } = a;
+      const patch: Record<string, any> = { ...rest };
+      if (scheduledFor !== undefined) patch.scheduled_for = scheduledFor;
+      if (keyAngle !== undefined) patch.key_angle = keyAngle;
+      if (!Object.keys(patch).length) throw new Error('Nothing to update — give at least one field.');
+      return updateContentItem(accountId, itemId, patch);
+    },
+  },
+  {
+    name: 'setContentStatus',
+    domain: 'content',
+    title: 'Move a content item',
+    description: `Move a piece along the board: ${CONTENT_STATUSES.join(' → ')}. Moving to APPROVED means a human signed it off; moving to PUBLISHED only records that it went out — it does NOT publish anything. Use publishSocialPost or scheduleSocialPost to actually send it.`,
+    gate: 'internal_write',
+    inputSchema: obj({ itemId: S.string, status: S.string }, ['itemId', 'status']),
+    zod: z.object({
+      itemId: z.string().min(1),
+      status: z.enum(CONTENT_STATUSES as [string, ...string[]]),
+    }),
+    run: (accountId, a) => setContentStatus(accountId, a.itemId, a.status as any),
+  },
+  {
+    name: 'deleteContentItem',
+    domain: 'content',
+    title: 'Delete a content item',
+    description: 'Permanently remove a piece from the content board. Prefer moving it to ARCHIVED unless the user asks to delete it.',
+    gate: 'destructive',
+    inputSchema: obj({ itemId: S.string }, ['itemId']),
+    zod: z.object({ itemId: z.string().min(1) }),
+    run: (accountId, a) => deleteContentItem(accountId, a.itemId),
+    summarize: (a) => `Permanently delete content item ${a.itemId}. This cannot be undone.`,
+  },
+
+  // -------------------------------------------------------------- generation
+  {
+    name: 'generateContentPiece',
+    domain: 'content',
+    title: 'Generate a content piece',
+    description: "Write one publish-ready piece of content, grounded in the venture's brand kit, the platform's real constraints (character limit, hashtag convention, CTA format) and the next content pillar in rotation. Returns the hook, body and CTA separately. Saves it to the content board as a DRAFT unless you say otherwise. This is the right tool for any real content request — it knows the constraints, a plain chat answer does not.",
+    gate: 'internal_write',
+    inputSchema: obj({
+      topic: S.string, platform: S.string, brandId: S.string, pillarId: S.string,
+      funnelStage: S.string, hook: S.string, cta: S.string, save: { type: 'boolean' },
+    }, ['topic', 'platform']),
+    zod: z.object({
+      topic: z.string().min(3).max(500),
+      platform: z.string().min(1),
+      brandId: z.string().optional(),
+      pillarId: z.string().optional(),
+      funnelStage: z.enum(FUNNEL_STAGES as unknown as [string, ...string[]]).optional(),
+      hook: z.string().optional(),
+      cta: z.string().optional(),
+      save: z.boolean().optional(),
+    }),
+    run: async (accountId, a) => {
+      const piece = await generateContent({ accountId, ...a });
+      if (a.save === false) return piece;
+      const item = await createContentItem(accountId, {
+        title: piece.title,
+        brandId: a.brandId ?? null,
+        status: 'DRAFT',
+        contentType: 'Social',
+        platforms: [piece.platform],
+        pillarId: piece.pillarId,
+        pillar: piece.pillar,
+        funnelStage: a.funnelStage ?? null,
+        keyAngle: piece.keyAngle,
+        targetAudience: piece.targetAudience,
+        hook: piece.hook,
+        body: piece.body,
+        cta: piece.cta,
+        hashtags: piece.hashtags,
+        imagePrompt: piece.imagePrompt,
+      });
+      return { ...piece, itemId: item.id };
+    },
+    observationLimit: 16_000,
+    digest: (a, result) => {
+      const r: any = result;
+      if (!r?.hook) return '';
+      return digestLine(
+        `Wrote a ${r.platform} piece${r.pillar ? ` on the "${r.pillar}" pillar` : ''}: "${String(r.hook).slice(0, 100)}"`,
+        r.withinLimit === false ? `WARNING: ${r.charCount} characters, over the platform limit — it needs cutting before it can go out.` : null,
+        r.itemId ? `Saved to the board as a draft (${r.itemId}).` : null,
+      );
+    },
+  },
+
+  // ------------------------------------------------------------------ media
+  {
+    name: 'generateBrandImage',
+    domain: 'content',
+    title: 'Generate an on-brand image',
+    description: "Generate an image that keeps a recurring character consistent. Pass characterRefId and the character's face, wardrobe and art style are held identical to the saved reference — describe only what CHANGES (the setting, the action). Without a characterRefId this is ordinary text-to-image. Use this, not generateImage, whenever a brand avatar or recurring person is in the shot.",
+    gate: 'internal_write',
+    inputSchema: obj({ prompt: S.string, characterRefId: S.string, caption: S.string, aspect: S.string }, ['prompt']),
+    zod: z.object({
+      prompt: z.string().min(3).max(2000),
+      characterRefId: z.string().optional(),
+      caption: z.string().max(300).optional(),
+      aspect: z.string().max(16).optional(),
+    }),
+    run: async (accountId, a) => {
+      let referenceUrls: string[] | undefined;
+      let styleLock: string | undefined;
+      let prompt = a.prompt;
+      if (a.characterRefId) {
+        const ref = await getCharacterRef(accountId, a.characterRefId);
+        if (!ref) throw new Error('No character reference with that id for this account.');
+        referenceUrls = [ref.image_url];
+        styleLock = ref.style_lock || undefined;
+        // The invariant description leads, the scene follows — the same order
+        // the reference system uses everywhere: who they are never varies,
+        // only what they are doing.
+        prompt = `${ref.description}\n\nScene: ${a.prompt}`;
+      }
+      const img = await routeImage({ prompt, caption: a.caption, aspect: a.aspect, referenceUrls, styleLock });
+      const url = await storeImage(img.base64, img.mimeType);
+      return { url, mimeType: img.mimeType, conditioned: Boolean(referenceUrls) };
+    },
+    digest: (_a, result) => {
+      const r: any = result;
+      if (!r?.url) return '';
+      return digestLine(`Image generated: ${r.url}`, r.conditioned ? 'Held to the saved character reference.' : null);
+    },
+  },
+  {
+    name: 'listCharacterRefs',
+    domain: 'content',
+    title: 'List character references',
+    description: 'List the saved character references — the anchor images that keep a recurring avatar or presenter looking the same across every generated image and video. Call before generateBrandImage or generateBrandVideo to get the id.',
+    gate: 'read',
+    inputSchema: obj({ brandId: S.string }),
+    zod: z.object({ brandId: z.string().optional() }),
+    run: (accountId, a) => listCharacterRefs(accountId, a?.brandId),
+    digest: (_a, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      if (!rows.length) return 'No character references saved — a recurring character will drift between generations until one exists.';
+      return digestLine(`${plural(rows.length, 'character reference')}.`, `Named: ${samples(rows, ['name'], 5).join(', ')}`);
+    },
+  },
+  {
+    name: 'createCharacterRef',
+    domain: 'content',
+    title: 'Save a character reference',
+    description: "Save an anchor image as a reusable character reference so a recurring avatar or presenter stays identical across every future generation. Needs the image URL, plus the fixed description of who they are (face, build, wardrobe, art style) that travels with every use. Generate the anchor image first with generateBrandImage, then save it here — never re-generate the character from text later.",
+    gate: 'internal_write',
+    inputSchema: obj({ name: S.string, imageUrl: S.string, description: S.string, styleLock: S.string, brandId: S.string }, ['name', 'imageUrl', 'description']),
+    zod: z.object({
+      name: z.string().min(1).max(120),
+      imageUrl: z.string().min(1),
+      description: z.string().min(10).max(2000),
+      styleLock: z.string().max(500).optional(),
+      brandId: z.string().optional(),
+    }),
+    run: (accountId, a) => createCharacterRef(accountId, a),
+  },
+  {
+    name: 'generateBrandVideo',
+    domain: 'content',
+    title: 'Generate a video',
+    description: "Animate a still image into a short video, optionally with the subject speaking a line to camera (lip-synced). Give the URL of the image to animate and describe what MOVES — camera motion, gesture, action — not who the subject is; the image already fixes that. Pair it with an image made from a character reference so the person on screen matches the stills. Renders take minutes.",
+    gate: 'internal_write',
+    inputSchema: obj({ imageUrl: S.string, prompt: S.string, dialogue: S.string }, ['imageUrl', 'prompt']),
+    zod: z.object({
+      imageUrl: z.string().min(1),
+      prompt: z.string().min(3).max(1000),
+      dialogue: z.string().max(600).optional(),
+    }),
+    run: async (_accountId, a) => {
+      if (!higgsfieldConfigured()) {
+        return { error: 'Video generation is not connected for this workspace.' };
+      }
+      return generateVideo({ imageUrl: a.imageUrl, prompt: a.prompt, dialogue: a.dialogue });
+    },
+    digest: (_a, result) => {
+      const r: any = result;
+      if (r?.error) return digestLine(`Video not generated: ${r.error}`);
+      return r?.url ? digestLine(`Video rendered: ${r.url}`) : '';
+    },
+  },
+  {
+    name: 'getVideoStatus',
+    domain: 'content',
+    title: 'Check a video render',
+    description: 'Check on a video render that was still going when you last looked. Needs the request id from the earlier attempt. A render that timed out is still running — this is how you pick it up rather than paying to start it again.',
+    gate: 'read',
+    inputSchema: obj({ requestId: S.string }, ['requestId']),
+    zod: z.object({ requestId: z.string().min(1) }),
+    run: async (_accountId, a) => {
+      if (!higgsfieldConfigured()) return { error: 'Video generation is not connected for this workspace.' };
+      const { status, url } = await getVideoStatus(a.requestId);
+      return { status, url };
+    },
+  },
+
+  // ---------------------------------------------------------------- pillars
+  {
+    name: 'listContentPillars',
+    domain: 'content',
+    title: 'List content pillars',
+    description: 'List the content pillars — the recurring themes content rotates through so a feed does not become one idea restated. Each names a pain and the relief the brand promises.',
+    gate: 'read',
+    inputSchema: obj({ brandId: S.string }),
+    zod: z.object({ brandId: z.string().optional() }),
+    run: (accountId, a) => listPillars(accountId, a?.brandId),
+    digest: (_a, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      if (!rows.length) return 'No content pillars defined — content will have no rotation and will tend to repeat one theme.';
+      return digestLine(`${plural(rows.length, 'content pillar')}: ${samples(rows, ['name'], 8).join(', ')}.`);
+    },
+  },
+  {
+    name: 'createContentPillar',
+    domain: 'content',
+    title: 'Add a content pillar',
+    description: 'Define a content pillar: a name, the pain it speaks to, and the relief the brand promises. Three to five pillars is the useful range — fewer and the feed repeats, more and none of them lands. Leave brandId off for a house pillar every venture inherits.',
+    gate: 'internal_write',
+    inputSchema: obj({ name: S.string, pain: S.string, promise: S.string, brandId: S.string, sortOrder: S.number }, ['name']),
+    zod: z.object({
+      name: z.string().min(1).max(120),
+      pain: z.string().max(600).optional(),
+      promise: z.string().max(600).optional(),
+      brandId: z.string().optional(),
+      sortOrder: z.number().int().min(0).max(100).optional(),
+    }),
+    run: (accountId, a) => createPillar(accountId, a),
+  },
+  {
+    name: 'deleteContentPillar',
+    domain: 'content',
+    title: 'Delete a content pillar',
+    description: 'Remove a content pillar. Content already assigned to it keeps its recorded pillar name.',
+    gate: 'destructive',
+    inputSchema: obj({ pillarId: S.string }, ['pillarId']),
+    zod: z.object({ pillarId: z.string().min(1) }),
+    run: (accountId, a) => deletePillar(accountId, a.pillarId),
+    summarize: (a) => `Delete content pillar ${a.pillarId}. Content already assigned to it keeps its recorded pillar name.`,
+  },
+
+  // --------------------------------------------------------- platform specs
+  {
+    name: 'listPlatformSpecs',
+    domain: 'content',
+    title: 'List platform specs',
+    description: "List the per-platform content constraints this workspace writes to — character limit, image spec, hashtag convention, CTA format, tone and best posting time. These are what generated content is held to. Use when the user asks why a post is shaped a certain way, or what a platform allows.",
+    gate: 'read',
+    inputSchema: obj({}),
+    zod: z.object({}),
+    run: (accountId) => listPlatformSpecs(accountId),
+    digest: (_a, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      return digestLine(`Specs for ${plural(rows.length, 'platform')}: ${samples(rows, ['platform'], 8).join(', ')}.`);
+    },
+  },
+  {
+    name: 'setPlatformSpec',
+    domain: 'content',
+    title: 'Override a platform spec',
+    description: "Override this workspace's constraints for one platform — character limit, image spec, hashtag strategy, CTA format, tone, or posting time. Sensible defaults already exist for every platform; only set this when the user's own rules differ. Every future generated piece obeys it.",
+    gate: 'internal_write',
+    inputSchema: obj({
+      platform: S.string, charLimit: S.number, imageSpecs: S.string, hashtagStrategy: S.string,
+      ctaFormat: S.string, copyTone: S.string, optimalTime: S.string,
+    }, ['platform']),
+    zod: z.object({
+      platform: z.string().min(1),
+      charLimit: z.number().int().min(1).max(100000).optional(),
+      imageSpecs: z.string().max(500).optional(),
+      hashtagStrategy: z.string().max(500).optional(),
+      ctaFormat: z.string().max(500).optional(),
+      copyTone: z.string().max(1000).optional(),
+      optimalTime: z.string().max(200).optional(),
+    }),
+    run: async (accountId, a) => {
+      const { platform, charLimit, imageSpecs, hashtagStrategy, ctaFormat, copyTone, optimalTime } = a;
+      // Start from whatever currently applies (the account's row, else the
+      // default) so setting one field does not blank the other five.
+      const current = await getPlatformSpec(accountId, platform);
+      return upsertPlatformSpec(accountId, platform, {
+        char_limit: charLimit ?? current?.char_limit ?? null,
+        image_specs: imageSpecs ?? current?.image_specs ?? null,
+        hashtag_strategy: hashtagStrategy ?? current?.hashtag_strategy ?? null,
+        cta_format: ctaFormat ?? current?.cta_format ?? null,
+        copy_tone: copyTone ?? current?.copy_tone ?? null,
+        optimal_time: optimalTime ?? current?.optimal_time ?? null,
+      });
+    },
+  },
+];

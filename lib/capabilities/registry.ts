@@ -32,6 +32,7 @@ import { SEARCH_CAPABILITIES } from './search';
 import { PIPELINE_CAPABILITIES } from './pipeline';
 import { CRM_AUTOMATION_CAPABILITIES } from './crm-automations';
 import { WORKSPACE_CAPABILITIES } from './workspace';
+import { CONTENT_CAPABILITIES } from './content';
 import { SUPPRESSION_CAPABILITIES } from './suppressions';
 import { INBOX_CAPABILITIES } from './inbox';
 import { DIAGNOSTICS_CAPABILITIES } from './diagnostics';
@@ -78,6 +79,7 @@ const ALL: Capability[] = [
   ...PIPELINE_CAPABILITIES,
   ...CRM_AUTOMATION_CAPABILITIES,
   ...WORKSPACE_CAPABILITIES,
+  ...CONTENT_CAPABILITIES,
   ...SUPPRESSION_CAPABILITIES,
   ...INBOX_CAPABILITIES,
   ...DIAGNOSTICS_CAPABILITIES,
@@ -131,6 +133,16 @@ const CATALOG_ORDER: string[] = [
   'listNotifications', 'markNotificationsRead', 'listApprovals',
   'createVenture', 'updateVenture', 'listTemplates', 'createTemplate',
   'createSequence', 'listSkills', 'setSkillEnabled', 'generateImage',
+  // --- appended: the content engine. The board and its lifecycle, the pillars
+  // content rotates through, the per-platform constraints every generator must
+  // obey, the character-reference system that stops a recurring avatar drifting
+  // between generations, and video — which the platform had none of at all.
+  'listContentItems', 'getContentBoard', 'getContentItem', 'createContentItem',
+  'updateContentItem', 'setContentStatus', 'deleteContentItem',
+  'generateContentPiece', 'generateBrandImage', 'listCharacterRefs',
+  'createCharacterRef', 'generateBrandVideo', 'getVideoStatus',
+  'listContentPillars', 'createContentPillar', 'deleteContentPillar',
+  'listPlatformSpecs', 'setPlatformSpec',
   // --- appended by Packet 10.3 (two-stage catalog). Appended, never sorted.
   // Present only when staging is on, matching the ALL filter above; the
   // missing/unknown checks below still hold in both modes.

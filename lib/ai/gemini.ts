@@ -106,15 +106,47 @@ export interface GeneratedImage {
   base64: string; // raw base64 image bytes
 }
 
+/** Fetch a reference image and return it as an inline data part.
+ *
+ *  Image-conditioning is what makes a recurring character stay the same
+ *  character. Text-to-image re-invents them on every call — different face,
+ *  different wardrobe, different style — so a brand avatar drifts visibly from
+ *  post to post. Passing the anchor image alongside the prompt is the fix, and
+ *  it is not a prompt-engineering trick: the model is given the actual pixels.
+ *
+ *  Bounded on purpose: a reference that is unreachable, oversized, or not an
+ *  image throws rather than silently degrading to text-to-image, because a
+ *  silent fallback produces exactly the drift this exists to prevent.
+ */
+const MAX_REFERENCE_BYTES = 8 * 1024 * 1024;
+
+async function referencePart(url: string): Promise<{ inlineData: { mimeType: string; data: string } }> {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Could not load the reference image (${res.status}).`);
+  const mimeType = res.headers.get('content-type') || 'image/png';
+  if (!mimeType.startsWith('image/')) throw new Error(`The reference URL is not an image (${mimeType}).`);
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length > MAX_REFERENCE_BYTES) throw new Error('The reference image is too large (limit 8MB).');
+  return { inlineData: { mimeType, data: buf.toString('base64') } };
+}
+
 /**
  * Generate a static image via Nano Banana. Caption overlays are rendered by the
  * model itself (baked into the image) when `caption` is supplied — no external
  * compositing dependency. Static only; video is out of scope.
+ *
+ * `referenceUrls` switches this from text-to-image to image-conditioned
+ * generation: the references are sent as pixels and the prompt describes only
+ * what CHANGES. That is the whole avatar-consistency system — generate the
+ * character sheet once, then condition every later scene on it.
  */
 export async function generateImage(opts: {
   prompt: string;
   caption?: string;
   aspect?: string; // e.g. "1:1", "16:9", "4:5"
+  referenceUrls?: string[];
+  /** Appended verbatim after everything else, e.g. a brand style lock. */
+  styleLock?: string;
 }): Promise<GeneratedImage> {
   requireKey();
   let prompt = opts.prompt;
@@ -124,11 +156,23 @@ export async function generateImage(opts: {
       `\n\nRender this exact caption as a clean, legible text overlay on the image` +
       ` (high-contrast, professional ad typography, no misspellings): "${opts.caption}".`;
   }
+  const refs = opts.referenceUrls?.length
+    ? await Promise.all(opts.referenceUrls.slice(0, 4).map(referencePart))
+    : [];
+  if (refs.length) {
+    prompt +=
+      `\n\nThe attached image${refs.length > 1 ? 's are' : ' is'} the reference for the subject's identity` +
+      ` — face, build, wardrobe and art style. Keep all of that IDENTICAL. Change only the scene described above.` +
+      ` Do not reinterpret or restyle the character.`;
+  }
+  if (opts.styleLock) prompt += `\n\n${opts.styleLock}`;
 
   const res = await fetch(`${BASE}/models/${IMAGE_MODEL}:generateContent?key=${KEY}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] }),
+    // References first, prompt last: the trailing text is what the model
+    // treats as the instruction acting ON the preceding images.
+    body: JSON.stringify({ contents: [{ role: 'user', parts: [...refs, { text: prompt }] }] }),
   });
   if (!res.ok) {
     const detail = (await res.text().catch(() => '')).slice(0, 300);
