@@ -31,6 +31,7 @@ import { TEMPLATE_CAPABILITIES } from './templates';
 import { SEARCH_CAPABILITIES } from './search';
 import { PIPELINE_CAPABILITIES } from './pipeline';
 import { CRM_AUTOMATION_CAPABILITIES } from './crm-automations';
+import { WORKSPACE_CAPABILITIES } from './workspace';
 import { SUPPRESSION_CAPABILITIES } from './suppressions';
 import { INBOX_CAPABILITIES } from './inbox';
 import { DIAGNOSTICS_CAPABILITIES } from './diagnostics';
@@ -76,6 +77,7 @@ const ALL: Capability[] = [
   ...SEARCH_CAPABILITIES,
   ...PIPELINE_CAPABILITIES,
   ...CRM_AUTOMATION_CAPABILITIES,
+  ...WORKSPACE_CAPABILITIES,
   ...SUPPRESSION_CAPABILITIES,
   ...INBOX_CAPABILITIES,
   ...DIAGNOSTICS_CAPABILITIES,
@@ -122,6 +124,13 @@ const CATALOG_ORDER: string[] = [
   'runContentPipeline', 'listContentPipelineRuns', 'getContentPipelineRun',
   'listAutomations', 'createAutomation', 'enableAutomation',
   'disableAutomation', 'deleteAutomation',
+  // --- appended: everyday surfaces that had a route and a UI but no tool
+  // name, so the assistant answered "I can't do that" about features the
+  // platform plainly has. createSequence/createTemplate in particular closed
+  // the outreach loop — it could enrol into a sequence it had no way to build.
+  'listNotifications', 'markNotificationsRead', 'listApprovals',
+  'createVenture', 'updateVenture', 'listTemplates', 'createTemplate',
+  'createSequence', 'listSkills', 'setSkillEnabled', 'generateImage',
   // --- appended by Packet 10.3 (two-stage catalog). Appended, never sorted.
   // Present only when staging is on, matching the ALL filter above; the
   // missing/unknown checks below still hold in both modes.
