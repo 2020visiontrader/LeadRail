@@ -35,6 +35,7 @@ import { listConversations,
   getComments, replyToComment, hideComment, deleteComment, sendInstagramMessage,
 } from '@/lib/social/meta-engagement';
 import { getInsightsByLevel, updateStatus } from '@/lib/social/meta-ads';
+import { listOwnPosts, getOwnProfile } from '@/lib/social/meta-read';
 import { getIntegrations } from '@/lib/social/index';
 import { createPost as bufferCreatePost, listPosts as bufferListPosts } from '@/lib/social/buffer';
 import { requireSocialCredential } from '@/lib/social/credentials';
@@ -234,9 +235,13 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     title: 'List direct messages',
     description: 'Read recent DM conversations for a connected account, newest first. Returns who each thread is with, their recipient id, and the last message — use this BEFORE sendSocialMessage, which needs that recipient id.',
     gate: 'read',
-    inputSchema: obj({ platform: S.string, limit: S.number }, ['platform']),
-    zod: z.object({ platform: livePlatform, limit: z.number().int().min(1).max(100).optional() }),
-    run: (accountId, a) => listConversations(accountId, commentPlatform(a.platform), a.limit ?? 25),
+    inputSchema: obj({ platform: S.string, limit: S.number, accountExternalId: S.string }, ['platform']),
+    zod: z.object({
+      platform: livePlatform,
+      limit: z.number().int().min(1).max(100).optional(),
+      accountExternalId: z.string().optional(),
+    }),
+    run: (accountId, a) => listConversations(accountId, commentPlatform(a.platform), a.limit ?? 25, a.accountExternalId),
     // The message text is the substance here and is what truncation eats first,
     // so quote a few verbatim alongside who they are from.
     digest: (_a, result) => {
@@ -258,9 +263,17 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     title: 'List comments on a post',
     description: 'Read the comments on one published post so you can summarise them or decide what to reply to. Needs the post id and which platform it is on.',
     gate: 'read',
-    inputSchema: obj({ postId: S.string, platform: S.string, limit: S.number }, ['postId', 'platform']),
-    zod: z.object({ postId: z.string().min(1), platform: livePlatform, limit: z.number().int().min(1).max(100).optional() }),
-    run: (accountId, a) => getComments(accountId, a.postId, commentPlatform(a.platform), a.limit ?? 25),
+    inputSchema: obj({ postId: S.string, platform: S.string, limit: S.number, accountExternalId: S.string }, ['postId', 'platform']),
+    zod: z.object({
+      postId: z.string().min(1),
+      platform: livePlatform,
+      limit: z.number().int().min(1).max(100).optional(),
+      accountExternalId: z.string().optional(),
+    }),
+    // accountExternalId pins WHICH connected page/profile the comments are read
+    // with. Without it, an account with several connected pages reads through
+    // whichever one resolves first — see the note on getComments.
+    run: (accountId, a) => getComments(accountId, a.postId, commentPlatform(a.platform), a.limit ?? 25, a.accountExternalId),
     // Comment text is the substance of this result and is exactly what gets
     // clipped by truncation, so quote a few verbatim. `hidden` is only reported
     // when at least one row actually carries the field — Meta omits it on some
@@ -292,6 +305,65 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
       // with the connection that owns the media.
       const { token } = await getMetaCreds(accountId, { provider: 'instagram', externalId: a.accountExternalId });
       return getInstagramInsights(a.mediaId, token);
+    },
+  },
+  {
+    name: 'listSocialPosts',
+    domain: 'social',
+    title: 'List posts on a connected page or profile',
+    description: 'Read the posts a connected Facebook Page or Instagram account has already published — caption, when it went out, its link, and its like/comment counts. This is where post ids come from: use it before listSocialComments or getSocialInsights, and whenever the user asks how recent posts did or what has been posted lately.',
+    gate: 'read',
+    inputSchema: obj({ platform: S.string, accountExternalId: S.string, limit: S.number }, ['platform']),
+    zod: z.object({
+      platform: livePlatform,
+      accountExternalId: z.string().optional(),
+      limit: z.number().int().min(1).max(50).optional(),
+    }),
+    run: async (accountId, a) => {
+      const platform = commentPlatform(a.platform); // facebook | instagram — same Meta-only surface
+      const externalId = await resolveExternalId(accountId, a.platform, a.accountExternalId);
+      return listOwnPosts(accountId, platform, externalId, a.limit ?? 10);
+    },
+    // The caption and the engagement numbers are the substance; the id is what
+    // every follow-up call needs, so it is never dropped from the digest.
+    digest: (_a, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      if (!rows.length) return 'That account has no published posts.';
+      const quoted = rows.slice(0, 3).map((r: any) => {
+        const text = typeof r.text === 'string' && r.text.trim() ? r.text.trim().slice(0, 80) : '(no caption)';
+        const eng = [
+          typeof r.likes === 'number' ? `${r.likes} likes` : null,
+          typeof r.comments === 'number' ? `${r.comments} comments` : null,
+        ].filter(Boolean).join(', ');
+        return `${r.id} — "${text}"${eng ? ` (${eng})` : ''}`;
+      });
+      return digestLine(`${plural(rows.length, 'published post')}.`, `Recent: ${quoted.join(' | ')}`);
+    },
+  },
+  {
+    name: 'getSocialProfile',
+    domain: 'social',
+    title: 'Read a connected page or profile',
+    description: 'Read the profile of a connected Facebook Page or Instagram account — its name, handle, bio, follower count and public link. Use when the user asks about one of their own pages or profiles, or before writing content that has to match how a profile presents itself.',
+    gate: 'read',
+    inputSchema: obj({ platform: S.string, accountExternalId: S.string }, ['platform']),
+    zod: z.object({ platform: livePlatform, accountExternalId: z.string().optional() }),
+    run: async (accountId, a) => {
+      const platform = commentPlatform(a.platform);
+      const externalId = await resolveExternalId(accountId, a.platform, a.accountExternalId);
+      return getOwnProfile(accountId, platform, externalId);
+    },
+    digest: (_a, result) => {
+      if (!result || typeof result !== 'object') return '';
+      const r: any = result;
+      const who = r.username ? `@${r.username}` : (r.name || r.id);
+      return digestLine(
+        `${r.platform === 'instagram' ? 'Instagram' : 'Facebook Page'} ${who}.`,
+        typeof r.followers === 'number' ? `${r.followers} followers.` : null,
+        typeof r.postCount === 'number' ? `${r.postCount} posts.` : null,
+        r.bio ? `Bio: "${String(r.bio).slice(0, 160)}"` : null,
+      );
     },
   },
   {
@@ -380,9 +452,15 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     // Hiding changes what a real audience sees on a live post, so it is held to
     // the same bar as a send rather than treated as an internal write.
     gate: 'external_send',
-    inputSchema: obj({ commentId: S.string, hide: { type: 'boolean' } }, ['commentId']),
-    zod: z.object({ commentId: z.string().min(1), hide: z.boolean().optional() }),
-    run: (accountId, a) => hideComment(accountId, a.commentId, a.hide ?? true),
+    inputSchema: obj({ commentId: S.string, hide: { type: 'boolean' }, platform: S.string, accountExternalId: S.string }, ['commentId']),
+    zod: z.object({
+      commentId: z.string().min(1),
+      hide: z.boolean().optional(),
+      platform: livePlatform.optional(),
+      accountExternalId: z.string().optional(),
+    }),
+    run: (accountId, a) =>
+      hideComment(accountId, a.commentId, a.hide ?? true, a.platform ? commentPlatform(a.platform) : undefined, a.accountExternalId),
     summarize: (a) => (a.hide === false
       ? `Unhide comment ${a.commentId} so the public can see it again.`
       : `Hide comment ${a.commentId} from everyone else viewing the post.`),
@@ -393,9 +471,14 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     title: 'Delete a comment',
     description: 'Permanently delete a comment on one of the account\'s posts. This cannot be undone — prefer hiding unless the user specifically asks to delete.',
     gate: 'destructive',
-    inputSchema: obj({ commentId: S.string }, ['commentId']),
-    zod: z.object({ commentId: z.string().min(1) }),
-    run: (accountId, a) => deleteComment(accountId, a.commentId),
+    inputSchema: obj({ commentId: S.string, platform: S.string, accountExternalId: S.string }, ['commentId']),
+    zod: z.object({
+      commentId: z.string().min(1),
+      platform: livePlatform.optional(),
+      accountExternalId: z.string().optional(),
+    }),
+    run: (accountId, a) =>
+      deleteComment(accountId, a.commentId, a.platform ? commentPlatform(a.platform) : undefined, a.accountExternalId),
     summarize: (a) => `Permanently delete comment ${a.commentId}. This cannot be undone.`,
   },
   {

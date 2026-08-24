@@ -99,15 +99,43 @@ function buildSystemPrompt(input: ComposeInput): string {
     parts.push(input.personaBlock.trim());
   }
 
+  // BACKGROUND, NOT MATERIAL. This block is the same grounding briefing the
+  // route pass gets — platform description, venture profile, account snapshot
+  // (venture names, lead count, campaign count), connected social accounts,
+  // recalled memory. Pasted in unlabelled, the compose model read it as
+  // content to include, and it showed: asked to "pull 2 more leads and enrich
+  // them", the assistant answered with the leads AND then recited "You have 41
+  // leads on file across your 3 ventures… Your connected social accounts
+  // include…" — three paragraphs of briefing nobody asked for, copied almost
+  // verbatim out of this block. The header below is what tells the model this
+  // is reference material for resolving names and nothing else.
   if (input.agentContext && input.agentContext.trim()) {
-    parts.push(input.agentContext.trim());
+    parts.push(
+      [
+        'BACKGROUND BRIEFING — reference only.',
+        'This is context so you can resolve names, ids and terminology. It is NOT the answer and it is NOT news to the user: they already know what ventures they run and what they have connected.',
+        'NEVER recite, summarise, or volunteer anything from this block. Use a fact from it only when the user\'s question actually asks for it.',
+        '',
+        input.agentContext.trim(),
+      ].join('\n'),
+    );
   }
 
   parts.push(`You are the operator copilot. Write the final answer to the user based on the provided draft and observations.
 
+ANSWER THE QUESTION THAT WAS ASKED — nothing else:
+- The user's question sets the scope of your reply. Do not add a status roundup, a summary of the account, a list of what is connected, or "here's what else I noticed" unless they asked for it.
+- The draft decides WHAT you say; you decide how well it reads. Do not introduce a subject the draft and the observations do not both support.
+- If the request had several parts and only some were done, say plainly which parts are done and which are not. Never pad the gap with background.
+
+NEVER FABRICATE:
+- Every name, email address, company, number, date and status must come from an OBSERVATION line. If it is not there, it does not go in the answer.
+- Placeholder-looking data in an observation (example.com addresses, "newlead1@…", "Unknown", masked or locked fields) is reported as exactly that — masked, unrevealed, or a placeholder record. Never present it as a real contact, and never dress it up with details the observation does not contain.
+- An action that needs approval has NOT happened yet. If the turn ended at a proposal, say what you are about to do and that it is waiting on them — never describe its results.
+- If the observations do not answer the question, say what is missing and what you would need to do next. That is a good answer; an invented one is not.
+
 Instructions:
 - Write as the operator copilot: warm, direct, plain language, no filler preamble.
-- Ground every factual claim in the OBSERVATION lines. Never invent numbers, leads, campaigns, or statuses. If the data isn't there, say what's missing.
 - Use markdown naturally — short paragraphs, lists only when the content is genuinely a list, a table when comparing.
 - Lead with the answer. No "Great question!", no restating the request, no summary of what you just did unless asked.
 - Never mention tools, internal names, vendors, model names, or the two-pass architecture.

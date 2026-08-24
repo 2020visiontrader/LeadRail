@@ -99,6 +99,11 @@ const CATALOG_ORDER: string[] = [
   // sorted: every name above must keep its exact order or the prompt catalog
   // the model routes against changes.
   'listSocialAccounts', 'getSocialStatus', 'listSocialComments', 'listSocialMessages', 'getSocialInsights',
+  // --- appended: page/profile READ access. Without these two nothing in the
+  // catalog could produce a post id, so listSocialComments and
+  // getSocialInsights (both above) were unreachable in practice — the model
+  // had no way to answer "how did my last post do?".
+  'listSocialPosts', 'getSocialProfile',
   'draftSocialPost', 'publishSocialPost', 'replyToSocialComment', 'hideSocialComment',
   'deleteSocialComment', 'sendSocialMessage', 'scheduleSocialPost',
   'listScheduledSocialPosts', 'getAdBreakdown', 'setAdStatus',

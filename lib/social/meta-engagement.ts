@@ -23,14 +23,24 @@ async function graphPost(path: string, body: Record<string, any>, token: string)
   return json;
 }
 
-/** Get comments on a post (Facebook post or Instagram media). */
+/** Get comments on a post (Facebook post or Instagram media).
+ *
+ *  `platform` used to be accepted and then ignored when resolving credentials:
+ *  getMetaCreds(accountId) with no options tries facebook first, so comments on
+ *  an Instagram media id were read with whichever Facebook Page connected most
+ *  recently. On an account with one page that is harmless; on one with several
+ *  pages and several Instagram accounts — which is the normal case here — it
+ *  reads the wrong connection and Meta answers with a permissions error the
+ *  user sees as "comments are broken". Pass externalId to pin the exact
+ *  connected page/profile. */
 export async function getComments(
   accountId: string,
   postId: string,
   platform: 'facebook' | 'instagram',
   limit = 25,
+  externalId?: string,
 ) {
-  const { token } = await getMetaCreds(accountId);
+  const { token } = await getMetaCreds(accountId, { provider: platform, externalId });
   const fields = 'from{id,name},message,created_time,like_count,comment_count,hidden,can_hide,can_comment,user_likes';
   const url = `${GRAPH}/${postId}/comments?fields=${fields}&limit=${limit}&access_token=${token}`;
   const res = await fetch(url);
@@ -53,18 +63,32 @@ export async function replyToComment(
   return graphPost(`${commentId}/comments`, { message }, token);
 }
 
-/** Delete a comment (only works for comments on the owned page/media). */
-export async function deleteComment(accountId: string, commentId: string) {
-  const { token } = await getMetaCreds(accountId);
+/** Delete a comment (only works for comments on the owned page/media). Same
+ *  multi-connection caveat as getComments above — pass the platform and, when
+ *  several are connected, the external id of the one that owns the media. */
+export async function deleteComment(
+  accountId: string,
+  commentId: string,
+  platform?: 'facebook' | 'instagram',
+  externalId?: string,
+) {
+  const { token } = await getMetaCreds(accountId, platform ? { provider: platform, externalId } : undefined);
   const res = await fetch(`${GRAPH}/${commentId}?access_token=${token}`, { method: 'DELETE' });
   const json = await res.json();
   if (!res.ok) throw new Error(`Meta delete error: ${json?.error?.message || res.statusText}`);
   return { deleted: true, commentId };
 }
 
-/** Hide/unhide a comment on a Facebook post. */
-export async function hideComment(accountId: string, commentId: string, hide = true) {
-  const { token } = await getMetaCreds(accountId);
+/** Hide/unhide a comment on a Facebook post. Same multi-connection caveat as
+ *  getComments above. */
+export async function hideComment(
+  accountId: string,
+  commentId: string,
+  hide = true,
+  platform?: 'facebook' | 'instagram',
+  externalId?: string,
+) {
+  const { token } = await getMetaCreds(accountId, platform ? { provider: platform, externalId } : undefined);
   return graphPost(commentId, { is_hidden: hide }, token);
 }
 
@@ -91,8 +115,11 @@ export async function listConversations(
   accountId: string,
   platform: 'facebook' | 'instagram',
   limit = 25,
+  externalId?: string,
 ) {
-  const { token } = await getMetaCreds(accountId);
+  // Same fix as getComments: resolve against the platform being read, not
+  // whichever Meta connection happens to come back first.
+  const { token } = await getMetaCreds(accountId, { provider: platform, externalId });
   const fields = 'participants,updated_time,message_count,messages.limit(1){message,from,created_time}';
   const path = platform === 'instagram' ? 'me/conversations?platform=instagram' : 'me/conversations';
   const sep = path.includes('?') ? '&' : '?';

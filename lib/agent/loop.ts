@@ -260,7 +260,24 @@ function systemPrompt(brandName?: string, agentContext?: string, carryover?: Car
     '',
     'HOW YOU WORK:',
     '- Ground every answer in this account\'s real data — use the context above and the tools; never invent numbers, leads, or campaigns.',
+    // Reporting a result that no tool produced is the single worst failure this
+    // assistant has: asked to pull and enrich two leads, it answered with two
+    // invented contacts at a real company, complete with a founding year and a
+    // headcount, none of which came from any observation. Stated as bald a rule
+    // as the protocol allows, because the compose pass downstream will faithfully
+    // polish a fabricated draft into something that reads true.
+    '- A result exists only if a tool returned it. Never state a name, email, count, or outcome you did not read in an OBSERVATION line, and never describe what a [needs approval] action found — it has not run yet. If a tool failed, returned nothing, or returned masked/placeholder values, say exactly that.',
+    '- Answer the question that was asked and stop. Do not append an account roundup, a list of connected accounts, or unrelated suggestions the user did not ask for.',
     '- To DO a task, call the tool for it. Resolve names to ids first with the list tools (listVentures, listAdAccounts, listCampaigns). Chain tools across turns to complete multi-step jobs.',
+    // The failure this fixes: "research the leads we have — learn everything on
+    // what they do, how they operate, what they have done before" was answered by
+    // one listLeads call and a three-line recital of the rows, with no research at
+    // all and no filtering to the kind of company that was asked about. Reading a
+    // record is not researching it, and the model needs to be told where the line
+    // is.
+    '- RESEARCH MEANS RESEARCH. When the user asks you to research, look into, learn about, or dig into people or companies, listing what is already in the CRM is NOT an answer. Pull the records, then call webSearch once per company (and again per person when it matters) to find what they do, how they operate, and what they have shipped — then answer from what you found. Say which ones you could not find anything on rather than padding them out.',
+    '- Filter to what was actually asked for. If the user asks about agencies and the records include a producer and an investor, say the list does not contain what they are after instead of answering with the wrong rows.',
+    '- Multi-part requests get every part addressed. If you run out of steps, finish with what you have and say plainly which parts are still outstanding.',
     '- Reads and safe internal writes run immediately. Tools marked [needs approval] spend money, send to real people, or are destructive — just call them; the platform pauses and asks the user to confirm before anything real happens. Do NOT ask for confirmation yourself in text; the call itself is the ask.',
     '- If a request is genuinely ambiguous in a way that changes the outcome, ask ONE focused clarifying question with action:"final". Otherwise make the reasonable call and proceed.',
     '- When you just need to talk — explain, advise, strategize, answer a question — use action:"final" with a substantive, warm, plain-language message. It is fine to answer directly without any tool when no action is needed.',
@@ -368,6 +385,64 @@ function salvageFinalMessage(raw: string): string | null {
   const stripped = raw.replace(/```json|```/g, '').trim();
   if (stripped && !stripped.startsWith('{')) return stripped;
   return null;
+}
+
+/** How many times one turn will re-ask for a valid JSON envelope before it
+ *  gives up. Was effectively 1. A single nudge is not enough on the requests
+ *  that matter most: the long, multi-part ones ("research these five agencies,
+ *  learn how they operate, then tailor outreach") are exactly the ones that
+ *  push the route pass into writing prose, and the user saw them all die as
+ *  "I couldn't complete that request. Please rephrase and try again." — after
+ *  the tools had already run and the evidence was already in hand. */
+const MAX_JSON_RETRIES = 2;
+
+/** The nudge text for retry n. The second one is deliberately blunter and
+ *  narrower than the first: by then the model has already ignored the polite
+ *  version, and asking only for the `final` shape gets an answer out of a model
+ *  that is mid-prose rather than restarting the routing decision. */
+function jsonNudge(attempt: number): string {
+  return attempt <= 1
+    ? 'Respond with ONLY one JSON object using the "tool" or "final" shape.'
+    : 'Your last reply was not valid JSON, so it could not be used. Reply with ONE JSON object and nothing else: {"action":"final","message":"<your answer to the user>"}. No prose outside it, no code fences.';
+}
+
+/** Last resort before a turn is declared a failure.
+ *
+ *  A route pass that cannot produce valid JSON has NOT necessarily failed the
+ *  user: by the time it breaks, the turn has usually already run its tools, and
+ *  their observations are sitting in the transcript. Throwing that away and
+ *  showing "I couldn't complete that request" spends the user's time and the
+ *  account's credits and returns nothing.
+ *
+ *  So: if there is at least one observation, hand it to the compose pass, which
+ *  is grounded on OBSERVATION lines by construction, and let it write the answer
+ *  the route pass could not envelope. Returns null when there is genuinely
+ *  nothing to say — a cold failure on step 0 with no tool run — and the caller
+ *  falls back to the error it would have shown anyway.
+ */
+async function answerFromObservations(
+  input: RunAgentInput,
+  messages: ChatMessage[],
+  personaBlock?: string,
+): Promise<string | null> {
+  const hasEvidence = messages.some(
+    (m) => typeof m.content === 'string' && m.content.startsWith('OBSERVATION: '),
+  );
+  if (!hasEvidence) return null;
+  try {
+    const composed = await composeAnswer({
+      accountId: input.accountId,
+      userMessage: input.message,
+      draft: 'Answer the user from the observations below. Cover what was actually found, and state plainly which parts of their request are not answered by it.',
+      transcript: messages,
+      agentContext: input.agentContext,
+      personaBlock,
+    });
+    const trimmed = stripAiMarkers(composed).trim();
+    return trimmed || null;
+  } catch {
+    return null;
+  }
 }
 
 function narrationFor(parsed: any): string | undefined {
@@ -814,7 +889,7 @@ async function runCoordinatorFanoutStream(
   if (level) emit({ type: 'compaction_suggested', level, tokenEstimate });
 }
 
-export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
+async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
   const { accountId, brandContext } = input;
   // Packet 6.2: only ever enter fan-out on a fresh turn — never mid-resume
   // (input.approve set) and never when the caller already pinned a single
@@ -878,7 +953,7 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
     messages.push(observation(obs, obsLimit));
   }
 
-  let corrected = false;
+  let jsonRetries = 0;
   const seen = new Set<string>();   // executed (tool+args) signatures — guards against re-calling the same read.
   let dupNudges = 0;
   const toolCalls: Record<string, number> = {};
@@ -909,9 +984,9 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
 
     const parsed = extractJson(raw);
     if (!parsed || (parsed.action !== 'tool' && parsed.action !== 'final')) {
-      if (!corrected) {
-        corrected = true;
-        messages.push({ role: 'user', content: 'Respond with ONLY one JSON object using the "tool" or "final" shape.' });
+      if (jsonRetries < MAX_JSON_RETRIES) {
+        jsonRetries++;
+        messages.push({ role: 'user', content: jsonNudge(jsonRetries) });
         continue;
       }
       const salv = salvageFinalMessage(raw);
@@ -932,9 +1007,16 @@ export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
       log.error('agent: model output failed JSON contract after correction', undefined, {
         accountId, step: i, afterTool: lastToolName ?? null, rawPreview: raw.slice(0, 500),
       });
+      // Salvage the turn from the evidence already gathered before declaring it
+      // a failure — see answerFromObservations.
+      const rescued = await answerFromObservations(input, messages, personaBlock);
+      if (rescued) {
+        messages.push({ role: 'assistant', content: rescued });
+        return { status: 'done', message: rescued, transcript: messages, steps };
+      }
       return { status: 'error', message: "I couldn't complete that request. Please rephrase and try again.", transcript: messages, steps };
     }
-    corrected = false;
+    jsonRetries = 0;
 
     // Record the model's decision in the transcript so context carries forward.
     messages.push({ role: 'assistant', content: JSON.stringify(parsed) });
@@ -1110,7 +1192,7 @@ function emitAnalysis(emit: (e: AgentEvent) => void, analysis: Analysis | null):
 // variant owns an `emit` channel, streams `final_delta`, and passes an onDelta
 // callback to composeAnswer that runAgent intentionally does not. Do not
 // "harmonize" the streaming/compose paths.
-export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent) => void): Promise<void> {
+async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) => void): Promise<void> {
   const { accountId, brandContext } = input;
   // Packet 6.2 — same fan-out gate as runAgent above; see the comment there.
   // These four reads don't depend on each other, so they run concurrently
@@ -1168,7 +1250,7 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
     messages.push(observation(obs, obsLimit));
   }
 
-  let corrected = false;
+  let jsonRetries = 0;
   const seen = new Set<string>();
   let dupNudges = 0;
   const toolCalls: Record<string, number> = {};
@@ -1204,9 +1286,9 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
 
     const parsed = extractJson(raw);
     if (!parsed || (parsed.action !== 'tool' && parsed.action !== 'final')) {
-      if (!corrected) {
-        corrected = true;
-        messages.push({ role: 'user', content: 'Respond with ONLY one JSON object using the "tool" or "final" shape.' });
+      if (jsonRetries < MAX_JSON_RETRIES) {
+        jsonRetries++;
+        messages.push({ role: 'user', content: jsonNudge(jsonRetries) });
         continue;
       }
       const salv = salvageFinalMessage(raw);
@@ -1225,10 +1307,18 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
       log.error('agent stream: model output failed JSON contract after correction', undefined, {
         accountId, step: i, afterTool: lastToolName ?? null, rawPreview: raw.slice(0, 500),
       });
+      // Salvage from the evidence already gathered — see answerFromObservations.
+      const rescued = await answerFromObservations(input, messages, personaBlock);
+      if (rescued) {
+        messages.push({ role: 'assistant', content: rescued });
+        await streamTokens(rescued, emit);
+        emit({ type: 'final', message: rescued, transcript: messages });
+        return;
+      }
       emit({ type: 'error', message: "I couldn't complete that request. Please rephrase and try again.", transcript: messages });
       return;
     }
-    corrected = false;
+    jsonRetries = 0;
     messages.push({ role: 'assistant', content: JSON.stringify(parsed) });
 
     // Packet 10.2 Part B: `narration` when the model supplied one, else
@@ -1383,5 +1473,134 @@ export async function generateCarryover(transcript: ChatMessage[]): Promise<Carr
     };
   } catch {
     return {};
+  }
+}
+
+
+// ---------------------------------------------------------------------------
+// TURN LOGGING
+//
+// Until now the only durable record a chat turn left behind was an error line:
+// the model call throwing, or the JSON contract failing. A turn that "worked"
+// but answered the wrong question, drifted off scope, or took ninety seconds
+// wrote nothing anywhere — so "look at the logs and see what was asked and what
+// came back" had no logs to look at, and every quality report had to be
+// reproduced by hand from a screenshot.
+//
+// These wrappers close that. One persisted row per turn, carrying the input,
+// the tools that actually ran, the outcome, the shape of the answer, and where
+// the wall-clock went. Written through log.request(), which is the sink that
+// persists info rows (log.info is console-only), so the rows show up in
+// GET /api/logs alongside HTTP request lines and are account-scoped by the
+// same rules.
+//
+// Deliberately bounded: previews are clipped, never the full transcript. The
+// full transcript already lives in agent_conversations; this table is for
+// scanning many turns quickly, not for storing a second copy of the chat.
+// ---------------------------------------------------------------------------
+
+const TURN_LOG_PREVIEW_CHARS = 300;
+
+function preview(text: string | undefined, limit = TURN_LOG_PREVIEW_CHARS): string | null {
+  if (!text) return null;
+  const t = text.trim();
+  if (!t) return null;
+  return t.length > limit ? `${t.slice(0, limit)}…` : t;
+}
+
+function logTurn(
+  input: RunAgentInput,
+  fields: {
+    variant: 'stream' | 'json';
+    outcome: string;
+    startedAt: number;
+    steps: AgentStep[];
+    answer?: string;
+    firstEventMs?: number | null;
+  },
+): void {
+  const durationMs = Date.now() - fields.startedAt;
+  const tools = fields.steps.filter((st) => st.tool).map((st) => st.tool as string);
+  log.request(
+    {
+      route: `agent:${fields.variant}`,
+      method: 'TURN',
+      accountId: input.accountId,
+      actorEmail: input.requestedBy ?? null,
+      durationMs,
+      message: `agent turn: ${fields.outcome}`,
+      detail: {
+        outcome: fields.outcome,
+        // What the user actually typed — the "input" half of the pair.
+        input: preview(input.message),
+        inputChars: input.message?.length ?? 0,
+        // What we did about it.
+        toolCalls: tools,
+        stepCount: fields.steps.length,
+        // What came back — the "output" half.
+        answer: preview(fields.answer),
+        answerChars: fields.answer?.length ?? 0,
+        // Where the time went. firstEventMs is time-to-first-visible-event on
+        // the stream path: a large gap between it and durationMs is the model
+        // ladder being slow, a small one is the pre-loop context assembly.
+        durationMs,
+        firstEventMs: fields.firstEventMs ?? null,
+        brand: input.brandContext?.name ?? null,
+        personaId: input.personaId ?? null,
+        conversationId: input.conversationId ?? null,
+        resumed: Boolean(input.transcript?.length),
+        approved: input.approve?.tool ?? null,
+      },
+    },
+    fields.outcome === 'error' ? 'warn' : 'info',
+  );
+}
+
+/** LeadRail AI, non-streaming. Thin wrapper over the loop that records one
+ *  durable line per turn (see TURN LOGGING above); behaviour is unchanged. */
+export async function runAgent(input: RunAgentInput): Promise<AgentResult> {
+  const startedAt = Date.now();
+  try {
+    const result = await runAgentImpl(input);
+    logTurn(input, {
+      variant: 'json',
+      outcome: result.status,
+      startedAt,
+      steps: result.steps,
+      answer: result.message,
+    });
+    return result;
+  } catch (e) {
+    logTurn(input, { variant: 'json', outcome: 'threw', startedAt, steps: [] });
+    throw e;
+  }
+}
+
+/** LeadRail AI, streaming. Same wrapper, plus time-to-first-event: the emit
+ *  channel is tapped rather than the loop being instrumented, so the loop's
+ *  own control flow is untouched. */
+export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent) => void): Promise<void> {
+  const startedAt = Date.now();
+  let firstEventMs: number | null = null;
+  let outcome = 'incomplete';
+  let answer: string | undefined;
+  const steps: AgentStep[] = [];
+
+  const tap = (e: AgentEvent) => {
+    if (firstEventMs === null) firstEventMs = Date.now() - startedAt;
+    if (e.type === 'tool') steps.push({ tool: e.tool, args: e.args });
+    else if (e.type === 'final') { outcome = 'done'; answer = e.message; }
+    else if (e.type === 'needs_approval') { outcome = 'needs_approval'; answer = e.message; }
+    else if (e.type === 'error') { outcome = 'error'; answer = e.message; }
+    emit(e);
+  };
+
+  try {
+    await runAgentStreamImpl(input, tap);
+  } catch (e) {
+    outcome = 'threw';
+    throw e;
+  } finally {
+    logTurn(input, { variant: 'stream', outcome, startedAt, steps, answer, firstEventMs });
   }
 }
