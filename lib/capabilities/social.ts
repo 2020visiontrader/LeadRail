@@ -35,7 +35,7 @@ import { listConversations,
   getComments, replyToComment, hideComment, deleteComment, sendMetaMessage,
 } from '@/lib/social/meta-engagement';
 import { getInsightsByLevel, updateStatus } from '@/lib/social/meta-ads';
-import { listOwnPosts, getOwnProfile } from '@/lib/social/meta-read';
+import { listOwnPosts, getOwnProfile, type SocialContentType } from '@/lib/social/meta-read';
 import { getIntegrations } from '@/lib/social/index';
 import { createPost as bufferCreatePost, listPosts as bufferListPosts } from '@/lib/social/buffer';
 import { requireSocialCredential } from '@/lib/social/credentials';
@@ -353,26 +353,28 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     name: 'listSocialPosts',
     domain: 'social',
     title: 'List posts on a connected page or profile',
-    description: 'Read the posts a connected Facebook Page or Instagram account has already published — caption, when it went out, its link, and its like/comment counts. This is where post ids come from: use it before listSocialComments or getSocialInsights, and whenever the user asks how recent posts did or what has been posted lately. With several accounts connected and none named, it covers all of them, each row tagged with the account it came from.',
+    description: "Read the content a connected Facebook Page or Instagram account has — caption, when it went out, its link, and its like/comment counts. contentType picks the shelf: 'posts' (default, everything published), 'videos' (uploaded videos and reels), 'stories' (Instagram stories live right now), 'tagged' (other people's Instagram posts that @-tag this account). This is where post ids come from: use it before listSocialComments or getSocialInsights, and whenever the user asks how recent posts did or what has been posted lately. With several accounts connected and none named, it covers all of them, each row tagged with the account it came from. Instagram Saved posts and Collections (the bookmark icon) are not readable — Meta exposes no API for them at all — so say that plainly rather than substituting something else.",
     gate: 'read',
-    inputSchema: obj({ platform: S.string, accountExternalId: S.string, limit: S.number }, ['platform']),
+    inputSchema: obj({ platform: S.string, contentType: S.string, accountExternalId: S.string, limit: S.number }, ['platform']),
     zod: z.object({
       platform: livePlatform,
+      contentType: z.enum(['posts', 'videos', 'stories', 'tagged']).optional(),
       accountExternalId: z.string().optional(),
       limit: z.number().int().min(1).max(50).optional(),
     }),
     run: async (accountId, a) => {
       const platform = commentPlatform(a.platform); // facebook | instagram — same Meta-only surface
       const ids = await resolveExternalIdsForRead(accountId, a.platform, a.accountExternalId);
+      const contentType: SocialContentType = a.contentType ?? 'posts';
       // One account: the plain list, exactly as a single-account estate expects.
-      if (ids.length === 1) return listOwnPosts(accountId, platform, ids[0], a.limit ?? 10);
+      if (ids.length === 1) return listOwnPosts(accountId, platform, ids[0], a.limit ?? 10, contentType);
       // Several: every account's posts, each tagged with the account it came
       // from, and a per-account slice of the limit so the result stays a
       // readable comparison rather than one account's feed drowning the rest.
       const per = Math.max(1, Math.ceil((a.limit ?? 10) / ids.length));
       const batches = await Promise.all(ids.map(async (id) => {
         try {
-          const posts = await listOwnPosts(accountId, platform, id, per);
+          const posts = await listOwnPosts(accountId, platform, id, per, contentType);
           return posts.map((p) => ({ ...p, accountExternalId: id }));
         } catch (e: any) {
           // One unreadable account must not blank out the others — report it

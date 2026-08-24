@@ -179,13 +179,136 @@ export async function getInstagramProfile(
   };
 }
 
+/** Which shelf of an account's own content to read.
+ *
+ *  A note on what is NOT here, because it is asked for constantly: Instagram
+ *  SAVED posts and Collections — the bookmark icon — are not exposed by any
+ *  Meta API, on any permission, for any account type. There is no endpoint to
+ *  call. The same is true of Facebook's "Saved items", whose API was retired.
+ *  This is a platform limit, not a gap in this file, and no amount of app
+ *  review unlocks it. What IS reachable is everything the account itself
+ *  published or was tagged in, which is what the shelves below cover.
+ */
+export type SocialContentType = 'posts' | 'videos' | 'stories' | 'tagged';
+
+/** Videos and reels the account uploaded — the "my saved videos" shelf.
+ *  On Instagram this is /media filtered to video types; a Page has a dedicated
+ *  /videos edge that also surfaces uploads not attached to a feed post. */
+export async function listVideos(
+  accountId: string,
+  platform: 'facebook' | 'instagram',
+  externalId?: string,
+  limit = 10,
+): Promise<SocialPostSummary[]> {
+  if (platform === 'instagram') {
+    // IG has no video-only edge; over-fetch and filter so `limit` still means
+    // "this many videos" rather than "this many of whatever came back".
+    const media = await listInstagramMedia(accountId, externalId, Math.min(50, limit * 4));
+    return media.filter((m) => m.mediaType === 'VIDEO' || m.mediaType === 'REELS').slice(0, limit);
+  }
+  const { token, pageId, externalId: connId } = await getMetaCreds(accountId, {
+    provider: 'facebook',
+    externalId,
+  });
+  const target = externalId || pageId || connId;
+  if (!target) throw new Error('No Facebook Page is connected for this account.');
+  const json = await graphGet(
+    `${target}/videos`,
+    { fields: 'id,title,description,created_time,permalink_url,picture,likes.summary(true).limit(0),comments.summary(true).limit(0)', limit: String(limit) },
+    token,
+  );
+  return (json.data || []).map((v: any): SocialPostSummary => ({
+    id: String(v.id),
+    platform: 'facebook',
+    text: v.title || v.description || null,
+    publishedAt: v.created_time ?? null,
+    permalink: v.permalink_url ?? null,
+    mediaType: 'video',
+    mediaUrl: v.picture ?? null,
+    likes: v.likes?.summary?.total_count ?? null,
+    comments: v.comments?.summary?.total_count ?? null,
+    shares: null,
+  }));
+}
+
+/** Stories currently live on a connected Instagram account (24h window). */
+export async function listInstagramStories(
+  accountId: string,
+  externalId?: string,
+  limit = 25,
+): Promise<SocialPostSummary[]> {
+  const { token, igUserId, externalId: connId } = await getMetaCreds(accountId, {
+    provider: 'instagram',
+    externalId,
+  });
+  const target = externalId || igUserId || connId;
+  if (!target) throw new Error('No Instagram Business account is connected for this account.');
+  const json = await graphGet(`${target}/stories`, { fields: IG_MEDIA_FIELDS, limit: String(limit) }, token);
+  return (json.data || []).map((m: any): SocialPostSummary => ({
+    id: String(m.id),
+    platform: 'instagram',
+    text: m.caption ?? null,
+    publishedAt: m.timestamp ?? null,
+    permalink: m.permalink ?? null,
+    mediaType: m.media_type ? `STORY_${m.media_type}` : 'STORY',
+    mediaUrl: m.media_url ?? m.thumbnail_url ?? null,
+    likes: null,
+    comments: null,
+    shares: null,
+  }));
+}
+
+/** Other people's media that @-tags the connected Instagram account. The
+ *  closest thing to a "saved by others" shelf, and the raw material for
+ *  engagement work — someone tagging you is a lead you did not have to find. */
+export async function listInstagramTagged(
+  accountId: string,
+  externalId?: string,
+  limit = 25,
+): Promise<SocialPostSummary[]> {
+  const { token, igUserId, externalId: connId } = await getMetaCreds(accountId, {
+    provider: 'instagram',
+    externalId,
+  });
+  const target = externalId || igUserId || connId;
+  if (!target) throw new Error('No Instagram Business account is connected for this account.');
+  const json = await graphGet(
+    `${target}/tags`,
+    { fields: `${IG_MEDIA_FIELDS},username`, limit: String(limit) },
+    token,
+  );
+  return (json.data || []).map((m: any): SocialPostSummary => ({
+    id: String(m.id),
+    platform: 'instagram',
+    text: m.caption ?? null,
+    publishedAt: m.timestamp ?? null,
+    permalink: m.permalink ?? null,
+    mediaType: m.media_type ?? null,
+    mediaUrl: m.media_url ?? m.thumbnail_url ?? null,
+    likes: m.like_count ?? null,
+    comments: m.comments_count ?? null,
+    shares: null,
+    ...(m.username ? { taggedBy: m.username } : {}),
+  } as SocialPostSummary));
+}
+
 /** Platform-dispatching entry points used by the capabilities layer. */
 export function listOwnPosts(
   accountId: string,
   platform: 'facebook' | 'instagram',
   externalId?: string,
   limit = 10,
+  contentType: SocialContentType = 'posts',
 ): Promise<SocialPostSummary[]> {
+  if (contentType === 'videos') return listVideos(accountId, platform, externalId, limit);
+  if (contentType === 'stories') {
+    if (platform !== 'instagram') throw new Error('Stories are only available for Instagram accounts.');
+    return listInstagramStories(accountId, externalId, limit);
+  }
+  if (contentType === 'tagged') {
+    if (platform !== 'instagram') throw new Error('Tagged media is only available for Instagram accounts.');
+    return listInstagramTagged(accountId, externalId, limit);
+  }
   return platform === 'instagram'
     ? listInstagramMedia(accountId, externalId, limit)
     : listFacebookPagePosts(accountId, externalId, limit);
