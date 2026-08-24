@@ -95,6 +95,14 @@ describe('Regression Guard 1: Sensitive Baseline', () => {
   // gate is one of: 'spend', 'external_send', 'destructive', 'standing_rule'.
   // Currently 19 sensitive capabilities (as of Packet 7.3).
   const SENSITIVE_BASELINE = [
+    // CRM automations engine (migration 012), exposed to the assistant for the
+    // first time. Same risk class as its social twin and gated identically: a
+    // rule is created switched OFF ('standing_rule'), arming it is
+    // enableAutomation's own approval, and one of its actions
+    // (enroll_sequence) sends real email with no further human in the loop.
+    // disableAutomation is deliberately NOT here — stopping a rule only ever
+    // reduces unattended sending, mirroring disableSocialAutomation's omission.
+    'createAutomation',
     // Packet D2 added this deliberately. A scheduled task runs an agent
     // unattended and REPEATEDLY with no further human in the loop, which is
     // exactly what 'standing_rule' means (packet 2.2-S). This guard caught it
@@ -102,9 +110,11 @@ describe('Regression Guard 1: Sensitive Baseline', () => {
     // sensitive capability must be an explicit, reviewable line here.
     'createScheduledTask',
     'createSocialAutomation',
+    'deleteAutomation',
     'deleteDeal',
     'deleteSocialAutomation',
     'deleteSocialComment',
+    'enableAutomation',
     'enableSocialAutomation',
     'enrichLead',
     'enrollInSequence',

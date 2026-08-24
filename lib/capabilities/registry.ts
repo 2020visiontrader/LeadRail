@@ -29,6 +29,8 @@ import { BUDGET_CAPABILITIES } from './budgets';
 import { SCHEDULED_CAPABILITIES } from './scheduled';
 import { TEMPLATE_CAPABILITIES } from './templates';
 import { SEARCH_CAPABILITIES } from './search';
+import { PIPELINE_CAPABILITIES } from './pipeline';
+import { CRM_AUTOMATION_CAPABILITIES } from './crm-automations';
 import { SUPPRESSION_CAPABILITIES } from './suppressions';
 import { INBOX_CAPABILITIES } from './inbox';
 import { DIAGNOSTICS_CAPABILITIES } from './diagnostics';
@@ -72,6 +74,8 @@ const ALL: Capability[] = [
   ...SCHEDULED_CAPABILITIES,
   ...TEMPLATE_CAPABILITIES,
   ...SEARCH_CAPABILITIES,
+  ...PIPELINE_CAPABILITIES,
+  ...CRM_AUTOMATION_CAPABILITIES,
   ...SUPPRESSION_CAPABILITIES,
   ...INBOX_CAPABILITIES,
   ...DIAGNOSTICS_CAPABILITIES,
@@ -110,6 +114,14 @@ const CATALOG_ORDER: string[] = [
   'listSocialAutomations', 'createSocialAutomation', 'enableSocialAutomation',
   'disableSocialAutomation', 'deleteSocialAutomation',
   'pauseAllSocialAutomations', 'resumeAllSocialAutomations',
+  // --- appended: two engines that shipped without a way for the assistant to
+  // reach them. The six-stage content pipeline (migration 032) and the CRM
+  // automations engine (migration 012) were both live over their HTTP routes
+  // and invisible to the catalog, so "run the content engine" and "set up an
+  // automation" had no tool to route to.
+  'runContentPipeline', 'listContentPipelineRuns', 'getContentPipelineRun',
+  'listAutomations', 'createAutomation', 'enableAutomation',
+  'disableAutomation', 'deleteAutomation',
   // --- appended by Packet 10.3 (two-stage catalog). Appended, never sorted.
   // Present only when staging is on, matching the ALL filter above; the
   // missing/unknown checks below still hold in both modes.
