@@ -172,8 +172,14 @@ function buildUserTurn(input: ComposeInput): string {
  *  EXPORTED so lib/agent/loop.ts and the capability contract test assert
  *  against this number rather than restating it. The one thing that must never
  *  happen again is two caps in series disagreeing in silence. */
+//
+// Raised with the per-observation limit and the transcript budget: 32k chars is
+// ~8k tokens, which was sized for the weakest tier on the ladder rather than
+// for the Claude model that actually composes the answer. On a turn that calls
+// a dozen tools it silently dropped the earliest findings before the answer was
+// written — which reads as the assistant ignoring half of what it just looked up.
 export const OBSERVATION_BLOCK_CHARS =
-  Number(process.env.AGENT_OBSERVATION_BLOCK_CHARS) || 32_000;
+  Number(process.env.AGENT_OBSERVATION_BLOCK_CHARS) || 160_000;
 
 function extractObservationBlock(transcript: ChatMessage[]): string {
   const lines: string[] = [];

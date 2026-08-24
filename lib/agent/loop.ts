@@ -34,7 +34,11 @@ import { createApproval, consumeApprovalForExecution, markApprovedByToolAndArgs,
 import { log } from '@/lib/logger';
 import { hermesRoute } from '@/lib/ai/hermes';
 
-const MAX_STEPS = 10;
+// A multi-part request ("research these five agencies, then tailor outreach")
+// needs a list call, a web search per company, and then the answer — 10 steps
+// could not fit that even before five of them were being lost to guessed tool
+// names. Raised now that those two leaks are closed.
+const MAX_STEPS = Number(process.env.AGENT_MAX_STEPS) || 16;
 // Two-pass output (Packet 8.1). The route pass below stays at temp 0.2 / 700
 // tokens behind a JSON envelope — correct for tool selection, poor for prose.
 // A second compose pass writes what the user actually reads. Set AGENT_COMPOSE=0
@@ -52,13 +56,24 @@ const AGENT_COMPOSE = process.env.AGENT_COMPOSE !== '0';
 // built on the whole thing. Raised 4x, and bounded by the compose block cap
 // (OBSERVATION_BLOCK_CHARS) which is what ultimately reaches the final answer.
 export const OBSERVATION_CHAR_LIMIT =
-  Number(process.env.AGENT_OBSERVATION_CHARS) || 8_000;
+  Number(process.env.AGENT_OBSERVATION_CHARS) || 24_000;
 
 // Long-chat handoff thresholds (token estimate over the running transcript).
 // Soft → nudge the user to start a fresh chat (context carried over). Hard →
 // the chat is large enough that quality degrades; tell them to switch now.
-export const SOFT_TOKEN_LIMIT = Number(process.env.AGENT_SOFT_TOKENS || 24000);
-export const HARD_TOKEN_LIMIT = Number(process.env.AGENT_HARD_TOKENS || 40000);
+// Sized to the model that actually answers, not to the weakest tier.
+//
+// 24k/40k were set when the loop assumed a small fast model. The primary tier is
+// Zo Ask, which is a Claude model with a 200k context — so a chat was being told
+// to start over at roughly a fifth of what the model could hold, and the
+// transcript cap below (2x hard) was throwing away the earliest turns of a
+// conversation the model could have read in full. That truncation is felt
+// exactly as "it doesn't remember what we were doing".
+//
+// The headroom left under 200k is deliberate: the system prompt, the tool
+// catalog and the grounding block all sit outside this estimate.
+export const SOFT_TOKEN_LIMIT = Number(process.env.AGENT_SOFT_TOKENS || 120_000);
+export const HARD_TOKEN_LIMIT = Number(process.env.AGENT_HARD_TOKENS || 160_000);
 
 export function compactionLevel(tokenEstimate: number): 'soft' | 'hard' | null {
   if (tokenEstimate >= HARD_TOKEN_LIMIT) return 'hard';
@@ -73,6 +88,34 @@ export function compactionLevel(tokenEstimate: number): 'soft' | 'hard' | null {
 // via AGENT_ZOASK_MODEL. JSON tool-routing is well within a fast model's ability.
 const AGENT_ZOASK_MODEL = process.env.AGENT_ZOASK_MODEL || '';
 const AGENT_OPENCODE_MODEL = 'deepseek-v4-flash';
+
+// WHICH TIER DOES THE THINKING.
+//
+// This was the wrong way round. The COMPOSE pass — which only rewrites a draft
+// that has already been decided — asked for the heavy tier, so the account's
+// Claude subscription wrote the prose. The ROUTE pass — which decides what to
+// do, which tools to call, how to break a request apart, and whether the answer
+// is even complete — passed no preference at all and took whatever the
+// operator's latency-ordered ladder handed it, which is usually the fastest
+// tier. All the reasoning that matters was happening on the cheap model and the
+// good model was being spent on wording.
+//
+// 'heavy' puts Zo Ask (Claude) first for the routing pass too. The ladder is
+// unchanged underneath: if that tier errors or times out, the call still falls
+// through to OpenCode, NIM and the rest exactly as before, so this trades
+// latency for quality without adding a way for the turn to fail.
+//
+// Set AGENT_ROUTE_TIER=fast to put it back on the speed-ordered ladder.
+const AGENT_ROUTE_TIER =
+  (process.env.AGENT_ROUTE_TIER as 'fast' | 'balanced' | 'heavy' | undefined) || 'heavy';
+
+// Ceiling, not a budget: resolveMaxOutputTokens takes min(model capability,
+// this), and the Zo Ask tier ignores it entirely (it has no output parameter —
+// the model's own limit applies). Replaces a hardcoded maxOutputTokens of 2048,
+// which capped a step's reasoning at a number picked for a small model. A route
+// step is normally a few hundred tokens; this only stops a long plan from being
+// guillotined mid-JSON, which is one of the ways the turn used to die.
+const AGENT_ROUTE_CEILING = Number(process.env.AGENT_ROUTE_CEILING) || 16_000;
 
 export interface AgentProposal {
   tool: string;
@@ -869,7 +912,10 @@ async function synthesizeCoordinatorAnswer(
         content: `User's request: ${userMessage || '(none)'}\n\nDelegate responses:\n${block}\n\nWrite the single unified final answer for the user now. Plain language, no JSON, no markdown headers.`,
       }],
       temperature: 0.3,
-      maxOutputTokens: 800,
+      // Was a hard 800 tokens — enough to truncate a synthesis of three
+      // delegates mid-sentence. Follows the selected model's own ceiling now.
+      maxOutputCeiling: AGENT_ROUTE_CEILING,
+      preferTier: AGENT_ROUTE_TIER,
       zoAskModel: AGENT_ZOASK_MODEL,
       model: AGENT_OPENCODE_MODEL,
       ...(coordinator.model_id ? { accountId, modelId: coordinator.model_id } : {}),
@@ -1032,7 +1078,13 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
     let raw: string;
     try {
       raw = await generateChat({
-        system, messages, temperature: 0.2, maxOutputTokens: 2048, zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
+        system, messages, temperature: 0.2,
+        // No fixed maxOutputTokens — see AGENT_ROUTE_CEILING.
+        maxOutputCeiling: AGENT_ROUTE_CEILING,
+        accountId,
+        task: 'reason',
+        preferTier: AGENT_ROUTE_TIER,
+        zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
         // Only threaded through when a persona with a model override is active,
         // so the no-persona path calls generateChat with EXACTLY the same
         // options object shape as before this change.
@@ -1339,7 +1391,13 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
     let raw: string;
     try {
       raw = await generateChat({
-        system, messages, temperature: 0.2, maxOutputTokens: 2048, zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
+        system, messages, temperature: 0.2,
+        // No fixed maxOutputTokens — see AGENT_ROUTE_CEILING.
+        maxOutputCeiling: AGENT_ROUTE_CEILING,
+        accountId,
+        task: 'reason',
+        preferTier: AGENT_ROUTE_TIER,
+        zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
         ...(personaModelId ? { accountId, modelId: personaModelId } : {}),
       });
     } catch (e: unknown) {

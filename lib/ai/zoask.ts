@@ -16,9 +16,13 @@ const MODEL = process.env.ZOASK_MODEL;
 
 // Hard timeout so a stalled subscription call fails over to OpenCode/NIM
 // instead of blocking the whole request. Haiku answers in ~2-3s, Opus in
-// ~15-20s; 40s covers the slow default while leaving room under the frontend
-// guard for the remaining tiers. Override with ZOASK_TIMEOUT_MS.
-const TIMEOUT_MS = Number(process.env.ZOASK_TIMEOUT_MS) || 40_000;
+// ~15-20s on a short prompt — but the agent's routing pass now runs here too,
+// on a prompt carrying the tool catalog, the grounding block and a long
+// transcript, where Opus legitimately takes considerably longer. At 40s those
+// calls were being aborted and silently answered by the next tier down, which
+// is the worst outcome available: the latency of the good model was paid and
+// the cheap model's answer was shipped. Override with ZOASK_TIMEOUT_MS.
+const TIMEOUT_MS = Number(process.env.ZOASK_TIMEOUT_MS) || 120_000;
 
 export function zoAskConfigured(): boolean {
   // Model is optional (defaults to the account model), so token presence alone
