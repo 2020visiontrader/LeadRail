@@ -32,7 +32,7 @@ import {
   publishToInstagramForAccount, publishToFacebookPage, getInstagramInsights, getMetaCreds,
 } from '@/lib/integrations/meta';
 import { listConversations,
-  getComments, replyToComment, hideComment, deleteComment, sendInstagramMessage,
+  getComments, replyToComment, hideComment, deleteComment, sendMetaMessage,
 } from '@/lib/social/meta-engagement';
 import { getInsightsByLevel, updateStatus } from '@/lib/social/meta-ads';
 import { listOwnPosts, getOwnProfile } from '@/lib/social/meta-read';
@@ -93,6 +93,42 @@ async function resolveExternalId(
   return conns[0].external_id ? String(conns[0].external_id) : undefined;
 }
 
+/**
+ * Resolve WHICH connected accounts a READ spans.
+ *
+ * resolveExternalId above throws on ambiguity, and that is right for anything
+ * that publishes, DMs or moderates: posting to the wrong one of five Instagram
+ * accounts is not recoverable. A read has no such cost, and the strict rule made
+ * the obvious request impossible — "analyse my profiles", with five connected,
+ * came back as "specify which one" instead of five profiles.
+ *
+ * So reads fan out: an explicit id still wins and is still validated, and with
+ * none given every connected account on that platform is read, newest first,
+ * bounded by MAX_FANOUT_ACCOUNTS so a large estate cannot turn one question into
+ * fifty Graph calls.
+ */
+const MAX_FANOUT_ACCOUNTS = 5;
+
+async function resolveExternalIdsForRead(
+  accountId: string,
+  platform: string,
+  externalId?: string,
+): Promise<string[]> {
+  const conns = (await getConnections(accountId)).filter(
+    (c: any) => c.provider === platform && c.status === 'connected',
+  );
+  if (externalId) {
+    const hit = conns.find((c: any) => String(c.external_id) === externalId);
+    if (!hit) throw new Error(`No connected ${platform} account with id ${externalId}.`);
+    return [String(hit.external_id)];
+  }
+  if (!conns.length) throw new Error(`No ${platform} account is connected.`);
+  return conns
+    .filter((c: any) => c.external_id)
+    .slice(0, MAX_FANOUT_ACCOUNTS)
+    .map((c: any) => String(c.external_id));
+}
+
 // ---------------------------------------------------------------------------
 // Dispatch maps — the ONLY place a platform string appears
 // ---------------------------------------------------------------------------
@@ -134,7 +170,13 @@ const PUBLISHERS: Partial<Record<SocialKey, Dispatch>> = {
 
 const MESSENGERS: Partial<Record<SocialKey, Dispatch>> = {
   instagram: (accountId, a, externalId) =>
-    sendInstagramMessage(accountId, a.recipientId, a.text, externalId),
+    sendMetaMessage(accountId, 'instagram', a.recipientId, a.text, externalId),
+  // Facebook Page DMs. Reading them already worked (listSocialMessages accepts
+  // 'facebook') and pages_messaging was already granted at connect time — the
+  // send was simply never mapped, so a Page message could be read and not
+  // answered.
+  facebook: (accountId, a, externalId) =>
+    sendMetaMessage(accountId, 'facebook', a.recipientId, a.text, externalId),
 };
 
 // Comment reading/replying is Meta-only today; the map keeps that fact in one
@@ -311,7 +353,7 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     name: 'listSocialPosts',
     domain: 'social',
     title: 'List posts on a connected page or profile',
-    description: 'Read the posts a connected Facebook Page or Instagram account has already published — caption, when it went out, its link, and its like/comment counts. This is where post ids come from: use it before listSocialComments or getSocialInsights, and whenever the user asks how recent posts did or what has been posted lately.',
+    description: 'Read the posts a connected Facebook Page or Instagram account has already published — caption, when it went out, its link, and its like/comment counts. This is where post ids come from: use it before listSocialComments or getSocialInsights, and whenever the user asks how recent posts did or what has been posted lately. With several accounts connected and none named, it covers all of them, each row tagged with the account it came from.',
     gate: 'read',
     inputSchema: obj({ platform: S.string, accountExternalId: S.string, limit: S.number }, ['platform']),
     zod: z.object({
@@ -321,8 +363,24 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     }),
     run: async (accountId, a) => {
       const platform = commentPlatform(a.platform); // facebook | instagram — same Meta-only surface
-      const externalId = await resolveExternalId(accountId, a.platform, a.accountExternalId);
-      return listOwnPosts(accountId, platform, externalId, a.limit ?? 10);
+      const ids = await resolveExternalIdsForRead(accountId, a.platform, a.accountExternalId);
+      // One account: the plain list, exactly as a single-account estate expects.
+      if (ids.length === 1) return listOwnPosts(accountId, platform, ids[0], a.limit ?? 10);
+      // Several: every account's posts, each tagged with the account it came
+      // from, and a per-account slice of the limit so the result stays a
+      // readable comparison rather than one account's feed drowning the rest.
+      const per = Math.max(1, Math.ceil((a.limit ?? 10) / ids.length));
+      const batches = await Promise.all(ids.map(async (id) => {
+        try {
+          const posts = await listOwnPosts(accountId, platform, id, per);
+          return posts.map((p) => ({ ...p, accountExternalId: id }));
+        } catch (e: any) {
+          // One unreadable account must not blank out the others — report it
+          // as a row so the answer can say which one failed and why.
+          return [{ accountExternalId: id, error: e?.message || 'could not read this account' } as any];
+        }
+      }));
+      return batches.flat();
     },
     // The caption and the engagement numbers are the substance; the id is what
     // every follow-up call needs, so it is never dropped from the digest.
@@ -345,23 +403,40 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     name: 'getSocialProfile',
     domain: 'social',
     title: 'Read a connected page or profile',
-    description: 'Read the profile of a connected Facebook Page or Instagram account — its name, handle, bio, follower count and public link. Use when the user asks about one of their own pages or profiles, or before writing content that has to match how a profile presents itself.',
+    description: 'Read the profile of a connected Facebook Page or Instagram account — its name, handle, bio, follower count and public link. Use when the user asks about one of their own pages or profiles, or before writing content that has to match how a profile presents itself. With several accounts connected and none named, it returns all of them — so \"analyse my profiles\" works in one call.',
     gate: 'read',
     inputSchema: obj({ platform: S.string, accountExternalId: S.string }, ['platform']),
     zod: z.object({ platform: livePlatform, accountExternalId: z.string().optional() }),
     run: async (accountId, a) => {
       const platform = commentPlatform(a.platform);
-      const externalId = await resolveExternalId(accountId, a.platform, a.accountExternalId);
-      return getOwnProfile(accountId, platform, externalId);
+      const ids = await resolveExternalIdsForRead(accountId, a.platform, a.accountExternalId);
+      if (ids.length === 1) return getOwnProfile(accountId, platform, ids[0]);
+      // "Analyse my profiles" is a normal request and it means all of them.
+      return Promise.all(ids.map(async (id) => {
+        try {
+          return await getOwnProfile(accountId, platform, id);
+        } catch (e: any) {
+          return { platform, id, error: e?.message || 'could not read this profile' } as any;
+        }
+      }));
     },
     digest: (_a, result) => {
+      const describe = (r: any) => {
+        const who = r.username ? `@${r.username}` : (r.name || r.id);
+        const bits = [
+          typeof r.followers === 'number' ? `${r.followers} followers` : null,
+          typeof r.postCount === 'number' ? `${r.postCount} posts` : null,
+        ].filter(Boolean).join(', ');
+        return r.error ? `${who}: ${r.error}` : `${who}${bits ? ` (${bits})` : ''}`;
+      };
+      if (Array.isArray(result)) {
+        if (!result.length) return '';
+        return digestLine(`${plural(result.length, 'profile')}.`, result.map(describe).join(' | '));
+      }
       if (!result || typeof result !== 'object') return '';
       const r: any = result;
-      const who = r.username ? `@${r.username}` : (r.name || r.id);
       return digestLine(
-        `${r.platform === 'instagram' ? 'Instagram' : 'Facebook Page'} ${who}.`,
-        typeof r.followers === 'number' ? `${r.followers} followers.` : null,
-        typeof r.postCount === 'number' ? `${r.postCount} posts.` : null,
+        `${r.platform === 'instagram' ? 'Instagram' : 'Facebook Page'} ${describe(r)}.`,
         r.bio ? `Bio: "${String(r.bio).slice(0, 160)}"` : null,
       );
     },

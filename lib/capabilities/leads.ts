@@ -7,6 +7,13 @@ import {
   present, rowsOf, firstField, plural, tally, samples, clip, digestLine,
 } from './types';
 
+/** A field the API takes as one string, but that the model often supplies as a
+ *  list. Accepts either and normalises to a comma-separated string. */
+const listOrString = z
+  .union([z.string(), z.array(z.string())])
+  .optional()
+  .transform((v) => (Array.isArray(v) ? v.filter(Boolean).join(', ') : v));
+
 // Module-local ownership helper — replaces TOOLS.getLead pattern
 async function getLeadOwned(accountId: string, id: string) {
   const { data } = await supabase.from('contacts').select('*').eq('id', id).eq('account_id', accountId).single();
@@ -71,7 +78,23 @@ export const LEAD_CAPABILITIES: Capability[] = [
     description: 'Find new leads/people matching a target profile (titles, seniority, location, industry, keywords, company size). Returns candidates with names/companies; emails stay masked until you reveal one. Uses sourcing credits.',
     gate: 'spend',
     inputSchema: obj({ titles: { type: 'array', items: { type: 'string' } }, seniority: { type: 'array', items: { type: 'string' } }, location: S.string, industry: S.string, keywords: S.string, companySize: S.string, limit: S.number }),
-    zod: z.object({ titles: z.array(z.string()).optional(), seniority: z.array(z.string()).optional(), location: z.string().optional(), industry: z.string().optional(), keywords: z.string().optional(), companySize: z.string().optional(), limit: z.number().max(25).optional() }),
+    // titles/seniority are lists and the other four are single strings — a
+    // distinction the model does not reliably observe. A real proposal came in
+    // as location:["United States","United Arab Emirates"],
+    // industry:["marketing","media","venture capital"], keywords:[...],
+    // companySize:[...]: the intent was perfectly clear and the call would have
+    // been rejected as invalid arguments after the user had already approved
+    // spending credits on it. Accept either shape and join, rather than failing
+    // a request we understood.
+    zod: z.object({
+      titles: z.array(z.string()).optional(),
+      seniority: z.array(z.string()).optional(),
+      location: listOrString,
+      industry: listOrString,
+      keywords: listOrString,
+      companySize: listOrString,
+      limit: z.number().max(25).optional(),
+    }),
     run: (accountId, a) => searchPeople(accountId, { titles: a.titles, seniority: a.seniority, location: a.location, industry: a.industry, keywords: a.keywords, company_size: a.companySize, limit: a.limit ?? 10 }),
     // States the credit cost and the actual filters, so the reviewer can catch a
     // search that is too broad BEFORE it is paid for.

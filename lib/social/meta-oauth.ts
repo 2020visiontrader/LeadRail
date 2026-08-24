@@ -20,6 +20,13 @@ const SCOPES = [
   'pages_read_engagement',
   'pages_manage_posts',
   'pages_manage_metadata',
+  // Content OTHER PEOPLE post on the Page — their comments and their posts.
+  // pages_read_engagement covers the Page's own content and aggregate
+  // engagement; reading and moderating what visitors wrote needs this one.
+  // Without it listSocialComments returns the Page's own replies and little
+  // else, and hideSocialComment / deleteSocialComment — the entire moderation
+  // job — fail on exactly the comments a moderator cares about.
+  'pages_read_user_content',
   // Facebook Page DMs. `me/conversations` on a Page returns 400 without this —
   // listSocialMessages(platform:'facebook') cannot work otherwise.
   'pages_messaging',
@@ -94,6 +101,20 @@ export function buildAuthorizeUrl(state: string): string {
     state,
     scope: SCOPES,
     response_type: 'code',
+    // WHY THIS IS HERE: without it the dialog silently reuses whichever Facebook
+    // session the browser already has, approves instantly, and returns the SAME
+    // set of Pages — which is indistinguishable, from the user's side, from
+    // "adding a second account does not work". Storage was never the problem
+    // (rows are keyed by account+provider+external_id and several already
+    // coexist); the consent screen simply never offered a choice. Forcing
+    // re-authentication makes Meta ask WHICH account is connecting, which is the
+    // only way to attach Pages the currently-logged-in user does not admin.
+    //
+    // Note for Instagram accounts with no linked Facebook Page: they cannot come
+    // through this flow at all, whatever we pass here — they connect through
+    // Instagram Business Login (/api/social/instagram/connect), which sets
+    // force_reauth for the same reason.
+    auth_type: 'reauthenticate',
   });
   return `${DIALOG}?${p.toString()}`;
 }

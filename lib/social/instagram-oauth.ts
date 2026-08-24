@@ -14,6 +14,13 @@ const IG_SCOPES = [
   'instagram_business_content_publish',
   'instagram_business_manage_comments',
   'instagram_business_manage_insights',
+  // DMs. Without this, an account connected through Instagram Business Login
+  // can publish and moderate comments but cannot read or answer a single direct
+  // message — me/conversations returns a permissions error. The Facebook-login
+  // path already asked for the equivalent (instagram_manage_messages in
+  // meta-oauth.ts); this path did not, so whether DMs worked depended on which
+  // button the user happened to connect with.
+  'instagram_business_manage_messages',
 ].join(',');
 
 export { signState, verifyState };

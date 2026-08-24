@@ -445,6 +445,69 @@ async function answerFromObservations(
   }
 }
 
+/** The observation left behind when a turn stops for approval.
+ *
+ *  THIS IS NOT COSMETIC. A sensitive tool call is pushed into the transcript as
+ *  an assistant message and the turn then returns — so the persisted
+ *  conversation contained a tool call with NO observation after it, which is the
+ *  exact shape of "a tool ran and I have its result". On the next turn the model
+ *  read its own pending proposal as a completed action and invented the result.
+ *
+ *  It is not hypothetical. A real transcript: the model proposed sourceLeads,
+ *  the turn stopped for approval, the user re-sent their message instead of
+ *  approving — and the model's very next step called enrichLead with
+ *  "newlead1@agency.com", an address it had made up to stand in for a search
+ *  result it never received. Apollo matched the domain, returned a real
+ *  organisation, and the user was told two leads had been found. This line is
+ *  what makes the gap in the transcript legible instead of invisible.
+ */
+function pendingApprovalObservation(tool: string): ChatMessage {
+  return observation(
+    `PENDING APPROVAL — "${tool}" has NOT run. It is waiting for the user to approve it, and it produced NO result. ` +
+    'Do not describe, summarise, or invent its output, and do not call another tool with values you would have gotten from it. ' +
+    'If the user asks again before approving, tell them it is still waiting on their approval.',
+  );
+}
+
+/** How many unknown tool names one turn tolerates before it is made to answer.
+ *
+ *  From a real transcript: asked what it knew about a venture, the model spent
+ *  five consecutive steps calling getDeckSummary, getPitch, getSectors, getIcp
+ *  and getLeadGoal — none of which exist. Each one was a full model round-trip,
+ *  each got back the bare string 'ERROR: unknown tool "X".' with no indication
+ *  of what DOES exist, and half the step budget was gone before any real work
+ *  started. That is both the latency the user feels and the reason long requests
+ *  run out of steps. */
+const MAX_UNKNOWN_TOOLS = 2;
+
+/** Turn a wrong tool name into a useful correction.
+ *
+ *  Cheap edit-distance-free matching: a real name is offered when it shares a
+ *  meaningful prefix or substring with what the model reached for, which covers
+ *  the observed failure mode (getPitch → getPersona, getIcp → updateIcpProfile).
+ *  Falls back to naming the read tools, which is what a model guessing at
+ *  getters actually wants. */
+function unknownToolObservation(
+  tool: string,
+  known: string[],
+  attempt: number,
+): ChatMessage {
+  const needle = tool.toLowerCase().replace(/^(get|list|fetch|read)/, '');
+  const close = known
+    .filter((n) => {
+      const l = n.toLowerCase();
+      return needle.length >= 3 && (l.includes(needle) || needle.includes(l.replace(/^(get|list)/, '')));
+    })
+    .slice(0, 6);
+  const suggestions = close.length
+    ? `Closest real tools: ${close.join(', ')}.`
+    : `Real tools include: ${known.filter((n) => /^(get|list)/.test(n)).slice(0, 12).join(', ')}.`;
+  const lastChance = attempt >= MAX_UNKNOWN_TOOLS
+    ? ' You have used up your guesses at tool names — answer the user now with action:"final", using what you already have and saying plainly what you could not look up.'
+    : ' Use a tool name EXACTLY as it appears in AVAILABLE TOOLS above — do not invent one.';
+  return observation(`ERROR: there is no tool called "${tool}". ${suggestions}${lastChance}`);
+}
+
 function narrationFor(parsed: any): string | undefined {
   const n = parsed?.narration;
   if (typeof n === 'string' && n.trim() !== '') return n;
@@ -954,6 +1017,8 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
   }
 
   let jsonRetries = 0;
+  let unknownTools = 0;             // hallucinated tool names this turn — see MAX_UNKNOWN_TOOLS.
+  const knownToolNames = [...Object.keys(TOOLS), ...Object.keys(extraTools)];
   const seen = new Set<string>();   // executed (tool+args) signatures — guards against re-calling the same read.
   let dupNudges = 0;
   const toolCalls: Record<string, number> = {};
@@ -1047,8 +1112,9 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
     const def = TOOLS[tool] ?? extraTools[tool]; // Packet 4: fall back to this turn's external-MCP tools
 
     if (!def) {
+      unknownTools++;
       steps.push({ thought: narrationFor(parsed), tool });
-      messages.push(observation(`ERROR: unknown tool "${tool}".`));
+      messages.push(unknownToolObservation(tool, knownToolNames, unknownTools));
       continue;
     }
 
@@ -1076,6 +1142,9 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
         return { status: 'error', message: "I couldn't record that action for your approval, so I haven't run it. Please try again.", transcript: messages, steps };
       }
       steps.push({ thought: narrationFor(parsed), tool, args });
+      // Close the gap in the transcript before it is persisted — see
+      // pendingApprovalObservation.
+      messages.push(pendingApprovalObservation(tool));
       return { status: 'needs_approval', message: proposal.summary, proposal, transcript: messages, steps };
     }
 
@@ -1251,6 +1320,8 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
   }
 
   let jsonRetries = 0;
+  let unknownTools = 0;             // see MAX_UNKNOWN_TOOLS — kept identical to runAgent per the LOOP-CONTROL INVARIANT.
+  const knownToolNames = [...Object.keys(TOOLS), ...Object.keys(extraTools)];
   const seen = new Set<string>();
   let dupNudges = 0;
   const toolCalls: Record<string, number> = {};
@@ -1359,8 +1430,9 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
     const def = TOOLS[tool] ?? extraTools[tool]; // Packet 4: fall back to this turn's external-MCP tools
 
     if (!def) {
+      unknownTools++;
       emit({ type: 'observation', text: `Unknown tool "${tool}".`, ok: false });
-      messages.push(observation(`ERROR: unknown tool "${tool}".`));
+      messages.push(unknownToolObservation(tool, knownToolNames, unknownTools));
       continue;
     }
 
@@ -1384,6 +1456,9 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
         emit({ type: 'error', message: "I couldn't record that action for your approval, so I haven't run it. Please try again." });
         return;
       }
+      // Close the gap in the transcript before it is persisted — see
+      // pendingApprovalObservation.
+      messages.push(pendingApprovalObservation(tool));
       emit({ type: 'needs_approval', proposal, message: proposal.summary, transcript: messages });
       return;
     }

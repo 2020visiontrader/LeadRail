@@ -92,13 +92,30 @@ export async function hideComment(
   return graphPost(commentId, { is_hidden: hide }, token);
 }
 
-/** Send an Instagram DM reply via the Send API. Pass externalId (the specific
- *  connected IG business account id) to target the right connection when an
- *  account has more than one connected — omit to fall back to the
- *  most-recently-connected one. */
-export async function sendInstagramMessage(accountId: string, recipientId: string, text: string, externalId?: string) {
-  const { token } = await getMetaCreds(accountId, { provider: 'instagram', externalId });
+/** Send a DM via the Send API, on Instagram or on a Facebook Page.
+ *
+ *  Both platforms post to the same me/messages edge with the owning connection's
+ *  token; only the credential lookup differs. Facebook was never wired up — DM
+ *  reading already worked for Pages (listConversations takes 'facebook') and the
+ *  pages_messaging scope was already granted, so the only thing missing was the
+ *  send. A user could read a Page message and had no way to answer it.
+ *
+ *  Pass externalId (the specific connected IG account or Page) to target the
+ *  right connection when an account has more than one connected. */
+export async function sendMetaMessage(
+  accountId: string,
+  platform: 'facebook' | 'instagram',
+  recipientId: string,
+  text: string,
+  externalId?: string,
+) {
+  const { token } = await getMetaCreds(accountId, { provider: platform, externalId });
   return graphPost('me/messages', { recipient: { id: recipientId }, message: { text } }, token);
+}
+
+/** Instagram-only alias kept for existing callers. */
+export async function sendInstagramMessage(accountId: string, recipientId: string, text: string, externalId?: string) {
+  return sendMetaMessage(accountId, 'instagram', recipientId, text, externalId);
 }
 
 /** List recent DM conversations for a connected account, newest first.
