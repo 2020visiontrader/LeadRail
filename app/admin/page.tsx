@@ -8,6 +8,9 @@ import ModelsProviders from '@/components/ModelsProviders';
 import AiUsage from '@/components/AiUsage';
 import McpClients from '@/components/McpClients';
 import ActivityFeed from '@/components/ActivityFeed';
+import Skills from '@/components/Skills';
+import SettingsConsole, { type SettingsGroup } from '@/components/SettingsConsole';
+import { IconPlatform, IconActivities, IconLogs, IconModels, IconSkills, IconUsage, IconConnections } from '@/components/icons';
 
 // Owner Admin portal — the one place platform-ops surfaces live: infra/service
 // keys (Platform backend), the live request feed (Live activity), and a link
@@ -15,6 +18,7 @@ import ActivityFeed from '@/components/ActivityFeed';
 // on a non-owner it renders the same "owners only" notice the Logs page uses.
 export default function AdminPage() {
   const [isOwner, setIsOwner] = useState<boolean | null>(null);
+  const [active, setActive] = useState('backend');
 
   useEffect(() => {
     fetch('/api/auth/me', { headers: { Accept: 'application/json' } })
@@ -34,44 +38,85 @@ export default function AdminPage() {
     );
   }
 
+  const groups: SettingsGroup[] = [
+    {
+      id: 'platform',
+      label: 'Platform',
+      items: [
+        { id: 'backend', label: 'Backend', icon: <IconPlatform /> },
+        { id: 'diagnostics', label: 'Diagnostics', icon: <IconActivities /> },
+        { id: 'activity', label: 'Live activity', icon: <IconLogs /> },
+      ],
+    },
+    {
+      id: 'ai',
+      label: 'AI',
+      items: [
+        { id: 'models', label: 'Providers & models', icon: <IconModels /> },
+        { id: 'skills', label: 'Skills', icon: <IconSkills /> },
+        { id: 'usage', label: 'Usage', icon: <IconUsage /> },
+        { id: 'mcp', label: 'MCP servers', icon: <IconConnections /> },
+      ],
+    },
+  ];
+
+  const META: Record<string, { title: string; description: string }> = {
+    backend: { title: 'Backend', description: 'Which service keys and infrastructure this deployment has configured.' },
+    diagnostics: { title: 'Diagnostics', description: 'What is reachable right now, and what is failing.' },
+    activity: { title: 'Live activity', description: 'The system feed as it happens. Full history is in Logs.' },
+    models: {
+      title: 'Providers & models',
+      description: 'The AI providers this platform routes through and the ladder it falls back down. Not visible to client accounts.',
+    },
+    skills: {
+      title: 'Skills',
+      description:
+        "Saved guidance that shapes how the assistant writes and decides. A skill's text goes into the system prompt, so every one is screened before it is injected — blocked skills are held back and shown here.",
+    },
+    usage: { title: 'Usage', description: 'AI calls, latency and failures across the platform.' },
+    mcp: { title: 'MCP servers', description: 'External tool servers wired into the assistant.' },
+  };
+
+  const meta = META[active] ?? META.backend;
+
   return (
-    <div className="mx-auto max-w-6xl space-y-8">
+    <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold">Admin</h1>
-        <p className="text-sm text-slate-500">Platform operations — infrastructure, service keys, AI providers, usage, MCP servers and the live system feed. Owner only; never shown to client accounts.</p>
+        <p className="text-sm text-[var(--text-secondary)]">
+          Platform operations. Owner only — never shown to client accounts.
+        </p>
       </div>
 
-      <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_360px]">
-        <div className="min-w-0 space-y-8">
-          <PlatformBackend />
-          {/* Moved here from /settings. Each of these exposes the PLATFORM's own
-              infrastructure rather than anything belonging to the signed-in
-              account: which service keys are configured, which AI providers the
-              registry routes through, how many AI calls the platform made, and
-              which external MCP servers are wired in. On /settings they sat on a
-              page every client account can open. Admin is owner-gated, both in
-              the nav and in this page's own role check. */}
-          <Diagnostics />
-          <ModelsProviders />
-          <AiUsage />
-          <McpClients />
-        </div>
-        <div className="space-y-4 xl:sticky xl:top-6 xl:self-start">
-          <div className="h-[520px]">
-            <ActivityFeed />
-          </div>
-          <Link
-            href="/logs"
-            className="flex items-center justify-between rounded-xl border border-[var(--border-default)] bg-[var(--bg-surface)] px-4 py-3 text-sm transition hover:bg-[var(--bg-raised)]"
-          >
-            <span>
-              <span className="block font-semibold text-[var(--text-primary)]">Full logs</span>
-              <span className="block text-xs text-[var(--text-muted)]">Every API action — filter by level, search, latency.</span>
-            </span>
-            <span aria-hidden className="text-[var(--text-muted)]">→</span>
-          </Link>
-        </div>
-      </div>
+      <SettingsConsole
+        groups={groups}
+        activeId={active}
+        onSelect={setActive}
+        title={meta.title}
+        description={meta.description}
+        actions={
+          active === 'activity' ? (
+            <Link
+              href="/logs"
+              className="rounded-md border border-[var(--border-default)] px-3 py-1.5 text-[13px] transition hover:bg-[var(--bg-raised)]"
+            >
+              Full logs →
+            </Link>
+          ) : undefined
+        }
+      >
+        {active === 'backend' && <PlatformBackend />}
+        {active === 'diagnostics' && <Diagnostics />}
+        {active === 'activity' && <div className="h-[560px]"><ActivityFeed /></div>}
+        {active === 'models' && <ModelsProviders />}
+        {/* Moved here from /settings. A skill's instructions are spliced into
+            the assistant's system prompt, above the user's own message — that
+            is platform configuration, not a per-account preference, and 341 of
+            the catalog's skills came from third-party repositories. */}
+        {active === 'skills' && <Skills />}
+        {active === 'usage' && <AiUsage />}
+        {active === 'mcp' && <McpClients />}
+      </SettingsConsole>
     </div>
   );
 }

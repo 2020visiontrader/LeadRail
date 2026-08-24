@@ -7,11 +7,12 @@ import Input from '@/components/Input';
 import { apiGet, apiSend } from '@/lib/api';
 import SenderProfiles from '@/components/SenderProfiles';
 import Personas from '@/components/Personas';
-import Skills from '@/components/Skills';
 import Budgets from '@/components/Budgets';
 import ScheduledTasks from '@/components/ScheduledTasks';
 import Approvals from '@/components/Approvals';
 import { SOCIAL_PROVIDERS } from '@/lib/social/providers';
+import SettingsConsole, { type SettingsGroup } from '@/components/SettingsConsole';
+import { IconConnections, IconOutreach, IconPersonas, IconUsage, IconSequences, IconAdmin, IconPrivacy } from '@/components/icons';
 
 interface Connection {
   provider: string;
@@ -410,6 +411,7 @@ export default function Settings() {
   const [connections, setConnections] = useState<Connection[]>([]);
   const [loading, setLoading] = useState(true);
   const [feedback, setFeedback] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [active, setActive] = useState('connections');
   const accountId = '00000000-0000-0000-0000-0000000000b1';
 
   const load = useCallback(() => {
@@ -469,46 +471,84 @@ export default function Settings() {
     }
   }, []);
 
+  const groups: SettingsGroup[] = [
+    {
+      id: 'workspace',
+      label: 'Workspace',
+      items: [
+        { id: 'connections', label: 'Connections', icon: <IconConnections /> },
+        { id: 'senders', label: 'Sender profiles', icon: <IconOutreach /> },
+        { id: 'personas', label: 'Personas', icon: <IconPersonas /> },
+      ],
+    },
+    {
+      id: 'controls',
+      label: 'Controls',
+      items: [
+        { id: 'budgets', label: 'Budgets', icon: <IconUsage /> },
+        { id: 'scheduled', label: 'Scheduled tasks', icon: <IconSequences /> },
+        { id: 'approvals', label: 'Approvals', icon: <IconAdmin /> },
+      ],
+    },
+    {
+      id: 'account',
+      label: 'Account',
+      items: [{ id: 'privacy', label: 'Data & privacy', icon: <IconPrivacy /> }],
+    },
+  ];
+
+  const META: Record<string, { title: string; description: string }> = {
+    connections: {
+      title: 'Connections',
+      description: 'The social and ad accounts you post from, plus the sources your assistant reads.',
+    },
+    senders: { title: 'Sender profiles', description: 'Who your outreach comes from, per venture.' },
+    personas: {
+      title: 'Personas',
+      description:
+        'Specialists your assistant can adopt or consult. Pick one to frame a conversation, or write your own — a persona is a name, a role, and instructions in your words.',
+    },
+    budgets: { title: 'Budgets', description: 'Monthly spend limits. Anything that costs money is refused past the cap.' },
+    scheduled: { title: 'Scheduled tasks', description: 'Work your assistant runs on a schedule, unattended.' },
+    approvals: { title: 'Approvals', description: 'Actions waiting on your decision, and what you have already decided.' },
+    privacy: { title: 'Data & privacy', description: 'Export or delete the data this workspace holds about you.' },
+  };
+
+  const meta = META[active] ?? META.connections;
+
   return (
-    <div className="max-w-3xl space-y-6">
+    <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-bold">Connections</h1>
-        <p className="text-sm text-slate-500">
-          Connect the social and ad accounts you post from, plus the sources your assistant reads.
+        <h1 className="text-2xl font-bold">Settings</h1>
+        <p className="text-sm text-[var(--text-secondary)]">
+          Your workspace. Platform configuration — AI providers, models, skills and MCP servers — lives in Admin.
         </p>
       </div>
+
+      {feedback && (
+        <div className={`rounded-lg border px-4 py-3 text-sm ${feedback.ok ? 'border-green-200 bg-green-50 text-green-700' : 'border-red-200 bg-red-50 text-red-700'}`}>
+          {feedback.msg}
+        </div>
+      )}
 
       {loading ? (
         <LoadingSpinner />
       ) : (
-        <>
-          {feedback && (
-            <div className={`rounded-lg border px-4 py-3 text-sm ${feedback.ok ? 'border-green-200 bg-green-50 text-green-700' : 'border-red-200 bg-red-50 text-red-700'}`}>
-              {feedback.msg}
-            </div>
-          )}
-
-          {/* Platform-ops surfaces — AI providers, AI usage, MCP servers and
-              Diagnostics — moved to /admin. They expose the platform's own
-              infrastructure (service-key presence, provider registry, request
-              counts), which is owner-only by definition and does not belong on
-              a page every client account can open. */}
-          <ClientConnections connections={connections} onChange={load} />
-
-          <SenderProfiles />
-
-          <Personas />
-
-          <Skills />
-
-          <Budgets />
-
-          <ScheduledTasks />
-
-          <Approvals />
-
-          <DataPrivacySection />
-        </>
+        <SettingsConsole
+          groups={groups}
+          activeId={active}
+          onSelect={setActive}
+          title={meta.title}
+          description={meta.description}
+        >
+          {active === 'connections' && <ClientConnections connections={connections} onChange={load} />}
+          {active === 'senders' && <SenderProfiles />}
+          {active === 'personas' && <Personas />}
+          {active === 'budgets' && <Budgets />}
+          {active === 'scheduled' && <ScheduledTasks />}
+          {active === 'approvals' && <Approvals />}
+          {active === 'privacy' && <DataPrivacySection />}
+        </SettingsConsole>
       )}
     </div>
   );
