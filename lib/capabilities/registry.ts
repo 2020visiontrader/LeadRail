@@ -145,6 +145,7 @@ const CATALOG_ORDER: string[] = [
   'updateContentItem', 'setContentStatus', 'deleteContentItem',
   'generateContentPiece', 'generateBrandImage', 'listCharacterRefs',
   'createCharacterRef', 'generateBrandVideo', 'getVideoStatus',
+  'getBrandCanon', 'setBrandCanon', 'scoreContentLinearity',
   'listContentPillars', 'createContentPillar', 'deleteContentPillar',
   'listPlatformSpecs', 'setPlatformSpec',
   // --- appended: the assistant could produce a report and had no way to hand

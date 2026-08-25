@@ -212,6 +212,14 @@ export interface ContentItemInput {
   mediaUrl?: string | null;
   pipelineRunId?: string | null;
   scheduledFor?: string | null;
+  /** 'organic' or 'paid' (migration 054). Different objective, different
+   *  brief — see the note on the column. */
+  intent?: 'organic' | 'paid';
+  /** Ties siblings in a hook × body × cta test into one experiment. */
+  variantGroup?: string | null;
+  variantLabel?: string | null;
+  linearityScore?: number | null;
+  linearityReport?: unknown;
 }
 
 function toRow(accountId: string, i: ContentItemInput) {
@@ -235,6 +243,11 @@ function toRow(accountId: string, i: ContentItemInput) {
     media_url: i.mediaUrl ?? null,
     pipeline_run_id: i.pipelineRunId ?? null,
     scheduled_for: i.scheduledFor ?? null,
+    intent: i.intent ?? 'organic',
+    variant_group: i.variantGroup ?? null,
+    variant_label: i.variantLabel ?? null,
+    linearity_score: i.linearityScore ?? null,
+    linearity_report: i.linearityReport ?? null,
   };
 }
 
@@ -246,11 +259,13 @@ export async function createContentItem(accountId: string, input: ContentItemInp
 
 export async function listContentItems(accountId: string, opts?: {
   status?: ContentStatus; brandId?: string | null; platform?: string; limit?: number;
+  intent?: 'organic' | 'paid';
 }) {
   let q = supabase.from('content_items').select('*').eq('account_id', accountId);
   if (opts?.status) q = q.eq('status', opts.status);
   if (opts?.brandId) q = q.eq('brand_id', opts.brandId);
   if (opts?.platform) q = q.contains('platforms', [opts.platform.toLowerCase()]);
+  if (opts?.intent) q = q.eq('intent', opts.intent);
   const { data, error } = await q
     .order('updated_at', { ascending: false })
     .limit(Math.min(opts?.limit ?? 50, 200));

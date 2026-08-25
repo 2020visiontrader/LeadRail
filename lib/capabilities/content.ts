@@ -17,6 +17,7 @@ import {
   CONTENT_STATUSES, FUNNEL_STAGES,
 } from '@/lib/content/store';
 import { generateContent } from '@/lib/content/engine';
+import { loadCanon, saveCanon, scoreLinearity } from '@/lib/content/canon';
 import { generateImage as routeImage } from '@/lib/ai/image-router';
 import { generateVideo, getVideoStatus, higgsfieldUnavailableReason } from '@/lib/integrations/higgsfield';
 import { obj, S, type Capability, rowsOf, plural, samples, tally, digestLine } from './types';
@@ -43,12 +44,13 @@ export const CONTENT_CAPABILITIES: Capability[] = [
     title: 'List content items',
     description: `Read the content board — every planned, drafted and published piece, newest first. Filter by status (${CONTENT_STATUSES.join(', ')}), by venture, or by platform. Use whenever the user asks what content exists, what is in draft, or what is ready to go out.`,
     gate: 'read',
-    inputSchema: obj({ status: S.string, brandId: S.string, platform: S.string, limit: S.number }),
+    inputSchema: obj({ status: S.string, brandId: S.string, platform: S.string, limit: S.number, intent: S.string }),
     zod: z.object({
       status: z.enum(CONTENT_STATUSES as [string, ...string[]]).optional(),
       brandId: z.string().optional(),
       platform: z.string().optional(),
       limit: z.number().int().min(1).max(200).optional(),
+      intent: z.enum(['organic', 'paid']).optional(),
     }),
     run: (accountId, a) => listContentItems(accountId, a),
     digest: (_a, result) => {
@@ -172,11 +174,12 @@ export const CONTENT_CAPABILITIES: Capability[] = [
     name: 'generateContentPiece',
     domain: 'content',
     title: 'Generate a content piece',
-    description: "Write one publish-ready piece of content, grounded in the venture's brand kit, the platform's real constraints (character limit, hashtag convention, CTA format) and the next content pillar in rotation. Returns the hook, body and CTA separately. Saves it to the content board as a DRAFT unless you say otherwise. This is the right tool for any real content request — it knows the constraints, a plain chat answer does not.",
+    description: "Write one publish-ready piece of content, held to the brand THESIS and grounded in the venture's brand kit, the platform's real constraints (character limit, hashtag convention, CTA format) and the next content pillar in rotation. Returns the hook, body and CTA separately. Saves it to the content board as a DRAFT unless you say otherwise. Set intent to 'paid' for an ad — direct response, substantiable claims, one hard ask — or leave it 'organic' for content that earns attention. These are different briefs, not the same brief reworded. This is the right tool for any real content request — it knows the constraints, a plain chat answer does not.",
     gate: 'internal_write',
     inputSchema: obj({
       topic: S.string, platform: S.string, brandId: S.string, pillarId: S.string,
       funnelStage: S.string, hook: S.string, cta: S.string, save: { type: 'boolean' },
+      intent: S.string,
     }, ['topic', 'platform']),
     zod: z.object({
       topic: z.string().min(3).max(500),
@@ -187,6 +190,7 @@ export const CONTENT_CAPABILITIES: Capability[] = [
       hook: z.string().optional(),
       cta: z.string().optional(),
       save: z.boolean().optional(),
+      intent: z.enum(['organic', 'paid']).optional(),
     }),
     run: async (accountId, a) => {
       const piece = await generateContent({ accountId, ...a });
@@ -196,6 +200,9 @@ export const CONTENT_CAPABILITIES: Capability[] = [
         brandId: a.brandId ?? null,
         status: 'DRAFT',
         contentType: 'Social',
+        intent: a.intent ?? 'organic',
+        linearityScore: piece.linearity?.score ?? null,
+        linearityReport: piece.linearity ?? null,
         platforms: [piece.platform],
         pillarId: piece.pillarId,
         pillar: piece.pillar,
@@ -217,6 +224,9 @@ export const CONTENT_CAPABILITIES: Capability[] = [
       return digestLine(
         `Wrote a ${r.platform} piece${r.pillar ? ` on the "${r.pillar}" pillar` : ''}: "${String(r.hook).slice(0, 100)}"`,
         r.withinLimit === false ? `WARNING: ${r.charCount} characters, over the platform limit — it needs cutting before it can go out.` : null,
+        r.linearity && r.linearity.pass === false
+          ? `OFF-BRAND (${r.linearity.score}/10): ${r.linearity.reasons.join(' ')} Say this plainly rather than presenting it as ready.`
+          : null,
         r.itemId ? `Saved to the board as a draft (${r.itemId}).` : null,
       );
     },
@@ -344,6 +354,84 @@ export const CONTENT_CAPABILITIES: Capability[] = [
   },
 
   // ---------------------------------------------------------------- pillars
+  {
+    name: 'getBrandCanon',
+    domain: 'content',
+    title: 'Read the brand thesis',
+    description: "Read a venture's brand canon — the core thesis it asserts, the belief it argues against, the takeaway a reader should be left with, and the words it owns or refuses. This is what keeps content recognisably one brand across platforms. Use before writing anything substantial, or when the user asks what the brand stands for.",
+    gate: 'read',
+    inputSchema: obj({ brandId: S.string }, ['brandId']),
+    zod: z.object({ brandId: z.string().min(1) }),
+    run: (accountId, a) => loadCanon(accountId, a.brandId),
+    digest: (_a, result) => {
+      const r: any = result;
+      // Null is "there was nothing to read", which the observation already
+      // carries — a digest that narrates absence is inventing a finding.
+      if (!r || typeof r !== 'object') return '';
+      if (!r.coreThesis) return 'No thesis set — content for this venture is not held to one, so it will drift.';
+      return digestLine(
+        `Thesis: "${String(r.coreThesis).slice(0, 200)}"`,
+        r.brandEnemy ? `Argues against: ${String(r.brandEnemy).slice(0, 120)}` : null,
+        r.bannedTerms?.length ? `Banned: ${r.bannedTerms.join(', ')}` : null,
+      );
+    },
+  },
+  {
+    name: 'setBrandCanon',
+    domain: 'content',
+    title: 'Set the brand thesis',
+    description: "Define what a venture stands for, as a constraint every future piece is held to. coreThesis is the single non-negotiable claim; brandEnemy is the belief it argues against (a hook that agitates this is on-brand, one that ignores it is generic); anchorTakeaway is what a reader concludes even with the logo removed; bannedTerms are the generic words that dissolve the identity. Setting the thesis also embeds it, so later content can be scored for drift. Only set this from what the user actually told you — inventing a brand's beliefs is worse than leaving it empty.",
+    gate: 'internal_write',
+    inputSchema: obj({
+      brandId: S.string, coreThesis: S.string, brandEnemy: S.string, anchorTakeaway: S.string,
+      mandatoryLexicon: { type: 'array', items: S.string },
+      bannedTerms: { type: 'array', items: S.string },
+    }, ['brandId']),
+    zod: z.object({
+      brandId: z.string().min(1),
+      coreThesis: z.string().min(10).max(600).optional(),
+      brandEnemy: z.string().max(600).optional(),
+      anchorTakeaway: z.string().max(600).optional(),
+      mandatoryLexicon: z.array(z.string()).max(40).optional(),
+      bannedTerms: z.array(z.string()).max(60).optional(),
+    }),
+    run: (accountId, a) => {
+      const { brandId, ...rest } = a;
+      return saveCanon(accountId, brandId, rest);
+    },
+    digest: (_a, result) => {
+      const r: any = result;
+      if (!r?.saved) return '';
+      return digestLine(
+        'Brand thesis saved.',
+        r.embedded
+          ? 'It is embedded, so future content is scored for drift against it.'
+          : 'It could not be embedded, so drift scoring is unavailable until it is set again.',
+      );
+    },
+  },
+  {
+    name: 'scoreContentLinearity',
+    domain: 'content',
+    title: 'Check copy against the brand thesis',
+    description: "Score a piece of copy against a venture's brand thesis — semantic distance from the thesis plus any banned wording. Use before publishing something written by hand, or when the user asks whether a draft sounds like them. A low score means the copy has wandered off the argument, not that it phrased it differently: expressing the thesis natively for a platform is the goal, repeating it word-for-word is not.",
+    gate: 'read',
+    inputSchema: obj({ brandId: S.string, copy: S.string }, ['brandId', 'copy']),
+    zod: z.object({ brandId: z.string().min(1), copy: z.string().min(10).max(20000) }),
+    run: (accountId, a) => scoreLinearity(accountId, a.brandId, a.copy),
+    digest: (_a, result) => {
+      const r: any = result;
+      // A score of `undefined` rendered as "undefined/10" — a number the digest
+      // invented from a result that carried none. Report the verdict only when
+      // there is actually a number behind it.
+      if (!r || typeof r !== 'object' || typeof r.score !== 'number') return '';
+      return digestLine(
+        `${r.pass ? 'On brand' : 'OFF BRAND'} — ${r.score}/10.`,
+        typeof r.thesisSimilarity === 'number' ? `Thesis similarity ${Number(r.thesisSimilarity).toFixed(2)}.` : null,
+        Array.isArray(r.reasons) && r.reasons.length ? r.reasons.join(' ') : null,
+      );
+    },
+  },
   {
     name: 'listContentPillars',
     domain: 'content',

@@ -70,6 +70,9 @@ const EXPECTATIONS: Expectation[] = [
   { table: 'skill_repairs', columns: ['proposed', 'status'], migration: '051', breaks: 'blocked skills cannot be repaired' },
   { table: 'mcp_clients', columns: ['auth_mode', 'oauth_client_id', 'oauth_access_token_encrypted'], migration: '053', breaks: 'OAuth-protected MCP servers cannot be connected' },
   { table: 'mcp_oauth_states', columns: ['code_verifier', 'expires_at'], migration: '053', breaks: 'the MCP OAuth handshake cannot start' },
+  { table: 'brands', columns: ['core_thesis', 'banned_terms', 'thesis_embedding'], migration: '054', breaks: 'content is not held to a brand thesis and drift cannot be scored' },
+  { table: 'content_items', columns: ['intent', 'linearity_score'], migration: '054', breaks: 'organic and paid content cannot be told apart, and off-brand copy is not flagged' },
+  { table: 'platform_specs', columns: ['aspect_ratios', 'format_family', 'hook_hold_seconds'], migration: '054', breaks: 'the format router cannot tell short-form from static, and safe zones are unknown' },
 ];
 
 export interface DriftFinding {

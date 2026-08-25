@@ -18,6 +18,7 @@ import { generateChat } from '@/lib/ai/router';
 import { stripAiMarkers, HUMANIZE_RULES } from '@/lib/ai/humanizer';
 import { supabase } from '@/lib/db';
 import { getPlatformSpec, platformSpecBlock, nextPillar, type PlatformSpec } from './store';
+import { loadCanon, canonBlock, scoreLinearity, type BrandCanon, type LinearityReport } from './canon';
 
 export interface GeneratedContent {
   title: string;
@@ -36,6 +37,8 @@ export interface GeneratedContent {
    *  is reported, never silently trimmed — a truncated CTA is worse than a
    *  visible warning, and the caller may prefer to regenerate. */
   withinLimit: boolean;
+  /** Whether this reads as THIS brand. Null when no thesis is set. */
+  linearity: LinearityReport | null;
 }
 
 interface BrandKit {
@@ -106,6 +109,10 @@ export interface GenerateContentInput {
   /** Operator steer — a hook they already have in mind, or a required CTA. */
   hook?: string | null;
   cta?: string | null;
+  /** 'organic' optimises for retention, saves and shareability; 'paid'
+   *  optimises for click-through and cost per acquisition. These are not the
+   *  same brief with different words — see the note in the prompt below. */
+  intent?: 'organic' | 'paid';
 }
 
 /**
@@ -117,9 +124,10 @@ export interface GenerateContentInput {
  */
 export async function generateContent(input: GenerateContentInput): Promise<GeneratedContent> {
   const platform = input.platform.toLowerCase();
-  const [spec, kit, pillar] = await Promise.all([
+  const [spec, kit, canon, pillar] = await Promise.all([
     getPlatformSpec(input.accountId, platform).catch(() => null as PlatformSpec | null),
     loadBrandKit(input.accountId, input.brandId).catch(() => null),
+    loadCanon(input.accountId, input.brandId).catch(() => null as BrandCanon | null),
     input.pillarId
       ? Promise.resolve(
           supabase.from('content_pillars').select('*').eq('id', input.pillarId)
@@ -128,8 +136,29 @@ export async function generateContent(input: GenerateContentInput): Promise<Gene
       : nextPillar(input.accountId, input.brandId).catch(() => null),
   ]);
 
+  const intent = input.intent ?? 'organic';
   const system = [
     'You are the content engine for an operator console. You write one finished piece of content per call — publish-ready, not a sketch.',
+    '',
+    // THE THESIS GOES FIRST, ALONE. It is the one instruction that must survive
+    // contact with every other constraint below it, and attention is highest
+    // here. See lib/content/canon.ts.
+    canonBlock(canon),
+    '',
+    intent === 'paid'
+      ? [
+          'INTENT — PAID. This is direct response, not brand content.',
+          '- The hook must create friction: name the cost, the loss or the problem the reader is living with right now.',
+          '- One unmistakable ask. No "learn more" — say what happens when they click.',
+          '- Every claim must be substantiable. Ad networks reject unverifiable results, before/after framing, and implied personal attributes; write as if a reviewer will ask for the evidence.',
+          '- Optimise for click-through and cost per acquisition, not for applause.',
+        ].join('\n')
+      : [
+          'INTENT — ORGANIC. This earns attention, it does not buy it.',
+          '- Optimise for retention and saves: the reader should finish it, and want it later.',
+          '- Give the value away in the post. A piece that withholds the point to drive a click reads as an ad and is treated as one.',
+          '- A call to action is optional here and should be absent more often than not.',
+        ].join('\n'),
     '',
     brandBlock(kit),
     '',
@@ -176,6 +205,13 @@ export async function generateContent(input: GenerateContentInput): Promise<Gene
   const cta = stripAiMarkers(String(p.cta || '').trim());
   const assembled = [hook, body, cta].filter(Boolean).join('\n\n');
 
+  // Scored AFTER generation, never asked of the generator. A model reviewing
+  // its own output for brand fit produces agreeable answers; this is the gate
+  // for the cases where it was confident and wrong.
+  const linearity = await scoreLinearity(
+    input.accountId, input.brandId, assembled, canon,
+  ).catch(() => null);
+
   return {
     title: String(p.title || input.topic).slice(0, 200),
     hook,
@@ -191,5 +227,6 @@ export async function generateContent(input: GenerateContentInput): Promise<Gene
     charCount: assembled.length,
     // Reported, never silently enforced — see the note on the interface.
     withinLimit: !spec?.char_limit || assembled.length <= spec.char_limit,
+    linearity,
   };
 }
