@@ -96,6 +96,16 @@ describe('the pre-auth surface has not widened by accident', () => {
       '/api/social/meta/connect', '/api/social/meta/deauthorize',
       '/api/social/meta/data-deletion', '/api/social/instagram/callback',
       '/api/track', '/api/unsubscribe',
+      // MCP OAuth callback (migration 053). Pre-auth for the same reason the
+      // Meta callback is: an authorization server redirects the browser here
+      // from a third-party origin, and SameSite means our session cookie is
+      // not guaranteed to ride along. It is SELF-PROTECTING rather than open —
+      // identity comes from a `state` value that was minted server-side, is
+      // bound to one account and one connection, expires in ten minutes, and
+      // is deleted on read, so a replayed or forged callback resolves to
+      // nothing. It never reads a session and never accepts an account id from
+      // the request.
+      '/api/mcp-clients/oauth/callback',
     ]);
     expect(PUBLIC_API.filter((p) => !KNOWN.has(p))).toEqual([]);
   });

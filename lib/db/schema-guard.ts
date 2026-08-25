@@ -68,6 +68,8 @@ const EXPECTATIONS: Expectation[] = [
   { table: 'brands', columns: ['tone_of_voice', 'content_examples'], migration: '050', breaks: 'the generator cannot read the brand voice' },
   { table: 'skills', columns: ['capabilities', 'screen_status'], migration: '051', breaks: 'skills cannot declare tools and screen results are not recorded' },
   { table: 'skill_repairs', columns: ['proposed', 'status'], migration: '051', breaks: 'blocked skills cannot be repaired' },
+  { table: 'mcp_clients', columns: ['auth_mode', 'oauth_client_id', 'oauth_access_token_encrypted'], migration: '053', breaks: 'OAuth-protected MCP servers cannot be connected' },
+  { table: 'mcp_oauth_states', columns: ['code_verifier', 'expires_at'], migration: '053', breaks: 'the MCP OAuth handshake cannot start' },
 ];
 
 export interface DriftFinding {
