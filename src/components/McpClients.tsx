@@ -67,13 +67,21 @@ export default function McpClients() {
   const [connecting, setConnecting] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<Record<string, { ok: boolean; error?: string; tools?: string[] }>>({});
 
+  const [loadErr, setLoadErr] = useState<string | null>(null);
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
       const res = await apiGet<{ clients: McpClient[] }>('/api/mcp-clients');
       setClients(res.clients || []);
-    } catch {
-      /* surfaced via empty state */
+      setLoadErr(null);
+    } catch (e: any) {
+      // Never swallowed. An empty list and a failed fetch look identical on
+      // screen, and the difference is "you have not added one" versus "this
+      // page cannot see what you added" — which sends someone hunting in
+      // completely the wrong place.
+      setLoadErr(e?.message || 'Could not load registered servers.');
+      setClients([]);
     } finally {
       setLoading(false);
     }
@@ -175,13 +183,17 @@ export default function McpClients() {
    *  a transport. This is the ONLY thing a preset does — it fills the same form
    *  a manual add uses. It does not imply the connection will work: these are
    *  OAuth-protected, and the Connect button is where that is proved. */
-  const KNOWN_SERVERS: { key: string; name: string; url: string; transport: 'http' | 'sse'; blurb: string }[] = [
+  const KNOWN_SERVERS: {
+    key: string; name: string; url: string; transport: 'http' | 'sse';
+    blurb: string; unlocks: string;
+  }[] = [
     {
       key: 'higgsfield',
       name: 'Higgsfield',
       url: 'https://mcp.higgsfield.ai/mcp',
       transport: 'http',
-      blurb: 'Video and image generation. Powers generateBrandVideo.',
+      blurb: 'Video and image generation, over MCP. Higgsfield issues no API key — authorization happens through OAuth, so Add then Connect are two separate steps.',
+      unlocks: 'generateBrandVideo, image generation for the content engine',
     },
   ];
 
@@ -241,23 +253,54 @@ export default function McpClients() {
         </div>
       )}
 
-      {/* Known servers. A shortcut past "find the URL and guess the transport",
-          which is where the manual form loses people — it is the same POST the
-          form makes, with the fields already right. */}
-      {KNOWN_SERVERS.some((k) => !clients.find((c) => { try { return new URL(c.url).host === new URL(k.url).host; } catch { return false; } })) && (
-        <div className="flex flex-wrap gap-2">
-          {KNOWN_SERVERS.filter((k) => !clients.find((c) => { try { return new URL(c.url).host === new URL(k.url).host; } catch { return false; } })).map((k) => (
-            <button
-              key={k.key}
-              type="button"
-              onClick={() => addKnown(k)}
-              disabled={saving}
-              className="flex items-center gap-2 rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface)] px-3 py-2 text-left transition hover:bg-[var(--bg-raised)] disabled:opacity-50"
-            >
-              <span className="text-[13px] font-semibold text-[var(--text-primary)]">+ {k.name}</span>
-              <span className="text-[11px] text-[var(--text-muted)]">{k.blurb}</span>
-            </button>
-          ))}
+      {/* Named connectors, as cards rather than a row of chips.
+          These stay on screen once registered instead of disappearing, because
+          a card that vanishes the moment it is added is indistinguishable from
+          one that was never built — and "is Higgsfield in here?" is exactly the
+          question this section exists to answer at a glance. */}
+      <div className="space-y-2">
+        {KNOWN_SERVERS.map((k) => {
+          const existing = clients.find((c) => {
+            try { return new URL(c.url).host === new URL(k.url).host; } catch { return false; }
+          });
+          const state = !existing
+            ? { tone: 'gray' as const, label: 'not added' }
+            : existing.oauth_connected
+              ? { tone: 'green' as const, label: 'authorized' }
+              : { tone: 'amber' as const, label: 'added — not authorized' };
+          return (
+            <div key={k.key} className="rounded-lg border border-[var(--border-default)] bg-[var(--bg-raised)] p-4">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold">{k.name}</span>
+                    <Badge tone="gray">MCP</Badge>
+                    <Badge tone={state.tone}>{state.label}</Badge>
+                  </div>
+                  <p className="mt-1 text-xs text-[var(--text-secondary)]">{k.blurb}</p>
+                  <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">Unlocks: {k.unlocks}</p>
+                </div>
+                <div className="flex shrink-0 gap-2">
+                  {!existing ? (
+                    <Button variant="secondary" className="text-xs" loading={saving} onClick={() => addKnown(k)}>Add</Button>
+                  ) : (
+                    <>
+                      <Button variant="secondary" className="text-xs" loading={connecting === existing.id} onClick={() => connectOauth(existing)}>
+                        {existing.oauth_connected ? 'Reconnect' : 'Connect'}
+                      </Button>
+                      <Button variant="ghost" className="text-xs" loading={testing === existing.id} onClick={() => testClient(existing)}>Test</Button>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {loadErr && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          {loadErr} — the list below is empty because the fetch failed, not because nothing is registered.
         </div>
       )}
 

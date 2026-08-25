@@ -223,12 +223,32 @@ export const CONTENT_CAPABILITIES: Capability[] = [
     digest: (a, result) => {
       const r: any = result;
       if (!r?.hook) return '';
+      // The evaluator's blocking issues are stated first and plainly. A digest
+      // that leads with "wrote a piece" and buries "it is 800 characters over
+      // and will be truncated" is how flawed work gets presented as finished.
+      const ev = r.evaluation;
+      const blocks: string[] = Array.isArray(ev?.issues)
+        ? ev.issues.filter((i: any) => i?.severity === 'block').map((i: any) => String(i.message))
+        : [];
+      const warns: string[] = Array.isArray(ev?.issues)
+        ? ev.issues.filter((i: any) => i?.severity === 'warn').map((i: any) => String(i.message))
+        : [];
+      const beats = Array.isArray(r.production?.beats) ? r.production.beats.length : 0;
+
       return digestLine(
         `Wrote a ${r.platform} piece${r.pillar ? ` on the "${r.pillar}" pillar` : ''}: "${String(r.hook).slice(0, 100)}"`,
-        r.withinLimit === false ? `WARNING: ${r.charCount} characters, over the platform limit — it needs cutting before it can go out.` : null,
-        r.linearity && r.linearity.pass === false
-          ? `OFF-BRAND (${r.linearity.score}/10): ${r.linearity.reasons.join(' ')} Say this plainly rather than presenting it as ready.`
+        r.formatFamily === 'short_video' && beats
+          ? `Shot as short-form video: ${plural(beats, 'beat')}${r.production?.openingFrame ? ', with an opening frame' : ''}.`
           : null,
+        r.formatFamily === 'visual' && Array.isArray(r.production?.slides) && r.production.slides.length > 1
+          ? `${plural(r.production.slides.length, 'slide')} in the carousel.`
+          : null,
+        blocks.length
+          ? `NOT READY — ${blocks.join(' ')} Say this plainly rather than presenting it as finished.`
+          : null,
+        // Only when nothing blocks: a list of nits under a "not ready" line
+        // reads as equally important and dilutes the thing that matters.
+        !blocks.length && warns.length ? `Worth fixing: ${warns.slice(0, 3).join(' ')}` : null,
         r.itemId ? `Saved to the board as a draft (${r.itemId}).` : null,
       );
     },

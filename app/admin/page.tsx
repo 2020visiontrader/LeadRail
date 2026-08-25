@@ -77,7 +77,7 @@ export default function AdminPage() {
         { id: 'models', label: 'Providers & models', icon: <IconModels /> },
         { id: 'skills', label: 'Skills', icon: <IconSkills /> },
         { id: 'usage', label: 'Usage', icon: <IconUsage /> },
-        { id: 'mcp', label: 'MCP servers', icon: <IconConnections /> },
+        { id: 'mcp', label: 'Connectors', icon: <IconConnections /> },
       ],
     },
   ];
@@ -96,7 +96,7 @@ export default function AdminPage() {
         "Saved guidance that shapes how the assistant writes and decides. A skill's text goes into the system prompt, so every one is screened before it is injected — blocked skills are held back and shown here.",
     },
     usage: { title: 'Usage', description: 'AI calls, latency and failures across the platform.' },
-    mcp: { title: 'MCP servers', description: 'External tool servers wired into the assistant.' },
+    mcp: { title: 'Connectors', description: 'External tool servers wired into the assistant, including Higgsfield. Named connectors are listed first; anything else can be added by URL.' },
   };
 
   const meta = META[active] ?? META.backend;

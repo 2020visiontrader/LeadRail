@@ -17,8 +17,9 @@
 import { generateChat } from '@/lib/ai/router';
 import { stripAiMarkers, HUMANIZE_RULES } from '@/lib/ai/humanizer';
 import { supabase } from '@/lib/db';
-import { getPlatformSpec, platformSpecBlock, nextPillar, type PlatformSpec } from './store';
+import { getPlatformSpec, platformSpecBlock, formatFamilyFor, nextPillar, type PlatformSpec, type FormatFamily } from './store';
 import { loadCanon, canonBlock, scoreLinearity, type BrandCanon, type LinearityReport } from './canon';
+import { evaluate, type Evaluation } from './evaluate';
 
 export interface GeneratedContent {
   title: string;
@@ -39,6 +40,19 @@ export interface GeneratedContent {
   withinLimit: boolean;
   /** Whether this reads as THIS brand. Null when no thesis is set. */
   linearity: LinearityReport | null;
+  /** Which production branch this came out of. */
+  formatFamily: FormatFamily;
+  /** Spec, algorithmic and policy checks, folded together with linearity.
+   *  Advisory to the caller: the generator returns work with its problems
+   *  attached rather than suppressing it, because a human deciding to post
+   *  something flagged is a legitimate outcome and silently withholding it is
+   *  not. */
+  evaluation: Evaluation;
+  /** Everything a producer needs beyond the copy. Shape depends on the branch:
+   *  a short video carries beats, a starting frame and a motion prompt; a
+   *  carousel carries slides; a text post carries neither. Empty for a branch
+   *  that needs nothing extra. */
+  production: Record<string, any>;
 }
 
 interface BrandKit {
@@ -97,6 +111,80 @@ function parseJson<T>(raw: string, fallback: T): T {
   try { return JSON.parse(m[0]) as T; } catch { return fallback; }
 }
 
+/** What each production branch actually has to produce.
+ *
+ *  Written as a job description rather than a field list, because the fields
+ *  only make sense once the model knows what it is making. The short-video
+ *  brief is the longest for a reason: it is the branch that was previously
+ *  collapsed into "write a caption", and a caption is the least important
+ *  artefact a 9:16 video needs. */
+const FORMAT_BRIEF: Record<FormatFamily, string> = {
+  short_video: [
+    'FORMAT — SHORT-FORM VIDEO. You are writing a shoot, not a caption.',
+    '- beats: the spoken script broken into timed segments. The first beat is the 0-3s hook and it must work with the sound off — assume a viewer who has not decided to watch yet.',
+    '- Each beat carries what is SAID and what is SEEN. A beat with no visual is a beat that will be filmed as a talking head by default.',
+    '- opening_frame: describe the very first frame as a still. It is the thumbnail, the scroll-stopper and the conditioning image for generation, so it does more work than any other single asset.',
+    '- motion: what moves — camera, subject, cut rhythm. Not who the subject is; the opening frame fixes that.',
+    '- on_screen_text: the kinetic caption line per beat. Short. It is read, not studied.',
+    '- The body and cta fields are still required: they become the post caption, which is a different surface from the script.',
+  ].join('\n'),
+  visual: [
+    'FORMAT — STATIC OR CAROUSEL. The image carries the argument; the caption supports it.',
+    '- slides: if the idea needs more than one frame, break it into slides, each with its own line of on-image text and a one-line visual direction. One idea per slide. If a single image says it, return one slide.',
+    '- The first slide is the hook and must be legible as a thumbnail at a glance.',
+    '- image_prompt describes the visual system across slides, not just the first one, so they read as a set.',
+  ].join('\n'),
+  text: [
+    'FORMAT — TEXT NATIVE. There is no image doing any work here, so the writing carries all of it.',
+    '- The opening line is the whole hook. It is what shows before the fold and before anyone taps "more".',
+    '- Line breaks are structure. A wall of text is not read on these surfaces.',
+    '- image_prompt is optional here — supply one only if a visual genuinely adds something.',
+  ].join('\n'),
+};
+
+/** The extra JSON fields each branch returns, appended to the shared contract. */
+const FORMAT_FIELDS: Record<FormatFamily, string> = {
+  short_video: ', "beats": [{"t": string, "say": string, "see": string, "on_screen_text": string}], "opening_frame": string, "motion": string',
+  visual: ', "slides": [{"text": string, "visual": string}]',
+  text: '',
+};
+
+/** Pull the branch-specific artefacts out of a parsed generation.
+ *
+ *  Tolerant by design: a model that returns beats as strings rather than
+ *  objects has still done the useful work, and discarding that because the
+ *  shape disappointed us would throw away the whole video. */
+function extractProduction(family: FormatFamily, p: any): Record<string, any> {
+  if (family === 'short_video') {
+    const beats = Array.isArray(p?.beats)
+      ? p.beats.slice(0, 12).map((b: any) =>
+          typeof b === 'string'
+            ? { say: b }
+            : {
+                t: b?.t ? String(b.t) : undefined,
+                say: b?.say ? String(b.say) : undefined,
+                see: b?.see ? String(b.see) : undefined,
+                onScreenText: b?.on_screen_text ? String(b.on_screen_text) : undefined,
+              })
+      : [];
+    return {
+      beats,
+      openingFrame: p?.opening_frame ? String(p.opening_frame) : null,
+      motion: p?.motion ? String(p.motion) : null,
+    };
+  }
+  if (family === 'visual') {
+    const slides = Array.isArray(p?.slides)
+      ? p.slides.slice(0, 12).map((s: any) =>
+          typeof s === 'string'
+            ? { text: s }
+            : { text: s?.text ? String(s.text) : undefined, visual: s?.visual ? String(s.visual) : undefined })
+      : [];
+    return { slides };
+  }
+  return {};
+}
+
 export interface GenerateContentInput {
   accountId: string;
   topic: string;
@@ -137,6 +225,7 @@ export async function generateContent(input: GenerateContentInput): Promise<Gene
   ]);
 
   const intent = input.intent ?? 'organic';
+  const family = formatFamilyFor(spec);
   const system = [
     'You are the content engine for an operator console. You write one finished piece of content per call — publish-ready, not a sketch.',
     '',
@@ -171,12 +260,18 @@ export async function generateContent(input: GenerateContentInput): Promise<Gene
     '- body: the substance. Before → after, the mechanism, or the proof. Concrete over abstract; a named number beats an adjective every time.',
     '- cta: one ask, in the format the platform section above specifies. Exactly one.',
     '',
+    // THE FORMAT BRANCH. A 9:16 video, a carousel and a text post are three
+    // different production jobs, not one job at three word counts. Each needs
+    // artefacts the others do not, and asking for all of them every time
+    // produces a generator that half-fills every field.
+    FORMAT_BRIEF[family],
+    '',
     'NEVER invent a statistic, a customer name, a case study, or a result. If a claim would need a number you have not been given, write the sentence without the number.',
     'Never mention scheduling tools, other platforms, vendors, or model names.',
     ...HUMANIZE_RULES.map((r) => `- ${r}`),
     '',
     'Return ONLY this JSON object and nothing else:',
-    '{"title": string, "hook": string, "body": string, "cta": string, "hashtags": string[], "image_prompt": string, "key_angle": string, "target_audience": string}',
+    `{"title": string, "hook": string, "body": string, "cta": string, "hashtags": string[], "image_prompt": string, "key_angle": string, "target_audience": string${FORMAT_FIELDS[family]}}`,
     'title: a short internal label for the board, not a headline the audience sees.',
     'key_angle: one line saying what makes this piece different from the obvious take.',
     'image_prompt: describes a single still image to accompany the post. No video, no text overlay instructions unless the platform spec asks for them.',
@@ -204,6 +299,8 @@ export async function generateContent(input: GenerateContentInput): Promise<Gene
   const body = stripAiMarkers(String(p.body || '').trim());
   const cta = stripAiMarkers(String(p.cta || '').trim());
   const assembled = [hook, body, cta].filter(Boolean).join('\n\n');
+  const hashtags = Array.isArray(p.hashtags) ? p.hashtags.map(String) : [];
+  const production = extractProduction(family, p);
 
   // Scored AFTER generation, never asked of the generator. A model reviewing
   // its own output for brand fit produces agreeable answers; this is the gate
@@ -217,7 +314,7 @@ export async function generateContent(input: GenerateContentInput): Promise<Gene
     hook,
     body,
     cta,
-    hashtags: Array.isArray(p.hashtags) ? p.hashtags.map(String) : [],
+    hashtags,
     imagePrompt: stripAiMarkers(String(p.image_prompt || '').trim()),
     keyAngle: String(p.key_angle || '').trim(),
     targetAudience: String(p.target_audience || '').trim(),
@@ -228,5 +325,12 @@ export async function generateContent(input: GenerateContentInput): Promise<Gene
     // Reported, never silently enforced — see the note on the interface.
     withinLimit: !spec?.char_limit || assembled.length <= spec.char_limit,
     linearity,
+    formatFamily: family,
+    production,
+    evaluation: evaluate({
+      hook, body, cta, hashtags,
+      spec, family, intent,
+      linearity, production,
+    }),
   };
 }

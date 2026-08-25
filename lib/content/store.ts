@@ -24,7 +24,23 @@ export interface PlatformSpec {
   cta_format: string | null;
   copy_tone: string | null;
   optimal_time: string | null;
+  // --- structured fields (migration 054). Prose could not be asserted on: a
+  // generator cannot check safe-zone compliance against a sentence, and the
+  // router cannot tell short-form from static by reading "1080x1920".
+  aspect_ratios?: string[] | null;
+  safe_zones?: string | null;
+  format_family?: FormatFamily | null;
+  hook_hold_seconds?: number | null;
+  algorithmic_signal?: string | null;
+  ad_policy_notes?: string | null;
 }
+
+/** Which production branch a platform belongs to. This is the fork the whole
+ *  format engine turns on: a 9:16 video needs a starting frame, a motion
+ *  prompt and beat-timed script; a carousel needs slides; a text post needs
+ *  neither. Treating them as one job with different word counts is what made
+ *  "auto-format for 10 platforms" a lie. */
+export type FormatFamily = 'short_video' | 'visual' | 'text';
 
 // ---------------------------------------------------------------- platform specs
 
@@ -94,7 +110,23 @@ export function platformSpecBlock(spec: PlatformSpec | null): string {
   if (spec.hashtag_strategy) lines.push(`- Hashtags: ${spec.hashtag_strategy}`);
   if (spec.cta_format) lines.push(`- CTA: ${spec.cta_format}`);
   if (spec.image_specs) lines.push(`- Image/video spec: ${spec.image_specs}`);
+  // The structured fields, which is what the platform actually RANKS on.
+  // Without these the generator optimises for fitting the box rather than for
+  // the signal that decides whether anyone sees it.
+  if (spec.algorithmic_signal) lines.push(`- What this platform ranks on: ${spec.algorithmic_signal}`);
+  if (spec.aspect_ratios?.length) lines.push(`- Aspect ratios: ${spec.aspect_ratios.join(', ')}`);
+  if (spec.safe_zones) lines.push(`- Safe zones: ${spec.safe_zones}`);
+  if (spec.hook_hold_seconds) {
+    lines.push(`- The first ${spec.hook_hold_seconds} seconds decide everything here. Viewers who leave inside that window are the whole ranking problem.`);
+  }
   return lines.join('\n');
+}
+
+/** The production branch for a platform. Falls back to 'text' rather than
+ *  guessing from the name: an unknown platform with no stored family is one we
+ *  have no spec data for, and text is the branch that assumes least. */
+export function formatFamilyFor(spec: PlatformSpec | null): FormatFamily {
+  return spec?.format_family ?? 'text';
 }
 
 // --------------------------------------------------------------------- pillars
