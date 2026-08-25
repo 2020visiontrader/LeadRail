@@ -83,7 +83,7 @@ export default function ContactDrawer({ contact, isOpen, onClose, onUpdate, onDe
           <div className="flex items-center gap-2">
             <Badge tone="indigo">{contact.segment}</Badge>
             <Badge tone={statusTone(contact.status)}>{contact.status}</Badge>
-            <span className="ml-auto text-lg font-bold text-green-600">{contact.score}</span>
+            <span className="ml-auto text-lg font-bold text-[var(--text-positive)]">{contact.score}</span>
           </div>
 
           {editing ? (

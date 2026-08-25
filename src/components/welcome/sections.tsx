@@ -9,7 +9,6 @@
 // than one <section>; the fragment keeps that grouping intact without adding a
 // wrapper element that would change the existing layout.
 import ExampleRun from '@/components/welcome/ExampleRun';
-import ArchitectureTabs from '@/components/welcome/ArchitectureTabs';
 import { ENTITY, ENTITY_CITY, ENTITY_REGION, ENTITY_COUNTRY, CONTACT, FAQ, CAPABILITY_DOMAINS } from './content';
 import { ContactForm } from './ContactForm';
 
@@ -175,31 +174,6 @@ export function HowItWorksSection() {
         </div>
       </section>
 
-      {/* ---------------------------------------------------------------- */}
-      {/* Architecture explorer (client island, all panels server-rendered) */}
-      {/* ---------------------------------------------------------------- */}
-    </>
-  );
-}
-
-export function ArchitectureSection() {
-  return (
-    <>
-      <section id="architecture" aria-labelledby="architecture-h" className="scroll-mt-16 pb-14 sm:pb-20">
-        <h2 id="architecture-h" className="text-2xl font-bold tracking-tight sm:text-3xl">
-          What LeadRail is made of
-        </h2>
-        <p className="mt-3 max-w-2xl text-[15px] leading-relaxed text-[var(--text-secondary)]">
-          Seven parts, each of which you can inspect the behaviour of from inside the product.
-        </p>
-        <div className="mt-6">
-          <ArchitectureTabs />
-        </div>
-      </section>
-
-      {/* ---------------------------------------------------------------- */}
-      {/* Capability domains                                                */}
-      {/* ---------------------------------------------------------------- */}
     </>
   );
 }
@@ -209,12 +183,12 @@ export function CapabilitiesSection() {
     <>
       <section id="capabilities" aria-labelledby="capabilities-h" className="scroll-mt-16 pb-14 sm:pb-20">
         <h2 id="capabilities-h" className="text-2xl font-bold tracking-tight sm:text-3xl">
-          Nine capability domains
+          What the assistant can do
         </h2>
         <p className="mt-3 max-w-2xl text-[15px] leading-relaxed text-[var(--text-secondary)]">
-          Each action the assistant can take is declared once, in one registry. The chat catalog, the machine
-          tool list, the approval gate and the audit trail all read from the same declarations, so the assistant
-          and an external client can never drift apart.
+          The assistant works across the areas your team already runs — leads, pipeline, outreach, campaigns,
+          content and reporting — and every action it takes is recorded and, where it matters, held for your
+          approval first.
         </p>
         <ul className="mt-8 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {CAPABILITY_DOMAINS.map((d) => (

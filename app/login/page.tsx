@@ -69,7 +69,7 @@ function LoginInner() {
         <p className="mb-6 text-sm text-[var(--text-secondary)]">Multi-brand lead command center.</p>
 
         {expired && !error && (
-          <p className="mb-4 flex items-start gap-1.5 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+          <p className="mb-4 flex items-start gap-1.5 rounded-md border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-amber-800">
             <span aria-hidden>⏱</span><span>Your session expired — sign in again to pick up where you left off.</span>
           </p>
         )}
@@ -93,7 +93,7 @@ function LoginInner() {
           </label>
 
           {error && (
-            <p className="flex items-start gap-1.5 rounded-md border border-red-500/25 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+            <p className="flex items-start gap-1.5 rounded-md border border-red-500/25 bg-red-500/10 px-3 py-2 text-sm text-red-700">
               <span aria-hidden>⚠</span><span>{error}</span>
             </p>
           )}

@@ -23,7 +23,7 @@ export interface McpClientRow {
   allow_auto: boolean;
   last_status: string | null;
   last_checked_at: string | null;
-  discovered_tools: { name: string; description?: string }[];
+  discovered_tools: { name: string; description?: string; inputSchema?: Record<string, any> }[];
   created_at: string;
   updated_at: string;
 

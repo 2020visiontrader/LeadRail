@@ -95,7 +95,7 @@ function DataPrivacySection() {
           )}
         </div>
       )}
-      {msg && <p className="text-xs text-red-600">{msg}</p>}
+      {msg && <p className="text-xs text-[var(--text-negative)]">{msg}</p>}
       <p className="text-xs text-[var(--text-muted)]">
         Files (decks, attachments) are stored in private buckets and served via short-lived signed links — never public.
         See our <a href="/privacy" className="underline">Privacy Policy</a> and <a href="/data-deletion" className="underline">Data Deletion</a> page.
@@ -128,7 +128,7 @@ function ConnectionRow({ c, busy, onDisconnect }: { c: Connection; busy: boolean
       <button
         onClick={onDisconnect}
         disabled={busy}
-        className="ml-2 shrink-0 text-xs text-[var(--text-muted)] hover:text-red-600"
+        className="ml-2 shrink-0 text-xs text-[var(--text-muted)] hover:text-[var(--text-negative)]"
       >
         {busy ? '…' : 'Disconnect'}
       </button>
@@ -311,7 +311,7 @@ function KnowledgeSources({ connections, onChange }: { connections: Connection[]
           )}
         </div>
       </div>
-      {msg && <p className={`text-xs ${msg.ok ? 'text-green-600' : 'text-red-600'}`}>{msg.text}</p>}
+      {msg && <p className={`text-xs ${msg.ok ? 'text-[var(--text-positive)]' : 'text-[var(--text-negative)]'}`}>{msg.text}</p>}
     </div>
   );
 }

@@ -132,7 +132,7 @@ export default function SequenceDetail() {
             <Button variant="danger" onClick={remove}>Delete</Button>
           </div>
         </div>
-        {!seq.is_active && <p className="mt-1 text-xs text-amber-600">Paused sequences do not send. Activate to start the cadence for enrolled contacts.</p>}
+        {!seq.is_active && <p className="mt-1 text-xs text-[var(--text-warning)]">Paused sequences do not send. Activate to start the cadence for enrolled contacts.</p>}
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">

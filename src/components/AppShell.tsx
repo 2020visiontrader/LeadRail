@@ -147,6 +147,12 @@ function AccountFooter() {
           <span aria-hidden className="text-[13px] leading-none">↻</span>Update available
         </button>
       )}
+      {/* The public site was reachable only by signing out, which is a strange
+          price to pay for reading your own marketing page. /welcome is already
+          public, so a signed-in user can open it and come straight back. */}
+      <Link href="/welcome" className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-[13px] text-[var(--text-secondary)] transition hover:bg-[var(--bg-raised)] hover:text-[var(--text-primary)]">
+        <span aria-hidden className="text-[13px] leading-none">◹</span>Landing page
+      </Link>
       <button onClick={logout} className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-[13px] text-[var(--text-secondary)] transition hover:bg-[var(--bg-raised)] hover:text-[var(--text-primary)]">
         <span aria-hidden className="text-[13px] leading-none">⇥</span>Sign out
       </button>
@@ -170,12 +176,22 @@ function ThemeToggle() {
   );
 }
 
+/** The logo, as a link home.
+ *
+ *  It was a plain div, so clicking it did nothing — and clicking the logo is
+ *  the single most reflexive navigation there is. Points at the dashboard,
+ *  which is what a logo means inside a signed-in app; the public landing page
+ *  is reachable from the account menu below. */
 function Wordmark() {
   return (
-    <div className="flex items-center gap-2 px-1">
+    <Link
+      href="/"
+      aria-label="LeadRail home"
+      className="flex items-center gap-2 rounded-md px-1 py-0.5 transition hover:opacity-80"
+    >
       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--ink)] text-[13px] font-bold text-[var(--ink-fg)]" style={{ fontFamily: 'var(--font-display)' }}>↝</span>
       <span className="text-[15px] font-bold tracking-tight" style={{ fontFamily: 'var(--font-display)' }}>LeadRail</span>
-    </div>
+    </Link>
   );
 }
 

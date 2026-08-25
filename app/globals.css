@@ -17,7 +17,23 @@
 
   --text-primary: #2B2418;       /* warm near-black ink */
   --text-secondary: #5B5241;
-  --text-muted: #8C8170;
+  /* Darkened from #8C8170, which measured 2.95:1 against --bg-raised — below
+     the 4.5:1 WCAG AA floor for body text, and visibly so: muted text on a
+     nested tile was the hardest thing on the page to read. #6B6150 keeps the
+     same warm grey-brown hue and clears 4.5:1 on all three light surfaces
+     (4.69 raised / 5.31 canvas / 5.69 surface). Muted must still READ; it is
+     hierarchy, not decoration. */
+  --text-muted: #6B6150;
+
+  /* Status TEXT, as tokens rather than Tailwind swatches.
+     A hardcoded text-green-600 cannot flip with the theme, so the same class
+     that is merely weak on paper (3.08:1) becomes unreadable on near-black.
+     These are tuned per theme and all clear 4.5:1 on every surface in their
+     own mode. Note they are text colours only — the -500/10 tints used for
+     status BACKGROUNDS are fine as they are, because nothing is read off them. */
+  --text-positive: #136c34;
+  --text-negative: #b91c1c;
+  --text-warning:  #92400e;
 
   --border-default: #E1D7C4;
   --border-strong: #CDBFA6;
@@ -65,7 +81,13 @@
 
   --text-primary: #F2EBDF;       /* warm near-white */
   --text-secondary: #B9AE9C;     /* labels, meta, inactive nav */
-  --text-muted: #8B8071;         /* timestamps, hints only */
+  /* Same fix on the dark side: #8B8071 measured 3.95:1 against --bg-raised.
+     #9A8F7E clears 4.5:1 on all three (4.81 / 5.37 / 5.81). */
+  --text-muted: #9A8F7E;         /* timestamps, hints only */
+
+  --text-positive: #4ade80;
+  --text-negative: #f87171;
+  --text-warning:  #fbbf24;
 
   --border-default: rgba(242, 235, 223, 0.10);
   --border-strong: rgba(242, 235, 223, 0.18);

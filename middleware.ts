@@ -48,6 +48,25 @@ export async function middleware(req: NextRequest) {
     return pathname === base || pathname.startsWith(base + '/');
   };
   const isPublic = isApi ? PUBLIC_API.some(matchPrefix) : PUBLIC_PAGES.some(matchPrefix);
+
+  // An already-signed-in visitor asking for the sign-in form is not asking to
+  // sign in — they got here from the landing page's "Sign in" button, which is
+  // the only route back into the app from there. Rendering the form again
+  // strands them in a loop whose apparent exit is signing out. Send them where
+  // they were going instead.
+  if (!isApi && (pathname === '/login' || pathname === '/signup')) {
+    const already = await verifySession(req.cookies.get(SESSION_COOKIE)?.value);
+    if (already) {
+      const to = req.nextUrl.clone();
+      const next = req.nextUrl.searchParams.get('next');
+      // Only a same-site path, never an absolute URL from the query string —
+      // that is an open redirect.
+      to.pathname = next && next.startsWith('/') && !next.startsWith('//') ? next : '/';
+      to.search = '';
+      return NextResponse.redirect(to);
+    }
+  }
+
   if (isPublic) return NextResponse.next();
 
   const session = await verifySession(req.cookies.get(SESSION_COOKIE)?.value);

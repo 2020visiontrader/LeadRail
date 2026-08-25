@@ -52,7 +52,7 @@ export default function LeadDetail() {
         <h1 className="text-2xl font-bold">{contact.name}</h1>
         <div className="flex items-center gap-2">
           <Badge tone="indigo">{contact.segment}</Badge>
-          <span className="text-xl font-bold text-green-600">{contact.score}</span>
+          <span className="text-xl font-bold text-[var(--text-positive)]">{contact.score}</span>
         </div>
       </div>
 

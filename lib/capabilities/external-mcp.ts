@@ -49,6 +49,7 @@ function slug(s: string): string {
 interface DiscoveredTool {
   name: string;
   description?: string;
+  inputSchema?: Record<string, any>;
 }
 
 interface ExternalClientRow {
@@ -112,10 +113,15 @@ export async function loadExternalCapabilities(accountId: string): Promise<Capab
         // per-client operator opt-in (allow_auto) downgrades this off the
         // sensitive gates; every other client stays approval-required.
         gate: row.allow_auto ? 'internal_write' : 'external_send',
-        // The remote server owns its own argument schema; we pass arguments
-        // through opaquely and let it validate them. inputSchema here is only
-        // for the model's benefit (it still needs SOME shape to fill in).
-        inputSchema: { type: 'object', properties: {}, additionalProperties: true },
+        // The remote server's OWN schema, when it published one. Previously
+        // this was always an empty object, which meant the model saw a tool
+        // with no parameters and had to invent them — the direct cause of
+        // "Invalid arguments" failures that looked like broken connections.
+        // Falls back to the permissive shape only when a server publishes
+        // nothing, since the model still needs some shape to fill in.
+        inputSchema: (t.inputSchema && typeof t.inputSchema === 'object' && t.inputSchema.type)
+          ? t.inputSchema
+          : { type: 'object', properties: {}, additionalProperties: true },
         zod: z.record(z.string(), z.any()).optional().default({}),
         run: async (callAccountId: string, args: any) => {
           // Re-scope by the account_id actually passed at call time, not a

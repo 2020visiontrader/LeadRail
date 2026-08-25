@@ -200,7 +200,7 @@ export default function OutreachPage() {
                 {attachments.map((a) => (
                   <li key={a.url} className="flex items-center justify-between rounded border border-slate-200 bg-slate-50 px-2 py-1 text-sm">
                     <a href={a.url} target="_blank" rel="noreferrer" className="truncate text-blue-600">{a.filename}</a>
-                    <button type="button" onClick={() => removeAttachment(a.url)} className="ml-2 text-slate-400 hover:text-red-600">✕</button>
+                    <button type="button" onClick={() => removeAttachment(a.url)} className="ml-2 text-slate-400 hover:text-[var(--text-negative)]">✕</button>
                   </li>
                 ))}
               </ul>

@@ -144,7 +144,7 @@ export default function LogsPage() {
                     <td className="whitespace-nowrap px-4 py-2 font-mono text-xs text-slate-700">
                       <span className="text-slate-400">{r.method}</span> {r.route}
                     </td>
-                    <td className={`px-4 py-2 font-medium ${r.status && r.status >= 500 ? 'text-red-600' : r.status && r.status >= 400 ? 'text-amber-600' : 'text-slate-500'}`}>
+                    <td className={`px-4 py-2 font-medium ${r.status && r.status >= 500 ? 'text-[var(--text-negative)]' : r.status && r.status >= 400 ? 'text-[var(--text-warning)]' : 'text-slate-500'}`}>
                       {r.status ?? '—'}
                     </td>
                     <td className="px-4 py-2 text-slate-500">{r.duration_ms ?? '—'}</td>

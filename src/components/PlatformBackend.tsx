@@ -171,7 +171,7 @@ export default function PlatformBackend() {
                     onChange={(e) => { setTokenValue((e.target as HTMLInputElement).value); setFeedback(null); }}
                   />
                   {feedback && (
-                    <p className={`text-xs ${feedback.ok ? 'text-green-600' : 'text-red-600'}`}>
+                    <p className={`text-xs ${feedback.ok ? 'text-[var(--text-positive)]' : 'text-[var(--text-negative)]'}`}>
                       {feedback.msg}
                     </p>
                   )}

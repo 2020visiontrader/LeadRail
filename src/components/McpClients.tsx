@@ -65,7 +65,7 @@ export default function McpClients() {
 
   const [testing, setTesting] = useState<string | null>(null);
   const [connecting, setConnecting] = useState<string | null>(null);
-  const [testResult, setTestResult] = useState<Record<string, { ok: boolean; error?: string; tools?: string[] }>>({});
+  const [testResult, setTestResult] = useState<Record<string, { ok: boolean; error?: string; tools?: string[]; warnings?: string[]; diagnostics?: { protocolVersion?: string; serverName?: string; toolCount: number; toolsWithSchema: number } }>>({});
 
   const [loadErr, setLoadErr] = useState<string | null>(null);
   const [oauthCfg, setOauthCfg] = useState<{ redirectUri: string; vaultConfigured: boolean } | null>(null);
@@ -241,7 +241,7 @@ export default function McpClients() {
     setTesting(c.id);
     setTestResult((prev) => ({ ...prev, [c.id]: undefined as any }));
     try {
-      const r = await apiSend<{ ok: boolean; error?: string; tools?: string[] }>(`/api/mcp-clients/${c.id}/test`, 'POST', {});
+      const r = await apiSend<{ ok: boolean; error?: string; tools?: string[]; warnings?: string[]; diagnostics?: any }>(`/api/mcp-clients/${c.id}/test`, 'POST', {});
       setTestResult((prev) => ({ ...prev, [c.id]: r }));
       load();
     } catch (e: any) {
@@ -347,12 +347,21 @@ export default function McpClients() {
                   );
                 }
                 if (!r) return null;
+                const d = r.diagnostics;
                 return (
-                  <p className={`mt-2 text-xs ${r.ok ? 'text-green-600' : 'text-red-600'}`}>
-                    {r.ok
-                      ? `Connected — ${r.tools?.length || 0} tool${r.tools?.length === 1 ? '' : 's'} discovered`
-                      : `Failed: ${r.error || 'unknown error'}`}
-                  </p>
+                  <div className="mt-2 space-y-1">
+                    <p className={`text-xs ${r.ok ? 'text-[var(--text-positive)]' : 'text-[var(--text-negative)]'}`}>
+                      {r.ok
+                        ? `Connected — ${d?.toolCount ?? r.tools?.length ?? 0} tools, ${d?.toolsWithSchema ?? 0} with argument schemas${d?.protocolVersion ? ` · protocol ${d.protocolVersion}` : ''}`
+                        : `Failed: ${r.error || 'unknown error'}`}
+                    </p>
+                    {/* Warnings are not failures. A connection that works but
+                        will produce bad calls needs saying out loud; colouring
+                        it red would send someone to debug the network. */}
+                    {(r.warnings || []).map((w) => (
+                      <p key={w} className="text-xs text-[var(--text-warning)]">{w}</p>
+                    ))}
+                  </div>
                 );
               })()}
             </div>
@@ -427,7 +436,7 @@ export default function McpClients() {
                 </div>
 
                 {c.auth_mode === 'oauth' && (
-                  <p className={`mt-2 text-xs ${c.oauth_connected ? 'text-green-600' : 'text-[var(--text-muted)]'}`}>
+                  <p className={`mt-2 text-xs ${c.oauth_connected ? 'text-[var(--text-positive)]' : 'text-[var(--text-muted)]'}`}>
                     {c.oauth_connected
                       ? `Authorized${c.oauth_expires_at ? ` — token renews ${new Date(c.oauth_expires_at).toLocaleString()}` : ''}`
                       : 'Registered but not authorized yet — press Connect.'}
@@ -435,7 +444,7 @@ export default function McpClients() {
                 )}
 
                 {result && (
-                  <p className={`mt-2 text-xs ${result.ok ? 'text-green-600' : 'text-red-600'}`}>
+                  <p className={`mt-2 text-xs ${result.ok ? 'text-[var(--text-positive)]' : 'text-[var(--text-negative)]'}`}>
                     {result.ok ? `Connected — ${result.tools?.length || 0} tool${result.tools?.length === 1 ? '' : 's'} discovered` : `Failed: ${result.error || 'unknown error'}`}
                   </p>
                 )}
@@ -476,7 +485,7 @@ export default function McpClients() {
           <Input label={editingId ? 'Auth header (leave blank to keep current)' : 'Auth header (optional)'} type="password"
             placeholder="Bearer sk-…" value={draft.auth_header}
             onChange={(e) => setDraft((d) => ({ ...d, auth_header: (e.target as HTMLInputElement).value }))} />
-          {formErr && <p className="text-xs text-red-600">{formErr}</p>}
+          {formErr && <p className="text-xs text-[var(--text-negative)]">{formErr}</p>}
         </div>
       </Modal>
     </div>

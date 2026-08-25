@@ -24,6 +24,10 @@ async function POST__impl(request: NextRequest, { params }: { params: { id: stri
       ok: result.ok,
       error: result.error,
       tools: (result.tools || []).map((t) => t.name),
+      // Reported so a connection that answers but cannot actually be used is
+      // distinguishable from one that works — see McpDiagnostics.
+      diagnostics: result.diagnostics,
+      warnings: result.warnings,
     });
   } catch (e) {
     return errorResponse(e);
