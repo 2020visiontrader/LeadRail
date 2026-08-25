@@ -197,6 +197,13 @@ export default function McpClients() {
     },
   ];
 
+  /** Registered servers that are NOT already shown as a named connector card.
+   *  Rendering one twice reads as two connections, and the second copy is the
+   *  one people press Remove on. */
+  const others = clients.filter((c) => !KNOWN_SERVERS.some((k) => {
+    try { return new URL(c.url).host === new URL(k.url).host; } catch { return false; }
+  }));
+
   async function addKnown(preset: (typeof KNOWN_SERVERS)[number]) {
     const existing = clients.find((c) => {
       try { return new URL(c.url).host === new URL(preset.url).host; } catch { return false; }
@@ -279,8 +286,18 @@ export default function McpClients() {
                   </div>
                   <p className="mt-1 text-xs text-[var(--text-secondary)]">{k.blurb}</p>
                   <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">Unlocks: {k.unlocks}</p>
+                  {existing && (
+                    <>
+                      <p className="mt-1 truncate text-[11px] text-[var(--text-muted)]">{existing.url}</p>
+                      {existing.last_checked_at && (
+                        <p className="text-[11px] text-[var(--text-muted)]">
+                          Last checked: {new Date(existing.last_checked_at).toLocaleString()}
+                        </p>
+                      )}
+                    </>
+                  )}
                 </div>
-                <div className="flex shrink-0 gap-2">
+                <div className="flex shrink-0 flex-wrap justify-end gap-2">
                   {!existing ? (
                     <Button variant="secondary" className="text-xs" loading={saving} onClick={() => addKnown(k)}>Add</Button>
                   ) : (
@@ -288,11 +305,40 @@ export default function McpClients() {
                       <Button variant="secondary" className="text-xs" loading={connecting === existing.id} onClick={() => connectOauth(existing)}>
                         {existing.oauth_connected ? 'Reconnect' : 'Connect'}
                       </Button>
+                      {existing.oauth_connected && (
+                        <Button variant="ghost" className="text-xs" onClick={() => disconnectOauth(existing)}>Sign out</Button>
+                      )}
                       <Button variant="ghost" className="text-xs" loading={testing === existing.id} onClick={() => testClient(existing)}>Test</Button>
+                      <Button variant="ghost" className="text-xs" onClick={() => openEdit(existing)}>Edit</Button>
+                      <Button variant="ghost" className="text-xs" onClick={() => toggleEnabled(existing)}>{existing.enabled ? 'Disable' : 'Enable'}</Button>
+                      <Button variant="danger" className="text-xs" onClick={() => removeClient(existing)}>Remove</Button>
                     </>
                   )}
                 </div>
               </div>
+              {existing && (() => {
+                const r = testResult[existing.id];
+                // A 401 here is the expected state before authorization, not a
+                // fault — saying "unreachable" for it sends people debugging a
+                // network problem that does not exist.
+                const unauthorized = !existing.oauth_connected
+                  && (r?.error ? /401|unauthorized/i.test(r.error) : existing.last_status === 'error');
+                if (unauthorized) {
+                  return (
+                    <p className="mt-2 text-xs text-[var(--text-muted)]">
+                      The server answers but rejects us — expected until Connect completes.
+                    </p>
+                  );
+                }
+                if (!r) return null;
+                return (
+                  <p className={`mt-2 text-xs ${r.ok ? 'text-green-600' : 'text-red-600'}`}>
+                    {r.ok
+                      ? `Connected — ${r.tools?.length || 0} tool${r.tools?.length === 1 ? '' : 's'} discovered`
+                      : `Failed: ${r.error || 'unknown error'}`}
+                  </p>
+                );
+              })()}
             </div>
           );
         })}
@@ -306,11 +352,14 @@ export default function McpClients() {
 
       {loading ? (
         <LoadingSpinner />
-      ) : clients.length === 0 ? (
-        <EmptyState icon="🔌" title="No external MCP servers registered" hint="Add one to let LeadRail discover its available tools." />
+      ) : others.length === 0 ? (
+        <EmptyState icon="🔌" title="No other MCP servers registered" hint="The named connectors above cover the servers LeadRail knows. Add a server by URL to register another." />
       ) : (
         <div className="space-y-2">
-          {clients.map((c) => {
+          {/* Anything already shown as a named connector card above is skipped
+              here. Rendering the same server twice reads as two connections,
+              and the second copy is the one people press Remove on. */}
+          {others.map((c) => {
             const result = testResult[c.id];
             return (
               <div key={c.id} className="rounded-lg border border-[var(--border-default)] bg-[var(--bg-raised)] p-4">
