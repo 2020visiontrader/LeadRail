@@ -149,7 +149,7 @@ const CATALOG_ORDER: string[] = [
   'getBrandCanon', 'setBrandCanon', 'scoreContentLinearity',
   'listContentPillars', 'createContentPillar', 'deleteContentPillar',
   'listPlatformSpecs', 'setPlatformSpec',
-  'syncContentPerformance', 'getContentPerformance',
+  'syncContentPerformance', 'getContentPerformance', 'proposeContentLearnings',
   // --- appended: the assistant could produce a report and had no way to hand
   // it over, and could not call for a specialist once a turn had started.
   'createFile', 'listSpecialists', 'askSpecialist',

@@ -68,12 +68,14 @@ export default function McpClients() {
   const [testResult, setTestResult] = useState<Record<string, { ok: boolean; error?: string; tools?: string[] }>>({});
 
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [oauthCfg, setOauthCfg] = useState<{ redirectUri: string; vaultConfigured: boolean } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await apiGet<{ clients: McpClient[] }>('/api/mcp-clients');
+      const res = await apiGet<{ clients: McpClient[]; oauth?: { redirectUri: string; vaultConfigured: boolean } }>('/api/mcp-clients');
       setClients(res.clients || []);
+      setOauthCfg(res.oauth || null);
       setLoadErr(null);
     } catch (e: any) {
       // Never swallowed. An empty list and a failed fetch look identical on
@@ -197,6 +199,22 @@ export default function McpClients() {
     },
   ];
 
+  /** True when the redirect we would register points somewhere other than the
+   *  site the user is on. Compared in the browser because the browser is the
+   *  only party that knows which address was actually typed — the server sees
+   *  proxy headers, which is how this drifts unnoticed in the first place. */
+  const redirectMismatch = (() => {
+    if (!oauthCfg?.redirectUri || typeof window === 'undefined') return false;
+    try { return new URL(oauthCfg.redirectUri).origin !== window.location.origin; } catch { return false; }
+  })();
+
+  /** Registered servers that are NOT already shown as a named connector card.
+   *  Rendering one twice reads as two connections, and the second copy is the
+   *  one people press Remove on. */
+  const others = clients.filter((c) => !KNOWN_SERVERS.some((k) => {
+    try { return new URL(c.url).host === new URL(k.url).host; } catch { return false; }
+  }));
+
   async function addKnown(preset: (typeof KNOWN_SERVERS)[number]) {
     const existing = clients.find((c) => {
       try { return new URL(c.url).host === new URL(preset.url).host; } catch { return false; }
@@ -279,8 +297,23 @@ export default function McpClients() {
                   </div>
                   <p className="mt-1 text-xs text-[var(--text-secondary)]">{k.blurb}</p>
                   <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">Unlocks: {k.unlocks}</p>
+                  {oauthCfg?.redirectUri && (
+                    <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
+                      Redirects back to <code className="font-mono">{oauthCfg.redirectUri}</code>
+                    </p>
+                  )}
+                  {existing && (
+                    <>
+                      <p className="mt-1 truncate text-[11px] text-[var(--text-muted)]">{existing.url}</p>
+                      {existing.last_checked_at && (
+                        <p className="text-[11px] text-[var(--text-muted)]">
+                          Last checked: {new Date(existing.last_checked_at).toLocaleString()}
+                        </p>
+                      )}
+                    </>
+                  )}
                 </div>
-                <div className="flex shrink-0 gap-2">
+                <div className="flex shrink-0 flex-wrap justify-end gap-2">
                   {!existing ? (
                     <Button variant="secondary" className="text-xs" loading={saving} onClick={() => addKnown(k)}>Add</Button>
                   ) : (
@@ -288,15 +321,63 @@ export default function McpClients() {
                       <Button variant="secondary" className="text-xs" loading={connecting === existing.id} onClick={() => connectOauth(existing)}>
                         {existing.oauth_connected ? 'Reconnect' : 'Connect'}
                       </Button>
+                      {existing.oauth_connected && (
+                        <Button variant="ghost" className="text-xs" onClick={() => disconnectOauth(existing)}>Sign out</Button>
+                      )}
                       <Button variant="ghost" className="text-xs" loading={testing === existing.id} onClick={() => testClient(existing)}>Test</Button>
+                      <Button variant="ghost" className="text-xs" onClick={() => openEdit(existing)}>Edit</Button>
+                      <Button variant="ghost" className="text-xs" onClick={() => toggleEnabled(existing)}>{existing.enabled ? 'Disable' : 'Enable'}</Button>
+                      <Button variant="danger" className="text-xs" onClick={() => removeClient(existing)}>Remove</Button>
                     </>
                   )}
                 </div>
               </div>
+              {existing && (() => {
+                const r = testResult[existing.id];
+                // A 401 here is the expected state before authorization, not a
+                // fault — saying "unreachable" for it sends people debugging a
+                // network problem that does not exist.
+                const unauthorized = !existing.oauth_connected
+                  && (r?.error ? /401|unauthorized/i.test(r.error) : existing.last_status === 'error');
+                if (unauthorized) {
+                  return (
+                    <p className="mt-2 text-xs text-[var(--text-muted)]">
+                      The server answers but rejects us — expected until Connect completes.
+                    </p>
+                  );
+                }
+                if (!r) return null;
+                return (
+                  <p className={`mt-2 text-xs ${r.ok ? 'text-green-600' : 'text-red-600'}`}>
+                    {r.ok
+                      ? `Connected — ${r.tools?.length || 0} tool${r.tools?.length === 1 ? '' : 's'} discovered`
+                      : `Failed: ${r.error || 'unknown error'}`}
+                  </p>
+                );
+              })()}
             </div>
           );
         })}
       </div>
+
+      {/* Preflight. Both of these break the handshake at a point where the
+          error surfaces as something else entirely, so they are stated before
+          anyone presses Connect rather than discovered afterwards. */}
+      {oauthCfg && !oauthCfg.vaultConfigured && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          <strong>AI_VAULT_KEY is not set on this deployment.</strong> Authorization will refuse to start rather than
+          store an access token in plaintext. Set it and reload before pressing Connect.
+        </div>
+      )}
+      {oauthCfg && redirectMismatch && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <strong>The redirect address does not match this site.</strong> We would register{' '}
+          <code className="font-mono">{oauthCfg.redirectUri}</code> with the provider, but you are on{' '}
+          <code className="font-mono">{typeof window !== 'undefined' ? window.location.origin : ''}</code>. Authorization
+          would succeed and then send the browser to the wrong host, so the connection never completes. Set{' '}
+          <code className="font-mono">APP_BASE_URL</code> to this site&apos;s address and redeploy.
+        </div>
+      )}
 
       {loadErr && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
@@ -306,11 +387,14 @@ export default function McpClients() {
 
       {loading ? (
         <LoadingSpinner />
-      ) : clients.length === 0 ? (
-        <EmptyState icon="🔌" title="No external MCP servers registered" hint="Add one to let LeadRail discover its available tools." />
+      ) : others.length === 0 ? (
+        <EmptyState icon="🔌" title="No other MCP servers registered" hint="The named connectors above cover the servers LeadRail knows. Add a server by URL to register another." />
       ) : (
         <div className="space-y-2">
-          {clients.map((c) => {
+          {/* Anything already shown as a named connector card above is skipped
+              here. Rendering the same server twice reads as two connections,
+              and the second copy is the one people press Remove on. */}
+          {others.map((c) => {
             const result = testResult[c.id];
             return (
               <div key={c.id} className="rounded-lg border border-[var(--border-default)] bg-[var(--bg-raised)] p-4">

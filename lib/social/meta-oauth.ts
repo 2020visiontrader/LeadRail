@@ -50,8 +50,18 @@ export function metaConfigured(): boolean {
   return Boolean(process.env.META_APP_ID && process.env.META_APP_SECRET);
 }
 
+/** The address this deployment is reached at, used to build every OAuth
+ *  redirect. APP_BASE_URL is authoritative; the fallback exists only so a
+ *  deployment that forgot to set it lands somewhere recognisable rather than
+ *  on a stale sandbox host.
+ *
+ *  A wrong value here fails LATE — after the user has signed in and approved —
+ *  because the provider redirects to an address that is not this site. That is
+ *  why the Connectors panel compares this against the browser's own origin and
+ *  says so before anyone presses Connect, instead of leaving it to be
+ *  discovered at the end of a handshake. */
 export function publicBase(): string {
-  return (process.env.APP_BASE_URL || 'https://leadrail-crm-aifranckie.zocomputer.io').replace(/\/$/, '');
+  return (process.env.APP_BASE_URL || 'https://app.leadrail.xyz').replace(/\/$/, '');
 }
 
 export function redirectUri(): string {

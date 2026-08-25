@@ -84,20 +84,77 @@ function wellKnown(base: URL, suffix: string): string[] {
   return withPath === atRoot ? [atRoot] : [withPath, atRoot];
 }
 
+/** Ask the MCP endpoint itself where its metadata lives.
+ *
+ *  THIS IS THE STEP THAT WAS MISSING, and it is not an optimisation. The spec
+ *  lets a server implement EITHER of two discovery mechanisms: the
+ *  WWW-Authenticate header on a 401, or the well-known URI. A client that only
+ *  implements the second one fails completely against a server that chose the
+ *  first — and fails in the most misleading way possible, reporting "no
+ *  metadata found" about a server that is publishing its metadata correctly
+ *  and telling us exactly where it is.
+ *
+ *  RFC 9728 §5.1: `WWW-Authenticate: Bearer resource_metadata="https://..."`.
+ *  The 401 is the expected, successful outcome of this probe — we are reading
+ *  the challenge, not trying to get past it.
+ *
+ *  Returns null rather than throwing: this is one of two routes, and a server
+ *  that answers without the header is still reachable through the other. */
+async function resourceMetadataUrlFromChallenge(mcpUrl: string): Promise<string | null> {
+  try {
+    const res = await fetch(mcpUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+      // A well-formed initialize, so a server that authenticates per-method
+      // reaches the same 401 a real client would.
+      body: JSON.stringify({
+        jsonrpc: '2.0', id: 1, method: 'initialize',
+        params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 'LeadRail', version: '1.0' } },
+      }),
+      signal: AbortSignal.timeout(DISCOVERY_TIMEOUT_MS),
+    });
+    const header = res.headers.get('www-authenticate');
+    if (!header) return null;
+    // resource_metadata="<url>" — quoted per RFC 7235, but accept unquoted too
+    // rather than failing on a server that is merely untidy about it.
+    const m = header.match(/resource_metadata\s*=\s*"([^"]+)"/i)
+      || header.match(/resource_metadata\s*=\s*([^,\s]+)/i);
+    return m ? m[1] : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Find the authorization server protecting an MCP endpoint.
  *
- * Preferred path is RFC 9728: the resource publishes which authorization
- * servers it trusts. Falling back to asking the MCP host for its OWN
- * authorization-server metadata covers servers that are their own issuer,
- * which is common and which the earlier spec drafts assumed.
+ * Three routes, in the order the spec prefers them:
+ *   1. the WWW-Authenticate challenge on a 401 — authoritative, the server
+ *      naming its own metadata document
+ *   2. the well-known protected-resource URI
+ *   3. assume the MCP host is its own issuer
+ *
+ * Route 1 first because it is the only one that cannot be wrong: 2 and 3 are
+ * both guesses about where a document might live, and a guess that happens to
+ * hit a DIFFERENT authorization server would send the user to sign in
+ * somewhere they did not intend.
  */
 export async function discoverAuthServer(mcpUrl: string): Promise<AuthServerMetadata> {
   let base: URL;
   try { base = new URL(mcpUrl); } catch { throw new Error('The server URL is not a valid URL.'); }
 
   const issuers: string[] = [];
-  for (const url of wellKnown(base, 'oauth-protected-resource')) {
+
+  const advertised = await resourceMetadataUrlFromChallenge(mcpUrl);
+  if (advertised) {
+    try {
+      const prm = await fetchJson(advertised, { headers: { Accept: 'application/json' } }, DISCOVERY_TIMEOUT_MS);
+      const list = Array.isArray(prm?.authorization_servers) ? prm.authorization_servers : [];
+      for (const i of list) if (typeof i === 'string') issuers.push(i);
+    } catch { /* fall through to the well-known route */ }
+  }
+
+  for (const url of issuers.length ? [] : wellKnown(base, 'oauth-protected-resource')) {
     try {
       const prm = await fetchJson(url, { headers: { Accept: 'application/json' } }, DISCOVERY_TIMEOUT_MS);
       const list = Array.isArray(prm?.authorization_servers) ? prm.authorization_servers : [];
@@ -138,6 +195,9 @@ export async function discoverAuthServer(mcpUrl: string): Promise<AuthServerMeta
   }
   throw new Error(
     `Could not find an authorization server for ${base.host}. ` +
+    (advertised
+      ? `The server pointed at ${advertised}, but that document did not name an authorization server. `
+      : 'The server did not advertise one on a 401, and no metadata document was published where the spec says to look. ') +
     `Tried: ${errors.slice(0, 3).join(' · ') || 'no metadata documents found'}. ` +
     'If this server uses a static token instead of OAuth, register it with an Auth header rather than Connect.',
   );
