@@ -99,6 +99,7 @@ const TOOL_VERB: Record<string, string> = {
   setPlatformSpec: 'Updating the platform rules',
   syncContentPerformance: 'Pulling the numbers from what went out',
   getContentPerformance: 'Looking at what actually performed',
+  proposeContentLearnings: 'Working out what the results suggest',
   createFile: 'Putting that in a file for you',
   listSpecialists: 'Checking who can help',
   askSpecialist: 'Consulting a specialist',

@@ -20,6 +20,7 @@ import { generateContent } from '@/lib/content/engine';
 import { loadCanon, saveCanon, scoreLinearity } from '@/lib/content/canon';
 import { runResearchSweep, listFindings, RESEARCH_PASSES } from '@/lib/content/research';
 import { syncPerformance, performanceReport } from '@/lib/content/performance';
+import { proposeLearning } from '@/lib/content/learning';
 import { runIntake, proposeCanon } from '@/lib/content/intake';
 import { generateImage as routeImage } from '@/lib/ai/image-router';
 import { generateVideo, getVideoStatus, higgsfieldUnavailableReason } from '@/lib/integrations/higgsfield';
@@ -426,6 +427,35 @@ export const CONTENT_CAPABILITIES: Capability[] = [
         `Across ${plural(r.scored, 'published piece')}: ${obs.slice(0, 4).map((o: any) => `${o.value} (${o.dimension}, median ${o.medianEngagement} over ${o.sample})`).join(', ')}.`,
         'These are observations over a small sample, not a strategy. Present them that way.',
         caveats.length ? caveats.join(' ') : null,
+      );
+    },
+  },
+
+  {
+    name: 'proposeContentLearnings',
+    domain: 'content',
+    title: 'What the results might mean',
+    description:
+      "Look at how published content performed and propose what to change — as SUGGESTIONS a person accepts, never as changes. This writes nothing: not to the brand canon, not to the pillars, not to the platform specs. Use when the user asks what they should do differently. Present every proposal with its evidence and its confidence, and never describe one as applied. If it returns nothing, say the data does not support a change yet rather than reaching for a suggestion.",
+    gate: 'read',
+    inputSchema: obj({ brandId: S.string }, []),
+    zod: z.object({ brandId: z.string().optional() }),
+    run: (accountId, a) => proposeLearning({ accountId, ...a }),
+    digest: (_a, result) => {
+      const r: any = result;
+      if (!r || !Array.isArray(r.proposals)) return '';
+      if (!r.proposals.length) {
+        return digestLine(
+          'Nothing in the results supports a change yet.',
+          Array.isArray(r.caveats) && r.caveats.length ? r.caveats.join(' ') : null,
+        );
+      }
+      return digestLine(
+        `${plural(r.proposals.length, 'suggestion')}: ${r.proposals.map((p: any) => `${p.suggestion} (${p.evidence}, ${p.confidence} confidence)`).join(' ')}`,
+        Array.isArray(r.caveats) && r.caveats.length ? r.caveats.join(' ') : null,
+        // Restated in the digest itself so it cannot be lost between the data
+        // and the moment someone decides to act on it.
+        r.governance,
       );
     },
   },
