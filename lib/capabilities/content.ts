@@ -19,6 +19,7 @@ import {
 import { generateContent } from '@/lib/content/engine';
 import { loadCanon, saveCanon, scoreLinearity } from '@/lib/content/canon';
 import { runResearchSweep, listFindings, RESEARCH_PASSES } from '@/lib/content/research';
+import { syncPerformance, performanceReport } from '@/lib/content/performance';
 import { runIntake, proposeCanon } from '@/lib/content/intake';
 import { generateImage as routeImage } from '@/lib/ai/image-router';
 import { generateVideo, getVideoStatus, higgsfieldUnavailableReason } from '@/lib/integrations/higgsfield';
@@ -372,6 +373,60 @@ export const CONTENT_CAPABILITIES: Capability[] = [
       } catch (e: any) {
         return { error: e?.message || 'Could not read the render status.' };
       }
+    },
+  },
+
+  // ------------------------------------------------------------ performance
+  //
+  // The loop was open: the engine generated, scored and published, and then
+  // nothing ever checked whether the judgement it made at the moment of
+  // writing turned out to be right.
+  {
+    name: 'syncContentPerformance',
+    domain: 'content',
+    title: 'Pull live metrics for published content',
+    description:
+      "Read likes, comments and shares for content already published to a connected Instagram or Facebook account, and store them against the board. Matches by the recorded post id only — an item published without one cannot be matched and is reported rather than guessed at. Use before reporting on how content is doing, or when the user asks what worked.",
+    gate: 'read',
+    inputSchema: obj({ brandId: S.string, limit: S.number }, []),
+    zod: z.object({ brandId: z.string().optional(), limit: z.number().int().min(1).max(200).optional() }),
+    run: (accountId, a) => syncPerformance({ accountId, ...a }),
+    digest: (_a, result) => {
+      const r: any = result;
+      if (!r || typeof r.updated !== 'number') return '';
+      return digestLine(
+        r.updated ? `Metrics updated for ${plural(r.updated, 'published piece')}.` : 'No published piece could be matched to a live post.',
+        // Named, not swallowed. Metrics for 3 of 20 published items look
+        // identical to 20 items performing badly once the gap is invisible.
+        Array.isArray(r.unmatched) && r.unmatched.length
+          ? `${plural(r.unmatched.length, 'item')} could not be matched: ${r.unmatched.slice(0, 3).map((u: any) => `"${String(u.title).slice(0, 40)}" (${u.reason})`).join('; ')}. Say so rather than reporting only on what matched.`
+          : null,
+      );
+    },
+  },
+  {
+    name: 'getContentPerformance',
+    domain: 'content',
+    title: 'What the numbers suggest',
+    description:
+      "Summarise how published content has performed, grouped by pillar and platform, using median engagement. Returns OBSERVATIONS, not instructions — and stays silent where the sample is too small to support a claim rather than ranking three posts and calling it a result. Use when the user asks what is working. Never treat the top row as a directive to change the brand's canon; that is a decision the user makes.",
+    gate: 'read',
+    inputSchema: obj({ brandId: S.string }, []),
+    zod: z.object({ brandId: z.string().optional() }),
+    run: (accountId, a) => performanceReport({ accountId, ...a }),
+    digest: (_a, result) => {
+      const r: any = result;
+      if (!r || typeof r.scored !== 'number') return '';
+      const obs = Array.isArray(r.observations) ? r.observations : [];
+      const caveats = Array.isArray(r.caveats) ? r.caveats : [];
+      if (!obs.length) {
+        return digestLine(caveats.length ? caveats.join(' ') : 'No published content has metrics on file yet.');
+      }
+      return digestLine(
+        `Across ${plural(r.scored, 'published piece')}: ${obs.slice(0, 4).map((o: any) => `${o.value} (${o.dimension}, median ${o.medianEngagement} over ${o.sample})`).join(', ')}.`,
+        'These are observations over a small sample, not a strategy. Present them that way.',
+        caveats.length ? caveats.join(' ') : null,
+      );
     },
   },
 
