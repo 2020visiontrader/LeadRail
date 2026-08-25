@@ -2,7 +2,7 @@ import type { Metadata } from 'next';
 import WelcomeShell from '@/components/welcome/Shell';
 import {
   HeroSection, ExampleRunSection, HowItWorksSection,
-  ArchitectureSection, CapabilitiesSection, FaqSection,
+  CapabilitiesSection, FaqSection,
 } from '@/components/welcome/sections';
 import { SITE_URL, ENTITY, ENTITY_CITY, ENTITY_REGION, ENTITY_COUNTRY, CONTACT, FAQ } from '@/components/welcome/content';
 
@@ -127,7 +127,6 @@ export default function WelcomePage() {
       <HeroSection />
       <ExampleRunSection />
       <HowItWorksSection />
-      <ArchitectureSection />
       <CapabilitiesSection />
       <FaqSection />
     </WelcomeShell>

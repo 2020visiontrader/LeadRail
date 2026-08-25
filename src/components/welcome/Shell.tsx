@@ -15,7 +15,6 @@ import Link from 'next/link';
 export const WELCOME_NAV = [
   { href: '/welcome/example-run', label: 'Example run' },
   { href: '/welcome/how-it-works', label: 'How it works' },
-  { href: '/welcome/architecture', label: 'Architecture' },
   { href: '/welcome/capabilities', label: 'Capabilities' },
   { href: '/welcome/faq', label: 'FAQ' },
 ] as const;

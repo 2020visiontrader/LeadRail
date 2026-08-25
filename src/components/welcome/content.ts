@@ -34,7 +34,7 @@ export const FAQ: Array<{ q: string; a: string }> = [
   },
   {
     q: 'What can the assistant actually do?',
-    a: 'It works through a registry of declared capabilities across nine domains: ventures, campaigns, leads, outreach, CRM, knowledge, creative, memory and social. In practice that means listing and enriching leads, moving deals through stages, drafting and sending outreach, creating and launching Meta ad campaigns, pulling live ad insights, drafting, scheduling and publishing social posts, replying to comments, and searching your connected Notion and Google Drive.',
+    a: 'It lists and enriches leads, moves deals through pipeline stages, drafts and sends outreach, creates and launches ad campaigns, pulls live campaign insights, drafts, schedules and publishes social posts, replies to comments, and searches the reference material you have connected. Anything that spends budget or reaches a real person waits for your approval first.',
   },
   {
     q: 'Does LeadRail send anything without my approval?',
@@ -46,7 +46,7 @@ export const FAQ: Array<{ q: string; a: string }> = [
   },
   {
     q: 'Which platforms does LeadRail connect to?',
-    a: 'Meta — Facebook, Instagram and Threads — for publishing, comments, ads and insights; Buffer, Postiz and GoHighLevel for scheduling and distribution; Notion and Google Drive as knowledge sources; Resend and Brevo for email; and Apollo for lead enrichment and prospect search. You connect only what you use, and anything you have not configured receives nothing.',
+    a: 'The major social networks for publishing, comments, ads and insights, along with scheduling tools, email delivery, lead enrichment and the document stores your team already uses for reference material. We will confirm the specific integrations you need during your demo. You connect only what you use, and anything you have not configured receives nothing.',
   },
   {
     q: 'Can LeadRail manage more than one brand?',
@@ -142,10 +142,10 @@ export const CAPABILITY_DOMAINS: Array<{ name: string; blurb: string }> = [
   { name: 'Leads', blurb: 'List, filter, enrich and re-status contacts; source new prospects.' },
   { name: 'CRM', blurb: 'Deals, stages, notes and tags — moved by name, not by drag.' },
   { name: 'Outreach', blurb: 'Draft messages, enrol contacts in sequences, send email.' },
-  { name: 'Campaigns', blurb: 'Create, launch, pause and sync Meta ad campaigns; pull live insights.' },
+  { name: 'Campaigns', blurb: 'Create, launch, pause and sync paid campaigns; pull live insights.' },
   { name: 'Social', blurb: 'Draft, schedule and publish posts; read and reply to comments.' },
   { name: 'Creative', blurb: 'Generate ad copy against a stored persona and brand voice.' },
-  { name: 'Knowledge', blurb: 'Search and read your connected Notion pages and Drive files.' },
+  { name: 'Knowledge', blurb: 'Search and read the reference material your team has connected.' },
   { name: 'Memory', blurb: 'Remember, list and forget durable facts across conversations.' },
   { name: 'Ventures', blurb: 'Several brands in one account, each scoped separately.' },
 ];
