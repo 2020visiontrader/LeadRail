@@ -19,7 +19,7 @@ function mockRpc(result: any) {
   )));
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => { vi.unstubAllGlobals(); });
 
 describe('tool call results', () => {
   it('reports isError as a failure, not a success', async () => {
