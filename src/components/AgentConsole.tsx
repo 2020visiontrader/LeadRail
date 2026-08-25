@@ -3,6 +3,8 @@ import { useRef, useState, useEffect } from 'react';
 import Button from '@/components/Button';
 import Markdown from '@/components/Markdown';
 import { apiGet, apiSend } from '@/lib/api';
+import VoiceInput from '@/components/composer/VoiceInput';
+import Attachments, { type UploadedAttachment } from '@/components/composer/Attachments';
 
 // Live agentic console. Streams the assistant's real reasoning from
 // /api/agent/stream and renders it Claude-desktop style: one plain-language
@@ -266,6 +268,22 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
   // boolean, and a single flag would be cleared by whichever run finished first
   // while others were still streaming.
   const [activeRuns, setActiveRuns] = useState<Set<string>>(new Set());
+  const [attachments, setAttachments] = useState<UploadedAttachment[]>([]);
+
+  // Moving between pages inside the app does NOT stop a run: the request is not
+  // tied to this component's lifetime, and the server saves the finished turn
+  // in its own `finally` whether or not anyone is still watching.
+  //
+  // Closing or reloading the TAB is the one case that genuinely loses work —
+  // the connection drops and the handler can be torn down before it persists.
+  // So that is the only case warned about; warning on ordinary navigation would
+  // be a lie that trains people to dismiss the dialog.
+  useEffect(() => {
+    if (!activeRuns.size) return;
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [activeRuns.size]);
   const busy = activeRuns.size > 0;
   const endRun = (id: string) => setActiveRuns((prev) => { const n = new Set(prev); n.delete(id); return n; });
   const [proposal, setProposal] = useState<Proposal | null>(null);
@@ -715,18 +733,37 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
           (selectPersonasForRequest), and who is working shows up in the STEP
           TRACE instead: "Ada is checking the numbers…". Attribution without
           administration. */}
-      <div className="flex items-end gap-2 border-t border-[var(--border-default)] p-3">
-        <textarea
-          rows={2}
-          value={input}
-          placeholder="Ask LeadRail to do something…"
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
-          className="flex-1 resize-none rounded-lg border border-[var(--border-default)] bg-[var(--bg-canvas)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--brand)] focus:outline-none"
-        />
-        <Button loading={false} disabled={!canSend} onClick={send}>
-          {activeRuns.size > 1 ? `Send (${activeRuns.size} running)` : activeRuns.size === 1 ? 'Send (1 running)' : 'Send'}
-        </Button>
+      <div className="border-t border-[var(--border-default)] pt-3">
+        <div className="flex items-end gap-2 px-3 pb-3">
+          <Attachments
+            conversationId={conversationIdRef.current}
+            attachments={attachments}
+            onChange={setAttachments}
+            disabled={busy}
+          />
+          <textarea
+            rows={2}
+            value={input}
+            placeholder="Ask LeadRail to do something…"
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
+            className="flex-1 resize-none rounded-lg border border-[var(--border-default)] bg-[var(--bg-canvas)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--brand)] focus:outline-none"
+          />
+          <VoiceInput
+            disabled={busy}
+            // Product and venture names are exactly the words a recogniser
+            // gets wrong, and exactly the ones that must be right.
+            vocabulary="LeadRail, venture, campaign, pipeline, outreach, cadence" 
+            // Appended, not replaced: speaking mid-sentence should continue the
+            // thought rather than wipe what is already typed. It lands in the
+            // box rather than sending, because a brain-dump is the thing you
+            // most want to read back before it goes anywhere.
+            onTranscript={(text) => setInput((prev) => (prev ? `${prev.trim()} ${text}` : text))}
+          />
+          <Button loading={false} disabled={!canSend} onClick={send}>
+            {activeRuns.size > 1 ? `Send (${activeRuns.size} running)` : activeRuns.size === 1 ? 'Send (1 running)' : 'Send'}
+          </Button>
+        </div>
       </div>
     </div>
   );
