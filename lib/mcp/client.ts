@@ -20,12 +20,50 @@ const CALL_TIMEOUT_MS = 20_000;
 export interface McpToolSummary {
   name: string;
   description?: string;
+  /** The remote tool's own JSON Schema, carried through verbatim.
+   *
+   *  THIS WAS BEING DISCARDED, and discarding it is why calls failed with
+   *  "invalid arguments": the model was shown a tool with a name, a sentence of
+   *  description, and NO parameters, so it had to invent argument names and
+   *  guess enum values. The server then rejected the guess — correctly — and
+   *  the whole thing read as a broken connection rather than as us withholding
+   *  the instructions. A schema with an enum in it is the difference between
+   *  the model knowing `action` must be one of four strings and it picking a
+   *  fifth. */
+  inputSchema?: Record<string, any>;
+}
+
+/** What the connection test actually established, beyond "it answered".
+ *
+ *  WHY MORE THAN A BOOLEAN. The old test ran initialize + tools/list and called
+ *  a success a working connection. A server can pass both of those and still
+ *  leave the assistant unable to call anything — which is exactly what
+ *  happened: tools were discovered, none of their schemas were kept, and every
+ *  call came back "invalid arguments". A green tick that does not distinguish
+ *  those two states is worse than no tick, because it sends you looking at the
+ *  network when the problem is the payload. */
+export interface McpDiagnostics {
+  /** The protocol version the server negotiated. */
+  protocolVersion?: string;
+  serverName?: string;
+  toolCount: number;
+  /** How many of those tools published an argument schema. A tool without one
+   *  forces the model to guess argument names and enum values, so this is the
+   *  number that predicts whether calls will actually succeed. */
+  toolsWithSchema: number;
+  /** Named so the warning can point at them rather than saying "some tools". */
+  toolsMissingSchema: string[];
 }
 
 export interface McpConnectResult {
   ok: boolean;
   tools?: McpToolSummary[];
   error?: string;
+  diagnostics?: McpDiagnostics;
+  /** Things that are true and worth knowing, but are not failures. Kept
+   *  separate from `error` so a usable connection is never reported as a
+   *  broken one. */
+  warnings?: string[];
 }
 
 interface JsonRpcResponse {
@@ -119,9 +157,40 @@ export async function connect(url: string, authHeader?: string | null): Promise<
   const rawTools = Array.isArray(list.result?.tools) ? list.result.tools : [];
   const tools: McpToolSummary[] = rawTools
     .filter((t: any) => t && typeof t.name === 'string')
-    .map((t: any) => ({ name: t.name, description: typeof t.description === 'string' ? t.description : undefined }));
+    .map((t: any) => ({
+      name: t.name,
+      description: typeof t.description === 'string' ? t.description : undefined,
+      // Accept either spelling: the spec says inputSchema, some servers emit
+      // input_schema. Neither is worth losing a schema over.
+      inputSchema: (t.inputSchema && typeof t.inputSchema === 'object')
+        ? t.inputSchema
+        : (t.input_schema && typeof t.input_schema === 'object') ? t.input_schema : undefined,
+    }));
 
-  return { ok: true, tools };
+  const missing = tools.filter((t) => !t.inputSchema?.type).map((t) => t.name);
+  const warnings: string[] = [];
+  if (!tools.length) {
+    warnings.push('The server connected but offers no tools, so the assistant has nothing to call on it.');
+  } else if (missing.length) {
+    // The precise failure this test previously could not see.
+    warnings.push(
+      `${missing.length} of ${tools.length} tools publish no argument schema (${missing.slice(0, 5).join(', ')}${missing.length > 5 ? ', …' : ''}). ` +
+      'Calls to those may fail with "invalid arguments", because there is nothing telling the assistant what to pass.',
+    );
+  }
+
+  return {
+    ok: true,
+    tools,
+    warnings,
+    diagnostics: {
+      protocolVersion: typeof init.result?.protocolVersion === 'string' ? init.result.protocolVersion : undefined,
+      serverName: typeof init.result?.serverInfo?.name === 'string' ? init.result.serverInfo.name : undefined,
+      toolCount: tools.length,
+      toolsWithSchema: tools.length - missing.length,
+      toolsMissingSchema: missing,
+    },
+  };
 }
 
 export interface McpCallResult {
@@ -150,5 +219,40 @@ export async function callTool(
   }
   const res = await rpcCall(url, authHeader, 'tools/call', { name, arguments: args ?? {} }, CALL_TIMEOUT_MS);
   if (!res.ok) return { ok: false, error: res.error };
-  return { ok: true, result: res.result };
+
+  // Unwrap the MCP result envelope.
+  //
+  // TWO BUGS LIVED HERE. The envelope was returned verbatim, so an observation
+  // read `{"content":[{"type":"text","text":"..."}]}` — the model had to parse
+  // JSON to find the answer, and the trace showed that JSON to the user.
+  //
+  // Worse, `isError: true` is how MCP reports a TOOL failure, and it arrives
+  // inside a perfectly successful JSON-RPC response. Ignoring it meant a
+  // rejected call was recorded as a completed one, with a green tick — the
+  // same class of bug as a pending approval reading as a finished action.
+  const envelope = res.result;
+  const text = extractText(envelope);
+  if (envelope && typeof envelope === 'object' && envelope.isError) {
+    return { ok: false, error: text || 'The tool reported an error but gave no detail.' };
+  }
+  // Structured output, where a server provides it, is more useful than prose.
+  if (envelope && typeof envelope === 'object' && envelope.structuredContent !== undefined) {
+    return { ok: true, result: envelope.structuredContent };
+  }
+  return { ok: true, result: text !== null ? text : envelope };
+}
+
+/** Pull readable text out of an MCP content array, or null when there is none.
+ *  Non-text parts (images, resources) are named rather than dropped, so an
+ *  observation never silently loses that something came back. */
+function extractText(envelope: any): string | null {
+  const parts = Array.isArray(envelope?.content) ? envelope.content : null;
+  if (!parts) return null;
+  const out: string[] = [];
+  for (const p of parts) {
+    if (p?.type === 'text' && typeof p.text === 'string') out.push(p.text);
+    else if (p?.type === 'resource' && typeof p.resource?.text === 'string') out.push(p.resource.text);
+    else if (p?.type) out.push(`[${p.type}]`);
+  }
+  return out.length ? out.join('\n') : null;
 }

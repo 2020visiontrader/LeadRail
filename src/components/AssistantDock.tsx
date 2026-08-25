@@ -5,7 +5,6 @@ import AgentConsole, { type Step } from '@/components/AgentConsole';
 import Button from '@/components/Button';
 import { apiGet } from '@/lib/api';
 
-interface Venture { id: string; name: string }
 interface ConversationSummary { id: string; title: string | null; updated_at: string | null; token_estimate: number | null }
 
 type DockMode = 'hidden' | 'docked';
@@ -47,8 +46,9 @@ function clampWidth(w: number): number {
 export default function AssistantDock() {
   const pathname = usePathname();
   const [mode, setMode] = useState<DockMode>('hidden');
-  const [ventures, setVentures] = useState<Venture[]>([]);
-  const [brandId, setBrandId] = useState<string | undefined>(undefined);
+  // Deliberately never set on this surface. The assistant resolves the venture
+  // from the conversation instead — see the note where the picker used to be.
+  const brandId: string | undefined = undefined;
 
   const [width, setWidth] = useState<number>(DEFAULT_WIDTH);
   const [steps, setSteps] = useState<Step[]>([]);
@@ -95,13 +95,6 @@ export default function AssistantDock() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
-
-  // Same venture-fetch pattern as app/assistant/page.tsx.
-  useEffect(() => {
-    apiGet<{ ventures: Venture[] }>('/api/ventures')
-      .then((d) => { const vs = d.ventures || []; setVentures(vs); setBrandId(vs[0]?.id); })
-      .catch(() => setVentures([]));
   }, []);
 
   // Live pointer-drag resize on the dock's right edge. Ref holds the drag origin
@@ -156,15 +149,13 @@ export default function AssistantDock() {
     >
       <div className="flex h-[52px] shrink-0 items-center gap-3 border-b border-[var(--border-default)] px-4">
         <span className="text-[15px] font-bold tracking-tight text-[var(--text-primary)]" style={{ fontFamily: 'var(--font-display)' }}>Assistant</span>
-        {ventures.length > 0 && (
-          <select
-            value={brandId}
-            onChange={(e) => setBrandId(e.target.value)}
-            className="rounded-md border border-[var(--border-default)] bg-[var(--bg-surface)] px-2 py-1 text-[13px] text-[var(--text-primary)]"
-          >
-            {ventures.map((v) => <option key={v.id} value={v.id}>{v.name}</option>)}
-          </select>
-        )}
+        {/* The venture picker is gone deliberately.
+            It defaulted to whichever venture sorted first and passed that id
+            silently, so work landed on a brand nobody chose — and the control
+            LOOKED like a deliberate choice, which made the wrong scope harder
+            to notice, not easier. The assistant now works out the venture from
+            what is being asked and asks when it genuinely cannot tell, which
+            is the same thing a person would do. */}
         <div className="ml-auto">
           <Button variant="ghost" onClick={hide} className="h-8 px-2.5 text-[13px]">
             <kbd className="rounded border border-[var(--border-default)] px-1 text-[11px] text-[var(--text-muted)]">⌘J</kbd>

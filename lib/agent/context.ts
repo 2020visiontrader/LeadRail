@@ -63,7 +63,7 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
     try {
       const vc = brandId ? await loadVentureContext(brandId, accountId) : undefined;
       if (vc) {
-        const lines = ['CURRENT VENTURE (source: live database — work here unless the user names another):'];
+        const lines = ['CURRENT VENTURE — the user is explicitly working here (source: live database). Use it unless they name another:'];
         if (vc.name) lines.push(`- Name: ${vc.name}`);
         if (vc.description) lines.push(`- What it is: ${vc.description}`);
         if (vc.pitch) lines.push(`- Pitch: ${vc.pitch}`);
@@ -104,7 +104,27 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
       // no fetch time invite the model to treat a stale recalled fact and a
       // live count as equally current when they conflict.
       const snap = [`ACCOUNT SNAPSHOT (source: live database, fetched ${new Date().toISOString()}):`];
-      if (ventures?.length) snap.push(`- Ventures (${ventures.length}): ${ventures.map((v: any) => v.name).filter(Boolean).join(', ')}`);
+      if (ventures?.length) {
+        // Names AND ids. Names alone let the model recognise a venture but not
+        // act on one — every brand-scoped capability takes an id, so a list
+        // without ids means it either asks a question it could have answered
+        // or invents an identifier.
+        snap.push(`- Ventures (${ventures.length}): ${ventures.map((v: any) => `${v.name} [${v.id}]`).filter(Boolean).join(', ')}`);
+        if (!brandId) {
+          // WHY THIS BLOCK EXISTS. The UI used to default to whichever venture
+          // sorted first and pass its id silently, so work landed on a brand
+          // nobody chose and nothing said so. Removing that default is only
+          // half the fix: without a rule, "no venture" becomes "guess", which
+          // is the same failure with an extra step.
+          snap.push('');
+          snap.push('WHICH VENTURE — no venture is selected, so work it out before doing anything brand-scoped:');
+          snap.push('1. If the message names a venture, or clearly refers to one (its product, its audience, a campaign only it runs), use that one and say which you picked.');
+          snap.push('2. If the account has exactly one venture, use it.');
+          snap.push('3. If the conversation already established one, stay with it — do not re-ask every turn.');
+          snap.push('4. Otherwise ASK which venture this is for, and ask BEFORE acting. Do not pick the first one, do not pick the most recently used, and do not spread the work across all of them.');
+          snap.push('Reading a venture to work out which is meant is fine. Writing, sending or spending against a guessed venture is not — that is work landing on the wrong brand, which is expensive to undo and easy to miss.');
+        }
+      }
       snap.push(`- Leads on file: ${leadCount ?? 0}`);
       snap.push(`- Ad campaigns: ${campaignCount ?? 0}`);
       return snap.join('\n');
