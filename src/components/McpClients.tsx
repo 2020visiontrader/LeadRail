@@ -68,12 +68,14 @@ export default function McpClients() {
   const [testResult, setTestResult] = useState<Record<string, { ok: boolean; error?: string; tools?: string[] }>>({});
 
   const [loadErr, setLoadErr] = useState<string | null>(null);
+  const [oauthCfg, setOauthCfg] = useState<{ redirectUri: string; vaultConfigured: boolean } | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await apiGet<{ clients: McpClient[] }>('/api/mcp-clients');
+      const res = await apiGet<{ clients: McpClient[]; oauth?: { redirectUri: string; vaultConfigured: boolean } }>('/api/mcp-clients');
       setClients(res.clients || []);
+      setOauthCfg(res.oauth || null);
       setLoadErr(null);
     } catch (e: any) {
       // Never swallowed. An empty list and a failed fetch look identical on
@@ -197,6 +199,15 @@ export default function McpClients() {
     },
   ];
 
+  /** True when the redirect we would register points somewhere other than the
+   *  site the user is on. Compared in the browser because the browser is the
+   *  only party that knows which address was actually typed — the server sees
+   *  proxy headers, which is how this drifts unnoticed in the first place. */
+  const redirectMismatch = (() => {
+    if (!oauthCfg?.redirectUri || typeof window === 'undefined') return false;
+    try { return new URL(oauthCfg.redirectUri).origin !== window.location.origin; } catch { return false; }
+  })();
+
   /** Registered servers that are NOT already shown as a named connector card.
    *  Rendering one twice reads as two connections, and the second copy is the
    *  one people press Remove on. */
@@ -286,6 +297,11 @@ export default function McpClients() {
                   </div>
                   <p className="mt-1 text-xs text-[var(--text-secondary)]">{k.blurb}</p>
                   <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">Unlocks: {k.unlocks}</p>
+                  {oauthCfg?.redirectUri && (
+                    <p className="mt-0.5 text-[11px] text-[var(--text-muted)]">
+                      Redirects back to <code className="font-mono">{oauthCfg.redirectUri}</code>
+                    </p>
+                  )}
                   {existing && (
                     <>
                       <p className="mt-1 truncate text-[11px] text-[var(--text-muted)]">{existing.url}</p>
@@ -343,6 +359,25 @@ export default function McpClients() {
           );
         })}
       </div>
+
+      {/* Preflight. Both of these break the handshake at a point where the
+          error surfaces as something else entirely, so they are stated before
+          anyone presses Connect rather than discovered afterwards. */}
+      {oauthCfg && !oauthCfg.vaultConfigured && (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+          <strong>AI_VAULT_KEY is not set on this deployment.</strong> Authorization will refuse to start rather than
+          store an access token in plaintext. Set it and reload before pressing Connect.
+        </div>
+      )}
+      {oauthCfg && redirectMismatch && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <strong>The redirect address does not match this site.</strong> We would register{' '}
+          <code className="font-mono">{oauthCfg.redirectUri}</code> with the provider, but you are on{' '}
+          <code className="font-mono">{typeof window !== 'undefined' ? window.location.origin : ''}</code>. Authorization
+          would succeed and then send the browser to the wrong host, so the connection never completes. Set{' '}
+          <code className="font-mono">APP_BASE_URL</code> to this site&apos;s address and redeploy.
+        </div>
+      )}
 
       {loadErr && (
         <div className="rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">

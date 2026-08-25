@@ -11,7 +11,7 @@ import {
 // HTTP routes and the MCP tools call these — never two implementations of the
 // launch path. Every function is account-scoped and throws on guard failure.
 
-const APP_BASE_URL = process.env.APP_BASE_URL || 'https://leadrail-crm-aifranckie.zocomputer.io';
+const APP_BASE_URL = process.env.APP_BASE_URL || 'https://app.leadrail.xyz';
 
 export class GuardError extends Error {
   status: number;

@@ -3,6 +3,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { dbReady } from '@/lib/db';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 import { listMcpClients, createMcpClient, type McpTransport } from '@/lib/mcp/clients';
+import { publicBase } from '@/lib/social/meta-oauth';
+import { vaultConfigured } from '@/lib/ai/crypto';
 
 export const dynamic = 'force-dynamic';
 
@@ -14,10 +16,19 @@ const VALID_TRANSPORTS: McpTransport[] = ['http', 'sse'];
 async function GET__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
-  if (!dbReady()) return NextResponse.json({ clients: [] });
+  // The redirect URI is returned so the UI can check it against the origin the
+  // user is actually on. A redirect registered for the wrong host fails at the
+  // very END of the handshake, after the user has already signed in and
+  // approved — which reads as "the provider rejected me" rather than "we sent
+  // them to the wrong address", and is close to undiagnosable without this.
+  const oauth = {
+    redirectUri: `${publicBase()}/api/mcp-clients/oauth/callback`,
+    vaultConfigured: vaultConfigured(),
+  };
+  if (!dbReady()) return NextResponse.json({ clients: [], oauth });
   try {
     const clients = await listMcpClients(session.accountId);
-    return NextResponse.json({ clients });
+    return NextResponse.json({ clients, oauth });
   } catch (e) {
     return errorResponse(e);
   }
