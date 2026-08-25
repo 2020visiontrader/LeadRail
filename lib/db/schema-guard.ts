@@ -73,6 +73,8 @@ const EXPECTATIONS: Expectation[] = [
   { table: 'brands', columns: ['core_thesis', 'banned_terms', 'thesis_embedding'], migration: '054', breaks: 'content is not held to a brand thesis and drift cannot be scored' },
   { table: 'content_items', columns: ['intent', 'linearity_score'], migration: '054', breaks: 'organic and paid content cannot be told apart, and off-brand copy is not flagged' },
   { table: 'platform_specs', columns: ['aspect_ratios', 'format_family', 'hook_hold_seconds'], migration: '054', breaks: 'the format router cannot tell short-form from static, and safe zones are unknown' },
+  { table: 'research_findings', columns: ['pass', 'finding', 'superseded_at'], migration: '055', breaks: 'research is not stored, so every sweep starts from nothing' },
+  { table: 'brand_intakes', columns: ['raw_description', 'status'], migration: '055', breaks: 'a brand description cannot be captured, so the front door does not open' },
 ];
 
 export interface DriftFinding {

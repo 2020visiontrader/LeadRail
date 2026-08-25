@@ -18,6 +18,8 @@ import {
 } from '@/lib/content/store';
 import { generateContent } from '@/lib/content/engine';
 import { loadCanon, saveCanon, scoreLinearity } from '@/lib/content/canon';
+import { runResearchSweep, listFindings, RESEARCH_PASSES } from '@/lib/content/research';
+import { runIntake, proposeCanon } from '@/lib/content/intake';
 import { generateImage as routeImage } from '@/lib/ai/image-router';
 import { generateVideo, getVideoStatus, higgsfieldUnavailableReason } from '@/lib/integrations/higgsfield';
 import { obj, S, type Capability, rowsOf, plural, samples, tally, digestLine } from './types';
@@ -354,6 +356,121 @@ export const CONTENT_CAPABILITIES: Capability[] = [
   },
 
   // ---------------------------------------------------------------- pillars
+  {
+    name: 'startBrandIntake',
+    domain: 'content',
+    title: 'Set up a venture from a description',
+    description:
+      "THE FRONT DOOR. Take what the user says they are building and turn it into a grounded venture: records their description verbatim, then runs four research passes in parallel — what competitors say, what the platforms are rewarding, what people search for, and how the audience talks about the problem. Findings are stored so later work does not repeat the sweep. Use this when someone describes a new brand, product or venture, or when an existing one has no research on file. Ask for competitors if they have not named any; the sweep is much better with them. This does NOT set the brand's beliefs — call proposeBrandCanon afterwards and show the user what it drafted.",
+    gate: 'internal_write',
+    inputSchema: obj({
+      description: S.string, brandId: S.string,
+      competitors: { type: 'array', items: S.string },
+      audience: S.string, offer: S.string,
+    }, ['description']),
+    zod: z.object({
+      description: z.string().min(20).max(4000),
+      brandId: z.string().optional(),
+      competitors: z.array(z.string()).max(8).optional(),
+      audience: z.string().max(600).optional(),
+      offer: z.string().max(600).optional(),
+    }),
+    run: (accountId, a) => runIntake({ accountId, ...a }),
+    observationLimit: 20_000,
+    digest: (_a, result) => {
+      const r: any = result;
+      if (!r || typeof r !== 'object' || !r.research) return '';
+      const f = Array.isArray(r.research.findings) ? r.research.findings : [];
+      const gaps = Array.isArray(r.research.gaps) ? r.research.gaps : [];
+      if (!f.length && !gaps.length) return '';
+      return digestLine(
+        f.length ? `${plural(f.length, 'research finding')} stored.` : 'The sweep found nothing usable.',
+        // Gaps are named, never swallowed: a pass that failed silently reads to
+        // the user as a pass that found nothing to say.
+        gaps.length ? `Could not cover: ${gaps.map((g: any) => `${g.pass} (${g.reason})`).join('; ')}.` : null,
+        f.length ? `Sample: ${f.slice(0, 3).map((x: any) => String(x.finding).slice(0, 100)).join(' | ')}` : null,
+      );
+    },
+  },
+  {
+    name: 'runBrandResearch',
+    domain: 'content',
+    title: 'Research a venture',
+    description: `Run the research passes for a venture and store what they find: ${RESEARCH_PASSES.join(', ')}. Use to refresh stale research, or to run one pass on its own when the user asks a specific question about competitors, trends, search demand or audience language. Findings supersede the previous set for the same passes rather than deleting it.`,
+    gate: 'read',
+    inputSchema: obj({
+      subject: S.string, brandId: S.string,
+      competitors: { type: 'array', items: S.string },
+      passes: { type: 'array', items: S.string },
+    }, ['subject']),
+    zod: z.object({
+      subject: z.string().min(5).max(1000),
+      brandId: z.string().optional(),
+      competitors: z.array(z.string()).max(8).optional(),
+      passes: z.array(z.enum(['competitor', 'trend', 'search', 'audience'])).optional(),
+    }),
+    run: (accountId, a) => runResearchSweep({ accountId, ...a }),
+    observationLimit: 20_000,
+    digest: (_a, result) => {
+      const r: any = result;
+      if (!r || typeof r !== 'object') return '';
+      const f = Array.isArray(r.findings) ? r.findings : [];
+      const gaps = Array.isArray(r.gaps) ? r.gaps : [];
+      if (!f.length && !gaps.length) return '';
+      return digestLine(
+        f.length ? `${plural(f.length, 'finding')}.` : 'Nothing usable came back.',
+        gaps.length ? `Gaps: ${gaps.map((g: any) => g.pass).join(', ')}.` : null,
+      );
+    },
+  },
+  {
+    name: 'listResearchFindings',
+    domain: 'content',
+    title: 'Read stored research',
+    description: 'Read the research on file for a venture — what was found about competitors, trends, search demand and audience language, with the source of each. Use before writing content or strategy so you build on what is known rather than searching again.',
+    gate: 'read',
+    inputSchema: obj({ brandId: S.string, pass: S.string }),
+    zod: z.object({
+      brandId: z.string().optional(),
+      pass: z.enum(['competitor', 'trend', 'search', 'audience']).optional(),
+    }),
+    run: (accountId, a) => listFindings(accountId, a?.brandId, a?.pass as any),
+    observationLimit: 16_000,
+    digest: (_a, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      if (!rows.length) return 'No research on file for that venture — run startBrandIntake or runBrandResearch first.';
+      return digestLine(
+        `${plural(rows.length, 'stored finding')}.`,
+        tally(rows, 'pass') ? `${tally(rows, 'pass')}.` : null,
+      );
+    },
+  },
+  {
+    name: 'proposeBrandCanon',
+    domain: 'content',
+    title: 'Draft what the brand stands for',
+    description:
+      "Draft a brand canon from the venture's description and stored research — a core thesis, the belief it argues against, the takeaway, owned and banned words, and 3-5 content pillars. This PROPOSES only and saves nothing. Show the user what it drafted, in full, and let them correct it before you call setBrandCanon: a brand's core belief is a claim its owner has to recognise as theirs, not a fact you extract on their behalf. Always relay the caveats — they say where the research was thin.",
+    gate: 'read',
+    inputSchema: obj({ description: S.string, brandId: S.string }, ['description']),
+    zod: z.object({ description: z.string().min(20).max(4000), brandId: z.string().optional() }),
+    run: (accountId, a) => proposeCanon({ accountId, ...a }),
+    observationLimit: 16_000,
+    digest: (_a, result) => {
+      const r: any = result;
+      if (!r || typeof r !== 'object') return '';
+      if (r.error) return digestLine(String(r.error));
+      if (!r.coreThesis) return '';
+      return digestLine(
+        `Proposed thesis: "${String(r.coreThesis).slice(0, 200)}"`,
+        r.brandEnemy ? `Against: ${String(r.brandEnemy).slice(0, 120)}` : null,
+        Array.isArray(r.pillars) && r.pillars.length ? `${plural(r.pillars.length, 'pillar')} proposed.` : null,
+        Array.isArray(r.caveats) && r.caveats.length ? `Caveats: ${r.caveats.join(' ')}` : null,
+        'NOT SAVED — show this to the user and let them correct it before calling setBrandCanon.',
+      );
+    },
+  },
   {
     name: 'getBrandCanon',
     domain: 'content',

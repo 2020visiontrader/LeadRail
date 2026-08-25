@@ -145,6 +145,7 @@ const CATALOG_ORDER: string[] = [
   'updateContentItem', 'setContentStatus', 'deleteContentItem',
   'generateContentPiece', 'generateBrandImage', 'listCharacterRefs',
   'createCharacterRef', 'generateBrandVideo', 'getVideoStatus',
+  'startBrandIntake', 'runBrandResearch', 'listResearchFindings', 'proposeBrandCanon',
   'getBrandCanon', 'setBrandCanon', 'scoreContentLinearity',
   'listContentPillars', 'createContentPillar', 'deleteContentPillar',
   'listPlatformSpecs', 'setPlatformSpec',
