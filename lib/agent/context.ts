@@ -13,6 +13,7 @@
 import { supabase, getConnections } from '@/lib/db';
 import { LIVE_SOCIALS } from '@/lib/social/providers';
 import { loadVentureContext } from '@/lib/ai/venture-context';
+import { listAttachments, attachmentContextBlock } from '@/lib/documents/attachments';
 import { recallMemoryDigest } from './memory';
 
 // A static description of what LeadRail is and how its pieces fit together, so
@@ -39,6 +40,8 @@ export interface AgentContextInput {
   /** Current user message — enables semantic (meaning-based) memory recall.
    *  Omitted → durable memory falls back to recency-only (unchanged). */
   query?: string;
+  /** Documents dropped into THIS conversation. Omitted → none are read. */
+  conversationId?: string;
 }
 
 /**
@@ -185,11 +188,27 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
     } catch { return null; /* memory omitted */ }
   })();
 
-  const [venture, snapshot, social, memory] = await Promise.all([
-    ventureSection, snapshotSection, socialSection, memorySection,
+  // Documents the user dropped into this conversation. Fetched alongside the
+  // rest rather than in the route, so both the streaming and non-streaming
+  // entry points get them and cannot drift apart.
+  const attachmentSection = (async () => {
+    if (!input.conversationId) return null;
+    try {
+      const files = await listAttachments(accountId, input.conversationId);
+      return files.length ? attachmentContextBlock(files) : null;
+    } catch { return null; /* a failed read must not blank the whole context */ }
+  })();
+
+  const [venture, snapshot, social, memory, attachments] = await Promise.all([
+    ventureSection, snapshotSection, socialSection, memorySection, attachmentSection,
   ]);
 
   const sections: string[] = [PLATFORM_BRIEF];
   for (const s of [venture, snapshot, social, memory]) if (s) sections.push(s);
+  // LAST, deliberately. Untrusted document text goes closest to the user's own
+  // message so the boundary between "what the platform knows" and "what a file
+  // claims" is unambiguous — and so no trusted instruction follows it, which is
+  // the shape an injected payload tries to imitate.
+  if (attachments) sections.push(attachments);
   return sections.join('\n\n');
 }
