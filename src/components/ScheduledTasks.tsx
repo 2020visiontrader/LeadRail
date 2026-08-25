@@ -202,7 +202,7 @@ export default function ScheduledTasks() {
           </div>
           <Textarea label="Prompt" placeholder="What should the agent do each time this runs?" rows={4} value={draft.prompt}
             onChange={(e) => setDraft((d) => ({ ...d, prompt: (e.target as HTMLTextAreaElement).value }))} />
-          {formErr && <p className="text-xs text-red-600">{formErr}</p>}
+          {formErr && <p className="text-xs text-[var(--text-negative)]">{formErr}</p>}
         </div>
       </Modal>
     </div>

@@ -238,7 +238,7 @@ export default function Personas() {
           <Checkbox label="Coordinator — frames the final answer when multiple personas are @mentioned"
             checked={draft.is_coordinator}
             onChange={(e) => setDraft((d) => ({ ...d, is_coordinator: (e.target as HTMLInputElement).checked }))} />
-          {formErr && <p className="text-xs text-red-600">{formErr}</p>}
+          {formErr && <p className="text-xs text-[var(--text-negative)]">{formErr}</p>}
         </div>
       </Modal>
     </div>

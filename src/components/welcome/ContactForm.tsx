@@ -78,7 +78,7 @@ export function ContactForm({ intent = 'general', heading, blurb }: {
       />
 
       {error && (
-        <p className="flex items-start gap-1.5 rounded-md border border-red-500/25 bg-red-500/10 px-3 py-2 text-sm text-red-300">
+        <p className="flex items-start gap-1.5 rounded-md border border-red-500/25 bg-red-500/10 px-3 py-2 text-sm text-red-700">
           <span aria-hidden>⚠</span><span>{error}</span>
         </p>
       )}

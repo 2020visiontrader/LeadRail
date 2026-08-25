@@ -297,7 +297,7 @@ export default function Skills() {
           <Textarea label="Instructions" placeholder="The system-prompt guidance this skill contributes…" rows={6}
             value={draft.instructions}
             onChange={(e) => setDraft((d) => ({ ...d, instructions: (e.target as HTMLTextAreaElement).value }))} />
-          {formErr && <p className="text-xs text-red-600">{formErr}</p>}
+          {formErr && <p className="text-xs text-[var(--text-negative)]">{formErr}</p>}
         </div>
       </Modal>
     </div>

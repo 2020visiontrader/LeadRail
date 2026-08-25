@@ -96,7 +96,7 @@ function AddProviderForm({ onCreated, onCancel }: { onCreated: () => void; onCan
         <Input label="Base URL (optional)" placeholder="https://api.openai.com/v1" value={baseUrl} onChange={(e) => setBaseUrl((e.target as HTMLInputElement).value)} />
         <Input label="API key (optional)" type="password" placeholder="sk-…" value={apiKey} onChange={(e) => setApiKey((e.target as HTMLInputElement).value)} />
       </div>
-      {msg && <p className="text-xs text-red-600">{msg}</p>}
+      {msg && <p className="text-xs text-[var(--text-negative)]">{msg}</p>}
       <div className="flex gap-2">
         <Button onClick={submit} className="text-xs">Add provider</Button>
         <Button variant="ghost" onClick={onCancel} className="text-xs">Cancel</Button>
@@ -129,7 +129,7 @@ function AddModelForm({ providerId, onCreated, onCancel }: { providerId: string;
         <Input placeholder="Display label (optional)" value={label} onChange={(e) => setLabel((e.target as HTMLInputElement).value)} />
         <Dropdown options={TIER_OPTIONS} value={tier} onChange={(e) => setTier((e.target as HTMLSelectElement).value as any)} />
       </div>
-      {msg && <p className="text-xs text-red-600">{msg}</p>}
+      {msg && <p className="text-xs text-[var(--text-negative)]">{msg}</p>}
       <div className="flex gap-2">
         <Button onClick={submit} className="text-xs">Add model</Button>
         <Button variant="ghost" onClick={onCancel} className="text-xs">Cancel</Button>
@@ -274,7 +274,7 @@ export default function ModelsProviders() {
                   </div>
 
                   {result && (
-                    <p className={`mt-2 text-xs ${result.ok ? 'text-green-600' : 'text-red-600'}`}>
+                    <p className={`mt-2 text-xs ${result.ok ? 'text-[var(--text-positive)]' : 'text-[var(--text-negative)]'}`}>
                       {result.ok ? 'Connection OK' : `Failed: ${result.detail || 'unknown error'}`}
                     </p>
                   )}
@@ -299,7 +299,7 @@ export default function ModelsProviders() {
                             <Button variant="ghost" className="text-xs" disabled={isActive} onClick={() => toggleFallback(m.id)}>
                               {inFallback ? 'Remove from fallback' : 'Add to fallback'}
                             </Button>
-                            <button onClick={() => removeModel(p.id, m.id)} className="text-xs text-slate-400 hover:text-red-600">Remove</button>
+                            <button onClick={() => removeModel(p.id, m.id)} className="text-xs text-slate-400 hover:text-[var(--text-negative)]">Remove</button>
                           </div>
                         </div>
                       );

@@ -159,7 +159,7 @@ function VentureCard({ venture, onSaved }: { venture: Venture; onSaved: (v: Vent
 
           <div className="flex items-center gap-3">
             <Button onClick={save} loading={busy} className="text-xs">Save profile</Button>
-            {msg && <span className={`text-xs ${msg.ok ? 'text-green-600' : 'text-red-600'}`}>{msg.text}</span>}
+            {msg && <span className={`text-xs ${msg.ok ? 'text-[var(--text-positive)]' : 'text-[var(--text-negative)]'}`}>{msg.text}</span>}
           </div>
         </div>
       )}
