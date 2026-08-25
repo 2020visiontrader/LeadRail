@@ -3054,3 +3054,421 @@ CREATE INDEX IF NOT EXISTS idx_skill_repairs_skill ON skill_repairs(skill_id, cr
 ALTER TABLE skill_repairs ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON public.skill_repairs FROM anon, authenticated;
 
+-- ============ 052_schema_guard.sql ============
+-- 052_schema_guard.sql — introspection for the schema-drift check.
+--
+-- WHY: four migrations (039, 042, 043, 044) sat unapplied against production
+-- for weeks and nothing noticed, because nothing compares the schema the
+-- deployed code writes against with the schema that is actually there. The
+-- symptom, when it finally surfaced, was a modal saying "Internal error" over
+-- a log line reading PGRST204, column 'allow_auto' not found.
+--
+-- PostgREST does not expose information_schema, so the application cannot ask
+-- "does this column exist?" directly. This is the narrowest possible window
+-- onto that question: given a list of table names, return the (table, column)
+-- pairs that exist in the public schema. Nothing else.
+--
+-- SECURITY DEFINER with a pinned search_path, and it returns only NAMES —
+-- never a value, never a row of anyone's data. The worst an unexpected caller
+-- learns is the shape of a schema they can already infer from the API's own
+-- error messages.
+--
+-- Idempotent; safe to re-run.
+
+CREATE OR REPLACE FUNCTION public.schema_columns_for(p_tables TEXT[])
+RETURNS TABLE (table_name TEXT, column_name TEXT)
+LANGUAGE sql
+SECURITY DEFINER
+SET search_path = pg_catalog, public
+STABLE
+AS $$
+  SELECT c.table_name::text, c.column_name::text
+  FROM information_schema.columns c
+  WHERE c.table_schema = 'public'
+    AND c.table_name = ANY(p_tables);
+$$;
+
+-- Service-role only. The app calls this with the service key; no anon or
+-- authenticated client has any reason to introspect the schema.
+REVOKE ALL ON FUNCTION public.schema_columns_for(TEXT[]) FROM PUBLIC, anon, authenticated;
+
+-- ============ 053_mcp_oauth.sql ============
+-- 053_mcp_oauth.sql — OAuth for external MCP servers.
+--
+-- WHY: lib/mcp/client.ts sends a static `Authorization` header and nothing
+-- else. That is enough for a server issuing a long-lived token, and useless
+-- for the growing number that are OAuth-protected — Higgsfield among them.
+-- There was no discovery, no client registration, no PKCE, no refresh, so
+-- those servers were simply unreachable and the UI had no way to say why.
+--
+-- Two additions, and one deliberate omission.
+--
+-- ADDED: per-connection OAuth state on mcp_clients (which authorization server,
+-- which client_id we registered as, the encrypted tokens, when they expire),
+-- and a short-lived table for in-flight authorization attempts.
+--
+-- OMITTED: any storage of the PKCE verifier outside the server. The verifier is
+-- the secret that proves the token request came from whoever started the flow;
+-- putting it in a cookie or a signed blob handed to the browser means an
+-- attacker who can read it can complete someone else's authorization. It lives
+-- in mcp_oauth_states, is looked up by an opaque `state` value, and is deleted
+-- the moment it is used.
+--
+-- Idempotent; safe to re-run.
+
+-- How this connection authenticates. 'header' is every existing row — a static
+-- Authorization header — and stays the default so nothing already registered
+-- changes behaviour.
+ALTER TABLE mcp_clients ADD COLUMN IF NOT EXISTS auth_mode TEXT NOT NULL DEFAULT 'header';
+
+-- Discovery + registration results, so a reconnect does not re-register and a
+-- refresh knows where to go. None of this is secret: an authorization endpoint
+-- is public, and a dynamically-registered client_id identifies us, it does not
+-- authenticate us.
+ALTER TABLE mcp_clients ADD COLUMN IF NOT EXISTS oauth_issuer          TEXT;
+ALTER TABLE mcp_clients ADD COLUMN IF NOT EXISTS oauth_authorize_url   TEXT;
+ALTER TABLE mcp_clients ADD COLUMN IF NOT EXISTS oauth_token_url       TEXT;
+ALTER TABLE mcp_clients ADD COLUMN IF NOT EXISTS oauth_registration_url TEXT;
+ALTER TABLE mcp_clients ADD COLUMN IF NOT EXISTS oauth_client_id       TEXT;
+ALTER TABLE mcp_clients ADD COLUMN IF NOT EXISTS oauth_scope           TEXT;
+
+-- Secrets. Encrypted with the same lib/ai/crypto vault that protects
+-- auth_header_encrypted — never plaintext, never returned by the API
+-- projection (see toSafe in lib/mcp/clients.ts).
+--
+-- A dynamically-registered client MAY be issued a client_secret; most public
+-- clients are not, which is why PKCE is mandatory below rather than optional.
+ALTER TABLE mcp_clients ADD COLUMN IF NOT EXISTS oauth_client_secret_encrypted  TEXT;
+ALTER TABLE mcp_clients ADD COLUMN IF NOT EXISTS oauth_access_token_encrypted   TEXT;
+ALTER TABLE mcp_clients ADD COLUMN IF NOT EXISTS oauth_refresh_token_encrypted  TEXT;
+
+-- Expiry drives proactive refresh. Nullable because a server may issue a token
+-- with no stated lifetime, in which case we refresh reactively on a 401 rather
+-- than guessing a duration.
+ALTER TABLE mcp_clients ADD COLUMN IF NOT EXISTS oauth_expires_at TIMESTAMPTZ;
+ALTER TABLE mcp_clients ADD COLUMN IF NOT EXISTS oauth_connected_at TIMESTAMPTZ;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'mcp_clients_auth_mode_check' AND conrelid = 'mcp_clients'::regclass
+  ) THEN
+    ALTER TABLE mcp_clients
+      ADD CONSTRAINT mcp_clients_auth_mode_check CHECK (auth_mode IN ('header', 'oauth'));
+  END IF;
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- In-flight authorization attempts.
+--
+-- One row per "user clicked Connect", deleted on completion. Holds the PKCE
+-- verifier — the one genuinely secret part of the exchange — plus the account
+-- and connection the callback belongs to, so the callback route needs no
+-- session cookie and trusts nothing the browser hands it except an opaque
+-- lookup key.
+--
+-- `state` is the lookup key AND the CSRF defence: it is random, single-use, and
+-- a callback whose state is not in this table is refused outright.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS mcp_oauth_states (
+  state          TEXT PRIMARY KEY,
+  account_id     UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  client_id      UUID NOT NULL REFERENCES mcp_clients(id) ON DELETE CASCADE,
+  -- PKCE. Stored server-side only; see the header note.
+  code_verifier  TEXT NOT NULL,
+  redirect_uri   TEXT NOT NULL,
+  created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  -- Ten minutes is the standard authorization-code window. An expired row is
+  -- refused even if it is still present, so a stalled tab cannot be completed
+  -- an hour later.
+  expires_at     TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '10 minutes')
+);
+CREATE INDEX IF NOT EXISTS idx_mcp_oauth_states_expiry ON mcp_oauth_states(expires_at);
+
+ALTER TABLE mcp_oauth_states ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.mcp_oauth_states FROM anon, authenticated;
+
+-- ============ 054_brand_canon.sql ============
+-- 054_brand_canon.sql — brand linearity as an enforceable constraint.
+--
+-- THE PROBLEM. A brand kit today is adjectives: tone_of_voice, key_messaging,
+-- content_examples. Handed to a model alongside character limits, hashtag
+-- rules, aspect ratios and SEO keywords, adjectives lose. That is attention
+-- decay, and it is why high-volume generation drifts: nothing in the prompt is
+-- a constraint, so everything in it is negotiable.
+--
+-- Linearity is NOT repetition. Forcing identical phrasing across TikTok,
+-- LinkedIn and a Meta ad fails on all three — TikTok rejects corporate
+-- slogans, LinkedIn rejects hype, ads need problem-solution friction. What has
+-- to stay fixed is the BELIEF; what adapts is its expression.
+--
+-- So the canon stores the four things that must not vary, and stores a vector
+-- of the thesis so drift can be MEASURED rather than eyeballed:
+--
+--   core_thesis       the one non-negotiable truth the brand asserts
+--   brand_enemy       the belief or status quo it argues against
+--   anchor_takeaway   what the audience concludes even with the logo removed
+--   mandatory_lexicon words the brand owns
+--   banned_terms      generic filler that dissolves identity
+--
+-- WHY AN EMBEDDING COLUMN. lib/agent/embeddings.ts already produces 1024-dim
+-- vectors and migration 036 already installed pgvector with a cosine index, so
+-- comparing generated copy against the thesis is arithmetic we can already do.
+-- A rubric asking a model "is this on-brand?" grades its own homework; cosine
+-- distance to a fixed anchor does not.
+--
+-- Idempotent; safe to re-run.
+
+-- ---------------------------------------------------------------------------
+-- Brand canon
+-- ---------------------------------------------------------------------------
+ALTER TABLE brands ADD COLUMN IF NOT EXISTS core_thesis       TEXT;
+ALTER TABLE brands ADD COLUMN IF NOT EXISTS brand_enemy       TEXT;
+ALTER TABLE brands ADD COLUMN IF NOT EXISTS anchor_takeaway   TEXT;
+ALTER TABLE brands ADD COLUMN IF NOT EXISTS mandatory_lexicon TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE brands ADD COLUMN IF NOT EXISTS banned_terms      TEXT[] NOT NULL DEFAULT '{}';
+
+-- The thesis as a vector, recomputed whenever core_thesis changes. Nullable
+-- because a brand may have a thesis before the embedder is reachable, and a
+-- missing vector must degrade to "cannot score drift" rather than "fails".
+ALTER TABLE brands ADD COLUMN IF NOT EXISTS thesis_embedding vector(1024);
+
+-- ---------------------------------------------------------------------------
+-- Intent: the organic / paid split.
+--
+-- These are not one pipeline with different copy. Organic optimises for
+-- retention, saves and watch-time; paid optimises for CTR, CPA and CVR, burns
+-- creative far faster, and is policed by ad-network policy on claims. A piece
+-- built for one is wrong for the other, and until now content_items had no way
+-- to say which it was.
+--
+-- Defaulted to 'organic' because every row that exists today is organic — the
+-- paid path lives in ad_campaigns and never wrote here.
+-- ---------------------------------------------------------------------------
+ALTER TABLE content_items ADD COLUMN IF NOT EXISTS intent TEXT NOT NULL DEFAULT 'organic';
+
+-- Variant testing. A paid asset belongs to a matrix (hook × body × cta); an
+-- organic one does not. variant_group ties siblings together so a test can be
+-- read as one experiment rather than eighteen unrelated drafts.
+ALTER TABLE content_items ADD COLUMN IF NOT EXISTS variant_group TEXT;
+ALTER TABLE content_items ADD COLUMN IF NOT EXISTS variant_label TEXT;
+
+-- Linearity verdict, written by the evaluator before a human ever sees it.
+ALTER TABLE content_items ADD COLUMN IF NOT EXISTS linearity_score  REAL;
+ALTER TABLE content_items ADD COLUMN IF NOT EXISTS linearity_report JSONB;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint
+    WHERE conname = 'content_items_intent_check' AND conrelid = 'content_items'::regclass
+  ) THEN
+    ALTER TABLE content_items
+      ADD CONSTRAINT content_items_intent_check CHECK (intent IN ('organic', 'paid'));
+  END IF;
+END $$;
+
+CREATE INDEX IF NOT EXISTS idx_content_items_intent
+  ON content_items(account_id, intent, status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_content_items_variant
+  ON content_items(account_id, variant_group) WHERE variant_group IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- Platform specs: structured, not prose.
+--
+-- image_specs is a sentence — "1080x1350 portrait (4:5)". A generator cannot
+-- check safe-zone compliance against a sentence, and an evaluator cannot score
+-- hook pacing against one either. These columns carry the same facts in a form
+-- code can assert on.
+--
+-- hook_hold_seconds and target_hold_rate are the short-form algorithmic
+-- signals: TikTok, Reels and Shorts all rank on how many viewers survive the
+-- opening. A spec that omits them cannot tell a generator that the first three
+-- seconds are the whole job.
+-- ---------------------------------------------------------------------------
+ALTER TABLE platform_specs ADD COLUMN IF NOT EXISTS aspect_ratios      TEXT[] NOT NULL DEFAULT '{}';
+ALTER TABLE platform_specs ADD COLUMN IF NOT EXISTS safe_zones         TEXT;
+ALTER TABLE platform_specs ADD COLUMN IF NOT EXISTS format_family      TEXT;
+ALTER TABLE platform_specs ADD COLUMN IF NOT EXISTS hook_hold_seconds  INT;
+ALTER TABLE platform_specs ADD COLUMN IF NOT EXISTS algorithmic_signal TEXT;
+ALTER TABLE platform_specs ADD COLUMN IF NOT EXISTS ad_policy_notes    TEXT;
+
+-- Fill the structured fields for the six platforms already seeded. Values are
+-- the same facts the prose columns carry, not new claims.
+UPDATE platform_specs SET
+  aspect_ratios = ARRAY['4:5','9:16','1:1'],
+  format_family = 'visual',
+  safe_zones = 'Keep text clear of the bottom 20% (caption/UI) and top 10% on reels.',
+  hook_hold_seconds = 3,
+  algorithmic_signal = 'Saves and shares outrank likes. Reels rank on watch-through and re-watch.',
+  ad_policy_notes = 'Meta policy: no before/after body claims, no implied personal attributes.'
+WHERE platform = 'instagram' AND account_id IS NULL;
+
+UPDATE platform_specs SET
+  aspect_ratios = ARRAY['1.91:1','4:5'],
+  format_family = 'visual',
+  safe_zones = 'Link previews crop to 1.91:1 — keep text out of the outer 10%.',
+  algorithmic_signal = 'Comments and shares outrank reactions; native photo beats linked.',
+  ad_policy_notes = 'Meta policy applies. Text-heavy creative suppresses delivery.'
+WHERE platform = 'facebook' AND account_id IS NULL;
+
+UPDATE platform_specs SET
+  aspect_ratios = ARRAY['1.91:1','4:5'],
+  format_family = 'text',
+  algorithmic_signal = 'Dwell time and comment depth. Outbound links in the body suppress reach.',
+  ad_policy_notes = 'LinkedIn ads require substantiated professional claims.'
+WHERE platform = 'linkedin' AND account_id IS NULL;
+
+UPDATE platform_specs SET
+  aspect_ratios = ARRAY['16:9'],
+  format_family = 'text',
+  algorithmic_signal = 'Replies and reposts. One idea per post; threads for depth.'
+WHERE platform = 'x' AND account_id IS NULL;
+
+UPDATE platform_specs SET
+  aspect_ratios = ARRAY['9:16'],
+  format_family = 'short_video',
+  safe_zones = 'Right rail and bottom 25% carry UI — no text there.',
+  hook_hold_seconds = 3,
+  algorithmic_signal = '3-second hold rate, completion rate and re-watch. Sound is a ranking input.',
+  ad_policy_notes = 'TikTok policy: no unsubstantiated results claims, no before/after.'
+WHERE platform = 'tiktok' AND account_id IS NULL;
+
+UPDATE platform_specs SET
+  aspect_ratios = ARRAY['4:5','1:1'],
+  format_family = 'text',
+  algorithmic_signal = 'Replies. The surface is conversational, not broadcast.'
+WHERE platform = 'threads' AND account_id IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- Thesis similarity.
+--
+-- The comparison has to happen in Postgres because that is where the vector
+-- lives and where the <=> operator is. Returning the similarity rather than the
+-- vector keeps the embedding server-side and hands the caller one number.
+--
+-- Account-scoped in the WHERE clause, not by the caller: this is the only way
+-- the function can be reached, so the tenancy check belongs inside it.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION public.brand_thesis_similarity(
+  p_account_id UUID,
+  p_brand_id   TEXT,
+  p_query      vector(1024)
+)
+RETURNS REAL
+LANGUAGE sql
+STABLE
+AS $$
+  SELECT (1 - (b.thesis_embedding <=> p_query))::real
+  FROM brands b
+  WHERE b.id = p_brand_id
+    AND b.account_id = p_account_id
+    AND b.thesis_embedding IS NOT NULL;
+$$;
+
+-- ============ 055_research_vault.sql ============
+-- 055_research_vault.sql — the research vault and the intake that fills it.
+--
+-- WHAT WAS MISSING. The assistant could already search the web and read a
+-- public profile, but every finding died in the transcript. Ask it to research
+-- five competitors on Monday and it has to do the whole sweep again on Tuesday,
+-- because nothing kept what it learned. Research that is not stored is not
+-- research, it is a conversation.
+--
+-- So findings land here, scoped to a brand, tagged by which pass produced them,
+-- and carrying their source. Two properties matter more than the schema:
+--
+--   PROVENANCE. Every row records where it came from. A finding without a
+--   source cannot be re-checked, and content built on unverifiable research is
+--   the same failure as content built on a hallucinated tool result — it reads
+--   as confident and nobody can tell.
+--
+--   SUPERSESSION, not deletion. A competitor changes their positioning; the old
+--   finding was true when it was captured. Rows are marked superseded rather
+--   than overwritten, so "what did we believe in March" stays answerable and a
+--   re-run never silently rewrites history.
+--
+-- Idempotent; safe to re-run.
+
+CREATE TABLE IF NOT EXISTS research_findings (
+  id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id  UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  -- Brand-optional, like everything else in the content engine: a sweep can be
+  -- run to inform a venture that does not exist yet.
+  brand_id    TEXT REFERENCES brands(id) ON DELETE CASCADE,
+
+  -- Which of the four passes produced this. Named rather than free-text so a
+  -- caller can ask for "everything we know about competitor hooks" without
+  -- string-matching.
+  pass        TEXT NOT NULL,
+
+  -- The finding itself, in one or two sentences. Deliberately short: a vault
+  -- of essays is a vault nobody reads, and the source URL carries the detail.
+  finding     TEXT NOT NULL,
+
+  -- Where it came from. A URL where there is one, a handle for a social read,
+  -- or the name of the tool when the finding is derived rather than quoted.
+  source      TEXT,
+  source_kind TEXT,
+
+  -- Free-form structure per pass — a competitor's hook, a trend's volume, an
+  -- audience phrase. jsonb so a pass can evolve what it captures without a
+  -- migration, and so nothing is lost when a pass returns more than expected.
+  detail      JSONB NOT NULL DEFAULT '{}'::jsonb,
+
+  -- Superseded rather than deleted — see the header.
+  superseded_at TIMESTAMPTZ,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+  CONSTRAINT research_findings_pass_check CHECK (
+    pass IN ('competitor', 'trend', 'search', 'audience')
+  )
+);
+
+-- The read that matters: current findings for a brand, newest first, optionally
+-- narrowed to one pass.
+CREATE INDEX IF NOT EXISTS idx_research_findings_current
+  ON research_findings(account_id, brand_id, pass, created_at DESC)
+  WHERE superseded_at IS NULL;
+
+ALTER TABLE research_findings ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.research_findings FROM anon, authenticated;
+
+-- ---------------------------------------------------------------------------
+-- Intake.
+--
+-- One row per "a person described what they are building". This is the front
+-- door the architecture was missing — not a form, but a record of what was
+-- said, so a sweep can be re-run against the original description rather than
+-- against a summary of a summary.
+--
+-- raw_description is kept VERBATIM and never rewritten. It is the only
+-- unmediated statement of intent in the whole pipeline; everything downstream
+-- is derived from it, so paraphrasing it at the door would corrupt every
+-- inference made later and leave no way to notice.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS brand_intakes (
+  id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  account_id      UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+  brand_id        TEXT REFERENCES brands(id) ON DELETE CASCADE,
+  raw_description TEXT NOT NULL,
+  -- What the operator named, before any research ran. Kept separate from the
+  -- findings so a wrong competitor guess is visible as a wrong INPUT rather
+  -- than appearing as a research conclusion.
+  stated_competitors TEXT[] NOT NULL DEFAULT '{}',
+  stated_audience    TEXT,
+  stated_offer       TEXT,
+  status          TEXT NOT NULL DEFAULT 'captured',
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  CONSTRAINT brand_intakes_status_check CHECK (
+    status IN ('captured', 'researched', 'canon_proposed', 'complete')
+  )
+);
+CREATE INDEX IF NOT EXISTS idx_brand_intakes_account
+  ON brand_intakes(account_id, created_at DESC);
+
+ALTER TABLE brand_intakes ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON public.brand_intakes FROM anon, authenticated;
+

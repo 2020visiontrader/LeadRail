@@ -31,7 +31,10 @@ const PUBLIC_PAGES = ['/login', '/signup', '/privacy', '/terms', '/data-deletion
 // how someone with no account reaches us. Both enforce their own protection
 // (IP rate limiting, and signup additionally behind SIGNUPS_OPEN), so "public to
 // the cookie middleware" is not "unprotected".
-const PUBLIC_API = ['/api/auth/login', '/api/auth/signup', '/api/contact', '/api/webhooks', '/api/hermes/tick', '/api/mcp', '/api/public', '/api/social/meta/callback', '/api/social/meta/connect', '/api/social/meta/deauthorize', '/api/social/meta/data-deletion', '/api/social/instagram/callback', '/api/track', '/api/unsubscribe'];
+const PUBLIC_API = ['/api/auth/login', '/api/auth/signup', '/api/contact', '/api/webhooks', '/api/hermes/tick', '/api/mcp', '/api/public', '/api/social/meta/callback', '/api/social/meta/connect', '/api/social/meta/deauthorize', '/api/social/meta/data-deletion', '/api/social/instagram/callback', '/api/track', '/api/unsubscribe',
+  // Identity comes from the single-use `state` row, not a cookie — a
+  // third-party redirect cannot be relied on to carry ours (SameSite).
+  '/api/mcp-clients/oauth/callback'];
 
 export async function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;

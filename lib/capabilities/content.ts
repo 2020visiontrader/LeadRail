@@ -17,8 +17,12 @@ import {
   CONTENT_STATUSES, FUNNEL_STAGES,
 } from '@/lib/content/store';
 import { generateContent } from '@/lib/content/engine';
+import { loadCanon, saveCanon, scoreLinearity } from '@/lib/content/canon';
+import { runResearchSweep, listFindings, RESEARCH_PASSES } from '@/lib/content/research';
+import { syncPerformance, performanceReport } from '@/lib/content/performance';
+import { runIntake, proposeCanon } from '@/lib/content/intake';
 import { generateImage as routeImage } from '@/lib/ai/image-router';
-import { generateVideo, higgsfieldConfigured, getVideoStatus } from '@/lib/integrations/higgsfield';
+import { generateVideo, getVideoStatus, higgsfieldUnavailableReason } from '@/lib/integrations/higgsfield';
 import { obj, S, type Capability, rowsOf, plural, samples, tally, digestLine } from './types';
 
 /** Persist generated image bytes and hand back a URL. Shared by the two image
@@ -43,12 +47,13 @@ export const CONTENT_CAPABILITIES: Capability[] = [
     title: 'List content items',
     description: `Read the content board — every planned, drafted and published piece, newest first. Filter by status (${CONTENT_STATUSES.join(', ')}), by venture, or by platform. Use whenever the user asks what content exists, what is in draft, or what is ready to go out.`,
     gate: 'read',
-    inputSchema: obj({ status: S.string, brandId: S.string, platform: S.string, limit: S.number }),
+    inputSchema: obj({ status: S.string, brandId: S.string, platform: S.string, limit: S.number, intent: S.string }),
     zod: z.object({
       status: z.enum(CONTENT_STATUSES as [string, ...string[]]).optional(),
       brandId: z.string().optional(),
       platform: z.string().optional(),
       limit: z.number().int().min(1).max(200).optional(),
+      intent: z.enum(['organic', 'paid']).optional(),
     }),
     run: (accountId, a) => listContentItems(accountId, a),
     digest: (_a, result) => {
@@ -172,11 +177,12 @@ export const CONTENT_CAPABILITIES: Capability[] = [
     name: 'generateContentPiece',
     domain: 'content',
     title: 'Generate a content piece',
-    description: "Write one publish-ready piece of content, grounded in the venture's brand kit, the platform's real constraints (character limit, hashtag convention, CTA format) and the next content pillar in rotation. Returns the hook, body and CTA separately. Saves it to the content board as a DRAFT unless you say otherwise. This is the right tool for any real content request — it knows the constraints, a plain chat answer does not.",
+    description: "Write one publish-ready piece of content, held to the brand THESIS and grounded in the venture's brand kit, the platform's real constraints (character limit, hashtag convention, CTA format) and the next content pillar in rotation. Returns the hook, body and CTA separately. Saves it to the content board as a DRAFT unless you say otherwise. Set intent to 'paid' for an ad — direct response, substantiable claims, one hard ask — or leave it 'organic' for content that earns attention. These are different briefs, not the same brief reworded. This is the right tool for any real content request — it knows the constraints, a plain chat answer does not.",
     gate: 'internal_write',
     inputSchema: obj({
       topic: S.string, platform: S.string, brandId: S.string, pillarId: S.string,
       funnelStage: S.string, hook: S.string, cta: S.string, save: { type: 'boolean' },
+      intent: S.string,
     }, ['topic', 'platform']),
     zod: z.object({
       topic: z.string().min(3).max(500),
@@ -187,6 +193,7 @@ export const CONTENT_CAPABILITIES: Capability[] = [
       hook: z.string().optional(),
       cta: z.string().optional(),
       save: z.boolean().optional(),
+      intent: z.enum(['organic', 'paid']).optional(),
     }),
     run: async (accountId, a) => {
       const piece = await generateContent({ accountId, ...a });
@@ -196,6 +203,9 @@ export const CONTENT_CAPABILITIES: Capability[] = [
         brandId: a.brandId ?? null,
         status: 'DRAFT',
         contentType: 'Social',
+        intent: a.intent ?? 'organic',
+        linearityScore: piece.linearity?.score ?? null,
+        linearityReport: piece.linearity ?? null,
         platforms: [piece.platform],
         pillarId: piece.pillarId,
         pillar: piece.pillar,
@@ -214,9 +224,32 @@ export const CONTENT_CAPABILITIES: Capability[] = [
     digest: (a, result) => {
       const r: any = result;
       if (!r?.hook) return '';
+      // The evaluator's blocking issues are stated first and plainly. A digest
+      // that leads with "wrote a piece" and buries "it is 800 characters over
+      // and will be truncated" is how flawed work gets presented as finished.
+      const ev = r.evaluation;
+      const blocks: string[] = Array.isArray(ev?.issues)
+        ? ev.issues.filter((i: any) => i?.severity === 'block').map((i: any) => String(i.message))
+        : [];
+      const warns: string[] = Array.isArray(ev?.issues)
+        ? ev.issues.filter((i: any) => i?.severity === 'warn').map((i: any) => String(i.message))
+        : [];
+      const beats = Array.isArray(r.production?.beats) ? r.production.beats.length : 0;
+
       return digestLine(
         `Wrote a ${r.platform} piece${r.pillar ? ` on the "${r.pillar}" pillar` : ''}: "${String(r.hook).slice(0, 100)}"`,
-        r.withinLimit === false ? `WARNING: ${r.charCount} characters, over the platform limit — it needs cutting before it can go out.` : null,
+        r.formatFamily === 'short_video' && beats
+          ? `Shot as short-form video: ${plural(beats, 'beat')}${r.production?.openingFrame ? ', with an opening frame' : ''}.`
+          : null,
+        r.formatFamily === 'visual' && Array.isArray(r.production?.slides) && r.production.slides.length > 1
+          ? `${plural(r.production.slides.length, 'slide')} in the carousel.`
+          : null,
+        blocks.length
+          ? `NOT READY — ${blocks.join(' ')} Say this plainly rather than presenting it as finished.`
+          : null,
+        // Only when nothing blocks: a list of nits under a "not ready" line
+        // reads as equally important and dilutes the thing that matters.
+        !blocks.length && warns.length ? `Worth fixing: ${warns.slice(0, 3).join(' ')}` : null,
         r.itemId ? `Saved to the board as a draft (${r.itemId}).` : null,
       );
     },
@@ -296,7 +329,7 @@ export const CONTENT_CAPABILITIES: Capability[] = [
     name: 'generateBrandVideo',
     domain: 'content',
     title: 'Generate a video',
-    description: "Animate a still image into a short video, optionally with the subject speaking a line to camera (lip-synced). Give the URL of the image to animate and describe what MOVES — camera motion, gesture, action — not who the subject is; the image already fixes that. Pair it with an image made from a character reference so the person on screen matches the stills. Renders take minutes.",
+    description: "Animate a still image into a short video, optionally with the subject speaking a line to camera (lip-synced). Give the URL of the image to animate and describe what MOVES — camera motion, gesture, action — not who the subject is; the image already fixes that. Pair it with an image made from a character reference so the person on screen matches the stills. Renders take minutes. Runs through the account's Higgsfield MCP connection.",
     gate: 'internal_write',
     inputSchema: obj({ imageUrl: S.string, prompt: S.string, dialogue: S.string }, ['imageUrl', 'prompt']),
     zod: z.object({
@@ -304,11 +337,18 @@ export const CONTENT_CAPABILITIES: Capability[] = [
       prompt: z.string().min(3).max(1000),
       dialogue: z.string().max(600).optional(),
     }),
-    run: async (_accountId, a) => {
-      if (!higgsfieldConfigured()) {
-        return { error: 'Video generation is not connected for this workspace.' };
+    run: async (accountId, a) => {
+      // The reason is looked up rather than assumed: "not connected" and
+      // "connected but switched off" are different problems with different
+      // fixes, and the earlier version of this told people to set an API key
+      // that Higgsfield does not issue.
+      const blocked = await higgsfieldUnavailableReason(accountId);
+      if (blocked) return { error: blocked };
+      try {
+        return await generateVideo(accountId, { imageUrl: a.imageUrl, prompt: a.prompt, dialogue: a.dialogue });
+      } catch (e: any) {
+        return { error: e?.message || 'The video render failed.' };
       }
-      return generateVideo({ imageUrl: a.imageUrl, prompt: a.prompt, dialogue: a.dialogue });
     },
     digest: (_a, result) => {
       const r: any = result;
@@ -324,14 +364,266 @@ export const CONTENT_CAPABILITIES: Capability[] = [
     gate: 'read',
     inputSchema: obj({ requestId: S.string }, ['requestId']),
     zod: z.object({ requestId: z.string().min(1) }),
-    run: async (_accountId, a) => {
-      if (!higgsfieldConfigured()) return { error: 'Video generation is not connected for this workspace.' };
-      const { status, url } = await getVideoStatus(a.requestId);
-      return { status, url };
+    run: async (accountId, a) => {
+      const blocked = await higgsfieldUnavailableReason(accountId);
+      if (blocked) return { error: blocked };
+      try {
+        const { status, url } = await getVideoStatus(accountId, a.requestId);
+        return { status, url };
+      } catch (e: any) {
+        return { error: e?.message || 'Could not read the render status.' };
+      }
+    },
+  },
+
+  // ------------------------------------------------------------ performance
+  //
+  // The loop was open: the engine generated, scored and published, and then
+  // nothing ever checked whether the judgement it made at the moment of
+  // writing turned out to be right.
+  {
+    name: 'syncContentPerformance',
+    domain: 'content',
+    title: 'Pull live metrics for published content',
+    description:
+      "Read likes, comments and shares for content already published to a connected Instagram or Facebook account, and store them against the board. Matches by the recorded post id only — an item published without one cannot be matched and is reported rather than guessed at. Use before reporting on how content is doing, or when the user asks what worked.",
+    gate: 'read',
+    inputSchema: obj({ brandId: S.string, limit: S.number }, []),
+    zod: z.object({ brandId: z.string().optional(), limit: z.number().int().min(1).max(200).optional() }),
+    run: (accountId, a) => syncPerformance({ accountId, ...a }),
+    digest: (_a, result) => {
+      const r: any = result;
+      if (!r || typeof r.updated !== 'number') return '';
+      return digestLine(
+        r.updated ? `Metrics updated for ${plural(r.updated, 'published piece')}.` : 'No published piece could be matched to a live post.',
+        // Named, not swallowed. Metrics for 3 of 20 published items look
+        // identical to 20 items performing badly once the gap is invisible.
+        Array.isArray(r.unmatched) && r.unmatched.length
+          ? `${plural(r.unmatched.length, 'item')} could not be matched: ${r.unmatched.slice(0, 3).map((u: any) => `"${String(u.title).slice(0, 40)}" (${u.reason})`).join('; ')}. Say so rather than reporting only on what matched.`
+          : null,
+      );
+    },
+  },
+  {
+    name: 'getContentPerformance',
+    domain: 'content',
+    title: 'What the numbers suggest',
+    description:
+      "Summarise how published content has performed, grouped by pillar and platform, using median engagement. Returns OBSERVATIONS, not instructions — and stays silent where the sample is too small to support a claim rather than ranking three posts and calling it a result. Use when the user asks what is working. Never treat the top row as a directive to change the brand's canon; that is a decision the user makes.",
+    gate: 'read',
+    inputSchema: obj({ brandId: S.string }, []),
+    zod: z.object({ brandId: z.string().optional() }),
+    run: (accountId, a) => performanceReport({ accountId, ...a }),
+    digest: (_a, result) => {
+      const r: any = result;
+      if (!r || typeof r.scored !== 'number') return '';
+      const obs = Array.isArray(r.observations) ? r.observations : [];
+      const caveats = Array.isArray(r.caveats) ? r.caveats : [];
+      if (!obs.length) {
+        return digestLine(caveats.length ? caveats.join(' ') : 'No published content has metrics on file yet.');
+      }
+      return digestLine(
+        `Across ${plural(r.scored, 'published piece')}: ${obs.slice(0, 4).map((o: any) => `${o.value} (${o.dimension}, median ${o.medianEngagement} over ${o.sample})`).join(', ')}.`,
+        'These are observations over a small sample, not a strategy. Present them that way.',
+        caveats.length ? caveats.join(' ') : null,
+      );
     },
   },
 
   // ---------------------------------------------------------------- pillars
+  {
+    name: 'startBrandIntake',
+    domain: 'content',
+    title: 'Set up a venture from a description',
+    description:
+      "THE FRONT DOOR. Take what the user says they are building and turn it into a grounded venture: records their description verbatim, then runs four research passes in parallel — what competitors say, what the platforms are rewarding, what people search for, and how the audience talks about the problem. Findings are stored so later work does not repeat the sweep. Use this when someone describes a new brand, product or venture, or when an existing one has no research on file. Ask for competitors if they have not named any; the sweep is much better with them. This does NOT set the brand's beliefs — call proposeBrandCanon afterwards and show the user what it drafted.",
+    gate: 'internal_write',
+    inputSchema: obj({
+      description: S.string, brandId: S.string,
+      competitors: { type: 'array', items: S.string },
+      audience: S.string, offer: S.string,
+    }, ['description']),
+    zod: z.object({
+      description: z.string().min(20).max(4000),
+      brandId: z.string().optional(),
+      competitors: z.array(z.string()).max(8).optional(),
+      audience: z.string().max(600).optional(),
+      offer: z.string().max(600).optional(),
+    }),
+    run: (accountId, a) => runIntake({ accountId, ...a }),
+    observationLimit: 20_000,
+    digest: (_a, result) => {
+      const r: any = result;
+      if (!r || typeof r !== 'object' || !r.research) return '';
+      const f = Array.isArray(r.research.findings) ? r.research.findings : [];
+      const gaps = Array.isArray(r.research.gaps) ? r.research.gaps : [];
+      if (!f.length && !gaps.length) return '';
+      return digestLine(
+        f.length ? `${plural(f.length, 'research finding')} stored.` : 'The sweep found nothing usable.',
+        // Gaps are named, never swallowed: a pass that failed silently reads to
+        // the user as a pass that found nothing to say.
+        gaps.length ? `Could not cover: ${gaps.map((g: any) => `${g.pass} (${g.reason})`).join('; ')}.` : null,
+        f.length ? `Sample: ${f.slice(0, 3).map((x: any) => String(x.finding).slice(0, 100)).join(' | ')}` : null,
+      );
+    },
+  },
+  {
+    name: 'runBrandResearch',
+    domain: 'content',
+    title: 'Research a venture',
+    description: `Run the research passes for a venture and store what they find: ${RESEARCH_PASSES.join(', ')}. Use to refresh stale research, or to run one pass on its own when the user asks a specific question about competitors, trends, search demand or audience language. Findings supersede the previous set for the same passes rather than deleting it.`,
+    gate: 'read',
+    inputSchema: obj({
+      subject: S.string, brandId: S.string,
+      competitors: { type: 'array', items: S.string },
+      passes: { type: 'array', items: S.string },
+    }, ['subject']),
+    zod: z.object({
+      subject: z.string().min(5).max(1000),
+      brandId: z.string().optional(),
+      competitors: z.array(z.string()).max(8).optional(),
+      passes: z.array(z.enum(['competitor', 'trend', 'search', 'audience'])).optional(),
+    }),
+    run: (accountId, a) => runResearchSweep({ accountId, ...a }),
+    observationLimit: 20_000,
+    digest: (_a, result) => {
+      const r: any = result;
+      if (!r || typeof r !== 'object') return '';
+      const f = Array.isArray(r.findings) ? r.findings : [];
+      const gaps = Array.isArray(r.gaps) ? r.gaps : [];
+      if (!f.length && !gaps.length) return '';
+      return digestLine(
+        f.length ? `${plural(f.length, 'finding')}.` : 'Nothing usable came back.',
+        gaps.length ? `Gaps: ${gaps.map((g: any) => g.pass).join(', ')}.` : null,
+      );
+    },
+  },
+  {
+    name: 'listResearchFindings',
+    domain: 'content',
+    title: 'Read stored research',
+    description: 'Read the research on file for a venture — what was found about competitors, trends, search demand and audience language, with the source of each. Use before writing content or strategy so you build on what is known rather than searching again.',
+    gate: 'read',
+    inputSchema: obj({ brandId: S.string, pass: S.string }),
+    zod: z.object({
+      brandId: z.string().optional(),
+      pass: z.enum(['competitor', 'trend', 'search', 'audience']).optional(),
+    }),
+    run: (accountId, a) => listFindings(accountId, a?.brandId, a?.pass as any),
+    observationLimit: 16_000,
+    digest: (_a, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      if (!rows.length) return 'No research on file for that venture — run startBrandIntake or runBrandResearch first.';
+      return digestLine(
+        `${plural(rows.length, 'stored finding')}.`,
+        tally(rows, 'pass') ? `${tally(rows, 'pass')}.` : null,
+      );
+    },
+  },
+  {
+    name: 'proposeBrandCanon',
+    domain: 'content',
+    title: 'Draft what the brand stands for',
+    description:
+      "Draft a brand canon from the venture's description and stored research — a core thesis, the belief it argues against, the takeaway, owned and banned words, and 3-5 content pillars. This PROPOSES only and saves nothing. Show the user what it drafted, in full, and let them correct it before you call setBrandCanon: a brand's core belief is a claim its owner has to recognise as theirs, not a fact you extract on their behalf. Always relay the caveats — they say where the research was thin.",
+    gate: 'read',
+    inputSchema: obj({ description: S.string, brandId: S.string }, ['description']),
+    zod: z.object({ description: z.string().min(20).max(4000), brandId: z.string().optional() }),
+    run: (accountId, a) => proposeCanon({ accountId, ...a }),
+    observationLimit: 16_000,
+    digest: (_a, result) => {
+      const r: any = result;
+      if (!r || typeof r !== 'object') return '';
+      if (r.error) return digestLine(String(r.error));
+      if (!r.coreThesis) return '';
+      return digestLine(
+        `Proposed thesis: "${String(r.coreThesis).slice(0, 200)}"`,
+        r.brandEnemy ? `Against: ${String(r.brandEnemy).slice(0, 120)}` : null,
+        Array.isArray(r.pillars) && r.pillars.length ? `${plural(r.pillars.length, 'pillar')} proposed.` : null,
+        Array.isArray(r.caveats) && r.caveats.length ? `Caveats: ${r.caveats.join(' ')}` : null,
+        'NOT SAVED — show this to the user and let them correct it before calling setBrandCanon.',
+      );
+    },
+  },
+  {
+    name: 'getBrandCanon',
+    domain: 'content',
+    title: 'Read the brand thesis',
+    description: "Read a venture's brand canon — the core thesis it asserts, the belief it argues against, the takeaway a reader should be left with, and the words it owns or refuses. This is what keeps content recognisably one brand across platforms. Use before writing anything substantial, or when the user asks what the brand stands for.",
+    gate: 'read',
+    inputSchema: obj({ brandId: S.string }, ['brandId']),
+    zod: z.object({ brandId: z.string().min(1) }),
+    run: (accountId, a) => loadCanon(accountId, a.brandId),
+    digest: (_a, result) => {
+      const r: any = result;
+      // Null is "there was nothing to read", which the observation already
+      // carries — a digest that narrates absence is inventing a finding.
+      if (!r || typeof r !== 'object') return '';
+      if (!r.coreThesis) return 'No thesis set — content for this venture is not held to one, so it will drift.';
+      return digestLine(
+        `Thesis: "${String(r.coreThesis).slice(0, 200)}"`,
+        r.brandEnemy ? `Argues against: ${String(r.brandEnemy).slice(0, 120)}` : null,
+        r.bannedTerms?.length ? `Banned: ${r.bannedTerms.join(', ')}` : null,
+      );
+    },
+  },
+  {
+    name: 'setBrandCanon',
+    domain: 'content',
+    title: 'Set the brand thesis',
+    description: "Define what a venture stands for, as a constraint every future piece is held to. coreThesis is the single non-negotiable claim; brandEnemy is the belief it argues against (a hook that agitates this is on-brand, one that ignores it is generic); anchorTakeaway is what a reader concludes even with the logo removed; bannedTerms are the generic words that dissolve the identity. Setting the thesis also embeds it, so later content can be scored for drift. Only set this from what the user actually told you — inventing a brand's beliefs is worse than leaving it empty.",
+    gate: 'internal_write',
+    inputSchema: obj({
+      brandId: S.string, coreThesis: S.string, brandEnemy: S.string, anchorTakeaway: S.string,
+      mandatoryLexicon: { type: 'array', items: S.string },
+      bannedTerms: { type: 'array', items: S.string },
+    }, ['brandId']),
+    zod: z.object({
+      brandId: z.string().min(1),
+      coreThesis: z.string().min(10).max(600).optional(),
+      brandEnemy: z.string().max(600).optional(),
+      anchorTakeaway: z.string().max(600).optional(),
+      mandatoryLexicon: z.array(z.string()).max(40).optional(),
+      bannedTerms: z.array(z.string()).max(60).optional(),
+    }),
+    run: (accountId, a) => {
+      const { brandId, ...rest } = a;
+      return saveCanon(accountId, brandId, rest);
+    },
+    digest: (_a, result) => {
+      const r: any = result;
+      if (!r?.saved) return '';
+      return digestLine(
+        'Brand thesis saved.',
+        r.embedded
+          ? 'It is embedded, so future content is scored for drift against it.'
+          : 'It could not be embedded, so drift scoring is unavailable until it is set again.',
+      );
+    },
+  },
+  {
+    name: 'scoreContentLinearity',
+    domain: 'content',
+    title: 'Check copy against the brand thesis',
+    description: "Score a piece of copy against a venture's brand thesis — semantic distance from the thesis plus any banned wording. Use before publishing something written by hand, or when the user asks whether a draft sounds like them. A low score means the copy has wandered off the argument, not that it phrased it differently: expressing the thesis natively for a platform is the goal, repeating it word-for-word is not.",
+    gate: 'read',
+    inputSchema: obj({ brandId: S.string, copy: S.string }, ['brandId', 'copy']),
+    zod: z.object({ brandId: z.string().min(1), copy: z.string().min(10).max(20000) }),
+    run: (accountId, a) => scoreLinearity(accountId, a.brandId, a.copy),
+    digest: (_a, result) => {
+      const r: any = result;
+      // A score of `undefined` rendered as "undefined/10" — a number the digest
+      // invented from a result that carried none. Report the verdict only when
+      // there is actually a number behind it.
+      if (!r || typeof r !== 'object' || typeof r.score !== 'number') return '';
+      return digestLine(
+        `${r.pass ? 'On brand' : 'OFF BRAND'} — ${r.score}/10.`,
+        typeof r.thesisSimilarity === 'number' ? `Thesis similarity ${Number(r.thesisSimilarity).toFixed(2)}.` : null,
+        Array.isArray(r.reasons) && r.reasons.length ? r.reasons.join(' ') : null,
+      );
+    },
+  },
   {
     name: 'listContentPillars',
     domain: 'content',

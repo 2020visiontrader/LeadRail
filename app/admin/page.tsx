@@ -19,6 +19,28 @@ import { IconPlatform, IconActivities, IconLogs, IconModels, IconSkills, IconUsa
 export default function AdminPage() {
   const [isOwner, setIsOwner] = useState<boolean | null>(null);
   const [active, setActive] = useState('backend');
+  // The OAuth callback lands back here with a result in the query string —
+  // it cannot render its own page, so this is where the user finds out what
+  // happened. Cleared from the URL once read so a refresh does not repeat it.
+  const [oauthMsg, setOauthMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const r = q.get('mcp_oauth');
+    if (!r) return;
+    const detail = q.get('detail');
+    const server = q.get('server');
+    const MAP: Record<string, { ok: boolean; text: string }> = {
+      connected: { ok: true, text: `${server || 'The server'} is authorized. Press Test to discover its tools.` },
+      denied: { ok: false, text: `Authorization was declined${detail ? `: ${detail}` : '.'}` },
+      expired: { ok: false, text: 'That authorization link had expired or was already used. Press Connect again.' },
+      bad_request: { ok: false, text: 'The authorization server sent an incomplete response.' },
+      not_registered: { ok: false, text: 'That connection lost its registration. Press Connect to register again.' },
+      exchange_failed: { ok: false, text: `Could not complete the handshake${detail ? `: ${detail}` : '.'}` },
+    };
+    setOauthMsg(MAP[r] || { ok: false, text: 'Authorization did not complete.' });
+    setActive('mcp');
+    window.history.replaceState({}, '', '/admin');
+  }, []);
 
   useEffect(() => {
     fetch('/api/auth/me', { headers: { Accept: 'application/json' } })
@@ -55,7 +77,7 @@ export default function AdminPage() {
         { id: 'models', label: 'Providers & models', icon: <IconModels /> },
         { id: 'skills', label: 'Skills', icon: <IconSkills /> },
         { id: 'usage', label: 'Usage', icon: <IconUsage /> },
-        { id: 'mcp', label: 'MCP servers', icon: <IconConnections /> },
+        { id: 'mcp', label: 'Connectors', icon: <IconConnections /> },
       ],
     },
   ];
@@ -74,7 +96,7 @@ export default function AdminPage() {
         "Saved guidance that shapes how the assistant writes and decides. A skill's text goes into the system prompt, so every one is screened before it is injected — blocked skills are held back and shown here.",
     },
     usage: { title: 'Usage', description: 'AI calls, latency and failures across the platform.' },
-    mcp: { title: 'MCP servers', description: 'External tool servers wired into the assistant.' },
+    mcp: { title: 'Connectors', description: 'External tool servers wired into the assistant, including Higgsfield. Named connectors are listed first; anything else can be added by URL.' },
   };
 
   const meta = META[active] ?? META.backend;
@@ -115,7 +137,16 @@ export default function AdminPage() {
             the catalog's skills came from third-party repositories. */}
         {active === 'skills' && <Skills />}
         {active === 'usage' && <AiUsage />}
-        {active === 'mcp' && <McpClients />}
+        {active === 'mcp' && (
+          <div className="space-y-3">
+            {oauthMsg && (
+              <div className={`rounded-lg border px-3 py-2 text-sm ${oauthMsg.ok ? 'border-green-200 bg-green-50 text-green-700' : 'border-red-200 bg-red-50 text-red-700'}`}>
+                {oauthMsg.text}
+              </div>
+            )}
+            <McpClients />
+          </div>
+        )}
       </SettingsConsole>
     </div>
   );
