@@ -70,7 +70,7 @@ async function fromXlsx(buf: Buffer): Promise<string> {
   return parts.join('\n\n');
 }
 
-const SUPPORTED = ['pdf', 'pptx', 'docx', 'xlsx', 'xls', 'txt', 'md'];
+const SUPPORTED = ['pdf', 'pptx', 'docx', 'xlsx', 'xls', 'csv', 'txt', 'md', 'json'];
 
 export function isSupportedDeck(filename: string): boolean {
   return SUPPORTED.includes(ext(filename));
@@ -91,6 +91,11 @@ export async function extractDeckText(filename: string, buf: Buffer, maxChars = 
       case 'docx': text = await fromDocx(buf); break;
       case 'xlsx':
       case 'xls': text = await fromXlsx(buf); break;
+      // CSV is read as text rather than through the xlsx path: a lead list is
+      // the commonest thing anyone attaches here, and the raw rows are more
+      // useful to a model than a re-serialised sheet.
+      case 'csv':
+      case 'json':
       case 'txt':
       case 'md': text = buf.toString('utf8'); break;
       default:
@@ -98,7 +103,18 @@ export async function extractDeckText(filename: string, buf: Buffer, maxChars = 
     }
     text = (text || '').replace(/\r/g, '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
     if (text.length > maxChars) text = text.slice(0, maxChars) + '\n…[truncated]';
-    if (!text) return { ...base, note: 'no extractable text (scanned image or empty file?)' };
+    if (!text) {
+      // Distinguish the two cases, because the remedies differ completely and
+      // "empty file?" sends someone to check a file that is perfectly fine.
+      // A PDF with bytes but no text layer is a scan: the words are pixels.
+      const scanned = kind === 'pdf' && buf.length > 2000;
+      return {
+        ...base,
+        note: scanned
+          ? 'This PDF has no text layer — it is a scan or an exported image, so the words are pixels. Nothing can be read from it without OCR.'
+          : 'no extractable text (the file appears to be empty)',
+      };
+    }
     return { text, chars: text.length, kind, ok: true };
   } catch (e: any) {
     return { ...base, note: `could not read .${kind} file: ${e?.message || 'parse error'}` };

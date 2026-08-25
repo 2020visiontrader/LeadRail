@@ -84,7 +84,7 @@ export async function POST(request: NextRequest) {
         const [transcript, carryover, agentContext] = await Promise.all([
           loadTranscript(conversationId, session.accountId),
           fromId ? loadCarryover(fromId, session.accountId) : Promise.resolve(null),
-          loadAgentContext({ accountId: session.accountId, brandId, brandName, query: message }),
+          loadAgentContext({ accountId: session.accountId, brandId, brandName, query: message, conversationId }),
         ]);
         await runAgentStream(
           { accountId: session.accountId, message, approve, transcript, agentContext, carryover, brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined, personaId, personaMentions, requestedBy: session.email, conversationId },
