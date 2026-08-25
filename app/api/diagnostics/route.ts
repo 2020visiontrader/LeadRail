@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, errorResponse } from '@/lib/http';
 import { supabase, dbReady } from '@/lib/db';
 import { validateEnv } from '@/lib/integrations/env';
+import { checkSchemaDrift, summarizeDrift } from '@/lib/db/schema-guard';
 
 export const dynamic = 'force-dynamic';
 
@@ -57,6 +58,24 @@ async function GET__impl(request: NextRequest) {
 
   // 1) DB reachability.
   checks.push(await checkDb());
+
+  // SCHEMA DRIFT. The check that would have caught migrations 039, 042, 043
+  // and 044 sitting unapplied for weeks — each one silently breaking a feature
+  // until somebody pressed the exact button that touched it. Reported as its
+  // own row so a missing column is a red line on a page an owner already reads,
+  // rather than a PGRST204 in a log nobody opens.
+  try {
+    const drift = await checkSchemaDrift();
+    checks.push({
+      name: 'schema',
+      status: drift.ok ? 'ok' : 'error',
+      detail: summarizeDrift(drift),
+    });
+  } catch (e: any) {
+    // The guard already never throws; this is belt and braces so a bug in the
+    // check cannot take out the whole diagnostics response.
+    checks.push({ name: 'schema', status: 'error', detail: String(e?.message || e).slice(0, 300) });
+  }
 
   // 2) Env presence (keys only — values never leave the server).
   let envPresence: { key: string; present: boolean }[] = [];
@@ -124,7 +143,11 @@ async function GET__impl(request: NextRequest) {
     checks.push({ name: 'table_counts', status: 'error', detail: 'database not connected' });
   }
 
-  return NextResponse.json({ checks, env: envPresence, counts });
+  // Findings are returned alongside the summary row: the row says WHICH
+  // migrations to apply, the list says exactly what is missing and what it
+  // breaks, which is what someone needs once they start fixing it.
+  const drift = await checkSchemaDrift().catch(() => null);
+  return NextResponse.json({ checks, env: envPresence, counts, schema: drift });
 }
 
 // --- request logging (auto-wrapped) ---
