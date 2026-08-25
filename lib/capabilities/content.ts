@@ -18,7 +18,7 @@ import {
 } from '@/lib/content/store';
 import { generateContent } from '@/lib/content/engine';
 import { generateImage as routeImage } from '@/lib/ai/image-router';
-import { generateVideo, higgsfieldConfigured, getVideoStatus } from '@/lib/integrations/higgsfield';
+import { generateVideo, getVideoStatus, higgsfieldUnavailableReason } from '@/lib/integrations/higgsfield';
 import { obj, S, type Capability, rowsOf, plural, samples, tally, digestLine } from './types';
 
 /** Persist generated image bytes and hand back a URL. Shared by the two image
@@ -296,7 +296,7 @@ export const CONTENT_CAPABILITIES: Capability[] = [
     name: 'generateBrandVideo',
     domain: 'content',
     title: 'Generate a video',
-    description: "Animate a still image into a short video, optionally with the subject speaking a line to camera (lip-synced). Give the URL of the image to animate and describe what MOVES — camera motion, gesture, action — not who the subject is; the image already fixes that. Pair it with an image made from a character reference so the person on screen matches the stills. Renders take minutes.",
+    description: "Animate a still image into a short video, optionally with the subject speaking a line to camera (lip-synced). Give the URL of the image to animate and describe what MOVES — camera motion, gesture, action — not who the subject is; the image already fixes that. Pair it with an image made from a character reference so the person on screen matches the stills. Renders take minutes. Runs through the account's Higgsfield MCP connection.",
     gate: 'internal_write',
     inputSchema: obj({ imageUrl: S.string, prompt: S.string, dialogue: S.string }, ['imageUrl', 'prompt']),
     zod: z.object({
@@ -304,11 +304,18 @@ export const CONTENT_CAPABILITIES: Capability[] = [
       prompt: z.string().min(3).max(1000),
       dialogue: z.string().max(600).optional(),
     }),
-    run: async (_accountId, a) => {
-      if (!higgsfieldConfigured()) {
-        return { error: 'Video generation is not connected for this workspace.' };
+    run: async (accountId, a) => {
+      // The reason is looked up rather than assumed: "not connected" and
+      // "connected but switched off" are different problems with different
+      // fixes, and the earlier version of this told people to set an API key
+      // that Higgsfield does not issue.
+      const blocked = await higgsfieldUnavailableReason(accountId);
+      if (blocked) return { error: blocked };
+      try {
+        return await generateVideo(accountId, { imageUrl: a.imageUrl, prompt: a.prompt, dialogue: a.dialogue });
+      } catch (e: any) {
+        return { error: e?.message || 'The video render failed.' };
       }
-      return generateVideo({ imageUrl: a.imageUrl, prompt: a.prompt, dialogue: a.dialogue });
     },
     digest: (_a, result) => {
       const r: any = result;
@@ -324,10 +331,15 @@ export const CONTENT_CAPABILITIES: Capability[] = [
     gate: 'read',
     inputSchema: obj({ requestId: S.string }, ['requestId']),
     zod: z.object({ requestId: z.string().min(1) }),
-    run: async (_accountId, a) => {
-      if (!higgsfieldConfigured()) return { error: 'Video generation is not connected for this workspace.' };
-      const { status, url } = await getVideoStatus(a.requestId);
-      return { status, url };
+    run: async (accountId, a) => {
+      const blocked = await higgsfieldUnavailableReason(accountId);
+      if (blocked) return { error: blocked };
+      try {
+        const { status, url } = await getVideoStatus(accountId, a.requestId);
+        return { status, url };
+      } catch (e: any) {
+        return { error: e?.message || 'Could not read the render status.' };
+      }
     },
   },
 
