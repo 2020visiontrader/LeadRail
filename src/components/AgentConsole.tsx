@@ -769,21 +769,37 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
   );
 }
 
+// Each step's outcome was carried ENTIRELY by a coloured glyph — a green tick,
+// a red cross, or a pulsing dot — with no text anywhere. Three consequences,
+// and none of them are edge cases:
+//   - a screen reader announced "✕ Sourcing leads", or for a running step, the
+//     step text with no indication it had not finished
+//   - the difference between done and failed was a colour and a glyph most of
+//     whose meaning is convention
+//   - hovering told you nothing
+// The glyph is now decorative, with the state said in words for assistive tech
+// and put in the title for everyone else.
 function StepRow({ step }: { step: Step }) {
   if (step.kind === 'error') {
-    return <div className="flex items-center gap-2 text-sm text-[var(--status-negative)]"><span>✕</span>{step.text}</div>;
+    return (
+      <div className="flex items-center gap-2 text-sm text-[var(--status-negative)]">
+        <span aria-hidden>✕</span><span className="sr-only">Error: </span>{step.text}
+      </div>
+    );
   }
   const text = step.kind === 'thought' ? step.text : step.label;
   const done = step.done;
   const failed = step.kind === 'tool' && step.ok === false;
+  const state = failed ? 'Failed' : done ? 'Done' : 'Running';
   return (
-    <div className="flex items-start gap-2.5 text-sm text-[var(--text-secondary)]">
+    <div className="flex items-start gap-2.5 text-sm text-[var(--text-secondary)]" title={`${state}: ${text}`}>
+      <span className="sr-only">{state}: </span>
       {failed ? (
-        <span className="mt-0.5 text-[var(--status-negative)]">✕</span>
+        <span aria-hidden className="mt-0.5 text-[var(--status-negative)]">✕</span>
       ) : done ? (
-        <span className="mt-0.5 text-[var(--status-positive)]">✓</span>
+        <span aria-hidden className="mt-0.5 text-[var(--status-positive)]">✓</span>
       ) : (
-        <span className="relative mt-1 flex h-2 w-2 shrink-0">
+        <span aria-hidden className="relative mt-1 flex h-2 w-2 shrink-0">
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--brand)] opacity-70" />
           <span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--brand)]" />
         </span>

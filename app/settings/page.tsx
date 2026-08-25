@@ -9,10 +9,12 @@ import SenderProfiles from '@/components/SenderProfiles';
 import Personas from '@/components/Personas';
 import Budgets from '@/components/Budgets';
 import ScheduledTasks from '@/components/ScheduledTasks';
+import Automations from '@/components/Automations';
+import SocialAutomations from '@/components/SocialAutomations';
 import Approvals from '@/components/Approvals';
 import { SOCIAL_PROVIDERS } from '@/lib/social/providers';
 import SettingsConsole, { type SettingsGroup } from '@/components/SettingsConsole';
-import { IconConnections, IconOutreach, IconPersonas, IconUsage, IconSequences, IconAdmin, IconPrivacy } from '@/components/icons';
+import { IconConnections, IconOutreach, IconPersonas, IconUsage, IconSequences, IconAdmin, IconPrivacy, IconJourneys, IconCampaigns } from '@/components/icons';
 
 interface Connection {
   provider: string;
@@ -487,6 +489,8 @@ export default function Settings() {
       items: [
         { id: 'budgets', label: 'Budgets', icon: <IconUsage /> },
         { id: 'scheduled', label: 'Scheduled tasks', icon: <IconSequences /> },
+        { id: 'automations', label: 'CRM rules', icon: <IconJourneys /> },
+        { id: 'social-rules', label: 'Social rules', icon: <IconCampaigns /> },
         { id: 'approvals', label: 'Approvals', icon: <IconAdmin /> },
       ],
     },
@@ -514,6 +518,14 @@ export default function Settings() {
     privacy: { title: 'Data & privacy', description: 'Export or delete the data this workspace holds about you.' },
   };
 
+  META.automations = {
+    title: 'CRM rules',
+    description: 'Standing rules that run on their own when a lead is added or replies. Created switched off — arming one is a separate decision.',
+  };
+  META['social-rules'] = {
+    title: 'Social rules',
+    description: 'Rules that act on comments, direct messages and mentions. A reply rule posts publicly as your brand, so each one is created off and carries a hard daily limit.',
+  };
   const meta = META[active] ?? META.connections;
 
   return (
@@ -546,6 +558,8 @@ export default function Settings() {
           {active === 'personas' && <Personas />}
           {active === 'budgets' && <Budgets />}
           {active === 'scheduled' && <ScheduledTasks />}
+          {active === 'automations' && <Automations />}
+          {active === 'social-rules' && <SocialAutomations />}
           {active === 'approvals' && <Approvals />}
           {active === 'privacy' && <DataPrivacySection />}
         </SettingsConsole>

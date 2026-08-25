@@ -3,7 +3,6 @@ import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import NotificationsBell from '@/components/NotificationsBell';
-import AssistantDock, { DOCK_EVENT, readDockMode, toggleDockMode } from '@/components/AssistantDock';
 import {
   IconDashboard, IconAssistant, IconLeads, IconEnrichment, IconCompanies, IconDeals,
   IconSegments, IconActivities, IconInbox, IconOutreach, IconSequences, IconJourneys,
@@ -33,7 +32,6 @@ const NAV_GROUPS: NavGroup[] = [
     label: 'Work',
     items: [
       { href: '/', label: 'Dashboard', icon: IconDashboard },
-      { href: '/assistant', label: 'Assistant', icon: IconAssistant },
       { href: '/activities', label: 'Activities', icon: IconActivities },
     ],
   },
@@ -198,7 +196,6 @@ function Wordmark() {
 export default function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const [isOwner, setIsOwner] = useState(false);
-  const [docked, setDocked] = useState(false);
   // Which groups are folded shut. Persisted per browser: someone who never
   // touches Campaigns should not have to close that group on every visit.
   const [collapsedGroups, setCollapsedGroups] = useState<string[]>([]);
@@ -221,21 +218,8 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
       .then((d) => setIsOwner(d?.role === 'owner'))
       .catch(() => {});
   }, []);
-  // Mirror the dock's mode for the rail launcher's active styling.
-  useEffect(() => {
-    setDocked(readDockMode() === 'docked');
-    const onDock = (e: Event) => setDocked((e as CustomEvent<string>).detail === 'docked');
-    window.addEventListener(DOCK_EVENT, onDock);
-    return () => window.removeEventListener(DOCK_EVENT, onDock);
-  }, []);
   const isActive = (href: string) => (href === '/' ? pathname === '/' : pathname.startsWith(href));
-  // '/assistant' IS the assistant, full-page. Rendering the dock there too gave
-  // two live consoles on one screen — two composers, two step traces — and
-  // because `docked` hides <main>, the page's own console was the one that
-  // disappeared, leaving the dock's narrow panel as the whole workspace. On this
-  // route the dock is suppressed and the layout is never treated as docked.
   const onAssistantPage = pathname === '/assistant';
-  const dockOpen = docked && !onAssistantPage;
   // '/welcome' (Packet 11.2) joins the existing bare routes: it is the public
   // landing page and brings its own <header>/<main>/<footer>, so wrapping it in
   // the authenticated nav rail would show a logged-out visitor a dashboard
@@ -264,18 +248,24 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <Wordmark />
         </div>
         <div className="px-3 pb-1">
-          <button
-            onClick={toggleDockMode}
-            aria-pressed={dockOpen}
+          {/* ONE Assistant, not two.
+              There used to be a dock toggle here AND an "Assistant" item in the
+              WORK group below, pointing at two different surfaces: the dock had
+              no multi-chat tabs, so the two looked like the same feature working
+              differently, which is worse than an obviously missing one. This is
+              now the single entry, and it opens the full page. */}
+          <Link
+            href="/assistant"
+            aria-current={onAssistantPage ? 'page' : undefined}
             className={`flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-[13px] transition ${
-              dockOpen ? 'bg-[var(--ink)] font-semibold text-[var(--ink-fg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-raised)] hover:text-[var(--text-primary)]'
+              onAssistantPage ? 'bg-[var(--ink)] font-semibold text-[var(--ink-fg)]' : 'text-[var(--text-secondary)] hover:bg-[var(--bg-raised)] hover:text-[var(--text-primary)]'
             }`}
-            style={!dockOpen ? { background: 'color-mix(in srgb, var(--ink) 12%, transparent)' } : undefined}
+            style={!onAssistantPage ? { background: 'color-mix(in srgb, var(--ink) 12%, transparent)' } : undefined}
           >
             <span aria-hidden className="text-[13px] leading-none">✦</span>
             <span className="truncate">Assistant</span>
             <kbd className="ml-auto rounded border border-[var(--border-default)] px-1 text-[11px] text-[var(--text-muted)]">⌘J</kbd>
-          </button>
+          </Link>
         </div>
         <nav className="console-rail-scroll flex-1 overflow-y-auto px-3 py-2">
           {NAV_GROUPS.map((group) => {
@@ -361,8 +351,7 @@ export default function AppShell({ children }: { children: React.ReactNode }) {
           <AccountFooter />
         </div>
       </aside>
-      {!onAssistantPage && <AssistantDock />}
-      <div className={`min-w-0 flex-1 flex-col ${dockOpen ? 'hidden' : 'flex'}`}>
+      <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 items-center gap-4 overflow-x-auto border-b border-[var(--border-default)] bg-[var(--bg-surface)] px-4 md:hidden">
           <Wordmark />
           {flatNav.map((n) => (
