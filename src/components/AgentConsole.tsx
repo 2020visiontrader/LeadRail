@@ -269,6 +269,14 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
   // while others were still streaming.
   const [activeRuns, setActiveRuns] = useState<Set<string>>(new Set());
   const [attachments, setAttachments] = useState<UploadedAttachment[]>([]);
+  // While dictating, the level meter sits BESIDE the composer rather than
+  // replacing it: the words are streaming into that box as they are spoken, so
+  // hiding it would hide the thing being produced.
+  const [dictating, setDictating] = useState(false);
+  // Whatever was typed before dictation started. Interim passes revise the
+  // spoken span, so they must replace it — without a fixed base, each refresh
+  // would append to the previous one and the text would multiply.
+  const dictationBase = useRef('');
 
   // Moving between pages inside the app does NOT stop a run: the request is not
   // tied to this component's lifetime, and the server saves the finished turn
@@ -739,11 +747,11 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
             conversationId={conversationIdRef.current}
             attachments={attachments}
             onChange={setAttachments}
-            disabled={busy}
+            disabled={busy || dictating}
           />
           <textarea
             rows={2}
-            // Named so the microphone can put the cursor here after dropping a
+            // Named so dictation can put the cursor here after dropping a
             // transcript in — see VoiceInput.
             data-composer
             value={input}
@@ -754,14 +762,29 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
           />
           <VoiceInput
             disabled={busy}
+            onActiveChange={(active) => {
+              // Freeze the typed prefix at the moment dictation begins, so the
+              // spoken span can be revised without touching it.
+              if (active) dictationBase.current = input;
+              setDictating(active);
+            }}
             // Product and venture names are exactly the words a recogniser
             // gets wrong, and exactly the ones that must be right.
-            vocabulary="LeadRail, venture, campaign, pipeline, outreach, cadence" 
-            // Appended, not replaced: speaking mid-sentence should continue the
-            // thought rather than wipe what is already typed. It lands in the
-            // box rather than sending, because a brain-dump is the thing you
-            // most want to read back before it goes anywhere.
-            onTranscript={(text) => setInput((prev) => (prev ? `${prev.trim()} ${text}` : text))}
+            vocabulary="LeadRail, venture, campaign, pipeline, outreach, cadence"
+            // REPLACES the spoken span each pass rather than appending: a later
+            // pass hears more context and legitimately revises earlier words, so
+            // appending would stack five versions of the same sentence.
+            onInterim={(text) => {
+              const base = dictationBase.current;
+              setInput(text ? (base ? `${base.trim()} ${text}` : text) : base);
+            }}
+            // The final transcript lands in the box and is NOT sent. A
+            // brain-dump is exactly what you want to read back before it goes
+            // anywhere, and recognisers still mangle proper nouns.
+            onFinal={(text) => {
+              const base = dictationBase.current;
+              setInput(base ? `${base.trim()} ${text}` : text);
+            }}
           />
           <Button loading={false} disabled={!canSend} onClick={send}>
             {activeRuns.size > 1 ? `Send (${activeRuns.size} running)` : activeRuns.size === 1 ? 'Send (1 running)' : 'Send'}
