@@ -62,6 +62,10 @@ type State = 'idle' | 'listening' | 'transcribing';
 export default function VoiceInput({ onInterim, onFinal, vocabulary, disabled, onActiveChange }: Props) {
   const [state, setState] = useState<State>('idle');
   const [error, setError] = useState<string | null>(null);
+  /** Separate from `error` on purpose. "Not set up yet" is a fact about the
+   *  deployment, not a failure — rendering it in red, over the conversation,
+   *  says something is broken when nothing is. */
+  const [hint, setHint] = useState(false);
   const [seconds, setSeconds] = useState(0);
   const [levels, setLevels] = useState<number[]>(() => new Array(METER_BARS).fill(0));
   const [available, setAvailable] = useState<boolean | null>(null);
@@ -362,11 +366,12 @@ export default function VoiceInput({ onInterim, onFinal, vocabulary, disabled, o
       <button
         type="button"
         disabled={disabled}
-        onClick={unconfigured
-          ? () => setError('Dictation needs a speech-to-text endpoint. Set TRANSCRIBE_URL on this deployment (any Whisper-compatible server) and redeploy.')
-          : start}
-        aria-label={unconfigured ? 'Dictation is not set up on this deployment' : 'Dictate a message'}
-        title={unconfigured ? 'Dictation is not set up yet — tap to see what it needs' : 'Dictate a message'}
+        onClick={unconfigured ? () => setHint((h) => !h) : start}
+        aria-label={unconfigured ? 'Dictation is not available on this workspace yet' : 'Dictate a message'}
+        // Said in the user's terms, not the deployment's. TRANSCRIBE_URL is
+        // developer language and the people using this console will never set
+        // it — that detail belongs where the person who CAN act on it looks.
+        title={unconfigured ? 'Dictation is not available on this workspace yet' : 'Dictate a message'}
         className={`flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-default)] transition disabled:opacity-40 ${
           unconfigured
             ? 'cursor-help text-[var(--text-muted)] opacity-60 hover:opacity-100'
@@ -378,6 +383,17 @@ export default function VoiceInput({ onInterim, onFinal, vocabulary, disabled, o
           <path d="M5 11a7 7 0 0 0 14 0M12 18v3" />
         </svg>
       </button>
+
+      {hint && unconfigured && (
+        // Muted, narrow, and dismissible. Not red: nothing has gone wrong.
+        <button
+          type="button"
+          onClick={() => setHint(false)}
+          className="absolute bottom-full right-0 z-20 mb-1.5 w-52 rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface)] px-2.5 py-2 text-left text-[11px] leading-snug text-[var(--text-secondary)] shadow-[var(--shadow-card)]"
+        >
+          Dictation is not available on this workspace yet.
+        </button>
+      )}
 
       {error && (
         // role="alert" so it is announced, dismissible so it cannot sit there
