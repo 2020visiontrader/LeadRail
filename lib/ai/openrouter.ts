@@ -79,10 +79,35 @@ export const MODEL_CHAIN = (process.env.OPENROUTER_MODEL
       'nvidia/nemotron-3-super-120b-a12b:free',
       'nvidia/nemotron-nano-12b-v2-vl:free',
       'nvidia/nemotron-nano-9b-v2:free',
-      // ── VERIFIED DEAD 2026-08-19: 429 rate-limited, not retired. Demoted so
-      // it stops costing a round-trip, kept because a rate limit is temporary.
+      // ── Added on request 2026-08-26, not yet latency-tested.
+      'minimax/minimax-m3:free',
+      // A `-latest` alias, so it follows whatever DeepSeek promotes rather than
+      // pinning a snapshot — placed after the pinned id above it, which stays
+      // as the predictable one. Requested as `~deepseek/…`; the leading tilde
+      // is not part of an OpenRouter model id and would 404 on every call, so
+      // it is dropped here. If the alias itself is wrong the chain falls
+      // through and /api/admin/model-catalogue names it.
+      'deepseek/deepseek-v4-flash-latest',
+      // Was pinned to the BOTTOM on 2026-08-19 after probing 429 (rate-limited,
+      // not retired). That demotion was a hand-maintained stand-in for health
+      // tracking, which now exists per model (lib/ai/health.ts) and quarantines
+      // a 429 for a cooldown on its own. Leaving it hardcoded last meant a
+      // temporary rate limit kept a working model buried indefinitely, and
+      // nothing would ever move it back. Restored to the untested group; if it
+      // is still saturated, health demotes it within one call.
       'z-ai/glm-5.2:free',
     ]);
+
+// NOT IN THE CHAIN, deliberately: perplexity/pplx-embed-v1-4b.
+//
+// It is an EMBEDDING model. This chain feeds /chat/completions, which would
+// reject it on every call — not "might not work", but categorically the wrong
+// endpoint. Embeddings in this codebase go through lib/agent/embeddings.ts
+// against NVIDIA's nv-embedqa-e5-v5 at 1024 dimensions, which is also the width
+// of the pgvector column and every vector already stored in it. Switching
+// embedding models is therefore not a config change: it needs a matching
+// dimension and a re-embed of the whole memory table, or recall silently
+// compares vectors from two different spaces.
 const MODEL = MODEL_CHAIN[0];
 
 /** Status codes where trying the NEXT model in the chain is worth doing.
