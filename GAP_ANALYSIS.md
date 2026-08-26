@@ -43,7 +43,7 @@ LeadRail already HAS adclaw's *agent engine*: ReAct loop (`lib/agent/loop.ts`), 
 | Predictive scoring (churn/conversion, BYO model) | rule-based lead scoring | **PARTIAL** |
 | Connector import (Klaviyo/HubSpot/Mailchimp, Shopify/Salesforce) | Apollo/Notion/Drive/Meta | **PARTIAL** |
 | White-label multi-tenancy | venture skins + RLS | **HAVE** |
-| SCIM/SSO/2FA, self-hosted backups/updates, Data Studio | JWT sessions; Vercel/Supabase-managed | **DEFER / SKIP** (enterprise; exists in FilmOps) |
+| SCIM/SSO/2FA, self-hosted backups/updates, Data Studio | JWT sessions; Zo/Supabase-managed | **DEFER / SKIP** (enterprise; exists in FilmOps) |
 
 ## GAP MATRIX C — opensoul + pendpost (agentic governance patterns, MIT)
 
@@ -86,7 +86,7 @@ C4. **Forms + landing pages**, **booking pages**, **public REST gateway + API ke
 ### Deliberately SKIP (with reason)
 - Local models / Ollama — LeadRail is hosted; cloud router is correct.
 - IDE adapters (Codex/Cursor/OpenClaw) — not LeadRail's execution model.
-- Self-hosted backups/updates — Vercel/Supabase managed.
+- Self-hosted backups/updates — Zo/Supabase managed.
 - SCIM/SSO/2FA, chain-of-command org, chat-platform bots — defer (enterprise / web-app-first).
 
 ---

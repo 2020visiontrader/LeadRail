@@ -82,8 +82,9 @@ async function runStep(sequence: any, contactId: string, step: HermesStep) {
 }
 
 /**
- * Drain due Hermes jobs. Call from a cron (e.g. Supabase scheduled function
- * or Vercel Cron) hitting POST /api/hermes/tick. Processes one step per job,
+ * Drain due Hermes jobs. Call from a scheduler (a Supabase scheduled function,
+ * or any cron that can POST) hitting POST /api/hermes/tick. Processes one step
+ * per job,
  * then enqueues the next step at its scheduled delay.
  */
 export async function processDueJobs(limit = 25) {

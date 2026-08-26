@@ -17,7 +17,7 @@ Multi-tenant CRM + Email Outreach + Social Content + Campaign Management platfor
 - **Backend**: Next.js API routes, Supabase PostgreSQL
 - **Integrations**: Brevo (email), Postiz (social), Meta (optional)
 - **Testing**: Playwright E2E
-- **Deployment**: Vercel
+- **Deployment**: Zo
 
 ## Getting Started
 
@@ -107,19 +107,16 @@ npm run start
 
 ## Deployment
 
-### Deploy to Vercel
+### Deploy from Zo
+
+Push to the working branch and deploy from Zo. Environment variables are set in
+the Zo project, not in a file in this repo — see `.env.local.example` for the
+full list and what each one does.
 
 ```bash
-# Link your repo to Vercel
-vercel link
-
-# Set environment variables
-vercel env add NEXT_PUBLIC_SUPABASE_URL
-vercel env add NEXT_PUBLIC_SUPABASE_ANON_KEY
-# ... add other keys
-
-# Deploy
-vercel deploy --prod
+npm run build      # verify it compiles before pushing
+git push origin <branch>
+# then deploy from Zo
 ```
 
 ## Hermes Automation

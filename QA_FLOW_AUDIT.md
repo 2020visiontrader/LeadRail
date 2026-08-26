@@ -78,7 +78,7 @@ more rows in the product nav. Confirmed the current session is
 ---
 
 ## Environment notes
-- No `.env.local` and no `.vercel` link in the working tree, so `dbReady()` is
+- No `.env.local` in the working tree, so `dbReady()` is
   false locally — local dev has no database and cannot authenticate.
 - Chrome extension reports zero connected browsers, so the originally requested
   "Chrome live" session is not currently available.

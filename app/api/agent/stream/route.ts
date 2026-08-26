@@ -76,6 +76,11 @@ export async function POST(request: NextRequest) {
       // fetching it reads as slower and less capable, not more transparent.
       // Says what is happening to THEM instead.
       send({ type: 'step_start', text: 'Thinking…' });
+      // Whether the client has been told the turn is OVER. A stream that closes
+      // without one of these leaves the UI running forever: the reader loop ends
+      // so the run is released, but no step ever resolves — which is exactly the
+      // "(1 running) disappears while the trace still says Running" state.
+      let terminalSent = false;
       let finalTranscript: ChatMessage[] | undefined;
       // Set from the trailing compaction_suggested event (emitted after `final`),
       // so the finally block below knows whether this turn hit a compaction
@@ -98,14 +103,36 @@ export async function POST(request: NextRequest) {
             // Only `final`/`needs_approval` carry a transcript. Everything else,
             // including `final_delta` (a progressive preview of the answer being
             // written), passes straight through unfiltered and unpersisted.
-            if (e.type === 'final' || e.type === 'needs_approval') finalTranscript = e.transcript;
+            if (e.type === 'final' || e.type === 'needs_approval') {
+              finalTranscript = e.transcript;
+              terminalSent = true;
+            }
+            if (e.type === 'error') terminalSent = true;
             if (e.type === 'compaction_suggested') compaction = e.level;
             send(e);
           },
         );
       } catch (e: any) {
         send({ type: 'error', message: e?.message || 'Agent failed' });
+        terminalSent = true;
       } finally {
+        // THE GUARANTEE: this stream never closes silently.
+        //
+        // A turn could complete its work and then fail on the way out — the
+        // logs showed exactly that, an inner turn logging "done" while the
+        // outer stream logged "threw" one second later. Whatever the cause,
+        // the client was left with a spinner and no explanation, which is the
+        // worst possible outcome: indistinguishable from still working.
+        //
+        // Enforced HERE rather than in the client because the server is the
+        // only party that knows a turn ended. A client-side timeout would have
+        // to guess, and would eventually give up on a turn that was fine.
+        if (!terminalSent) {
+          send({
+            type: 'error',
+            message: 'That turn ended without producing an answer. Nothing was sent or charged. Try again — if it repeats, the model provider is likely failing.',
+          });
+        }
         // Persist the conversation and tell the client its id so follow-up turns
         // and the carryover handoff can reference it.
         if (finalTranscript) {

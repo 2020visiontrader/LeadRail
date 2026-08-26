@@ -58,7 +58,9 @@ function appBaseUrl(): string {
   return (
     process.env.APP_URL ||
     process.env.NEXT_PUBLIC_APP_URL ||
-    process.env.VERCEL_URL && `https://${process.env.VERCEL_URL}` ||
+    // APP_BASE_URL is the authoritative one for this deployment; the others are
+    // legacy aliases kept so an older env file still resolves.
+    process.env.APP_BASE_URL ||
     ''
   ).replace(/\/$/, '');
 }

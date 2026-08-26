@@ -48,7 +48,7 @@ Before this works end-to-end:
    (and anon key), plus `APP_API_SECRET`.
 2. Apply migrations in order: `001_schema.sql` (fresh) OR `003_reconcile.sql`
    (if the original 001 was already applied), then `002_seed.sql`.
-3. Schedule a cron to `POST /api/hermes/tick` (Vercel Cron or Supabase pg_cron).
+3. Schedule a cron to `POST /api/hermes/tick` (a scheduled function or Supabase pg_cron).
 
 ## Known limitation
 Browser-originated mutations (leads page PATCH) can't hold `APP_API_SECRET`

@@ -12,8 +12,8 @@ import { runDueScheduledTasks } from '@/lib/scheduled/store';
 
 export const dynamic = 'force-dynamic';
 
-// Cron entrypoint. Schedule via Vercel Cron or Supabase scheduled function
-// to POST here every few minutes. Protected by APP_API_SECRET.
+// Cron entrypoint. Schedule via a Supabase scheduled function, or any cron
+// that can POST, every few minutes. Protected by APP_API_SECRET.
 async function POST__impl(request: NextRequest) {
   const unauthorized = requireAuth(request);
   if (unauthorized) return unauthorized;

@@ -86,8 +86,18 @@ export function tierOrder(): TierName[] {
 // notice and re-order the ladder.
 //
 // Deliberately in-memory: a breaker is a short-lived latency optimisation, not
-// state worth persisting. Losing it on restart just means one extra trial call.
-const BREAKER_OPEN_AFTER = Number(process.env.AI_BREAKER_OPEN_AFTER) || 2;
+// state worth persisting.
+//
+// OPENING AFTER ONE FAILURE, NOT TWO. The evidence: 18 NIM failures in four
+// hours of ordinary use, each paying its full timeout before the ladder moved
+// on. With the threshold at two, the SECOND call of every cooldown window also
+// pays that cost — and inside a fan-out, where one turn makes many model calls,
+// that repeats.
+//
+// One failure is enough signal to skip a tier for a minute. The cost of being
+// wrong is a single extra trial call after the cooldown, which is exactly what
+// this was already designed to tolerate.
+const BREAKER_OPEN_AFTER = Number(process.env.AI_BREAKER_OPEN_AFTER) || 1;
 const BREAKER_COOLDOWN_MS = Number(process.env.AI_BREAKER_COOLDOWN_MS) || 60_000;
 
 const breakers = new Map<string, { fails: number; openedAt: number }>();

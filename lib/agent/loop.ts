@@ -872,37 +872,80 @@ async function runFanoutDelegates(
   emit?: (e: AgentEvent) => void,
 ): Promise<{ outcomes: DelegateOutcome[]; needsApproval?: AgentResult }> {
   const delegates = personas.slice(0, MAX_FANOUT_DELEGATES); // constraint (2)
-  const outcomes: DelegateOutcome[] = [];
-  let stepsUsed = 0;
 
+  // CONCURRENT, not sequential — this was the single biggest source of latency
+  // in the product.
+  //
+  // Each delegate is a FULL agent turn: its own loop, its own model calls, its
+  // own DB reads. Running three of them one after another meant a fan-out cost
+  // the SUM of three complete turns before the coordinator had even started
+  // composing, which is how a single request reached four minutes. They are
+  // independent by construction — the comment above says so: each reasons from
+  // the same starting request and never sees the others' tool calls — so the
+  // sequencing bought nothing except waiting.
+  //
+  // Wall-clock is now the SLOWEST delegate rather than the sum of all of them.
+  //
+  // WHAT THE OLD ORDERING GAVE UP, and why it is affordable: the shared step
+  // budget could be spent adaptively, a later delegate getting whatever an
+  // earlier one left. Concurrently there is no "later", so each is given an
+  // equal slice of the same ceiling. The total is identical; only the
+  // distribution is fixed in advance.
+  const perDelegate = Math.max(1, Math.min(
+    MAX_FANOUT_STEPS_PER_DELEGATE,
+    Math.floor(MAX_FANOUT_TOTAL_STEPS / Math.max(1, delegates.length)),
+  ));
+
+  // Announced up front because they genuinely all start now. The previous
+  // version announced each one as it began, which was honest when they ran in
+  // sequence and would be a lie here.
   for (const persona of delegates) {
-    const remaining = MAX_FANOUT_TOTAL_STEPS - stepsUsed;
-    if (remaining <= 0) break; // shared step budget exhausted — stop, do not exceed it
-    const stepBudget = Math.min(MAX_FANOUT_STEPS_PER_DELEGATE, remaining);
-
-    // Live: announce THIS delegate as it starts, so the trace moves while a
-    // multi-minute fan-out is in flight.
     emit?.({ type: 'step_start', text: `${persona.name} is ${personaVerb(persona)}…` });
+  }
 
-    const result = await runAgent({
-      accountId,                 // constraint (4) — never a different account
-      message: input.message,
-      agentContext: input.agentContext,
-      personaId: persona.id,
-      maxSteps: stepBudget,
-      requestedBy: input.requestedBy,
-      conversationId: input.conversationId,
-      // Deliberately no `transcript`/`carryover`/`approve` here: a delegate
-      // is a fresh, self-contained sub-turn, not a resume of the coordinator's
-      // own conversation.
-    });
-    stepsUsed += result.steps.length;
-
-    if (result.status === 'needs_approval') {
-      return { outcomes, needsApproval: result }; // constraint (1) — stop the whole fan-out
+  const settled = await Promise.all(delegates.map(async (persona) => {
+    try {
+      const result = await runAgent({
+        accountId,                 // constraint (4) — never a different account
+        message: input.message,
+        agentContext: input.agentContext,
+        personaId: persona.id,
+        maxSteps: perDelegate,
+        requestedBy: input.requestedBy,
+        conversationId: input.conversationId,
+        // Deliberately no `transcript`/`carryover`/`approve` here: a delegate
+        // is a fresh, self-contained sub-turn, not a resume of the
+        // coordinator's own conversation.
+      });
+      return { persona, result };
+    } catch (e: any) {
+      // One delegate throwing must not take the fan-out with it. Before, a
+      // rejection propagated out of the loop and the whole turn died with
+      // whatever the others had already produced thrown away.
+      return {
+        persona,
+        result: {
+          status: 'error' as const,
+          message: String(e?.message || e).slice(0, 300),
+          steps: [] as AgentStep[],
+        },
+      };
     }
-    // Report what this delegate actually found, attributed by name, the moment
-    // it finishes — not batched after every delegate has run.
+  }));
+
+  const outcomes: DelegateOutcome[] = [];
+
+  // Results are folded in DELEGATE ORDER, not completion order, so the same
+  // request produces the same synthesis input every time. A fan-out whose
+  // observations arrive in whatever order the network settled would make the
+  // coordinator's answer irreproducible for no benefit.
+  for (const { persona, result } of settled) {
+    if (result.status === 'needs_approval') {
+      // Constraint (1) still holds: an approval stops the fan-out. Concurrently
+      // the others have already run, so this returns what completed alongside
+      // it rather than pretending they did not.
+      return { outcomes, needsApproval: result as AgentResult };
+    }
     emit?.({
       type: 'observation',
       ok: result.status !== 'error',
@@ -910,7 +953,6 @@ async function runFanoutDelegates(
         ? `${persona.name} hit a problem: ${truncate(result.message)}`
         : `${persona.name}: ${truncate(result.message)}`,
     });
-
     outcomes.push({
       persona,
       status: result.status,
