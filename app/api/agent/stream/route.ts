@@ -50,7 +50,9 @@ export async function POST(request: NextRequest) {
   }
 
   const fromId = typeof body?.from === 'string' && body.from ? body.from : undefined;
-  const conversationId = typeof body?.conversationId === 'string' && body.conversationId ? body.conversationId : undefined;
+  // `let`, not `const`: the opening save below mints an id for a brand-new
+  // conversation, and everything after it must use that id rather than undefined.
+  let conversationId = typeof body?.conversationId === 'string' && body.conversationId ? body.conversationId : undefined;
 
   // Optional persona routing (migration 024) — no-op unless the client opts in.
   const personaId: string | undefined = typeof body?.personaId === 'string' && body.personaId ? body.personaId : undefined;
@@ -86,6 +88,10 @@ export async function POST(request: NextRequest) {
       // so the finally block below knows whether this turn hit a compaction
       // threshold. Null on every ordinary turn.
       let compaction: 'soft' | 'hard' | null = null;
+      // The transcript this turn STARTED from, plus the user's message. Held so
+      // the finally block can persist something even when the turn never
+      // reaches a terminal event — see the save below.
+      let openingTranscript: ChatMessage[] | undefined;
       try {
         // Server-owned conversation state, scoped to this session's account. An
         // id from another account (or an unknown one) yields [] — not an error,
@@ -97,6 +103,28 @@ export async function POST(request: NextRequest) {
           fromId ? loadCarryover(fromId, session.accountId) : Promise.resolve(null),
           loadAgentContext({ accountId: session.accountId, brandId, brandName, query: message, conversationId }),
         ]);
+        // WHAT THE PERSON SAID IS DURABLE FROM HERE, whatever happens next.
+        //
+        // Previously the conversation was saved ONLY on a terminal event, so a
+        // turn that errored, was stopped, or threw saved nothing at all — and
+        // the user's own message vanished with it. Losing the assistant's half
+        // of a failed turn is tolerable; losing what the person typed is not,
+        // because only they can reproduce it.
+        if (typeof message === 'string' && message.trim()) {
+          openingTranscript = [...transcript, { role: 'user', content: message } as ChatMessage];
+          const openedId = await saveConversation({
+            id: conversationId, accountId: session.accountId, brandId: brandId ?? null,
+            title: message.slice(0, 80),
+            transcript: openingTranscript,
+          }).catch(() => null);
+          // Tell the client its id NOW rather than at the end, so a turn that
+          // dies mid-flight still leaves a conversation it can return to.
+          if (openedId) {
+            conversationId = openedId;
+            send({ type: 'conversation', conversationId: openedId });
+          }
+        }
+
         await runAgentStream(
           { accountId: session.accountId, message, approve, transcript, agentContext, carryover, brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined, personaId, personaMentions, requestedBy: session.email, conversationId },
           (e: AgentEvent) => {
@@ -135,18 +163,24 @@ export async function POST(request: NextRequest) {
         }
         // Persist the conversation and tell the client its id so follow-up turns
         // and the carryover handoff can reference it.
-        if (finalTranscript) {
+        // Save the fullest transcript this turn produced. `finalTranscript` when
+        // the turn completed; otherwise the opening one, which at least keeps
+        // the user's message. The old code saved nothing in the second case.
+        const toSave = finalTranscript ?? openingTranscript;
+        if (toSave) {
           const savedId = await saveConversation({
             id: conversationId, accountId: session.accountId, brandId: brandId ?? null,
             title: typeof message === 'string' ? message.slice(0, 80) : undefined,
-            transcript: finalTranscript,
+            transcript: toSave,
           });
           send({ type: 'conversation', conversationId: savedId ?? conversationId });
 
           // Passive memory extraction (Packet 1.1) — mirrors /api/agent. Only
           // on a compaction event (once per long chat, not per message), and
           // fire-and-forget: the stream closes immediately below regardless.
-          if (compaction === 'soft' || compaction === 'hard') {
+          // Only on a COMPLETED turn: extracting durable facts from a
+          // half-finished exchange would learn from work that never happened.
+          if (finalTranscript && (compaction === 'soft' || compaction === 'hard')) {
             const t = finalTranscript;
             void generateCarryover(t)
               .then((memo) => ingestCarryoverFacts(session.accountId, memo))

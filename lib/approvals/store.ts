@@ -245,6 +245,40 @@ export async function listApprovals(accountId: string, opts?: { state?: Approval
   return (data || []).map(toSafe).map(withEffectiveState);
 }
 
+/** The pending approval belonging to one conversation, if there is one.
+ *
+ *  WHY THIS EXISTS. An approval row is created BEFORE the needs_approval event
+ *  is emitted, because execution is gated on that row. So the queue entry
+ *  always exists, while the inline card only appears if the browser was still
+ *  connected to receive the event — and a turn that threw, was stopped, or was
+ *  navigated away from left the operator with a queue entry and no card, which
+ *  reads as the assistant having silently rerouted their work.
+ *
+ *  Live work is now re-surfaced in the chat it came from. A SCHEDULED task has
+ *  no conversation, so its approvals are unaffected and stay queue-only, which
+ *  is exactly where they belong — nobody is watching a chat at 3am.
+ */
+export async function pendingApprovalForConversation(
+  accountId: string,
+  conversationId: string,
+): Promise<SafeApproval | null> {
+  const { data, error } = await supabase
+    .from('approvals')
+    .select('*')
+    .eq('account_id', accountId)
+    .eq('conversation_id', conversationId)
+    .eq('state', 'pending')
+    .order('created_at', { ascending: false })
+    .limit(1);
+  if (error) throw error;
+  const row = (data || [])[0];
+  if (!row) return null;
+  const safe = withEffectiveState(toSafe(row));
+  // withEffectiveState downgrades a lapsed proposal to 'expired'. Re-surfacing
+  // one would offer a button that cannot work.
+  return safe.state === 'pending' ? safe : null;
+}
+
 export async function getApproval(accountId: string, id: string): Promise<SafeApproval | null> {
   const { data, error } = await supabase
     .from('approvals')

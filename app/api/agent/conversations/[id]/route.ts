@@ -1,6 +1,7 @@
 import { withApi, requireSession, errorResponse } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { loadTranscript } from '@/lib/agent/memory';
+import { pendingApprovalForConversation } from '@/lib/approvals/store';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,8 +17,15 @@ async function GET__impl(request: NextRequest, { params }: { params: { id: strin
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
-    const transcript = await loadTranscript(params.id, session.accountId);
-    return NextResponse.json({ id: params.id, transcript });
+    // The pending approval comes back WITH the transcript so returning to a
+    // chat re-surfaces the card inline, rather than leaving the proposal
+    // reachable only from the approval queue. Never fails the read: a chat that
+    // loads without its approval is far better than one that does not load.
+    const [transcript, pendingApproval] = await Promise.all([
+      loadTranscript(params.id, session.accountId),
+      pendingApprovalForConversation(session.accountId, params.id).catch(() => null),
+    ]);
+    return NextResponse.json({ id: params.id, transcript, pendingApproval });
   } catch (e) {
     return errorResponse(e);
   }

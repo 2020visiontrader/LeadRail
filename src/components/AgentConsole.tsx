@@ -369,11 +369,31 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
   useEffect(() => {
     if (!conversationId) return;
     let cancelled = false;
-    apiGet<{ transcript: Array<{ role: string; content: string }> }>(`/api/agent/conversations/${encodeURIComponent(conversationId)}`)
+    apiGet<{
+      transcript: Array<{ role: string; content: string }>;
+      pendingApproval?: { id: string; tool: string; title?: string; summary?: string } | null;
+    }>(`/api/agent/conversations/${encodeURIComponent(conversationId)}`)
       .then((d) => {
         if (cancelled) return;
         const rows = Array.isArray(d.transcript) ? d.transcript : [];
         setTurns(transcriptToTurns(rows));
+        // Re-surface a proposal that is still waiting, IN THE CHAT IT CAME FROM.
+        //
+        // The approval row is written before the needs_approval event is sent,
+        // because execution is gated on it. So a turn that threw, was stopped,
+        // or was navigated away from left a queue entry and no card — and the
+        // work looked like it had silently gone somewhere else. Live work now
+        // comes back where it was proposed; a SCHEDULED task has no
+        // conversation, so its approvals stay queue-only, which is right —
+        // nobody is watching a chat at 3am.
+        if (d.pendingApproval) {
+          setProposal({
+            approvalId: d.pendingApproval.id,
+            tool: d.pendingApproval.tool,
+            title: d.pendingApproval.title,
+            summary: d.pendingApproval.summary,
+          } as any);
+        }
       })
       .catch(() => { /* best-effort: an empty console is still usable */ });
     return () => { cancelled = true; };
