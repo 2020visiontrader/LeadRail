@@ -35,7 +35,13 @@ interface Claim { id: string; text: string; basis: Basis; evidenceIds: string[] 
 interface Finding { id: string; claimId: string; severity: 'low' | 'medium' | 'high'; recommendation?: string }
 interface Verdict { summary: string; findingIds: string[] }
 
-interface Proposal { tool: string; title: string; args: Record<string, any>; summary: string; approvalId?: string }
+interface Proposal {
+  tool: string; title: string; args: Record<string, any>; summary: string; approvalId?: string;
+  /** Whether "allow for this chat" may be offered. Comes from the SERVER —
+   *  the UI never decides which actions are pre-approvable, because a client
+   *  that decides that can pre-approve a destructive one. Absent means no. */
+  grantable?: boolean;
+}
 type Turn = { role: 'user' } & { text: string; id?: string } | {
   role: 'assistant'; text: string; steps: Step[];
   evidence?: Record<string, string>; claims?: Claim[]; findings?: Finding[]; verdict?: Verdict;
@@ -767,6 +773,42 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     run({ approve: { approvalId: proposal.approvalId, tool: proposal.tool, args: proposal.args } });
   };
 
+  // "Allow for this chat" — the middle tier between approving one action and
+  // being asked about every one of twenty identical ones.
+  //
+  // The grant is recorded BEFORE this action runs, and the action then runs
+  // through the ordinary approve path rather than a second one. Two code paths
+  // that both execute a sensitive tool is how one of them ends up missing a
+  // check; there is only ever one.
+  const [granting, setGranting] = useState(false);
+  const approveAlways = async () => {
+    if (!proposal?.approvalId) return;
+    const convo = conversationIdRef.current;
+    if (!convo) {
+      // No conversation to scope it to, and an unscoped grant is not on offer.
+      // Approving once still works, so say that rather than failing silently.
+      patchLatestAssistant((t) => t.steps.push({
+        kind: 'error',
+        text: 'This chat has not been saved yet, so I can only approve this one action for now.',
+      }));
+      return;
+    }
+    setGranting(true);
+    try {
+      await apiSend('/api/approvals/grants', 'POST', { tool: proposal.tool, conversationId: convo });
+    } catch (e: any) {
+      // The grant failed; the action itself is still approvable. Fall through
+      // to running it once rather than losing the click.
+      patchLatestAssistant((t) => t.steps.push({
+        kind: 'error',
+        text: `Could not remember that permission (${e?.message || 'unknown error'}) — running this one only.`,
+      }));
+    } finally {
+      setGranting(false);
+    }
+    approve();
+  };
+
   // Long-chat handoff: distil the current chat into a carryover memo server-side,
   // then start an empty chat that will send `from=<old id>` on its first (and
   // only its first) message. The old conversation is untouched and still listed.
@@ -851,10 +893,25 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
           <div className="animate-fade-in rounded-xl border border-[#D97706] bg-[color-mix(in_srgb,#D97706_8%,transparent)] p-4">
             <div className="text-sm font-semibold text-[var(--text-primary)]">Approval needed</div>
             <p className="mt-1 text-sm text-[var(--text-secondary)]">{proposal.summary}</p>
-            <div className="mt-3 flex gap-2">
+            <div className="mt-3 flex flex-wrap gap-2">
               <Button onClick={approve} loading={busy}>Approve &amp; run</Button>
-              <Button variant="secondary" onClick={() => setProposal(null)}>Cancel</Button>
+              {/* Offered only when the server said this action may be
+                  pre-approved. Destructive actions are asked every time —
+                  there is nothing to undo, so the one time it is read has to be
+                  every time. */}
+              {proposal.grantable && (
+                <Button variant="secondary" onClick={approveAlways} loading={granting || busy}>
+                  Allow for this chat
+                </Button>
+              )}
+              <Button variant="secondary" onClick={() => setProposal(null)}>Deny</Button>
             </div>
+            {proposal.grantable && (
+              <p className="mt-2 text-[12px] text-[var(--text-muted)]">
+                “Allow for this chat” stops asking for this action in this conversation only — it runs out after
+                a set number of uses and expires on its own. Every run is still recorded.
+              </p>
+            )}
           </div>
         )}
         <div ref={endRef} />

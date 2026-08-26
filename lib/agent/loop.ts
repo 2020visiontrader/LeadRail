@@ -30,12 +30,13 @@ import {
 import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
 import { composeAnswer } from './compose';
 import { stripAiMarkers } from '@/lib/ai/humanizer';
-import { createApproval, consumeApprovalForExecution, markApprovedByToolAndArgs, ApprovalExecutionError } from '@/lib/approvals/store';
+import { createApproval, consumeApprovalForExecution, markApprovedByToolAndArgs, recordExecutedApproval, ApprovalExecutionError } from '@/lib/approvals/store';
 import { log } from '@/lib/logger';
 import { buildCachedPrompt } from './prompt-cache';
 import { beginDelegationScope, endDelegationScope, setDelegationContext } from '@/lib/capabilities/delegation';
 import { hermesRoute } from '@/lib/ai/hermes';
 import { parseBatch, runBatch, batchSummary, MAX_BATCH, type BatchItemResult } from './batch';
+import { consumeGrant } from '@/lib/approvals/grants';
 
 // A multi-part request ("research these five agencies, then tailor outreach")
 // needs a list call, a web search per company, and then the answer — 10 steps
@@ -131,6 +132,11 @@ export interface AgentProposal {
    *  and record actor/comment/no-self-approval/edit-invalidation. Absent if
    *  persistence failed (e.g. DB unavailable) — resume still works. */
   approvalId?: string;
+  /** Whether "allow for this chat" may be offered for this action. Decided
+   *  SERVER-side from the capability's gate class, never inferred by the UI:
+   *  a client that decides for itself which actions can be pre-approved is a
+   *  client that can pre-approve a destructive one. */
+  grantable?: boolean;
 }
 
 export interface AgentStep {
@@ -774,6 +780,7 @@ async function reproposeAfterExpiry(
     const proposal: AgentProposal = {
       tool, title: def.title, args,
       summary: summarizeProposal(tool, args, opts.extraCapsByName, opts.extraTools),
+      grantable: grantableGate(capabilityFor(tool, opts.extraCapsByName)?.gate),
     };
     const row = await createApproval(accountId, {
       tool, title: def.title, summary: proposal.summary, args,
@@ -815,6 +822,65 @@ function batchObservation(tool: string, results: BatchItemResult[], extraCaps?: 
       : `[${r.index + 1}] FAILED — ${r.error || 'no reason given'}`,
   );
   return `${batchSummary(tool, results)}\n${lines.join('\n')}`;
+}
+
+
+
+/** Gate classes a standing grant may cover.
+ *
+ *  `destructive` is excluded and always will be. Every other gate commits
+ *  something recoverable — money can be refunded, a message can be followed up,
+ *  a rule can be turned off — and the case for not asking twenty times is that
+ *  the twentieth ask is not being read anyway. A destructive action has no
+ *  version of that argument: there is nothing to undo, so the one time it is
+ *  read has to be every time.
+ *
+ *  A capability with NO gate (an external MCP tool) is also excluded: nothing
+ *  declared what it is, and a grant is a decision about a known risk. */
+const GRANTABLE_GATES = new Set(['spend', 'external_send', 'standing_rule', 'internal_write']);
+
+export function grantableGate(gate?: string): boolean {
+  return Boolean(gate && GRANTABLE_GATES.has(gate));
+}
+
+/**
+ * Spend a standing grant for this tool, if the person granted one.
+ *
+ * Returns true when the action may run WITHOUT raising a card. The audit row is
+ * written here rather than left to the caller, because that is the property
+ * that makes a grant acceptable at all: a grant changes who authorised
+ * something and when, never whether it is recorded. Two call sites both
+ * remembering to log is one call site away from an unrecorded spend.
+ *
+ * Delegates never consume grants. A grant is scoped to the conversation a
+ * person is watching; a sub-run they never saw proposing spend and finding it
+ * pre-authorised is the delegate-approval hole by another route.
+ */
+async function grantCovers(
+  accountId: string,
+  tool: string,
+  args: Record<string, any>,
+  title: string,
+  summary: string,
+  opts: { conversationId?: string; requestedBy?: string; isDelegate?: boolean },
+): Promise<boolean> {
+  if (opts.isDelegate) return false;
+  const grantId = await consumeGrant(accountId, opts.conversationId, tool);
+  if (!grantId) return false;
+  try {
+    await recordExecutedApproval(accountId, {
+      tool, title, summary,
+      args,
+      // Names the grant, not a person: the audit trail must say this ran under a
+      // standing authorisation rather than a click, and which one — so a grant
+      // that turns out to have been too broad can be traced to everything it
+      // covered.
+      requestedBy: `grant:${grantId}`,
+    });
+  } catch (e) {
+    log.error('approval grant: execution recorded no audit row', e, { tool, grantId });
+  }
+  return true;
 }
 
 /**
@@ -1455,13 +1521,32 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
         const proposal: AgentProposal = {
           tool, title: def.title, args: batchArgs,
           summary: summarizeBatchProposal(tool, calls, extraCapsByName, extraTools),
+          grantable: grantableGate(capabilityFor(tool, extraCapsByName)?.gate),
         };
+        // A grant covers a BATCH as one use, not one per item. The person
+        // authorised "this kind of work in this chat"; charging them twenty-five
+        // uses for one decision would exhaust the grant on its first step and
+        // make it useless for exactly the case it exists for.
+        const batchGate = capabilityFor(tool, extraCapsByName)?.gate;
+        if (grantableGate(batchGate) && await grantCovers(accountId, tool, batchArgs, def.title, proposal.summary, {
+          conversationId: input.conversationId, requestedBy: input.requestedBy, isDelegate: input.isDelegate,
+        })) {
+          toolCalls[tool] = (toolCalls[tool] || 0) + 1;
+          const results = await runBatch(calls, (a) => runTool(tool, accountId, a, extraTools, extraCapsByName, brandContext?.id));
+          const obs = batchObservation(tool, results, extraCapsByName);
+          const perCall = obsLimitFor(tool, extraCapsByName);
+          const obsLimit = perCall === undefined ? undefined : perCall * Math.min(calls.length, 4);
+          lastToolName = tool;
+          steps.push({ thought: narrationFor(parsed), tool, args: batchArgs, observation: truncate(obs, obsLimit) });
+          messages.push(observation(obs, obsLimit));
+          continue;
+        }
         try {
           const row = await createApproval(accountId, {
             tool, title: def.title, summary: proposal.summary, args: batchArgs,
             conversationId: input.conversationId ?? null,
             requestedBy: input.requestedBy ?? null,
-            gate: capabilityFor(tool, extraCapsByName)?.gate,
+            gate: batchGate,
           });
           proposal.approvalId = row.id;
         } catch {
@@ -1499,7 +1584,24 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
         messages.push(observation(obs));
         continue;
       }
-      const proposal: AgentProposal = { tool, title: def.title, args, summary: summarizeProposal(tool, args, extraCapsByName, extraTools) };
+      const proposal: AgentProposal = { tool, title: def.title, args, summary: summarizeProposal(tool, args, extraCapsByName, extraTools), grantable: grantableGate(capabilityFor(tool, extraCapsByName)?.gate) };
+      // A standing grant for this tool in this chat runs it without a card.
+      // Checked here — the one place a sensitive first-party tool is proposed —
+      // so every gated capability behaves the same way and a new one cannot
+      // miss out by forgetting to opt in.
+      const gate = capabilityFor(tool, extraCapsByName)?.gate;
+      if (grantableGate(gate) && await grantCovers(accountId, tool, args, def.title, proposal.summary, {
+        conversationId: input.conversationId, requestedBy: input.requestedBy, isDelegate: input.isDelegate,
+      })) {
+        toolCalls[tool] = (toolCalls[tool] || 0) + 1;
+        const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
+        const obs = observationFor(tool, args, res, extraCapsByName);
+        const obsLimit = obsLimitFor(tool, extraCapsByName);
+        lastToolName = tool;
+        steps.push({ thought: narrationFor(parsed), tool, args, observation: truncate(obs, obsLimit) });
+        messages.push(observation(obs, obsLimit));
+        continue;
+      }
       // Additive: persist the proposal so it survives a closed tab and gets an
       // actor trail (migration 028_approvals.sql). Best-effort — a failure
       // here (e.g. DB unavailable) must never block the existing
@@ -1893,13 +1995,29 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
         const proposal: AgentProposal = {
           tool, title: def.title, args: batchArgs,
           summary: summarizeBatchProposal(tool, calls, extraCapsByName, extraTools),
+          grantable: grantableGate(capabilityFor(tool, extraCapsByName)?.gate),
         };
+        // One use for the whole batch — see the matching branch in runAgent.
+        const batchGate = capabilityFor(tool, extraCapsByName)?.gate;
+        if (grantableGate(batchGate) && await grantCovers(accountId, tool, batchArgs, def.title, proposal.summary, {
+          conversationId: input.conversationId, requestedBy: input.requestedBy, isDelegate: input.isDelegate,
+        })) {
+          toolCalls[tool] = (toolCalls[tool] || 0) + 1;
+          emit({ type: 'tool', tool, title: `${def.title} — ${calls.length} at once, pre-approved for this chat`, args: batchArgs });
+          const results = await runBatch(calls, (a) => runTool(tool, accountId, a, extraTools, extraCapsByName, brandContext?.id));
+          const obs = batchObservation(tool, results, extraCapsByName);
+          const perCall = obsLimitFor(tool, extraCapsByName);
+          const obsLimit = perCall === undefined ? undefined : perCall * Math.min(calls.length, 4);
+          emit({ type: 'observation', text: truncate(obs, obsLimit), ok: results.every((r) => r.ok), tool });
+          messages.push(observation(obs, obsLimit));
+          continue;
+        }
         try {
           const row = await createApproval(accountId, {
             tool, title: def.title, summary: proposal.summary, args: batchArgs,
             conversationId: input.conversationId ?? null,
             requestedBy: input.requestedBy ?? null,
-            gate: capabilityFor(tool, extraCapsByName)?.gate,
+            gate: batchGate,
           });
           proposal.approvalId = row.id;
         } catch {
@@ -1935,7 +2053,22 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
         messages.push(observation(obs));
         continue;
       }
-      const proposal: AgentProposal = { tool, title: def.title, args, summary: summarizeProposal(tool, args, extraCapsByName, extraTools) };
+      const proposal: AgentProposal = { tool, title: def.title, args, summary: summarizeProposal(tool, args, extraCapsByName, extraTools), grantable: grantableGate(capabilityFor(tool, extraCapsByName)?.gate) };
+      // Standing grant — see the matching branch in runAgent.
+      const gate = capabilityFor(tool, extraCapsByName)?.gate;
+      if (grantableGate(gate) && await grantCovers(accountId, tool, args, def.title, proposal.summary, {
+        conversationId: input.conversationId, requestedBy: input.requestedBy, isDelegate: input.isDelegate,
+      })) {
+        toolCalls[tool] = (toolCalls[tool] || 0) + 1;
+        emit({ type: 'tool', tool, title: `${def.title} — pre-approved for this chat`, args });
+        const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
+        const obs = observationFor(tool, args, res, extraCapsByName);
+        const obsLimit = obsLimitFor(tool, extraCapsByName);
+        emit({ type: 'observation', text: truncate(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
+        emitAnalysis(emit, analysisFor(tool, args, res, extraCapsByName));
+        messages.push(observation(obs, obsLimit));
+        continue;
+      }
       // Additive persistence — see the matching comment in runAgent above.
       // Best-effort; never blocks the existing needs_approval/resume flow.
       // REQUIRED, not best-effort — see the matching comment in runAgent.
