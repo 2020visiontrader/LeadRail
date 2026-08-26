@@ -118,7 +118,18 @@ function shouldTryNextModel(status: number): boolean {
 // observed live at 30s per call while NIM was down upstream. The circuit breaker
 // now caps how often that happens, but the first failure still costs this, so it
 // should be short enough to absorb. Override with NIM_TIMEOUT_MS.
-const TIMEOUT_MS = Number(process.env.NIM_TIMEOUT_MS) || 12_000;
+// RAISED FROM 12s, on measured evidence rather than taste.
+//
+// 30 days of ai_usage showed NIM's mean SUCCESSFUL latency at 9,868ms against a
+// 12,000ms ceiling — the timeout sat barely above the average, so a call only
+// had to be slightly slower than typical to be killed. The result was 11
+// successes in 40 calls, with a max_latency of exactly 12,002ms: the tail was
+// not failing, it was being cut off.
+//
+// A timeout that close to the mean is not a safety bound, it is a coin flip.
+// 30s leaves room for the tail while still being well under the point where a
+// caller gives up.
+const TIMEOUT_MS = Number(process.env.NIM_TIMEOUT_MS) || 30_000;
 
 export function nimConfigured(): boolean {
   return KEY.length > 0;
