@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/db';
 import { runAgent, agentConfigured, generateCarryover } from '@/lib/agent/loop';
 import { loadAgentContext } from '@/lib/agent/context';
-import { saveConversation, loadCarryover, loadTranscript, ingestCarryoverFacts } from '@/lib/agent/memory';
+import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts } from '@/lib/agent/memory';
 import { parseMentions } from '@/lib/agent/personas';
 
 export const dynamic = 'force-dynamic';
@@ -49,7 +49,14 @@ async function POST__impl(request: NextRequest) {
   // scoped to this session's account — an id belonging to another account (or
   // an unknown one) yields [], never an error and never their data.
   const conversationId = typeof body?.conversationId === 'string' && body.conversationId ? body.conversationId : undefined;
-  const transcript = await loadTranscript(conversationId, session.accountId);
+  // Same guard as the streaming twin: a read that FAILED reports [], and
+  // running the turn on that would save one message over the whole history.
+  // Refuse rather than truncate — see loadTranscriptResult.
+  const transcriptResult = await loadTranscriptResult(conversationId, session.accountId);
+  if (!transcriptResult.ok && conversationId) {
+    return badRequest('Could not load this conversation just now, so nothing was run — your history is safe and untouched. Try again in a moment.');
+  }
+  const transcript = transcriptResult.messages;
 
   // Resolve a venture id/name for grounding (best-effort; ownership is still
   // enforced per-tool). Only for brands the session owns.

@@ -3,7 +3,7 @@ import { NextRequest } from 'next/server';
 import { supabase } from '@/lib/db';
 import { runAgentStream, agentConfigured, generateCarryover, type AgentEvent } from '@/lib/agent/loop';
 import { loadAgentContext } from '@/lib/agent/context';
-import { saveConversation, loadCarryover, loadTranscript, ingestCarryoverFacts } from '@/lib/agent/memory';
+import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts } from '@/lib/agent/memory';
 import { parseMentions } from '@/lib/agent/personas';
 import type { ChatMessage } from '@/lib/ai/router';
 
@@ -98,8 +98,8 @@ export async function POST(request: NextRequest) {
         // not their data. This is also the approve-resume path's context source.
         // These three are independent reads — fetched concurrently now that
         // they're inside the stream, instead of serially blocking the response.
-        const [transcript, carryover, agentContext] = await Promise.all([
-          loadTranscript(conversationId, session.accountId),
+        const [transcriptResult, carryover, agentContext] = await Promise.all([
+          loadTranscriptResult(conversationId, session.accountId),
           fromId ? loadCarryover(fromId, session.accountId) : Promise.resolve(null),
           loadAgentContext({ accountId: session.accountId, brandId, brandName, query: message, conversationId }),
         ]);
@@ -110,6 +110,22 @@ export async function POST(request: NextRequest) {
         // the user's own message vanished with it. Losing the assistant's half
         // of a failed turn is tolerable; losing what the person typed is not,
         // because only they can reproduce it.
+        const transcript = transcriptResult.messages;
+        // A FAILED READ MUST NOT BECOME A WRITE. When the transcript could not
+        // be read, `transcript` is [] — indistinguishable from a new chat — and
+        // saving [user message] against an existing id would replace the whole
+        // history with one line. Refuse the turn instead: the conversation is
+        // untouched, and the person can retry with everything still there.
+        if (!transcriptResult.ok && conversationId) {
+          send({
+            type: 'error',
+            message: 'Could not load this conversation just now, so nothing was run — your history is safe and untouched. Try again in a moment.',
+          });
+          terminalSent = true;
+          controller.close();
+          return;
+        }
+
         if (typeof message === 'string' && message.trim()) {
           openingTranscript = [...transcript, { role: 'user', content: message } as ChatMessage];
           const openedId = await saveConversation({

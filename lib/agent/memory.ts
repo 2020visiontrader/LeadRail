@@ -11,6 +11,7 @@
 // conversation still works — it just isn't saved. Reads degrade to empty.
 
 import { supabase } from '@/lib/db';
+import { log } from '@/lib/logger';
 import type { ChatMessage } from '@/lib/ai/router';
 import { SECRET_KEY_PATTERN } from '@/lib/approvals/store';
 import { embedPassage, embedQuery, toPgVector } from './embeddings';
@@ -60,35 +61,82 @@ export async function saveConversation(args: {
     brand_id: args.brandId ?? null,
     transcript: args.transcript,
     token_estimate: tokenEstimate,
+    // Maintained so the write guard in migration 059 has something to compare
+    // against. See loadTranscriptResult for the failure this protects from: a
+    // read that errors returns [], and a save built on [] would replace a long
+    // conversation with a single message.
+    message_count: args.transcript.length,
     updated_at: new Date().toISOString(),
   };
   if (args.title !== undefined) row.title = args.title;
   if (args.carryover !== undefined) row.carryover = args.carryover;
   try {
     if (args.id) {
-      const { data } = await supabase.from('agent_conversations')
+      // The error is READ, not discarded. It used to be destructured away —
+      // `const { data } = await ...update(...)` — and supabase-js reports
+      // failures in the result object rather than throwing, so a failed UPDATE
+      // looked identical to one that matched no rows, and fell through to the
+      // INSERT below.
+      //
+      // That is how a conversation FORKS. Observed live: a turn saved three
+      // messages to one row, the next turn's update failed, the insert created
+      // a second row carrying the full history, and the client was handed the
+      // new id. From the user's side the chat "disappeared" — it was intact,
+      // under an id nothing pointed at any more, while the tab showed a
+      // three-message stub.
+      //
+      // An error means we do not know the row's state, and inventing a second
+      // row is the worst available response. Report the failure instead: the
+      // caller keeps the id it had, and the next turn tries the same row again.
+      const { data, error } = await supabase.from('agent_conversations')
         .update(row).eq('id', args.id).eq('account_id', args.accountId)
         .select('id').maybeSingle();
+      if (error) {
+        log.error('saveConversation: update failed, refusing to fork', error, {
+          conversationId: args.id, messages: args.transcript.length,
+        });
+        return null;
+      }
       if (data?.id) return data.id;
-      // Row vanished or id was stale — fall through to insert.
+      // No error and no row: the id is genuinely stale or belongs to another
+      // account. Inserting is right here — this is the only path that should
+      // ever reach it with an id in hand.
+      log.warn('saveConversation: id matched no row, creating a new conversation', {
+        conversationId: args.id,
+      });
     }
-    const { data } = await supabase.from('agent_conversations')
+    const { data, error } = await supabase.from('agent_conversations')
       .insert(row).select('id').maybeSingle();
+    if (error) {
+      log.error('saveConversation: insert failed', error, { messages: args.transcript.length });
+      return null;
+    }
     return data?.id ?? null;
-  } catch {
+  } catch (e) {
+    log.error('saveConversation: threw', e, { conversationId: args.id ?? null });
     return null;
   }
 }
 
-/** Load one conversation (transcript + carryover), tenant-scoped. */
+/** Load one conversation (transcript + carryover), tenant-scoped.
+ *
+ *  Returns null for "no such conversation, or not yours" and THROWS on a real
+ *  read failure. Those were the same value before, which is how a transient
+ *  database error became an empty transcript, and an empty transcript became a
+ *  save that overwrote the real one. A caller that cannot tell the difference
+ *  cannot protect the data.
+ *
+ *  Throwing leaks nothing about tenancy: an error is not an existence signal,
+ *  and a row belonging to another account still returns null. */
 export async function loadConversation(id: string, accountId: string): Promise<ConversationRow | null> {
-  try {
-    const { data } = await supabase.from('agent_conversations')
-      .select('*').eq('id', id).eq('account_id', accountId).maybeSingle();
-    return (data as ConversationRow) || null;
-  } catch {
-    return null;
+  const { data, error } = await supabase.from('agent_conversations')
+    .select('*').eq('id', id).eq('account_id', accountId).maybeSingle();
+  if (error) {
+    const err: any = new Error('Could not read the conversation');
+    err.cause = error;
+    throw err;
   }
+  return (data as ConversationRow) || null;
 }
 
 /** Load a conversation's transcript, tenant-scoped. Returns [] when the id
@@ -98,13 +146,50 @@ export async function loadConversation(id: string, accountId: string): Promise<C
  *  This is the ONLY source of prior conversation content for an agent turn:
  *  the server owns conversation state, the client never sends transcript. */
 export async function loadTranscript(conversationId: string | undefined, accountId: string): Promise<ChatMessage[]> {
-  if (!conversationId) return [];
-  const row = await loadConversation(conversationId, accountId);
+  return (await loadTranscriptResult(conversationId, accountId)).messages;
+}
+
+export interface TranscriptResult {
+  messages: ChatMessage[];
+  /** False when the read itself failed. `messages` is then [] and MUST NOT be
+   *  treated as the conversation's contents — see the note below. */
+  ok: boolean;
+}
+
+/**
+ * loadTranscript, plus whether the read actually succeeded.
+ *
+ * WHY A CALLER NEEDS THIS. The turn loop reads a conversation, appends the new
+ * user message, and writes the result back over the same row. If the read fails
+ * and reports [], the write is a one-message transcript replacing however many
+ * were there — silently, permanently, and looking exactly like a conversation
+ * that vanished.
+ *
+ * "No such conversation" and "could not read it" have to be told apart at the
+ * point where the difference decides whether to write. Absent, unknown, or
+ * another account's still returns { messages: [], ok: true }: callers must
+ * never distinguish "not yours" from "empty", and that is unchanged.
+ */
+export async function loadTranscriptResult(
+  conversationId: string | undefined,
+  accountId: string,
+): Promise<TranscriptResult> {
+  if (!conversationId) return { messages: [], ok: true };
+  let row: ConversationRow | null;
+  try {
+    row = await loadConversation(conversationId, accountId);
+  } catch (e) {
+    log.error('loadTranscript: read failed', e, { conversationId });
+    return { messages: [], ok: false };
+  }
   const transcript = row?.transcript;
-  if (!Array.isArray(transcript)) return [];
-  return transcript.filter(
-    (m: any) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string',
-  ) as ChatMessage[];
+  if (!Array.isArray(transcript)) return { messages: [], ok: true };
+  return {
+    ok: true,
+    messages: transcript.filter(
+      (m: any) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string',
+    ) as ChatMessage[],
+  };
 }
 
 export interface ConversationSummary {
