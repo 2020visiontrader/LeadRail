@@ -39,7 +39,9 @@ import { log } from '@/lib/logger';
 // cost of being wrong is a single extra trial call after the cooldown, which is
 // exactly what this was designed to tolerate.
 const OPEN_AFTER = Number(process.env.AI_BREAKER_OPEN_AFTER) || 1;
-const COOLDOWN_MS = Number(process.env.AI_BREAKER_COOLDOWN_MS) || 60_000;
+// Base cooldown period in milliseconds; actual cooldown is calculated via
+// getCooldownMs() based on consecutive failure count.
+const BASE_COOLDOWN_MS = Number(process.env.AI_BREAKER_COOLDOWN_MS) || 60_000;
 
 /** Opt-in: sort healthy candidates by measured latency. Off by default — see
  *  the note at the top of this file about whose decision the order is. */
@@ -50,8 +52,12 @@ export const HEALTH_REORDER = process.env.AI_HEALTH_REORDER === '1';
  *  answer does not reorder anything. */
 const EWMA_ALPHA = 0.3;
 
+// Exponential backoff steps in milliseconds: 1min, 5min, 15min, 30min.
+// Index = consecutiveFails - OPEN_AFTER (clipped to array length).
+const BACKOFF_MS = [60_000, 300_000, 900_000, 1_800_000];
+
 interface Entry {
-  fails: number;
+  consecutiveFails: number;
   openedAt: number;
   /** Rolling mean latency of SUCCESSFUL calls, in ms. Failures are excluded on
    *  purpose: a timeout's latency describes the timeout constant, not the
@@ -66,7 +72,7 @@ const entries = new Map<string, Entry>();
 function entryFor(id: string): Entry {
   let e = entries.get(id);
   if (!e) {
-    e = { fails: 0, openedAt: 0, ewmaMs: null, successes: 0, totalFails: 0 };
+    e = { consecutiveFails: 0, openedAt: 0, ewmaMs: null, successes: 0, totalFails: 0 };
     entries.set(id, e);
   }
   return e;
@@ -82,18 +88,29 @@ function entryFor(id: string): Entry {
  */
 export function quarantined(id: string): boolean {
   const e = entries.get(id);
-  if (!e || e.fails < OPEN_AFTER) return false;
-  if (Date.now() - e.openedAt >= COOLDOWN_MS) {
-    e.fails = OPEN_AFTER - 1;
-    return false;
-  }
-  return true;
+  if (!e || e.consecutiveFails < OPEN_AFTER) return false;
+  const cooldownMs = getCooldownMs(e.consecutiveFails);
+  return Date.now() - e.openedAt < cooldownMs;
+}
+
+function getCooldownMs(consecutiveFails: number): number {
+  // consecutiveFails >= OPEN_AFTER here
+  const backoffIndex = Math.min(consecutiveFails - OPEN_AFTER, BACKOFF_MS.length - 1);
+  return BACKOFF_MS[backoffIndex];
+}
+
+/** 0 for a candidate that isn't held; otherwise ms remaining on its cooldown. */
+function remainingCooldownMs(id: string): number {
+  const e = entries.get(id);
+  if (!e || e.consecutiveFails < OPEN_AFTER) return 0;
+  return Math.max(0, getCooldownMs(e.consecutiveFails) - (Date.now() - e.openedAt));
 }
 
 export function recordSuccess(id: string, latencyMs?: number): void {
   const e = entryFor(id);
-  if (e.fails >= OPEN_AFTER) log.info('ai health: candidate recovered', { candidate: id });
-  e.fails = 0;
+  if (e.consecutiveFails >= OPEN_AFTER) log.info('ai health: candidate recovered', { candidate: id });
+  e.consecutiveFails = 0;
+  e.openedAt = 0;
   e.successes += 1;
   if (typeof latencyMs === 'number' && Number.isFinite(latencyMs) && latencyMs >= 0) {
     e.ewmaMs = e.ewmaMs == null ? latencyMs : e.ewmaMs * (1 - EWMA_ALPHA) + latencyMs * EWMA_ALPHA;
@@ -102,11 +119,16 @@ export function recordSuccess(id: string, latencyMs?: number): void {
 
 export function recordFailure(id: string): void {
   const e = entryFor(id);
-  e.fails += 1;
+  e.consecutiveFails += 1;
   e.totalFails += 1;
-  if (e.fails >= OPEN_AFTER) e.openedAt = Date.now();
-  if (e.fails === OPEN_AFTER) {
-    log.warn('ai health: candidate quarantined', { candidate: id, cooldownMs: COOLDOWN_MS });
+  if (e.consecutiveFails >= OPEN_AFTER) {
+    e.openedAt = Date.now();
+    if (e.consecutiveFails === OPEN_AFTER) {
+      log.warn('ai health: candidate quarantined', { 
+        candidate: id, 
+        cooldownMs: getCooldownMs(e.consecutiveFails) 
+      });
+    }
   }
 }
 
@@ -124,6 +146,18 @@ export function orderByHealth<T>(candidates: T[], idOf: (c: T) => string): T[] {
   const healthy: T[] = [];
   const held: T[] = [];
   for (const c of candidates) (quarantined(idOf(c)) ? held : healthy).push(c);
+
+  // Within the held group, try whoever is closest to recovering first. A
+  // candidate deep in backoff (30min, after repeated proven failures) has
+  // given far more evidence of being broken than one on its first 60s
+  // cooldown — it should be the last thing attempted when nothing healthy
+  // exists, not tried in its original ladder slot ahead of a candidate that
+  // may have already recovered. Observed live: a full-ladder outage (every
+  // tier down at once) tries every held candidate every call regardless of
+  // depth, so the most persistently dead one costs exactly as much as the
+  // one most likely to answer. Stable sort keeps equal-cooldown candidates
+  // (e.g. two that just failed once) in the caller's original order.
+  held.sort((a, b) => remainingCooldownMs(idOf(a)) - remainingCooldownMs(idOf(b)));
 
   if (HEALTH_REORDER) {
     // Unmeasured candidates sort as if average rather than best or worst: a
@@ -153,14 +187,19 @@ export interface HealthRow {
 /** Read-only snapshot for diagnostics. */
 export function healthSnapshot(): HealthRow[] {
   const now = Date.now();
-  return [...entries.entries()].map(([candidate, e]) => ({
-    candidate,
-    successes: e.successes,
-    fails: e.totalFails,
-    consecutiveFails: e.fails,
-    ewmaMs: e.ewmaMs == null ? null : Math.round(e.ewmaMs),
-    heldForMs: e.fails >= OPEN_AFTER ? Math.max(0, COOLDOWN_MS - (now - e.openedAt)) : 0,
-  }));
+  return [...entries.entries()].map(([candidate, e]) => {
+    const heldForMs = e.consecutiveFails >= OPEN_AFTER
+      ? Math.max(0, getCooldownMs(e.consecutiveFails) - (now - e.openedAt))
+      : 0;
+    return ({
+      candidate,
+      successes: e.successes,
+      fails: e.totalFails,
+      consecutiveFails: e.consecutiveFails,
+      ewmaMs: e.ewmaMs == null ? null : Math.round(e.ewmaMs),
+      heldForMs,
+    });
+  });
 }
 
 /** Tests only — the module is process-global by design. */
