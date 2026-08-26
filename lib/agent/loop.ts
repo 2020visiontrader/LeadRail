@@ -900,8 +900,25 @@ async function runFanoutDelegates(
   // version announced each one as it began, which was honest when they ran in
   // sequence and would be a lie here.
   for (const persona of delegates) {
-    emit?.({ type: 'step_start', text: `${persona.name} is ${personaVerb(persona)}…` });
+    emit?.({ type: 'step_start', text: `${persona.name} is ${personaVerb(persona)}…`, parallel: true, key: `delegate:${persona.id}` });
   }
+
+  // Progress is reported AS EACH DELEGATE SETTLES, not once they all have.
+  // Folding still happens in delegate order below — the synthesis input stays
+  // reproducible — but the trace no longer goes silent for the length of the
+  // slowest delegate while the other two have already finished. That silence is
+  // what made a fan-out indistinguishable from a hang.
+  const announce = (persona: PersonaRow, result: { status: string; message: string }) => {
+    if (result.status === 'needs_approval') return;
+    emit?.({
+      type: 'observation',
+      key: `delegate:${persona.id}`,
+      ok: result.status !== 'error',
+      text: result.status === 'error'
+        ? `${persona.name} hit a problem: ${truncate(result.message)}`
+        : `${persona.name}: ${truncate(result.message)}`,
+    });
+  };
 
   const settled = await Promise.all(delegates.map(async (persona) => {
     try {
@@ -917,19 +934,22 @@ async function runFanoutDelegates(
         // is a fresh, self-contained sub-turn, not a resume of the
         // coordinator's own conversation.
       });
+      announce(persona, result);
       return { persona, result };
     } catch (e: any) {
       // One delegate throwing must not take the fan-out with it. Before, a
       // rejection propagated out of the loop and the whole turn died with
       // whatever the others had already produced thrown away.
-      return {
-        persona,
-        result: {
-          status: 'error' as const,
-          message: String(e?.message || e).slice(0, 300),
-          steps: [] as AgentStep[],
-        },
+      const result = {
+        status: 'error' as const,
+        message: String(e?.message || e).slice(0, 300),
+        steps: [] as AgentStep[],
       };
+      // Announced here too: a delegate that FAILED must close its own line. If
+      // only the success path reported, a thrown delegate would spin forever in
+      // the trace while the fan-out had already moved on without it.
+      announce(persona, result);
+      return { persona, result };
     }
   }));
 
@@ -946,13 +966,8 @@ async function runFanoutDelegates(
       // it rather than pretending they did not.
       return { outcomes, needsApproval: result as AgentResult };
     }
-    emit?.({
-      type: 'observation',
-      ok: result.status !== 'error',
-      text: result.status === 'error'
-        ? `${persona.name} hit a problem: ${truncate(result.message)}`
-        : `${persona.name}: ${truncate(result.message)}`,
-    });
+    // Already announced by `announce` as this delegate settled — emitting here
+    // too would double every line in the trace.
     outcomes.push({
       persona,
       status: result.status,
@@ -1377,10 +1392,29 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
 // sensitive tool it emits `needs_approval` with the transcript to resume from.
 
 export type AgentEvent =
-  | { type: 'step_start'; text: string }
+  | {
+      type: 'step_start';
+      text: string;
+      /** This step runs ALONGSIDE its siblings rather than after them.
+       *
+       *  The client resolves the previous pending step whenever a new event
+       *  arrives, which is right for a sequential trace — a new step means the
+       *  last one ended. In a fan-out it is a lie: three step_starts in a row
+       *  put a tick against the first two while all three are still running.
+       *  Flagged steps are left open until their own observation lands. */
+      parallel?: boolean;
+      /** Identifies this step so its own observation can close it. */
+      key?: string;
+    }
   | { type: 'thought'; text: string }
   | { type: 'tool'; tool: string; title: string; args: Record<string, any> }
-  | { type: 'observation'; text: string; ok: boolean; tool?: string; metrics?: Record<string, number> }
+  | {
+      type: 'observation'; text: string; ok: boolean; tool?: string; metrics?: Record<string, number>;
+      /** Closes the `step_start` that carried this same `key`. Only fan-out
+       *  delegates use it: their lines run concurrently, so "the most recent
+       *  open step" is not enough to say which one just finished. */
+      key?: string;
+    }
   // Structured analysis of a tool's result (see Capability.findings in
   // lib/capabilities/types.ts) — emitted alongside `observation`, never
   // instead of it. `evidence` and `claim` events may appear with no matching

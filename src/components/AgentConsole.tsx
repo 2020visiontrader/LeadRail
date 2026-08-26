@@ -13,7 +13,16 @@ import Attachments, { type UploadedAttachment } from '@/components/composer/Atta
 // every line is a real step the agent actually took.
 
 export type Step =
-  | { kind: 'thought'; text: string; done: boolean; synthetic?: boolean }
+  | {
+      kind: 'thought'; text: string; done: boolean; synthetic?: boolean;
+      /** Runs alongside its siblings, so a later event starting does NOT mean
+       *  this one finished. Only its own observation closes it. */
+      parallel?: boolean;
+      /** Matches the `key` on the observation that closes this step. */
+      key?: string;
+      ok?: boolean;
+      observation?: string;
+    }
   | { kind: 'tool'; label: string; done: boolean; ok?: boolean; metrics?: Record<string, number>; observation?: string }
   | { kind: 'error'; text: string };
 
@@ -632,14 +641,38 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
         steps.pop();
       }
 
-      // resolve the previous pending step
-      const prevPending = [...steps].reverse().find((s: Step) => 'done' in s && !s.done) as Step | undefined;
+      // Resolve the previous pending step.
+      //
+      // NOT the parallel ones. This rule — "a new event means the last step
+      // finished" — is correct for a sequential trace and false for a fan-out,
+      // where three delegates start at once. It was putting a tick against the
+      // first two the instant the third announced itself, so the trace claimed
+      // two delegates had completed when none had. A step flagged `parallel`
+      // stays open until its own observation arrives.
+      const prevPending = [...steps].reverse().find(
+        (s: Step) => 'done' in s && !s.done && !('parallel' in s && s.parallel),
+      ) as Step | undefined;
       if (prevPending && 'done' in prevPending) prevPending.done = true;
 
-      if (e.type === 'step_start') steps.push({ kind: 'thought', text: e.text, done: false, synthetic: true });
+      if (e.type === 'step_start') {
+        steps.push({ kind: 'thought', text: e.text, done: false, synthetic: true, ...(e.parallel ? { parallel: true, key: e.key } : {}) });
+      }
       else if (e.type === 'thought') steps.push({ kind: 'thought', text: e.text, done: false });
       else if (e.type === 'tool') steps.push({ kind: 'tool', label: verbFor(e.tool, e.title), done: false });
       else if (e.type === 'observation') {
+        // A keyed observation closes the step that carried the same key. Fan-out
+        // delegates run concurrently, so "the most recent open step" cannot say
+        // which one finished — and picking wrong ticks the wrong delegate.
+        if (e.key) {
+          const own = t.steps.find((s: Step) => 'key' in s && s.key === e.key);
+          if (own && own.kind === 'thought') {
+            own.done = true;
+            own.ok = e.ok;
+            const text = typeof e.text === 'string' ? e.text.trim() : '';
+            if (text) own.observation = text.length > 240 ? `${text.slice(0, 237)}…` : text;
+          }
+          return;
+        }
         const last = [...t.steps].reverse().find((s: Step) => s.kind === 'tool');
         if (last && last.kind === 'tool') {
           last.done = true;
