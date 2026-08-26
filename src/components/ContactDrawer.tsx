@@ -76,7 +76,7 @@ export default function ContactDrawer({ contact, isOpen, onClose, onUpdate, onDe
       <div className="h-full w-full max-w-md overflow-y-auto bg-white shadow-xl" onClick={(e) => e.stopPropagation()}>
         <div className="sticky top-0 flex items-center justify-between border-b border-slate-200 bg-white px-6 py-4">
           <h2 className="text-lg font-semibold">{contact.name}</h2>
-          <button onClick={onClose} className="text-xl text-slate-400 hover:text-slate-600">✕</button>
+          <button onClick={onClose} aria-label="Close" title="Close" className="text-xl text-slate-400 hover:text-slate-600"><span aria-hidden>✕</span></button>
         </div>
 
         <div className="space-y-5 px-6 py-5">
