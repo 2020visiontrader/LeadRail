@@ -117,6 +117,42 @@ const DEFAULT_TTL_MINUTES: Record<GateClass, number> = {
   internal_write: 0,
 };
 
+// THE CLOCK RESTARTS WHEN A PERSON DECIDES.
+//
+// The TTL above measures how long a proposal can sit UNREVIEWED before the
+// world it described may have moved. That is a real risk and the reason expiry
+// exists. It is NOT the same question as "how long after someone said yes may
+// this run", and using one number for both threw away decisions that were
+// seconds old:
+//
+//   T+0      proposal raised, expires_at = T+30min
+//   T+29min  the operator reads it and clicks Approve
+//   T+31min  the agent reaches the execution step -> EXPIRED
+//
+// Nothing about that approval was stale. The person had just looked at it. What
+// ran out was a clock that started before they were ever asked, and the cost of
+// it running out is the exact failure this whole gate is meant to prevent: work
+// the operator authorised silently not happening.
+//
+// So an approval decision sets a fresh, shorter window measured from the
+// decision. Long enough to survive a slow turn — a fan-out can legitimately
+// take minutes — short enough that "approved and then forgotten" still lapses
+// rather than firing an hour later against a changed world.
+//
+// This never SHORTENS an existing expiry: a longer remaining life (external_send
+// at 60 minutes) is left alone.
+const EXECUTION_WINDOW_MINUTES = Number(process.env.APPROVAL_EXECUTION_WINDOW_MINUTES) || 15;
+
+/** ISO expiry for an approval that a person has just decided, or null when the
+ *  proposal never lapsed in the first place. */
+export function expiryAfterDecision(existing: string | null, now: Date = new Date()): string | null {
+  if (!existing) return null;
+  const fresh = now.getTime() + EXECUTION_WINDOW_MINUTES * 60_000;
+  const current = Date.parse(existing);
+  const keep = Number.isFinite(current) ? Math.max(current, fresh) : fresh;
+  return new Date(keep).toISOString();
+}
+
 /** ISO expiry for a proposal of this gate class, or null when it never lapses.
  *  An unknown/absent gate yields null — callers that do not declare a gate keep
  *  exactly their previous behaviour rather than inheriting a surprise TTL. */
@@ -380,6 +416,9 @@ export async function decideApproval(
       decided_by: actor.decidedBy,
       decided_at: new Date().toISOString(),
       comment: actor.comment ?? null,
+      // Restart the clock from the decision — see expiryAfterDecision. Only on
+      // approval: a rejection is terminal and its expiry is irrelevant.
+      ...(decision === 'approved' ? { expires_at: expiryAfterDecision(existing.expires_at) } : {}),
       updated_at: new Date().toISOString(),
     })
     .eq('id', id)
@@ -403,13 +442,33 @@ export async function markApprovedByToolAndArgs(
   decidedBy?: string | null,
 ): Promise<void> {
   const hash = hashArgs(args);
-  await supabase
+  // Read the row first so its expiry can be extended from the decision the same
+  // way decideApproval does. Without this the resume path — which is the one
+  // the chat's Approve button actually goes through — kept the original clock,
+  // and an approval given at T+29 of a 30-minute window was dead before the
+  // agent reached the execution step.
+  const { data: rows } = await supabase
     .from('approvals')
-    .update({ state: 'approved', decided_by: decidedBy ?? null, decided_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+    .select('id, expires_at')
     .eq('account_id', accountId)
     .eq('tool', tool)
     .eq('args_hash', hash)
     .eq('state', 'pending');
+
+  for (const row of (rows || []) as { id: string; expires_at: string | null }[]) {
+    await supabase
+      .from('approvals')
+      .update({
+        state: 'approved',
+        decided_by: decidedBy ?? null,
+        decided_at: new Date().toISOString(),
+        expires_at: expiryAfterDecision(row.expires_at),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', row.id)
+      .eq('account_id', accountId)
+      .eq('state', 'pending');
+  }
 }
 
 export class ApprovalExecutionError extends Error {
