@@ -24,6 +24,7 @@
 const DEFAULT_MAX_OUT = Number(process.env.AI_MAX_OUTPUT_TOKENS) || 16000;
 
 import { readSseDeltas } from './opencode';
+import { reportOpenAIUsage } from './usage';
 
 const BASE = 'https://router.huggingface.co/v1';
 const KEY = process.env.HUGGINGFACE_API_KEY || process.env.HF_TOKEN || '';
@@ -128,6 +129,7 @@ async function complete(messages: Msg[], temperature: number, maxTokens: number)
         throwForResponse(res, model, detail);
       }
       const json: any = await res.json();
+      reportOpenAIUsage(json);
       const text = json?.choices?.[0]?.message?.content;
       if (typeof text !== 'string' || !text.trim()) {
         const err: any = new Error(`HuggingFace returned an empty response (model=${model})`);

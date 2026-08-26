@@ -29,6 +29,7 @@
 // Image generation is a separate ladder — see ./image-router.
 
 import type { ChatMessage } from './opencode';
+import { withUsageCapture, type TokenUsage } from './usage';
 import * as opencode from './opencode';
 import { zoAskConfigured, zoAskText, zoAskChat } from './zoask';
 import { nimConfigured, nimText, nimChat, nimStreamChat } from './nim';
@@ -216,6 +217,7 @@ export function textConfigured(): boolean {
 // import or a credits.ts failure can never break AI generation itself.
 async function logUsage(entry: {
   accountId: string; resolved: ResolvedModel; kind: 'text' | 'chat'; ok: boolean; error?: string; latencyMs: number;
+  usage?: TokenUsage | null;
 }): Promise<void> {
   try {
     const { recordAiUsage } = await import('@/lib/credits');
@@ -228,6 +230,9 @@ async function logUsage(entry: {
       ok: entry.ok,
       error: entry.error,
       latencyMs: entry.latencyMs,
+      // NULL, not 0, when the tier reported nothing — see lib/ai/usage.ts.
+      tokensIn: entry.usage?.tokensIn ?? null,
+      tokensOut: entry.usage?.tokensOut ?? null,
     });
   } catch { /* logging must never break the caller */ }
 }
@@ -253,9 +258,11 @@ async function tryRegistry(
     : await resolveChain(accountId, { modelId }).catch(() => []);
   for (const resolved of chain) {
     const start = Date.now();
+    // One capture scope per attempt, so a failed model's usage block cannot be
+    // attributed to the model that answered after it.
     try {
-      const text = await call(resolved);
-      void logUsage({ accountId, resolved, kind, ok: true, latencyMs: Date.now() - start });
+      const { result: text, usage } = await withUsageCapture(() => call(resolved));
+      void logUsage({ accountId, resolved, kind, ok: true, latencyMs: Date.now() - start, usage });
       if (text) return text;
     } catch (err: any) {
       void logUsage({ accountId, resolved, kind, ok: false, error: String(err?.message || err).slice(0, 300), latencyMs: Date.now() - start });

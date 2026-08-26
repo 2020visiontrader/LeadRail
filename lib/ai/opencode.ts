@@ -15,6 +15,8 @@
 // ai_providers is empty, so that path never runs and these literals ARE the hard
 // limit today. Set high enough to mean "as much as the model will give", and
 // override with AI_MAX_OUTPUT_TOKENS.
+import { reportOpenAIUsage } from './usage';
+
 const DEFAULT_MAX_OUT = Number(process.env.AI_MAX_OUTPUT_TOKENS) || 16000;
 
 const KEY =
@@ -101,6 +103,7 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
     throw err;
   }
   const json = await res.json();
+  reportOpenAIUsage(json);
   // DeepSeek returns the answer in message.content; reasoning_content is separate
   // scratch and is deliberately ignored.
   const content = json?.choices?.[0]?.message?.content;

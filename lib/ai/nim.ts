@@ -8,6 +8,7 @@
 // both are OpenAI-compatible Chat Completions transports. Importing it from
 // router.ts instead would create a circular import (router.ts imports this file).
 import { readSseDeltas } from './opencode';
+import { reportOpenAIUsage } from './usage';
 
 const KEY = process.env.NVIDIA_API_KEY || process.env.NIM_API_KEY || '';
 import { log } from '@/lib/logger';
@@ -198,6 +199,7 @@ async function completeWith(MODEL: string, messages: OpenAIMessage[], temperatur
     throw err;
   }
   const json = await res.json();
+  reportOpenAIUsage(json);
   const content = json?.choices?.[0]?.message?.content;
   return typeof content === 'string' ? content.trim() : '';
 }
