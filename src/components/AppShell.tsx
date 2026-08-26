@@ -187,7 +187,7 @@ function Wordmark() {
       aria-label="LeadRail home"
       className="flex items-center gap-2 rounded-md px-1 py-0.5 transition hover:opacity-80"
     >
-      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--ink)] text-[13px] font-bold text-[var(--ink-fg)]" style={{ fontFamily: 'var(--font-display)' }}>↝</span>
+      <span aria-hidden className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md bg-[var(--ink)] text-[13px] font-bold text-[var(--ink-fg)]" style={{ fontFamily: 'var(--font-display)' }}>↝</span>
       <span className="text-[15px] font-bold tracking-tight" style={{ fontFamily: 'var(--font-display)' }}>LeadRail</span>
     </Link>
   );

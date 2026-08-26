@@ -152,7 +152,7 @@ export default function VoiceInput({ onTranscript, vocabulary, disabled }: Props
         type="button"
         disabled={disabled || busy}
         onClick={recording ? stop : start}
-        aria-label={recording ? 'Stop recording and transcribe' : 'Record a voice note'}
+        aria-label={busy ? 'Transcribing…' : recording ? 'Stop recording and transcribe' : 'Record a voice note'}
         aria-pressed={recording}
         title={recording ? 'Stop and transcribe' : 'Record a voice note'}
         className={`flex h-9 w-9 items-center justify-center rounded-lg border transition disabled:opacity-40 ${
@@ -162,7 +162,7 @@ export default function VoiceInput({ onTranscript, vocabulary, disabled }: Props
         }`}
       >
         {busy ? (
-          <span className="text-[13px]">…</span>
+          <span aria-hidden className="text-[13px]">…</span>
         ) : recording ? (
           <span aria-hidden className="block h-2.5 w-2.5 rounded-[2px] bg-current" />
         ) : (

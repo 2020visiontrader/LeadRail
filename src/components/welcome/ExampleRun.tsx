@@ -249,14 +249,19 @@ export default function ExampleRun() {
 function StepRow({ step }: { step: Step }) {
   const text = step.kind === 'thought' ? step.text : step.label;
   const failed = step.kind === 'tool' && step.ok === false;
+  // Same fix as the real step trace in AgentConsole: the outcome of each step
+  // was carried entirely by a coloured glyph, so a screen reader announced
+  // "✕ Sourcing leads" and a running step gave no sign it had not finished.
+  const state = failed ? 'Failed' : step.done ? 'Done' : 'Running';
   return (
-    <div className="flex items-start gap-2.5 text-sm text-[var(--text-secondary)]">
+    <div className="flex items-start gap-2.5 text-sm text-[var(--text-secondary)]" title={`${state}: ${text}`}>
+      <span className="sr-only">{state}: </span>
       {failed ? (
-        <span className="text-[var(--status-negative)]">✕</span>
+        <span aria-hidden className="text-[var(--status-negative)]">✕</span>
       ) : step.done ? (
-        <span className="text-[var(--status-positive)]">✓</span>
+        <span aria-hidden className="text-[var(--status-positive)]">✓</span>
       ) : (
-        <span className="relative mt-1.5 flex h-2 w-2 shrink-0">
+        <span aria-hidden className="relative mt-1.5 flex h-2 w-2 shrink-0">
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[var(--brand)] opacity-70" />
           <span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--brand)]" />
         </span>

@@ -58,7 +58,7 @@ function LoginInner() {
       <div className="relative w-full max-w-sm animate-fade-in rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] p-8 shadow-[var(--shadow-pop)] backdrop-blur-xl">
         {/* Brand */}
         <div className="mb-7 flex items-center gap-2.5">
-          <span
+          <span aria-hidden
             className="flex h-9 w-9 items-center justify-center rounded-lg bg-[var(--ink)] text-lg text-[var(--ink-fg)]"
             style={{ fontFamily: 'var(--font-display)' }}
           >↝</span>
