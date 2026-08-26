@@ -782,6 +782,59 @@ async function resolvePersonaForTurn(
   return {};
 }
 
+
+/**
+ * Re-raise a proposal whose approval lapsed before it could run.
+ *
+ * WHY ONLY `expired`. The other refusals must NOT come back:
+ *   not_approved     — the person said no, or never said yes. Re-proposing is
+ *                      nagging past a decision.
+ *   already_executed — it ran. Re-proposing is a second spend.
+ *   args_mismatch    — the details moved between approval and execution, which
+ *                      is a signal something is wrong, not a timing accident.
+ *
+ * An expiry is the one case where nothing was decided and nothing happened: the
+ * clock simply ran out. The agent is still holding the exact tool and args, so
+ * ending the turn and telling the person to type "propose again" throws away
+ * everything it already knows and makes them redo a turn to reach the identical
+ * card. This raises that card directly.
+ *
+ * It is NOT a bypass. The new approval is a fresh row with a fresh clock, and a
+ * person still has to click it. Nothing executes on the strength of a lapsed
+ * approval — which is the property the expiry existed to protect.
+ */
+async function reproposeAfterExpiry(
+  accountId: string,
+  tool: string,
+  args: Record<string, any>,
+  def: { title: string },
+  opts: {
+    conversationId?: string;
+    requestedBy?: string;
+    extraCapsByName?: Record<string, Capability>;
+    extraTools?: Record<string, AgentTool>;
+  },
+): Promise<AgentProposal | null> {
+  try {
+    const proposal: AgentProposal = {
+      tool, title: def.title, args,
+      summary: summarizeProposal(tool, args, opts.extraCapsByName, opts.extraTools),
+    };
+    const row = await createApproval(accountId, {
+      tool, title: def.title, summary: proposal.summary, args,
+      conversationId: opts.conversationId ?? null,
+      requestedBy: opts.requestedBy ?? null,
+      gate: capabilityFor(tool, opts.extraCapsByName)?.gate,
+    });
+    proposal.approvalId = row.id;
+    return proposal;
+  } catch {
+    // Could not persist the new proposal. Fall back to the plain refusal —
+    // offering a card that can never be approved is worse than saying so.
+    return null;
+  }
+}
+
 /**
  * Run (or resume) the agent loop. Returns when the agent produces a final
  * answer, needs approval for a sensitive tool, or exhausts its step budget.
@@ -1245,6 +1298,21 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
     try {
       await consumeApprovalForExecution(accountId, approvalId, tool, args);
     } catch (e: any) {
+      if (e?.code === 'expired') {
+        const def = TOOLS[tool] ?? extraTools[tool];
+        const proposal = def && await reproposeAfterExpiry(accountId, tool, args, def, {
+          conversationId: input.conversationId, requestedBy: input.requestedBy,
+          extraCapsByName, extraTools,
+        });
+        if (proposal) {
+          messages.push(pendingApprovalObservation(tool));
+          return {
+            status: 'needs_approval',
+            message: `That approval lapsed before I could run it, so nothing happened. Here it is again — ${proposal.summary}`,
+            proposal, transcript: messages, steps,
+          };
+        }
+      }
       return { status: 'error', message: approvalRefusal(e), transcript: messages, steps };
     }
     const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
@@ -1628,6 +1696,25 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
     try {
       await consumeApprovalForExecution(accountId, approvalId, tool, args);
     } catch (e: any) {
+      // Same rule as runAgent: an EXPIRED approval comes straight back as a
+      // fresh card rather than ending the turn. See reproposeAfterExpiry for
+      // why only expiry qualifies.
+      if (e?.code === 'expired') {
+        const proposal = await reproposeAfterExpiry(accountId, tool, args, approveDef, {
+          conversationId: input.conversationId, requestedBy: input.requestedBy,
+          extraCapsByName, extraTools,
+        });
+        if (proposal) {
+          messages.push(pendingApprovalObservation(tool));
+          emit({
+            type: 'needs_approval',
+            proposal,
+            message: `That approval lapsed before I could run it, so nothing happened. Here it is again — ${proposal.summary}`,
+            transcript: messages,
+          });
+          return;
+        }
+      }
       emit({ type: 'error', message: approvalRefusal(e) });
       return;
     }
