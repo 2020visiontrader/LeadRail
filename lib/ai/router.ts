@@ -33,6 +33,7 @@
 import type { ChatMessage } from './opencode';
 import { withUsageCapture, type TokenUsage } from './usage';
 import { orderByHealth, recordSuccess, recordFailure, healthSnapshot } from './health';
+import { filterEligible, estimateTokens, type CallSize } from './eligibility';
 import * as opencode from './opencode';
 import { zoAskConfigured, zoAskText, zoAskChat } from './zoask';
 import { nimConfigured, nimText, nimChat, nimStreamChat } from './nim';
@@ -226,9 +227,21 @@ async function runCandidates(
   candidates: Candidate[],
   accountId: string | undefined,
   kind: 'text' | 'chat',
+  size: CallSize,
 ): Promise<string> {
+  // Eligibility BEFORE health, because they answer different kinds of question.
+  // Health is a preference and can be overruled by circumstance; capability
+  // cannot — a 32k model does not become able to read a 60k prompt because
+  // everything else is down. Never returns empty; see filterEligible.
+  const eligible = filterEligible(
+    candidates,
+    (c) => c.resolved?.model,
+    size,
+    (c, reason) => log.info('ai router: candidate not eligible', { fn, candidate: c.id, reason }),
+  );
+
   let lastErr: any = null;
-  for (const candidate of orderByHealth(candidates, (c) => c.id)) {
+  for (const candidate of orderByHealth(eligible, (c) => c.id)) {
     const start = Date.now();
     // One capture scope per attempt, so a failed model's usage block cannot be
     // attributed to the model that answered after it.
@@ -287,7 +300,10 @@ export async function generateText(opts: {
     huggingface: { configured: huggingfaceConfigured(), run: () => hfText(opts) },
     openrouter: { configured: openrouterConfigured(), run: () => openrouterText(opts) },
   });
-  return runCandidates('generateText', [...registry, ...ladder], opts.accountId, 'text');
+  return runCandidates('generateText', [...registry, ...ladder], opts.accountId, 'text', {
+    promptTokens: estimateTokens((opts.system || '') + opts.prompt),
+    wantOutputTokens: opts.maxOutputTokens,
+  });
 }
 
 export async function generateChat(opts: {
@@ -323,7 +339,13 @@ export async function generateChat(opts: {
     huggingface: { configured: huggingfaceConfigured(), run: () => hfChat(opts) },
     openrouter: { configured: openrouterConfigured(), run: () => openrouterChat(opts) },
   }, opts.preferTier);
-  return runCandidates('generateChat', [...registry, ...ladder], opts.accountId, 'chat');
+  return runCandidates('generateChat', [...registry, ...ladder], opts.accountId, 'chat', {
+    promptTokens: estimateTokens((opts.system || '') + opts.messages.map((m) => m.content).join('')),
+    // maxOutputCeiling is deliberately NOT passed: it means "the model's own
+    // capability, but no more than this", so a model under the ceiling is
+    // satisfying the request rather than failing it.
+    wantOutputTokens: opts.maxOutputTokens,
+  });
 }
 
 /**
@@ -361,5 +383,11 @@ export async function streamChat(
     huggingface: { configured: huggingfaceConfigured(), run: () => hfStreamChat(opts, onDelta) },
     openrouter: { configured: openrouterConfigured(), run: () => openrouterStreamChat(opts, onDelta) },
   }, opts.preferTier);
-  return runCandidates('streamChat', [...registry, ...ladder], opts.accountId, 'chat');
+  return runCandidates('streamChat', [...registry, ...ladder], opts.accountId, 'chat', {
+    promptTokens: estimateTokens((opts.system || '') + opts.messages.map((m) => m.content).join('')),
+    // maxOutputCeiling is deliberately NOT passed: it means "the model's own
+    // capability, but no more than this", so a model under the ceiling is
+    // satisfying the request rather than failing it.
+    wantOutputTokens: opts.maxOutputTokens,
+  });
 }

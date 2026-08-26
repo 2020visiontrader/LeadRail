@@ -75,7 +75,7 @@ export const LEAD_CAPABILITIES: Capability[] = [
     name: 'sourceLeads',
     domain: 'leads',
     title: 'Source leads (uses credits)',
-    description: 'Find new leads/people matching a target profile (titles, seniority, location, industry, keywords, company size). Returns candidates with names/companies; emails stay masked until you reveal one. Uses sourcing credits.',
+    description: 'Find new leads/people matching a target profile (titles, seniority, location, industry, keywords, company size). Returns candidates with names/companies and an `external_id` each; emails stay masked until you reveal one with enrichLead. Uses sourcing credits. `limit` is capped at 25 per search — run more than one search if you need more than 25.',
     gate: 'spend',
     inputSchema: obj({ titles: { type: 'array', items: { type: 'string' } }, seniority: { type: 'array', items: { type: 'string' } }, location: S.string, industry: S.string, keywords: S.string, companySize: S.string, limit: S.number }),
     // titles/seniority are lists and the other four are single strings — a
@@ -93,7 +93,14 @@ export const LEAD_CAPABILITIES: Capability[] = [
       industry: listOrString,
       keywords: listOrString,
       companySize: listOrString,
-      limit: z.number().max(25).optional(),
+      // CLAMPED, NOT REJECTED. A request for 50 failed validation and handed
+      // the model a raw zod dump ("too_big, maximum 25"), costing a step to
+      // learn a cap the tool never stated. The cap is in the description now,
+      // and "give me 50" is unambiguous, so this follows the same rule as the
+      // list/string coercion above: accept a request we understood. Nothing is
+      // spent silently — `summarize` reads the clamped value, so the approval
+      // card the user actually reads says 25.
+      limit: z.number().transform((n) => Math.min(Math.max(Math.floor(n), 1), 25)).optional(),
     }),
     run: (accountId, a) => searchPeople(accountId, { titles: a.titles, seniority: a.seniority, location: a.location, industry: a.industry, keywords: a.keywords, company_size: a.companySize, limit: a.limit ?? 10 }),
     // States the credit cost and the actual filters, so the reviewer can catch a
@@ -114,22 +121,45 @@ export const LEAD_CAPABILITIES: Capability[] = [
     name: 'enrichLead',
     domain: 'leads',
     title: 'Reveal lead details (uses credits)',
-    description: "Reveal a lead's verified email and full profile. Pass a lead id (an existing contact) OR identity hints (email/linkedinUrl/name+company). Uses sourcing credits. Does NOT save a contact record — if this person isn't already a lead id you passed in, call createLead with the result before draftOutreach/sendEmail.",
+    description: "Reveal a lead's verified email and full profile. Pass `externalId` (the external_id from a sourceLeads candidate) to reveal someone you just found, OR `contactId` for an existing contact, OR identity hints (email/linkedinUrl/name+company). Prefer externalId or contactId: a masked candidate CANNOT be revealed by name, because the name itself is masked. Uses sourcing credits. Does NOT save a contact record — call createLead with the result before draftOutreach/sendEmail.",
     gate: 'spend',
-    inputSchema: obj({ contactId: S.string, email: S.string, linkedinUrl: S.string, name: S.string, company: S.string }),
-    zod: z.object({ contactId: z.string().optional(), email: z.string().optional(), linkedinUrl: z.string().optional(), name: z.string().optional(), company: z.string().optional() }),
+    inputSchema: obj({ contactId: S.string, externalId: S.string, email: S.string, linkedinUrl: S.string, name: S.string, company: S.string }),
+    zod: z.object({ contactId: z.string().optional(), externalId: z.string().optional(), email: z.string().optional(), linkedinUrl: z.string().optional(), name: z.string().optional(), company: z.string().optional() }),
     run: async (accountId, a) => {
-      let keys: any = { email: a.email, linkedin_url: a.linkedinUrl, name: a.name, company: a.company };
+      // WHY externalId EXISTS. sourceLeads returns candidates carrying an
+      // `external_id`, and apollo.ts is explicit that matching on that id is the
+      // ONLY reliable way to unlock a masked preview — matching on the
+      // obfuscated name ("Andrea Fe***z") returns a still-masked record, or the
+      // wrong person entirely. No parameter accepted it, so the source -> reveal
+      // chain had no working path at all: the model passes the external_id as
+      // `contactId`, gets "Lead not found", and falls back to the name match
+      // that returns junk. Both halves of that were observed live.
+      let keys: any = { id: a.externalId || null, email: a.email, linkedin_url: a.linkedinUrl, name: a.name, company: a.company };
       if (a.contactId) {
         const c: any = await getLeadOwned(accountId, a.contactId);
-        keys = { id: c.apollo_person_id || null, email: c.email || a.email, name: c.name || a.name, company: c.company || a.company, linkedin_url: c.linkedin_url || a.linkedinUrl };
+        keys = {
+          // The importer stores the Apollo id at enriched.apollo_id — see
+          // candidateToContact in lib/integrations/apollo.ts. This read
+          // `c.apollo_person_id`, which is not a column on contacts, so it was
+          // ALWAYS undefined and every reveal-by-contact silently degraded to
+          // the masked-name match described above. `externalId` remains a
+          // fallback for a contact imported before the id was captured.
+          id: c.enriched?.apollo_id || a.externalId || null,
+          email: c.email || a.email,
+          name: c.name || a.name,
+          company: c.company || a.company,
+          linkedin_url: c.linkedin_url || a.linkedinUrl,
+        };
       }
       return matchPerson(accountId, keys);
     },
     // Names WHO is being revealed. "contactId: abc123" tells a reviewer nothing;
     // a name or an email lets them notice it is the wrong person.
     summarize: (a) => {
-      const who = a.name || a.email || a.linkedinUrl || (a.contactId ? `lead ${a.contactId}` : 'this person');
+      const who = a.name || a.email || a.linkedinUrl
+        || (a.contactId ? `lead ${a.contactId}` : null)
+        || (a.externalId ? `sourced candidate ${a.externalId}` : null)
+        || 'this person';
       return `Spend a sourcing credit to reveal the verified email and full profile for ${who}${a.company ? ` at ${a.company}` : ''}.`;
     },
   },

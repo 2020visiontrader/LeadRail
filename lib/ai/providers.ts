@@ -51,6 +51,14 @@ export interface AiModelRow {
   /** The model's real output-token ceiling (migration 038). NULL = unknown,
    *  in which case KIND_MAX_OUTPUT_TOKENS supplies a per-kind fallback. */
   max_output_tokens: number | null;
+  /** Total input+output capacity (migration 058). NULL = unknown, which means
+   *  the eligibility filter cannot rule the model out — never that it fits. */
+  context_window: number | null;
+  /** USD per million tokens (migration 058). 0 is a real value: the free
+   *  OpenRouter roster genuinely costs nothing. NULL means unknown, and unknown
+   *  is NOT free — a model with no price must never win a cost tiebreak. */
+  cost_per_mtok_in: number | null;
+  cost_per_mtok_out: number | null;
   created_at: string;
 }
 

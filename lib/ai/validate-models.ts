@@ -33,8 +33,23 @@ export interface ModelCheck {
   didYouMean?: string[];
 }
 
+/** What the catalogue tells us about one model. Every field is optional: this
+ *  is another service's response shape, and a field that moves or disappears
+ *  must degrade to "unknown" rather than to a wrong number written into our
+ *  database. */
+export interface CatalogueEntry {
+  id: string;
+  contextWindow?: number;
+  maxOutput?: number;
+  /** USD per MILLION tokens. OpenRouter quotes per-token strings; converted
+   *  here so the unit matches the column and nobody has to remember which is
+   *  which at the call site. */
+  costInPerMTok?: number;
+  costOutPerMTok?: number;
+}
+
 /** OpenRouter publishes its full model list unauthenticated. */
-async function openRouterCatalogue(): Promise<Set<string> | null> {
+async function openRouterCatalogue(): Promise<Map<string, CatalogueEntry> | null> {
   try {
     const res = await fetch('https://openrouter.ai/api/v1/models', {
       headers: { Accept: 'application/json' },
@@ -42,26 +57,52 @@ async function openRouterCatalogue(): Promise<Set<string> | null> {
     });
     if (!res.ok) return null;
     const json: any = await res.json();
-    const ids = (json?.data || []).map((m: any) => String(m?.id || '')).filter(Boolean);
-    return ids.length ? new Set<string>(ids) : null;
+    const out = new Map<string, CatalogueEntry>();
+    for (const m of json?.data || []) {
+      const id = String(m?.id || '');
+      if (!id) continue;
+      out.set(id, {
+        id,
+        contextWindow: posInt(m?.context_length),
+        maxOutput: posInt(m?.top_provider?.max_completion_tokens),
+        costInPerMTok: perMillion(m?.pricing?.prompt),
+        costOutPerMTok: perMillion(m?.pricing?.completion),
+      });
+    }
+    return out.size ? out : null;
   } catch {
     return null;
   }
 }
 
+function posInt(v: unknown): number | undefined {
+  const n = typeof v === 'string' ? Number(v) : v;
+  return typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.floor(n) : undefined;
+}
+
+/** OpenRouter quotes price per token as a decimal string ("0.0000004", and
+ *  "0" for the free roster). Zero is a real price and must survive; anything
+ *  unparseable becomes undefined, because a missing price is not a free one. */
+function perMillion(v: unknown): number | undefined {
+  const n = typeof v === 'string' ? Number(v) : v;
+  if (typeof n !== 'number' || !Number.isFinite(n) || n < 0) return undefined;
+  return n * 1_000_000;
+}
+
 /** Ids that share the family but not the exact name — a renamed or repriced
  *  variant is the commonest cause, so the base name before `:` is the useful
  *  thing to match on. */
-function suggestionsFor(wanted: string, live: Set<string>): string[] {
+function suggestionsFor(wanted: string, live: Map<string, CatalogueEntry>): string[] {
   const base = wanted.split(':')[0].toLowerCase();
   const stem = base.split('/').pop() || base;
   // Progressively looser: exact family, then any id sharing a distinctive
   // chunk of the name.
-  const family = [...live].filter((id) => id.toLowerCase().startsWith(base));
+  const ids = [...live.keys()];
+  const family = ids.filter((id) => id.toLowerCase().startsWith(base));
   if (family.length) return family.slice(0, 5);
   const parts = stem.split(/[-_.]/).filter((p) => p.length > 3);
   if (!parts.length) return [];
-  return [...live]
+  return ids
     .filter((id) => parts.filter((p) => id.toLowerCase().includes(p)).length >= 2)
     .slice(0, 5);
 }
@@ -119,4 +160,75 @@ export async function validateModels(accountId?: string): Promise<{
   }
 
   return { checks, catalogueReachable: Boolean(live) };
+}
+
+// ---------------------------------------------------------------------------
+// CAPABILITY SYNC
+// ---------------------------------------------------------------------------
+// Migration 058 added context_window and cost columns; the eligibility filter
+// reads them and treats NULL as "cannot rule this model out". So until they are
+// filled the filter does nothing, which is the correct failure but not a useful
+// state to sit in.
+//
+// They are filled from the provider's own catalogue rather than typed in. Two
+// reasons, and the second is the important one. A context window is a fact the
+// provider publishes, so copying it by hand is error-prone work that a request
+// does better. And these numbers CHANGE — a model gets repriced, a provider
+// raises a window — and a hand-entered figure has no way to notice, which is
+// how a routing decision ends up being made on a value that was true in March.
+//
+// Only what the catalogue actually stated is written. A model the catalogue
+// does not mention, or a field it does not carry, is left exactly as it was:
+// overwriting a known value with NULL because one response was missing a key
+// would quietly disable the filter for that model.
+
+export interface CapabilitySyncResult {
+  /** Rows whose capability columns were changed, with what they became. */
+  updated: { modelId: string; label: string; changes: Record<string, number> }[];
+  /** Configured OpenRouter models the catalogue had nothing to say about —
+   *  usually the same retired ids `validateModels` reports as missing. */
+  unmatched: string[];
+  catalogueReachable: boolean;
+}
+
+export async function syncModelCapabilities(accountId?: string): Promise<CapabilitySyncResult> {
+  const live = await openRouterCatalogue();
+  if (!live) return { updated: [], unmatched: [], catalogueReachable: false };
+  if (!dbReady()) return { updated: [], unmatched: [], catalogueReachable: true };
+
+  let q = supabase
+    .from('ai_models')
+    .select('id, label, model_id, context_window, max_output_tokens, cost_per_mtok_in, cost_per_mtok_out, ai_providers!inner(name, account_id)');
+  if (accountId) q = q.eq('ai_providers.account_id', accountId);
+  const { data, error } = await q;
+  if (error) throw error;
+
+  const updated: CapabilitySyncResult['updated'] = [];
+  const unmatched: string[] = [];
+
+  for (const row of (data || []) as any[]) {
+    if (!/openrouter/i.test(row.ai_providers?.name || '')) continue;
+    const entry = live.get(String(row.model_id || ''));
+    if (!entry) { unmatched.push(String(row.model_id || '')); continue; }
+
+    const changes: Record<string, number> = {};
+    const set = (col: string, next: number | undefined, current: unknown) => {
+      if (next === undefined) return;
+      // Numeric columns come back as strings from some drivers; compare as
+      // numbers so an unchanged value is not rewritten on every sync.
+      if (current != null && Number(current) === next) return;
+      changes[col] = next;
+    };
+    set('context_window', entry.contextWindow, row.context_window);
+    set('max_output_tokens', entry.maxOutput, row.max_output_tokens);
+    set('cost_per_mtok_in', entry.costInPerMTok, row.cost_per_mtok_in);
+    set('cost_per_mtok_out', entry.costOutPerMTok, row.cost_per_mtok_out);
+
+    if (!Object.keys(changes).length) continue;
+    const { error: upErr } = await supabase.from('ai_models').update(changes).eq('id', row.id);
+    if (upErr) throw upErr;
+    updated.push({ modelId: String(row.model_id), label: row.label || String(row.model_id), changes });
+  }
+
+  return { updated, unmatched, catalogueReachable: true };
 }
