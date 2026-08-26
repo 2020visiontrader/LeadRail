@@ -44,4 +44,17 @@ async function POST__impl(request: NextRequest) {
   }
 }
 
+// GET — is voice input actually usable on this deployment?
+//
+// The composer needs a real answer BEFORE showing a microphone, and it has to
+// come from the server: TRANSCRIBE_URL is server-side only, so the browser
+// cannot know. Requires a session like everything else, and deliberately
+// reveals only a boolean — the endpoint URL is infrastructure detail.
+async function GET__impl(request: NextRequest) {
+  const { session, error } = await requireSession(request);
+  if (error) return error;
+  return NextResponse.json({ configured: transcribeConfigured() });
+}
+
+export const GET = withApi(GET__impl as any, { route: '/api/assistant/transcribe', method: 'GET' });
 export const POST = withApi(POST__impl as any, { route: '/api/assistant/transcribe', method: 'POST' });

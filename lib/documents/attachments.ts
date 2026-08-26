@@ -114,6 +114,10 @@ export async function ingestAttachment(input: {
     throw new Error(`.${kind || '?'} files cannot be read. Supported: PDF, DOCX, PPTX, XLSX, CSV, TXT, MD, JSON, and images.`);
   }
 
+  // Prepare the bucket and say so if it cannot be. ensurePrivateBucket never
+  // throws by design, so a permissions problem used to surface one line later
+  // as an opaque upload failure — the storage key lacking bucket-create rights
+  // is the commonest first-run cause and deserves to be named.
   await ensurePrivateBucket(ASSISTANT_BUCKET);
   // Tenant-prefixed, like every other bucket here — that prefix is what makes
   // "an account's files are private" enforceable rather than aspirational.
@@ -123,7 +127,16 @@ export async function ingestAttachment(input: {
   const path = `${input.accountId}/${safeName}`;
 
   const put = await putPrivate(ASSISTANT_BUCKET, path, input.bytes, input.mimeType);
-  if (put.error) throw new Error(`Could not store that file: ${put.error}`);
+  if (put.error) {
+    // The two failures worth telling apart: the bucket does not exist (nothing
+    // has created it, or the key cannot), versus an ordinary upload failure.
+    const missingBucket = /bucket.*not.*found|does not exist/i.test(put.error);
+    throw new Error(
+      missingBucket
+        ? `The "${ASSISTANT_BUCKET}" storage bucket does not exist and could not be created automatically. Create it as a PRIVATE bucket in Supabase → Storage, or give the service key permission to create buckets.`
+        : `Could not store that file: ${put.error}`,
+    );
+  }
 
   let text = '';
   let note: string | null = null;
