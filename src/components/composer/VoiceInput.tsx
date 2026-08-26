@@ -296,7 +296,14 @@ export default function VoiceInput({ onInterim, onFinal, vocabulary, disabled, o
     }
   }
 
-  if (available === false) return null;
+  // NOT hidden when unconfigured — that was the wrong call, twice over.
+  //
+  // Hiding it makes "this product has no dictation" and "dictation needs one
+  // environment variable" look identical, and the person most likely to be
+  // looking at this console is the person who sets that variable. A missing
+  // control cannot explain itself; a disabled one can. So it stays, greyed,
+  // and says what it needs when pressed.
+  const unconfigured = available === false;
 
   const mmss = `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, '0')}`;
 
@@ -355,10 +362,16 @@ export default function VoiceInput({ onInterim, onFinal, vocabulary, disabled, o
       <button
         type="button"
         disabled={disabled}
-        onClick={start}
-        aria-label="Dictate a message"
-        title="Dictate a message"
-        className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-default)] text-[var(--text-secondary)] transition hover:bg-[var(--bg-raised)] hover:text-[var(--text-primary)] disabled:opacity-40"
+        onClick={unconfigured
+          ? () => setError('Dictation needs a speech-to-text endpoint. Set TRANSCRIBE_URL on this deployment (any Whisper-compatible server) and redeploy.')
+          : start}
+        aria-label={unconfigured ? 'Dictation is not set up on this deployment' : 'Dictate a message'}
+        title={unconfigured ? 'Dictation is not set up yet — tap to see what it needs' : 'Dictate a message'}
+        className={`flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-default)] transition disabled:opacity-40 ${
+          unconfigured
+            ? 'cursor-help text-[var(--text-muted)] opacity-60 hover:opacity-100'
+            : 'text-[var(--text-secondary)] hover:bg-[var(--bg-raised)] hover:text-[var(--text-primary)]'
+        }`}
       >
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
           <rect x="9" y="2" width="6" height="11" rx="3" />
