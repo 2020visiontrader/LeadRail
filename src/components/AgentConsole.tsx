@@ -293,7 +293,37 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     return () => window.removeEventListener('beforeunload', warn);
   }, [activeRuns.size]);
   const busy = activeRuns.size > 0;
-  const endRun = (id: string) => setActiveRuns((prev) => { const n = new Set(prev); n.delete(id); return n; });
+  const endRun = (id: string) => {
+    abortersRef.current.delete(id);
+    inFlightTextRef.current.delete(id);
+    setActiveRuns((prev) => { const n = new Set(prev); n.delete(id); return n; });
+  };
+
+  /** Stop every in-flight run and hand the last message back for editing.
+   *
+   *  WHY THE TEXT COMES BACK. Stopping almost always means "that came out
+   *  wrong" — a dictation that garbled a name, a prompt missing a detail. The
+   *  useful next action is to fix that sentence, not retype it from memory.
+   *
+   *  WHAT STOPPING DOES AND DOES NOT DO, said plainly in the trace rather than
+   *  implied: it disconnects THIS browser. The server finishes the turn it
+   *  started and saves it, because there is no way to reach in and unspend work
+   *  already done. Anything already approved has already run. */
+  function stopAll() {
+    const lastText = [...inFlightTextRef.current.values()].pop();
+    for (const [id, c] of abortersRef.current) {
+      c.abort();
+      patchTurn(id, (t: any) => {
+        t.status = 'error';
+        closeOpenSteps(t, true);
+        t.steps.push({ kind: 'error', text: 'Stopped. The server may still finish this turn and save it.' });
+      });
+    }
+    abortersRef.current.clear();
+    inFlightTextRef.current.clear();
+    setActiveRuns(new Set());
+    if (lastText) setInput((prev) => (prev.trim() ? prev : lastText));
+  }
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [compaction, setCompaction] = useState<{ level: 'soft' | 'hard'; tokenEstimate: number } | null>(null);
   const [handingOver, setHandingOver] = useState(false);
@@ -414,7 +444,25 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
       return next;
     });
 
+  /** Mark every unfinished step as finished. `failed` marks tool steps as
+   *  having failed rather than merely stopped, so the trace does not show a
+   *  green tick on a call that never returned. */
+  function closeOpenSteps(t: any, failed = false) {
+    for (const step of t.steps || []) {
+      if (step.kind === 'error' || step.done) continue;
+      step.done = true;
+      if (failed && step.kind === 'tool') step.ok = false;
+    }
+  }
+
   const turnSeq = useRef(0);
+  /** One controller per in-flight run, so Stop cancels exactly the run the user
+   *  is watching and not a sibling started moments earlier. */
+  const abortersRef = useRef(new Map<string, AbortController>());
+  /** The text of the message being run, kept so Stop can hand it back to the
+   *  composer. Stopping usually means "that came out wrong" — the useful next
+   *  action is editing it, not retyping it. */
+  const inFlightTextRef = useRef(new Map<string, string>());
 
   async function run(payload: { message?: string; approve?: any }) {
     // Id for THIS run's assistant turn. Every patch below is scoped to it, so a
@@ -422,6 +470,9 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     const turnId = `turn-${Date.now()}-${turnSeq.current++}`;
     const patchAssistant = (fn: (t: any) => void) => patchTurn(turnId, fn);
 
+    const aborter = new AbortController();
+    abortersRef.current.set(turnId, aborter);
+    if (payload.message) inFlightTextRef.current.set(turnId, payload.message);
     setActiveRuns((prev) => new Set(prev).add(turnId));
     setProposal(null);
     // Queue behind the first run until the thread has an id (see the note on
@@ -447,6 +498,7 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     try {
       res = await fetch('/api/agent/stream', {
         method: 'POST',
+        signal: aborter.signal,
         headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
         body: JSON.stringify({
           ...payload,
@@ -457,14 +509,20 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
         }),
       });
       if (from) pendingFromRef.current = undefined;
-    } catch {
-      patchAssistant((t) => t.steps.push({ kind: 'error', text: 'Connection failed. Try again.' }));
+    } catch (e: any) {
+      // A deliberate stop is not a fault, and stopAll has already written the
+      // trace line. Saying "connection failed" here would blame the network for
+      // something the user chose.
+      if (e?.name !== 'AbortError') {
+        patchAssistant((t) => { closeOpenSteps(t, true); t.steps.push({ kind: 'error', text: 'Connection failed. Try again.' }); });
+      }
       endRun(turnId); return;
     }
     if (res.status === 401) { window.location.href = '/login'; return; }
     if (!res.body) { patchAssistant((t) => t.steps.push({ kind: 'error', text: 'No response stream.' })); endRun(turnId); return; }
 
     const reader = res.body.getReader();
+    try {
     const decoder = new TextDecoder();
     let buf = '';
     // eslint-disable-next-line no-constant-condition
@@ -482,6 +540,12 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
         let e: any;
         try { e = JSON.parse(data); } catch { continue; }
         handleEvent(e, turnId);
+      }
+      }
+    } catch (e: any) {
+      // Same rule: an abort mid-stream is the user stopping, not a fault.
+      if (e?.name !== 'AbortError') {
+        patchAssistant((t) => { closeOpenSteps(t, true); t.steps.push({ kind: 'error', text: 'The connection dropped mid-answer.' }); });
       }
     }
     endRun(turnId);
@@ -573,9 +637,18 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
       else if (e.type === 'claim') { t.claims.push({ id: e.id, text: e.text, basis: e.basis, evidenceIds: e.evidenceIds || [] }); }
       else if (e.type === 'finding') { t.findings.push({ id: e.id, claimId: e.claimId, severity: e.severity, recommendation: e.recommendation }); }
       else if (e.type === 'verdict') { t.verdict = { summary: e.summary, findingIds: e.findingIds || [] }; }
-      else if (e.type === 'final') { t.status = 'done'; t.text = e.message; }
-      else if (e.type === 'needs_approval') { t.status = 'approval'; setProposal(e.proposal); }
-      else if (e.type === 'error') { t.status = 'error'; t.steps.push({ kind: 'error', text: e.message }); }
+      // Any step still spinning when a turn ENDS is closed out, whatever the
+      // outcome. Without this an error appended a red line below a step that
+      // kept pulsing — and since the trace scrolls, all the operator saw was a
+      // spinner that never stopped. A turn that failed after four minutes of
+      // provider retries looked identical to one still working.
+      else if (e.type === 'final') { t.status = 'done'; t.text = e.message; closeOpenSteps(t); }
+      else if (e.type === 'needs_approval') { t.status = 'approval'; setProposal(e.proposal); closeOpenSteps(t); }
+      else if (e.type === 'error') {
+        t.status = 'error';
+        closeOpenSteps(t, true);
+        t.steps.push({ kind: 'error', text: e.message });
+      }
     });
   }
 
@@ -762,12 +835,13 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
           />
           <VoiceInput
             disabled={busy}
-            onActiveChange={(active) => {
-              // Freeze the typed prefix at the moment dictation begins, so the
-              // spoken span can be revised without touching it.
-              if (active) dictationBase.current = input;
-              setDictating(active);
-            }}
+            // Layout only. Snapshotting state here was the duplication bug:
+            // this fires on every render, so the "prefix" kept absorbing the
+            // text dictation had just written.
+            onActiveChange={setDictating}
+            // Fires once, when recording actually starts. THIS is where the
+            // typed prefix is frozen.
+            onStart={() => { dictationBase.current = input; }}
             // Product and venture names are exactly the words a recogniser
             // gets wrong, and exactly the ones that must be right.
             vocabulary="LeadRail, venture, campaign, pipeline, outreach, cadence"
@@ -786,6 +860,11 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
               setInput(base ? `${base.trim()} ${text}` : text);
             }}
           />
+          {busy && (
+            <Button variant="secondary" onClick={stopAll} title="Stop the running request">
+              Stop
+            </Button>
+          )}
           <Button loading={false} disabled={!canSend} onClick={send}>
             {activeRuns.size > 1 ? `Send (${activeRuns.size} running)` : activeRuns.size === 1 ? 'Send (1 running)' : 'Send'}
           </Button>

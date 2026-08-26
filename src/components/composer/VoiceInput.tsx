@@ -53,13 +53,21 @@ interface Props {
    *  accuracy win available for exactly the words that matter most here. */
   vocabulary?: string;
   disabled?: boolean;
-  /** Lets the composer stand aside while dictation owns the row. */
+  /** Lets the composer stand aside while dictation owns the row. Layout only —
+   *  never use this to snapshot state, see onStart. */
   onActiveChange?: (active: boolean) => void;
+  /** Fired ONCE, imperatively, when recording actually begins.
+   *
+   *  This exists because the caller needs to freeze the typed text at exactly
+   *  that moment, and an effect is the wrong place to learn it: an effect that
+   *  depends on a prop callback re-runs whenever the parent re-renders, which
+   *  during dictation is on every single interim update. */
+  onStart?: () => void;
 }
 
 type State = 'idle' | 'listening' | 'transcribing';
 
-export default function VoiceInput({ onInterim, onFinal, vocabulary, disabled, onActiveChange }: Props) {
+export default function VoiceInput({ onInterim, onFinal, vocabulary, disabled, onActiveChange, onStart }: Props) {
   const [state, setState] = useState<State>('idle');
   const [error, setError] = useState<string | null>(null);
   /** Separate from `error` on purpose. "Not set up yet" is a fact about the
@@ -95,7 +103,19 @@ export default function VoiceInput({ onInterim, onFinal, vocabulary, disabled, o
    *  seconds the model is guessing at fragments and the text churns. */
   const INTERIM_MS = 3500;
 
-  useEffect(() => { onActiveChange?.(state !== 'idle'); }, [state, onActiveChange]);
+  // Held in a ref so the effect below depends on STATE ALONE.
+  //
+  // THE BUG THIS FIXES, because it was subtle and expensive: onActiveChange is
+  // an inline arrow in the parent, so it gets a new identity every render.
+  // Listing it as a dependency made the effect fire on every render — and
+  // during dictation the parent re-renders on every interim update. The parent
+  // used that call to snapshot the typed text, so the snapshot was retaken
+  // after each interim, with the interim already in it. Each pass then appended
+  // to the previous one and the box filled with the same sentence over and
+  // over, compounding.
+  const activeCbRef = useRef(onActiveChange);
+  activeCbRef.current = onActiveChange;
+  useEffect(() => { activeCbRef.current?.(state !== 'idle'); }, [state]);
 
   // Ask the SERVER whether voice input is configured — TRANSCRIBE_URL is
   // server-side only, so the browser cannot know, and a microphone that always
@@ -192,6 +212,8 @@ export default function VoiceInput({ onInterim, onFinal, vocabulary, disabled, o
       setSeconds(0);
       tickRef.current = setInterval(() => setSeconds((s) => s + 1), 1000);
       setState('listening');
+      // Imperative and exactly once — see the note on the prop.
+      onStart?.();
     } catch (e: any) {
       cleanup();
       setState('idle');

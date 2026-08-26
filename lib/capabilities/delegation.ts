@@ -133,13 +133,38 @@ export const DELEGATION_CAPABILITIES: Capability[] = [
       // capability registry, so a static import here would close an import
       // cycle through the registry barrel.
       const { runAgent } = await import('@/lib/agent/loop');
-      const result = await runAgent({
+
+      // A WALL-CLOCK BUDGET, because nothing else bounds this.
+      //
+      // Individual model calls time out, but a delegate runs its OWN loop of up
+      // to DELEGATE_STEPS steps, each of which may take the full model timeout.
+      // Multiply that by the specialists a coordinator consults and one turn can
+      // sit "thinking" for half an hour with the operator watching a spinner and
+      // no way to tell a slow answer from a dead one.
+      //
+      // On expiry the coordinator is TOLD the specialist did not answer in time
+      // rather than being left hanging — an unhelpful observation it can work
+      // around beats a turn that never returns.
+      const budgetMs = Number(process.env.AGENT_DELEGATE_BUDGET_MS) || 90_000;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const expired = new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), budgetMs);
+      });
+
+      const result = await Promise.race([runAgent({
         accountId,                 // never a different account
         message: a.context ? `${a.question}\n\nContext from the operator:\n${a.context}` : a.question,
         personaId: persona.id,
         maxSteps: DELEGATE_STEPS,
         isDelegate: true,          // blocks further delegation and approvals
-      });
+      }), expired]).finally(() => clearTimeout(timer));
+
+      if (result === 'timeout') {
+        return {
+          specialist: persona.name,
+          error: `${persona.name} did not come back within ${Math.round(budgetMs / 1000)}s and was left to finish on their own. Answer with what you have, and say that you could not get their input in time.`,
+        };
+      }
 
       if (result.status === 'needs_approval') {
         // Deliberately NOT executed here. The human is watching the caller's
