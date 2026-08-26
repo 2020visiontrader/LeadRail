@@ -743,6 +743,9 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
           />
           <textarea
             rows={2}
+            // Named so the microphone can put the cursor here after dropping a
+            // transcript in — see VoiceInput.
+            data-composer
             value={input}
             placeholder="Ask LeadRail to do something…"
             onChange={(e) => setInput(e.target.value)}

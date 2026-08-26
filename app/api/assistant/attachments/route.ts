@@ -1,6 +1,7 @@
 import { withApi, requireSession, errorResponse, badRequest } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { ingestAttachment, listAttachments, MAX_UPLOAD_BYTES } from '@/lib/documents/attachments';
+import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 // Parsing a large PDF is not a 10-second job, and the default would cut it off
@@ -43,8 +44,15 @@ async function POST__impl(request: NextRequest) {
       mimeType: file.type || undefined,
     });
     return NextResponse.json({ attachment });
-  } catch (e) {
-    return errorResponse(e);
+  } catch (e: any) {
+    // Deliberately NOT errorResponse here. Every failure on this path is one
+    // the person can act on — wrong file type, too large, storage not set up —
+    // and flattening those to "Internal error" tells them nothing and tells us
+    // nothing either. The messages are ours, authored for this purpose; the
+    // one that embeds a storage error is truncated.
+    const message = String(e?.message || 'Could not read that file.').slice(0, 300);
+    log.error('attachment upload failed', e);
+    return NextResponse.json({ error: message }, { status: 400 });
   }
 }
 

@@ -23,10 +23,24 @@ async function fromPdf(buf: Buffer): Promise<string> {
   const parser = new PDFParse({ data: new Uint8Array(buf) });
   try {
     const res = await parser.getText();
-    return res?.text || '';
+    return stripPageMarkers(res?.text || '');
   } finally {
     await parser.destroy().catch(() => {});
   }
+}
+
+/** Remove pdf-parse's own page separators ("-- 1 of 3 --").
+ *
+ *  WHY THIS MATTERS FAR MORE THAN IT LOOKS. A scanned PDF has no text layer, so
+ *  the parser returns ONLY these markers. Without stripping them the extractor
+ *  sees 12 non-empty characters, reports success, and hands the model
+ *  "-- 1 of 1 --" as the entire contents of the document someone attached — an
+ *  answer confidently built on nothing, with no sign anything went wrong. That
+ *  is precisely the failure the scanned-PDF branch below exists to prevent, and
+ *  it was being skipped. Found by running an actual scanned-shaped PDF through
+ *  this, which is the only way it could have been found. */
+function stripPageMarkers(text: string): string {
+  return text.replace(/^\s*--\s*\d+\s+of\s+\d+\s*--\s*$/gim, '').trim();
 }
 
 async function fromDocx(buf: Buffer): Promise<string> {

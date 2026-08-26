@@ -39,14 +39,20 @@ export default function VoiceInput({ onTranscript, vocabulary, disabled }: Props
   const streamRef = useRef<MediaStream | null>(null);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Hidden entirely when the deployment has no transcription endpoint. A
-  // microphone button that always errors is worse than no button — it looks
-  // broken rather than absent.
+  // Ask the server whether voice input is actually configured.
+  //
+  // The previous version of this probe was broken in a way that produced the
+  // exact symptom it was meant to prevent: it sent OPTIONS to a route with no
+  // OPTIONS handler (a 405, which fetch does not treat as an error) and then
+  // called setAvailable(true) from BOTH branches, so it could only ever answer
+  // "available". The button therefore appeared on deployments with no
+  // transcription endpoint at all.
   useEffect(() => {
     let alive = true;
-    fetch('/api/assistant/transcribe', { method: 'OPTIONS' })
-      .then(() => alive && setAvailable(true))
-      .catch(() => alive && setAvailable(true));
+    fetch('/api/assistant/transcribe', { headers: { Accept: 'application/json' } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (alive) setAvailable(Boolean(d?.configured)); })
+      .catch(() => { if (alive) setAvailable(false); });
     return () => { alive = false; };
   }, []);
 
@@ -128,11 +134,23 @@ export default function VoiceInput({ onTranscript, vocabulary, disabled }: Props
       const res = await fetch('/api/assistant/transcribe', { method: 'POST', body: form });
       const json = await res.json().catch(() => null);
       if (!res.ok || !json?.text) {
-        if (res.status === 503) setAvailable(false);
-        throw new Error(json?.error || 'Could not transcribe that.');
+        // Deliberately does NOT hide the control. The old code called
+        // setAvailable(false) here, which made the component return null on the
+        // very next render — taking the error message with it. Pressing record
+        // and having the button silently disappear is the worst possible
+        // outcome: nothing tells you what happened or where your words went.
+        throw new Error(
+          res.status === 503
+            ? 'Voice input is not set up on this deployment yet (TRANSCRIBE_URL is not configured).'
+            : json?.error || 'Could not transcribe that.',
+        );
       }
       onTranscript(json.text);
       setState('idle');
+      // Put the cursor where the words went. Without this the text appears in a
+      // box the user is not looking at, which reads as nothing having happened.
+      const box = document.querySelector<HTMLTextAreaElement>('textarea[data-composer]');
+      if (box) { box.focus(); box.setSelectionRange(box.value.length, box.value.length); }
     } catch (e: any) {
       setState('idle');
       // Said plainly, because whatever they spoke is gone and they have to say
@@ -181,9 +199,18 @@ export default function VoiceInput({ onTranscript, vocabulary, disabled }: Props
         </span>
       )}
       {error && (
-        <span className="absolute bottom-full left-1/2 mb-1 w-56 -translate-x-1/2 rounded border border-[var(--border-default)] bg-[var(--bg-surface)] px-2 py-1 text-[11px] text-[var(--text-negative)] shadow-[var(--shadow-card)]">
+        // role="alert" so it is ANNOUNCED, and dismissible so it cannot sit
+        // there forever. z-20 because this lives in a composer row that clips:
+        // an error rendered underneath the layout is the same as no error.
+        <button
+          type="button"
+          role="alert"
+          onClick={() => setError(null)}
+          title="Dismiss"
+          className="absolute bottom-full right-0 z-20 mb-1.5 w-64 rounded-lg border border-[var(--text-negative)]/30 bg-[var(--bg-surface)] px-2.5 py-2 text-left text-[11px] leading-snug text-[var(--text-negative)] shadow-[var(--shadow-pop)]"
+        >
           {error}
-        </span>
+        </button>
       )}
     </div>
   );
