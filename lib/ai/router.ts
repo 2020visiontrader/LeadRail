@@ -12,9 +12,11 @@
 //      3. NVIDIA NIM (free tier, weaker instruction-following)
 //      4. OpenRouter (last resort — free models, deepseek-v4-flash as final fallback)
 //
-// This makes the registry ADDITIVE and backward-compatible: an account with
-// zero providers configured (i.e. every account today) skips step 0 entirely
-// and behaves EXACTLY as before. Ask Zo is first in the hardcoded ladder
+// Both layers build into ONE candidate list and go through ONE attempt loop
+// (see SELECTION below) — they used to be two separate walks, which is how
+// `task` came to be honoured on one and dropped on the other. The registry
+// stays ADDITIVE: an account with zero providers configured contributes no
+// candidates and the ladder runs exactly as it did. Ask Zo is first in the hardcoded ladder
 // because it runs on the user's Claude subscription: with the Zo default
 // model set to Haiku it is fast AND accurate on structured extraction. If the
 // subscription tier errors/times out we fall through to OpenCode Go, then to
@@ -30,6 +32,7 @@
 
 import type { ChatMessage } from './opencode';
 import { withUsageCapture, type TokenUsage } from './usage';
+import { orderByHealth, recordSuccess, recordFailure, healthSnapshot } from './health';
 import * as opencode from './opencode';
 import { zoAskConfigured, zoAskText, zoAskChat } from './zoask';
 import { nimConfigured, nimText, nimChat, nimStreamChat } from './nim';
@@ -72,76 +75,25 @@ export function tierOrder(): TierName[] {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CIRCUIT BREAKER
+// HEALTH
 // ─────────────────────────────────────────────────────────────────────────────
-// A tier that TIMES OUT is far more expensive than a slow one: it burns its full
-// timeout on every call before yielding. Observed live — NIM was ordered first
-// on measured 413ms latency, then went down upstream, and every model call
-// started paying 30s waiting for it to fail before OpenRouter answered in 500ms.
-// On a 10-step agent run that is five minutes of pure waiting.
-//
-// So: after OPEN_AFTER consecutive failures a tier is skipped entirely for
-// COOLDOWN_MS, then allowed exactly one trial call. Success closes it; failure
-// re-opens it for another cooldown. A provider outage costs ONE timeout instead
-// of one per call, and recovery is automatic rather than waiting for a human to
-// notice and re-order the ladder.
-//
-// Deliberately in-memory: a breaker is a short-lived latency optimisation, not
-// state worth persisting.
-//
-// OPENING AFTER ONE FAILURE, NOT TWO. The evidence: 18 NIM failures in four
-// hours of ordinary use, each paying its full timeout before the ladder moved
-// on. With the threshold at two, the SECOND call of every cooldown window also
-// pays that cost — and inside a fan-out, where one turn makes many model calls,
-// that repeats.
-//
-// One failure is enough signal to skip a tier for a minute. The cost of being
-// wrong is a single extra trial call after the cooldown, which is exactly what
-// this was already designed to tolerate.
-const BREAKER_OPEN_AFTER = Number(process.env.AI_BREAKER_OPEN_AFTER) || 1;
-const BREAKER_COOLDOWN_MS = Number(process.env.AI_BREAKER_COOLDOWN_MS) || 60_000;
+// The circuit breaker that used to live here moved to ./health, re-keyed from
+// the TIER to the individual candidate. Same thresholds, same cooldown, same
+// one-trial-call recovery — see that file for why the numbers are what they
+// are. What it fixes: "openrouter" is one key in front of ~17 models behind
+// different upstreams, and one model's 429 was taking all seventeen offline.
 
-const breakers = new Map<string, { fails: number; openedAt: number }>();
-
-/** True when this tier should be skipped right now. */
-function breakerOpen(tier: string): boolean {
-  const b = breakers.get(tier);
-  if (!b || b.fails < BREAKER_OPEN_AFTER) return false;
-  if (Date.now() - b.openedAt >= BREAKER_COOLDOWN_MS) {
-    // Cooldown elapsed — allow ONE trial call through. Reset to the threshold
-    // minus one so a failed trial immediately re-opens rather than needing to
-    // fail the full count again.
-    b.fails = BREAKER_OPEN_AFTER - 1;
-    return false;
-  }
-  return true;
-}
-
-function breakerRecordFailure(tier: string): void {
-  const b = breakers.get(tier) || { fails: 0, openedAt: 0 };
-  b.fails += 1;
-  if (b.fails >= BREAKER_OPEN_AFTER) b.openedAt = Date.now();
-  breakers.set(tier, b);
-  if (b.fails === BREAKER_OPEN_AFTER) {
-    log.warn('ai router: tier circuit opened', { tier, cooldownMs: BREAKER_COOLDOWN_MS });
-  }
-}
-
-function breakerRecordSuccess(tier: string): void {
-  if (breakers.has(tier)) {
-    log.info('ai router: tier circuit closed', { tier });
-    breakers.delete(tier);
-  }
-}
-
-/** Read-only snapshot for diagnostics (see /api/admin/ai-probe). */
+/** Read-only snapshot for diagnostics (see /api/admin/ai-probe).
+ *
+ *  Kept under its old name and old shape because the probe route and its UI
+ *  read it; the rows are now per candidate rather than per tier, so a tier that
+ *  used to appear once may appear as several model ids. `healthSnapshot()` in
+ *  ./health carries the fuller picture including measured latency. */
 export function breakerState(): Record<string, { fails: number; openFor: number }> {
   const out: Record<string, { fails: number; openFor: number }> = {};
-  for (const [tier, b] of breakers) {
-    out[tier] = {
-      fails: b.fails,
-      openFor: b.fails >= BREAKER_OPEN_AFTER ? Math.max(0, BREAKER_COOLDOWN_MS - (Date.now() - b.openedAt)) : 0,
-    };
+  for (const row of healthSnapshot()) {
+    if (!row.consecutiveFails && !row.heldForMs) continue;
+    out[row.candidate] = { fails: row.consecutiveFails, openFor: row.heldForMs };
   }
   return out;
 }
@@ -160,72 +112,55 @@ function orderForTier(preferTier?: 'fast' | 'balanced' | 'heavy'): TierName[] {
   return ['zoask', ...base.filter((t) => t !== 'zoask')];
 }
 
-/** Walk the tiers in configured order, logging which one answered and why the
- *  others declined. Returns the first successful result. */
-async function runLadder(
-  fn: string,
-  runners: Partial<Record<TierName, { configured: boolean; run: () => Promise<string> }>>,
-  preferTier?: 'fast' | 'balanced' | 'heavy',
-): Promise<{ text?: string; lastErr: any }> {
-  let lastErr: any = null;
-  for (const tier of orderForTier(preferTier)) {
-    const r = runners[tier];
-    if (!r || !r.configured) continue;
-    // Skip a tier whose circuit is open — this is the whole point: a dead tier
-    // must not cost its timeout on every subsequent call.
-    if (breakerOpen(tier)) continue;
-    try {
-      const text = await r.run();
-      breakerRecordSuccess(tier);
-      log.info('ai router: tier succeeded', { tier, fn });
-      return { text, lastErr: null };
-    } catch (err: any) {
-      breakerRecordFailure(tier);
-      log.warn('ai router: tier failed', { tier, error: String(err?.message || err) });
-      lastErr = err;
-    }
-  }
-  // Every tier skipped or failed. If breakers hid ALL of them, the cooldown is
-  // worse than a slow answer — try each once ignoring the breaker rather than
-  // returning "no tier available" while a provider is merely degraded.
-  if (!lastErr) {
-    for (const tier of orderForTier(preferTier)) {
-      const r = runners[tier];
-      if (!r || !r.configured) continue;
-      try {
-        const text = await r.run();
-        breakerRecordSuccess(tier);
-        log.info('ai router: tier succeeded (breaker override)', { tier, fn });
-        return { text, lastErr: null };
-      } catch (err: any) {
-        log.warn('ai router: tier failed (breaker override)', { tier, error: String(err?.message || err) });
-        lastErr = err;
-      }
-    }
-  }
-  return { lastErr };
+// ─────────────────────────────────────────────────────────────────────────────
+// SELECTION
+// ─────────────────────────────────────────────────────────────────────────────
+// ONE list, ONE attempt loop. This replaces two code paths — tryRegistry, which
+// walked the account's configured models, and runLadder, which walked the
+// hardcoded tiers — that were tried in sequence and had drifted apart in ways
+// that mattered:
+//
+//   * `task` reached the registry path and was DROPPED on the ladder. Whenever
+//     the registry returned nothing, task-aware routing silently stopped
+//     existing, with nothing to indicate it had.
+//   * Only the registry path called logUsage. Anything answered by the ladder
+//     never reached ai_usage at all, so the Usage panel was reporting on a
+//     subset of calls while reading as if it covered them all.
+//   * The breaker existed on the ladder only, so a dead registry model was
+//     attempted, and paid its timeout, on every single call.
+//
+// Every one of those is the same bug: two places deciding one thing. A
+// candidate is now whatever the selector will actually attempt — an account's
+// model row, or a ladder tier whose client owns its own internal chain — and
+// they go through the same ordering, the same health accounting and the same
+// logging.
+
+interface Candidate {
+  /** Health key. Stable across calls and unique per attemptable thing. */
+  id: string;
+  /** Human-readable, for logs and for the ai_usage row. */
+  label: string;
+  /** Present for registry candidates; absent for ladder tiers, which have no
+   *  ai_models row to point at. */
+  resolved?: ResolvedModel;
+  run: () => Promise<string>;
 }
 
-
-export type { ChatMessage };
-
-export function textConfigured(): boolean {
-  return zoAskConfigured() || opencode.opencodeConfigured() || nimConfigured() || huggingfaceConfigured() || openrouterConfigured();
-}
-
-// Best-effort usage logging; imported lazily inside the try so a circular
-// import or a credits.ts failure can never break AI generation itself.
+/** Best-effort usage logging; imported lazily inside the try so a circular
+ *  import or a credits.ts failure can never break AI generation itself. */
 async function logUsage(entry: {
-  accountId: string; resolved: ResolvedModel; kind: 'text' | 'chat'; ok: boolean; error?: string; latencyMs: number;
+  accountId: string; candidate: Candidate; kind: 'text' | 'chat'; ok: boolean; error?: string; latencyMs: number;
   usage?: TokenUsage | null;
 }): Promise<void> {
   try {
     const { recordAiUsage } = await import('@/lib/credits');
     await recordAiUsage({
       accountId: entry.accountId,
-      providerId: entry.resolved.provider.id,
-      modelId: entry.resolved.model.id,
-      modelLabel: entry.resolved.model.label || entry.resolved.model.model_id,
+      // Null for a ladder tier — it is not one of the account's configured
+      // models and pointing the row at one would misattribute it.
+      providerId: entry.candidate.resolved?.provider.id ?? null,
+      modelId: entry.candidate.resolved?.model.id ?? null,
+      modelLabel: entry.candidate.label,
       kind: entry.kind,
       ok: entry.ok,
       error: entry.error,
@@ -237,38 +172,97 @@ async function logUsage(entry: {
   } catch { /* logging must never break the caller */ }
 }
 
-/** Try the account's configured registry chain; returns null (never throws)
- * when unconfigured or when every configured tier fails, so callers fall
- * through to the hardcoded ladder unchanged. */
-async function tryRegistry(
+/** The account's configured chain, or [] when it has none. Never throws —
+ *  a registry lookup failing must degrade to the ladder, not to an error. */
+async function registryCandidates(
   accountId: string | undefined,
   modelId: string | undefined,
-  kind: 'text' | 'chat',
+  task: string | undefined,
+  preferTier: 'fast' | 'balanced' | 'heavy' | undefined,
   call: (resolved: ResolvedModel) => Promise<string>,
-  // Task hint (Packet 8.1). When present, models tagged `good` for this task are
-  // tried first. Reordering only — a roster with no tags resolves exactly as
-  // before, so this stays a pure addition.
-  task?: string,
-  preferTier?: 'fast' | 'balanced' | 'heavy',
-): Promise<string | null> {
-  if (!accountId) return null;
-  if (!(await registryConfigured(accountId).catch(() => false))) return null;
+): Promise<Candidate[]> {
+  if (!accountId) return [];
+  if (!(await registryConfigured(accountId).catch(() => false))) return [];
   const chain = task
     ? await resolveChainForTask(accountId, task, { preferTier }).catch(() => [])
     : await resolveChain(accountId, { modelId }).catch(() => []);
-  for (const resolved of chain) {
+  return chain.map((resolved) => ({
+    id: `model:${resolved.model.id}`,
+    label: resolved.model.label || resolved.model.model_id,
+    resolved,
+    run: () => call(resolved),
+  }));
+}
+
+/** The hardcoded tiers, in the operator's configured order, skipping any that
+ *  are unconfigured. */
+function ladderCandidates(
+  runners: Partial<Record<TierName, { configured: boolean; run: () => Promise<string> }>>,
+  preferTier?: 'fast' | 'balanced' | 'heavy',
+): Candidate[] {
+  const out: Candidate[] = [];
+  for (const tier of orderForTier(preferTier)) {
+    const r = runners[tier];
+    if (!r || !r.configured) continue;
+    out.push({ id: tier, label: tier, run: r.run });
+  }
+  return out;
+}
+
+/**
+ * Try candidates in health order and return the first answer.
+ *
+ * Ordering is: the account's configured models, then the hardcoded tiers, with
+ * anything currently quarantined moved to the back of the whole list rather
+ * than removed. Holding back is a latency optimisation, never a refusal — if
+ * every candidate is unhealthy the call still goes out, it just goes out last.
+ *
+ * Throws the LAST error, matching what both replaced paths did. A caller
+ * seeing "OpenRouter failed (404)" is being told what the final attempt hit,
+ * not what the first one did.
+ */
+async function runCandidates(
+  fn: string,
+  candidates: Candidate[],
+  accountId: string | undefined,
+  kind: 'text' | 'chat',
+): Promise<string> {
+  let lastErr: any = null;
+  for (const candidate of orderByHealth(candidates, (c) => c.id)) {
     const start = Date.now();
     // One capture scope per attempt, so a failed model's usage block cannot be
     // attributed to the model that answered after it.
     try {
-      const { result: text, usage } = await withUsageCapture(() => call(resolved));
-      void logUsage({ accountId, resolved, kind, ok: true, latencyMs: Date.now() - start, usage });
-      if (text) return text;
+      const { result: text, usage } = await withUsageCapture(candidate.run);
+      const latencyMs = Date.now() - start;
+      // An empty answer is a failure of this candidate, not a result. The old
+      // registry path fell through on it silently; now it is recorded as the
+      // failure it is, so a model that always returns nothing shows up.
+      if (!text) throw new Error(`${candidate.label} returned an empty response`);
+      recordSuccess(candidate.id, latencyMs);
+      if (accountId) void logUsage({ accountId, candidate, kind, ok: true, latencyMs, usage });
+      log.info('ai router: candidate answered', { fn, candidate: candidate.id, latencyMs });
+      return text;
     } catch (err: any) {
-      void logUsage({ accountId, resolved, kind, ok: false, error: String(err?.message || err).slice(0, 300), latencyMs: Date.now() - start });
+      const latencyMs = Date.now() - start;
+      recordFailure(candidate.id);
+      if (accountId) {
+        void logUsage({
+          accountId, candidate, kind, ok: false,
+          error: String(err?.message || err).slice(0, 300), latencyMs,
+        });
+      }
+      log.warn('ai router: candidate failed', { fn, candidate: candidate.id, error: String(err?.message || err) });
+      lastErr = err;
     }
   }
-  return null;
+  throw lastErr || new Error('No AI tier configured');
+}
+
+export type { ChatMessage };
+
+export function textConfigured(): boolean {
+  return zoAskConfigured() || opencode.opencodeConfigured() || nimConfigured() || huggingfaceConfigured() || openrouterConfigured();
 }
 
 export async function generateText(opts: {
@@ -283,22 +277,17 @@ export async function generateText(opts: {
   /** Specific ai_models.id to try before the account's active/fallback chain. */
   modelId?: string;
 }): Promise<string> {
-  const registryResult = await tryRegistry(opts.accountId, opts.modelId, 'text', (resolved) =>
+  const registry = await registryCandidates(opts.accountId, opts.modelId, undefined, undefined, (resolved) =>
     callModel(resolved, { system: opts.system, prompt: opts.prompt, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens }),
   );
-  if (registryResult) return registryResult;
-
-
-  const ladder = await runLadder('generateText', {
-      zoask: { configured: zoAskConfigured(), run: () => zoAskText({ system: opts.system, prompt: opts.prompt, maxOutputTokens: opts.maxOutputTokens }) },
-      opencode: { configured: opencode.opencodeConfigured(), run: () => opencode.generateText(opts) },
-      nim: { configured: nimConfigured(), run: () => nimText(opts) },
-      huggingface: { configured: huggingfaceConfigured(), run: () => hfText(opts) },
-      openrouter: { configured: openrouterConfigured(), run: () => openrouterText(opts) },
-    });
-  if (ladder.text !== undefined) return ladder.text;
-  const lastErr = ladder.lastErr;
-  throw lastErr || new Error('No AI tier configured');
+  const ladder = ladderCandidates({
+    zoask: { configured: zoAskConfigured(), run: () => zoAskText({ system: opts.system, prompt: opts.prompt, maxOutputTokens: opts.maxOutputTokens }) },
+    opencode: { configured: opencode.opencodeConfigured(), run: () => opencode.generateText(opts) },
+    nim: { configured: nimConfigured(), run: () => nimText(opts) },
+    huggingface: { configured: huggingfaceConfigured(), run: () => hfText(opts) },
+    openrouter: { configured: openrouterConfigured(), run: () => openrouterText(opts) },
+  });
+  return runCandidates('generateText', [...registry, ...ladder], opts.accountId, 'text');
 }
 
 export async function generateChat(opts: {
@@ -324,34 +313,28 @@ export async function generateChat(opts: {
    *  output capability, but no more than this" (migration 038). */
   maxOutputCeiling?: number;
 }): Promise<string> {
-  const registryResult = await tryRegistry(opts.accountId, opts.modelId, 'chat', (resolved) =>
+  const registry = await registryCandidates(opts.accountId, opts.modelId, opts.task, opts.preferTier, (resolved) =>
     callModel(resolved, { system: opts.system, messages: opts.messages, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, maxOutputCeiling: opts.maxOutputCeiling }),
-    opts.task, opts.preferTier,
   );
-  if (registryResult) return registryResult;
-
-  const ladder = await runLadder('generateChat', {
-      zoask: { configured: zoAskConfigured(), run: () => zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel }) },
-      opencode: { configured: opencode.opencodeConfigured(), run: () => opencode.generateChat(opts) },
-      nim: { configured: nimConfigured(), run: () => nimChat(opts) },
-      huggingface: { configured: huggingfaceConfigured(), run: () => hfChat(opts) },
-      openrouter: { configured: openrouterConfigured(), run: () => openrouterChat(opts) },
-    }, opts.preferTier);
-  if (ladder.text !== undefined) return ladder.text;
-  const lastErr = ladder.lastErr;
-  throw lastErr || new Error('No AI tier configured');
+  const ladder = ladderCandidates({
+    zoask: { configured: zoAskConfigured(), run: () => zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel }) },
+    opencode: { configured: opencode.opencodeConfigured(), run: () => opencode.generateChat(opts) },
+    nim: { configured: nimConfigured(), run: () => nimChat(opts) },
+    huggingface: { configured: huggingfaceConfigured(), run: () => hfChat(opts) },
+    openrouter: { configured: openrouterConfigured(), run: () => openrouterChat(opts) },
+  }, opts.preferTier);
+  return runCandidates('generateChat', [...registry, ...ladder], opts.accountId, 'chat');
 }
 
 /**
  * Streaming twin of `generateChat` (Packet 8.1c). Pure addition — `generateChat`
  * is untouched.
  *
- * Tries the SAME layers in the SAME order as `generateChat`: the registry chain
- * first (honouring `task`/`preferTier` via `resolveChainForTask`, and
- * `accountId`/`modelId`) through the shared `tryRegistry` helper, then the
- * hardcoded Zo Ask -> OpenCode -> NIM ladder. Errors behave identically: a
- * failing tier falls through to the next, and if every tier fails the last
- * error is thrown.
+ * Builds the SAME candidate list as `generateChat` — the account's configured
+ * chain (honouring `task`/`preferTier`) followed by the hardcoded tiers — and
+ * runs it through the same selector. Errors behave identically: a failing
+ * candidate falls through to the next, and if every one fails the last error is
+ * thrown.
  *
  * Resolves with the COMPLETE text, exactly as `generateChat` would. Tiers that
  * cannot stream (Zo Ask, Gemini) invoke `onDelta` exactly once with the whole
@@ -368,20 +351,15 @@ export async function streamChat(
   opts: Parameters<typeof generateChat>[0],
   onDelta: (chunk: string) => void,
 ): Promise<string> {
-  const registryResult = await tryRegistry(opts.accountId, opts.modelId, 'chat', (resolved) =>
+  const registry = await registryCandidates(opts.accountId, opts.modelId, opts.task, opts.preferTier, (resolved) =>
     callModelStream(resolved, { system: opts.system, messages: opts.messages, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, maxOutputCeiling: opts.maxOutputCeiling }, onDelta),
-    opts.task, opts.preferTier,
   );
-  if (registryResult) return registryResult;
-
-  const ladder = await runLadder('streamChat', {
-      zoask: { configured: zoAskConfigured(), run: () => zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel }) },
-      opencode: { configured: opencode.opencodeConfigured(), run: () => opencode.streamChat(opts, onDelta) },
-      nim: { configured: nimConfigured(), run: () => nimStreamChat(opts, onDelta) },
-      huggingface: { configured: huggingfaceConfigured(), run: () => hfStreamChat(opts, onDelta) },
-      openrouter: { configured: openrouterConfigured(), run: () => openrouterStreamChat(opts, onDelta) },
-    }, opts.preferTier);
-  if (ladder.text !== undefined) return ladder.text;
-  const lastErr = ladder.lastErr;
-  throw lastErr || new Error('No AI tier configured');
+  const ladder = ladderCandidates({
+    zoask: { configured: zoAskConfigured(), run: () => zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel }) },
+    opencode: { configured: opencode.opencodeConfigured(), run: () => opencode.streamChat(opts, onDelta) },
+    nim: { configured: nimConfigured(), run: () => nimStreamChat(opts, onDelta) },
+    huggingface: { configured: huggingfaceConfigured(), run: () => hfStreamChat(opts, onDelta) },
+    openrouter: { configured: openrouterConfigured(), run: () => openrouterStreamChat(opts, onDelta) },
+  }, opts.preferTier);
+  return runCandidates('streamChat', [...registry, ...ladder], opts.accountId, 'chat');
 }

@@ -7,6 +7,7 @@ import { nimConfigured, nimText } from '@/lib/ai/nim';
 import { huggingfaceConfigured, hfText } from '@/lib/ai/huggingface';
 import { openrouterConfigured, openrouterText } from '@/lib/ai/openrouter';
 import { tierOrder, breakerState } from '@/lib/ai/router';
+import { healthSnapshot, HEALTH_REORDER } from '@/lib/ai/health';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -88,6 +89,13 @@ async function POST__impl(request: NextRequest) {
       tierOrder: order,
       // Which tiers the router is currently skipping, and for how long.
       breakers: breakerState(),
+      // Per-candidate health, including the rolling latency of SUCCESSFUL calls.
+      // This is what `tierOrder` should be set from: the probe above measures a
+      // single cold call, while these are the numbers from real traffic. It does
+      // not reorder anything by itself unless AI_HEALTH_REORDER=1 — the order is
+      // the operator's decision, and this is the evidence for making it.
+      health: healthSnapshot().sort((a, b) => (a.ewmaMs ?? Infinity) - (b.ewmaMs ?? Infinity)),
+      healthReorder: HEALTH_REORDER,
       servingTier: order.find((t) => working.includes(t)) ?? null,
       results,
     });
