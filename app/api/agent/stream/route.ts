@@ -69,7 +69,13 @@ export async function POST(request: NextRequest) {
       // rendering until the model's first real event, sometimes seconds later.
       // This line guarantees the UI shows motion within the connection's own
       // round-trip time, independent of how long context assembly takes.
-      send({ type: 'step_start', text: 'Loading your workspace context…' });
+      // This exists to prove the connection is alive within its own round-trip
+      // time, NOT to report on itself. "Loading your workspace context" told the
+      // operator about our plumbing every single turn — the assistant is
+      // supposed to already know their workspace, so announcing that it is
+      // fetching it reads as slower and less capable, not more transparent.
+      // Says what is happening to THEM instead.
+      send({ type: 'step_start', text: 'Thinking…' });
       let finalTranscript: ChatMessage[] | undefined;
       // Set from the trailing compaction_suggested event (emitted after `final`),
       // so the finally block below knows whether this turn hit a compaction
