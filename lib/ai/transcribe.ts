@@ -24,6 +24,13 @@
 const TRANSCRIBE_URL = process.env.TRANSCRIBE_URL || '';
 const TRANSCRIBE_KEY = process.env.TRANSCRIBE_API_KEY || '';
 
+/** A second endpoint, tried only when the primary fails — a bad key, an
+ *  outage, a plan's credits running out. Same dialect adapter as the primary,
+ *  so ElevenLabs-primary-with-Groq-fallback (or any other pairing) needs no
+ *  extra code, only a second URL. */
+const FALLBACK_URL = process.env.TRANSCRIBE_FALLBACK_URL || '';
+const FALLBACK_KEY = process.env.TRANSCRIBE_FALLBACK_API_KEY || '';
+
 /** Which wire dialect the endpoint speaks.
  *
  *  Nearly everything converged on the OpenAI shape, but ElevenLabs did not: it
@@ -81,22 +88,22 @@ export function transcribeConfigured(): boolean {
   return Boolean(TRANSCRIBE_URL);
 }
 
+export function fallbackConfigured(): boolean {
+  return Boolean(FALLBACK_URL);
+}
+
 export interface Transcription {
   text: string;
   /** Seconds of audio, when the engine reports it. Not all do. */
   duration?: number;
   model: string;
+  /** Whether the fallback endpoint served this request. Not shown to the
+   *  person who spoke; it is here so a fallback shows up in logs rather than
+   *  only in the primary provider's own dashboard. */
+  usedFallback?: boolean;
 }
 
-/**
- * Turn recorded audio into text.
- *
- * Throws with a message meant for the person who just spoke, because that is
- * who sees it. "Transcription is not set up on this deployment" is actionable;
- * "fetch failed" is not, and a failed voice note is uniquely frustrating —
- * whatever they said is gone, and they have to say it again.
- */
-export async function transcribeAudio(input: {
+interface TranscribeInput {
   bytes: Buffer;
   filename?: string;
   mimeType?: string;
@@ -109,20 +116,21 @@ export async function transcribeAudio(input: {
    *  available: without it, a venture called "Zoask" comes back as "zo ask",
    *  "so ask", or "Zoe asked". */
   prompt?: string;
-}): Promise<Transcription> {
-  if (!transcribeConfigured()) {
-    throw new Error(
-      'Voice input is not set up on this deployment. Set TRANSCRIBE_URL to a speech-to-text endpoint (any Whisper-compatible server) and redeploy.',
-    );
-  }
-  if (!input.bytes?.length) throw new Error('The recording was empty — nothing was captured.');
-  if (input.bytes.length > MAX_AUDIO_BYTES) {
-    throw new Error('That recording is too long. Keep voice notes under about ten minutes.');
-  }
+}
 
-  const provider = providerFor(TRANSCRIBE_URL);
+/** One endpoint's round trip: build the dialect-correct request, send it,
+ *  parse the response. Both the primary and the fallback call this — the only
+ *  difference between them is which URL/key/model/provider they pass in. */
+async function callEndpoint(
+  url: string,
+  key: string,
+  modelOverride: string | undefined,
+  providerOverride: string | undefined,
+  input: TranscribeInput,
+): Promise<Omit<Transcription, 'usedFallback'>> {
+  const provider = providerFor(url, providerOverride);
   const spec = PROVIDERS[provider];
-  const model = process.env.TRANSCRIBE_MODEL || spec.defaultModel;
+  const model = modelOverride || spec.defaultModel;
 
   const form = new FormData();
   const blob = new Blob([new Uint8Array(input.bytes)], { type: input.mimeType || 'audio/webm' });
@@ -146,9 +154,9 @@ export async function transcribeAudio(input: {
   const controller = AbortSignal.timeout(TIMEOUT_MS);
   let res: Response;
   try {
-    res = await fetch(TRANSCRIBE_URL, {
+    res = await fetch(url, {
       method: 'POST',
-      headers: TRANSCRIBE_KEY ? spec.authHeader(TRANSCRIBE_KEY) : {},
+      headers: key ? spec.authHeader(key) : {},
       body: form,
       signal: controller,
     });
@@ -179,4 +187,50 @@ export async function transcribeAudio(input: {
     duration: typeof json?.duration === 'number' ? json.duration : undefined,
     model,
   };
+}
+
+/**
+ * Turn recorded audio into text.
+ *
+ * Tries the primary endpoint, and falls through to TRANSCRIBE_FALLBACK_URL on
+ * any failure — a bad key, an outage, a plan out of credits — rather than
+ * losing the voice note. Throws with a message meant for the person who just
+ * spoke, because that is who sees it. "Transcription is not set up on this
+ * deployment" is actionable; "fetch failed" is not, and a failed voice note is
+ * uniquely frustrating — whatever they said is gone, and they have to say it
+ * again.
+ */
+export async function transcribeAudio(input: TranscribeInput): Promise<Transcription> {
+  if (!transcribeConfigured()) {
+    throw new Error(
+      'Voice input is not set up on this deployment. Set TRANSCRIBE_URL to a speech-to-text endpoint (any Whisper-compatible server) and redeploy.',
+    );
+  }
+  if (!input.bytes?.length) throw new Error('The recording was empty — nothing was captured.');
+  if (input.bytes.length > MAX_AUDIO_BYTES) {
+    throw new Error('That recording is too long. Keep voice notes under about ten minutes.');
+  }
+
+  try {
+    const result = await callEndpoint(
+      TRANSCRIBE_URL,
+      TRANSCRIBE_KEY,
+      process.env.TRANSCRIBE_MODEL,
+      process.env.TRANSCRIBE_PROVIDER,
+      input,
+    );
+    return result;
+  } catch (primaryError: any) {
+    if (!fallbackConfigured()) throw primaryError;
+    // A fallback was needed — worth a line in the logs, not in the UI.
+    console.warn(`[transcribe] primary endpoint failed, trying fallback: ${primaryError?.message || primaryError}`);
+    const result = await callEndpoint(
+      FALLBACK_URL,
+      FALLBACK_KEY,
+      process.env.TRANSCRIBE_FALLBACK_MODEL,
+      process.env.TRANSCRIBE_FALLBACK_PROVIDER,
+      input,
+    );
+    return { ...result, usedFallback: true };
+  }
 }
