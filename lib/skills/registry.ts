@@ -167,6 +167,29 @@ export const SKILLS: Skill[] = [
     inspiredBy: 'open lead-sourcing "ICP → boolean filter" prompt repos',
   },
   {
+    // Written from a real failed run, not from what Apollo's docs say the API
+    // does. The assistant sourced 25 candidates, tried to reveal them, and came
+    // back with records that had no name and no title — then correctly reported
+    // that the data looked like padding. Two of the three causes were our bugs
+    // (fixed), but the third is judgement the model has to carry into the next
+    // search, and judgement is what a skill is for.
+    id: 'skill-apollo-sourcing',
+    name: 'Apollo Sourcing Economics',
+    category: 'lead-gen',
+    when: 'sourcing or revealing leads through Apollo, before spending sourcing credits',
+    systemModule: [
+      'Apollo search returns MASKED previews. A candidate reads "Andrea Fe***z" with no email until it is revealed, and revealing costs a credit.',
+      'Read email_status on every candidate before proposing to spend: "locked" means an email exists and can be revealed; "unavailable" means there is no email on file and revealing it buys nothing. Never propose revealing an "unavailable" candidate.',
+      'To reveal a candidate you just sourced, pass its external_id to enrichLead. Do NOT pass it as contactId (it is not a CRM record yet) and do NOT reveal by name — the name is masked, so a name match returns a still-masked record or a different person entirely, which looks like a successful call returning junk.',
+      'SAMPLE BEFORE SCALING. Source a small batch first, report the locked/unavailable split, and get a decision before revealing at volume. A 2-in-10 locked rate means a 50-lead pull yields about ten usable contacts for fifty credits, and that is the user\'s call to make, not yours.',
+      'One title in a titles[] list usually dominates the results. If every candidate comes back with the same title, say so — the other titles are not surfacing for that filter combination, and the fix is a separate search per title rather than a longer list.',
+      'Company-name keywords match literally. Searching "agency" returns companies named "Social Media Agency", which are usually low-signal directory padding rather than real prospects. Filter on industry and company size instead, and treat a generic company name as a quality signal to report.',
+      'limit is capped at 25 per search. For more, run several searches with different filters rather than one broad one — and each search is a separate spend the user approves.',
+    ].join(' '),
+    taskKind: 'reason',
+    inspiredBy: 'observed failure on a live RetentionRail sourcing run, 2026-08-26',
+  },
+  {
     id: 'skill-deck-profiler',
     name: 'Pitch-Deck Profiler',
     category: 'lead-gen',
