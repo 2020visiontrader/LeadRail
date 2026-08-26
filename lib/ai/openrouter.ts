@@ -67,6 +67,14 @@ export const MODEL_CHAIN = (process.env.OPENROUTER_MODEL
       'dots-studio/dots-3-note-preview:free',
       'openai/gpt-oss-20b:free',
       'google/gemma-4-26b-a4b-it:free',
+      // BOTH DeepSeek entries are paid, and the OpenRouter account carries
+      // credit, so they are reachable rather than a guaranteed 402. `-latest`
+      // leads: it follows whatever DeepSeek promotes, and on a model family
+      // this actively maintained the current build is the one worth having.
+      // The pinned id stays directly behind it as the stable fallback — if the
+      // alias is ever repointed at something that regresses, the chain still
+      // has a known-good snapshot to fall through to.
+      'deepseek/deepseek-v4-flash-latest',
       'deepseek/deepseek-v4-flash',
       'nvidia/nemotron-3-ultra-550b-a55b:free',
       // ── Verified present in the provider catalog, not yet latency-tested.
@@ -81,13 +89,6 @@ export const MODEL_CHAIN = (process.env.OPENROUTER_MODEL
       'nvidia/nemotron-nano-9b-v2:free',
       // ── Added on request 2026-08-26, not yet latency-tested.
       'minimax/minimax-m3:free',
-      // A `-latest` alias, so it follows whatever DeepSeek promotes rather than
-      // pinning a snapshot — placed after the pinned id above it, which stays
-      // as the predictable one. Requested as `~deepseek/…`; the leading tilde
-      // is not part of an OpenRouter model id and would 404 on every call, so
-      // it is dropped here. If the alias itself is wrong the chain falls
-      // through and /api/admin/model-catalogue names it.
-      'deepseek/deepseek-v4-flash-latest',
       // Was pinned to the BOTTOM on 2026-08-19 after probing 429 (rate-limited,
       // not retired). That demotion was a hand-maintained stand-in for health
       // tracking, which now exists per model (lib/ai/health.ts) and quarantines

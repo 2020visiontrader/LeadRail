@@ -232,3 +232,69 @@ export async function syncModelCapabilities(accountId?: string): Promise<Capabil
 
   return { updated, unmatched, catalogueReachable: true };
 }
+
+// ---------------------------------------------------------------------------
+// AFFORDABLE-MODEL SEARCH
+// ---------------------------------------------------------------------------
+// "What else is under $X per million tokens?" is a question about a catalogue
+// that changes weekly, asked by someone deciding what to put in the chain. The
+// wrong way to answer it is from memory: prices move, models are withdrawn, and
+// a confidently wrong price becomes a routing decision nobody re-checks.
+//
+// So it is a query. It reads the same public catalogue as the validator above,
+// filters on the caller's ceilings, and reports what the provider says right
+// now — with the prices attached, so the answer can be checked rather than
+// trusted.
+
+export interface AffordableModel {
+  id: string;
+  costInPerMTok: number;
+  costOutPerMTok: number;
+  contextWindow?: number;
+  /** Already in the chain the router walks. */
+  inChain: boolean;
+}
+
+/**
+ * Catalogue models at or below the given price ceilings, cheapest output first.
+ *
+ * Both ceilings are USD per MILLION tokens, matching how providers quote and
+ * how the ai_models cost columns are stored.
+ *
+ * A model whose price the catalogue does not state is EXCLUDED, not assumed
+ * free. An unpriced entry is the one most likely to surprise a bill, and this
+ * function exists to answer a budget question — the one place where guessing
+ * low is worse than returning nothing.
+ */
+export async function affordableModels(opts: {
+  maxInPerMTok: number;
+  maxOutPerMTok: number;
+  /** Drop free models from the result. They are already known and usually not
+   *  what someone asking about a price ceiling is looking for. */
+  excludeFree?: boolean;
+}): Promise<{ models: AffordableModel[]; catalogueReachable: boolean }> {
+  const live = await openRouterCatalogue();
+  if (!live) return { models: [], catalogueReachable: false };
+
+  const chain = new Set<string>(OPENROUTER_CHAIN);
+  const models: AffordableModel[] = [];
+
+  for (const entry of live.values()) {
+    const { costInPerMTok, costOutPerMTok } = entry;
+    if (costInPerMTok === undefined || costOutPerMTok === undefined) continue;
+    if (costInPerMTok > opts.maxInPerMTok || costOutPerMTok > opts.maxOutPerMTok) continue;
+    if (opts.excludeFree && costInPerMTok === 0 && costOutPerMTok === 0) continue;
+    models.push({
+      id: entry.id,
+      costInPerMTok,
+      costOutPerMTok,
+      contextWindow: entry.contextWindow,
+      inChain: chain.has(entry.id),
+    });
+  }
+
+  // Cheapest output first: output tokens dominate the bill on a chat workload,
+  // and the input ceiling has already been applied as a filter.
+  models.sort((a, b) => a.costOutPerMTok - b.costOutPerMTok || a.costInPerMTok - b.costInPerMTok);
+  return { models, catalogueReachable: true };
+}

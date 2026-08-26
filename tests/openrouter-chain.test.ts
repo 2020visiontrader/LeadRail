@@ -36,10 +36,12 @@ describe('OpenRouter model chain', () => {
     }
   });
 
-  it('keeps the pinned deepseek id ahead of its -latest alias', () => {
-    // The pinned one is the predictable answer; the alias follows whatever the
-    // provider promotes and is the fallback, not the default.
-    expect(MODEL_CHAIN.indexOf('deepseek/deepseek-v4-flash'))
-      .toBeLessThan(MODEL_CHAIN.indexOf('deepseek/deepseek-v4-flash-latest'));
+  it('leads with the -latest alias and keeps the pinned id right behind it', () => {
+    // The alias follows whatever DeepSeek promotes; the pinned snapshot stays
+    // directly behind as the known-good fallback if the alias ever regresses.
+    const latest = MODEL_CHAIN.indexOf('deepseek/deepseek-v4-flash-latest');
+    const pinned = MODEL_CHAIN.indexOf('deepseek/deepseek-v4-flash');
+    expect(latest).toBeLessThan(pinned);
+    expect(pinned - latest).toBe(1);
   });
 });
