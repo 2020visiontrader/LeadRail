@@ -23,7 +23,50 @@
 
 const TRANSCRIBE_URL = process.env.TRANSCRIBE_URL || '';
 const TRANSCRIBE_KEY = process.env.TRANSCRIBE_API_KEY || '';
-const TRANSCRIBE_MODEL = process.env.TRANSCRIBE_MODEL || 'whisper-1';
+
+/** Which wire dialect the endpoint speaks.
+ *
+ *  Nearly everything converged on the OpenAI shape, but ElevenLabs did not: it
+ *  authenticates with an `xi-api-key` header instead of a bearer token, calls
+ *  the model field `model_id` instead of `model`, and rejects the extra fields
+ *  OpenAI accepts. Pointing TRANSCRIBE_URL at it without adapting produces a
+ *  401 or a 422 — which reads as "voice is broken" rather than "wrong dialect".
+ *
+ *  Auto-detected from the host so the common case needs no configuration, with
+ *  TRANSCRIBE_PROVIDER as the override for a proxy or a self-hosted gateway
+ *  that speaks one dialect from an unexpected address. */
+export type TranscribeProvider = 'openai' | 'elevenlabs';
+
+export function providerFor(url: string, override?: string): TranscribeProvider {
+  const forced = (override || process.env.TRANSCRIBE_PROVIDER || '').toLowerCase();
+  if (forced === 'elevenlabs' || forced === 'openai') return forced;
+  try {
+    return new URL(url).host.endsWith('elevenlabs.io') ? 'elevenlabs' : 'openai';
+  } catch {
+    return 'openai';
+  }
+}
+
+/** Each provider's defaults, kept together so a third one is a new entry rather
+ *  than a new conditional in the request builder. */
+const PROVIDERS: Record<TranscribeProvider, {
+  defaultModel: string;
+  modelField: string;
+  authHeader: (key: string) => Record<string, string>;
+}> = {
+  openai: {
+    defaultModel: 'whisper-1',
+    modelField: 'model',
+    authHeader: (key) => ({ Authorization: `Bearer ${key}` }),
+  },
+  elevenlabs: {
+    // Scribe is their STT model; the TTS model ids are a different family and
+    // naming one here fails in a confusing way.
+    defaultModel: 'scribe_v1',
+    modelField: 'model_id',
+    authHeader: (key) => ({ 'xi-api-key': key }),
+  },
+};
 
 /** Long enough for a real brain-dump, bounded so a stuck request cannot hold a
  *  serverless invocation open until it is killed without explanation. */
@@ -77,23 +120,35 @@ export async function transcribeAudio(input: {
     throw new Error('That recording is too long. Keep voice notes under about ten minutes.');
   }
 
+  const provider = providerFor(TRANSCRIBE_URL);
+  const spec = PROVIDERS[provider];
+  const model = process.env.TRANSCRIBE_MODEL || spec.defaultModel;
+
   const form = new FormData();
   const blob = new Blob([new Uint8Array(input.bytes)], { type: input.mimeType || 'audio/webm' });
   // The extension is load-bearing: several engines pick their decoder from the
   // filename rather than the content type, and a mismatched one fails with an
   // opaque decode error rather than an obvious rejection.
   form.append('file', blob, input.filename || 'audio.webm');
-  form.append('model', TRANSCRIBE_MODEL);
-  if (input.language) form.append('language', input.language);
-  if (input.prompt) form.append('prompt', input.prompt.slice(0, 800));
-  form.append('response_format', 'json');
+  form.append(spec.modelField, model);
+
+  if (provider === 'elevenlabs') {
+    // Deliberately NOT sending prompt/response_format: ElevenLabs rejects
+    // unknown multipart fields, so passing OpenAI's extras turns a working
+    // request into a 422. Language is the one shared option, under its own name.
+    if (input.language) form.append('language_code', input.language);
+  } else {
+    if (input.language) form.append('language', input.language);
+    if (input.prompt) form.append('prompt', input.prompt.slice(0, 800));
+    form.append('response_format', 'json');
+  }
 
   const controller = AbortSignal.timeout(TIMEOUT_MS);
   let res: Response;
   try {
     res = await fetch(TRANSCRIBE_URL, {
       method: 'POST',
-      headers: TRANSCRIBE_KEY ? { Authorization: `Bearer ${TRANSCRIBE_KEY}` } : {},
+      headers: TRANSCRIBE_KEY ? spec.authHeader(TRANSCRIBE_KEY) : {},
       body: form,
       signal: controller,
     });
@@ -122,6 +177,6 @@ export async function transcribeAudio(input: {
   return {
     text,
     duration: typeof json?.duration === 'number' ? json.duration : undefined,
-    model: TRANSCRIBE_MODEL,
+    model,
   };
 }
