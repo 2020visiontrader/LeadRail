@@ -36,6 +36,7 @@ import { consumeGrant, isGrantable } from '@/lib/approvals/grants';
 import { markParseOutcome } from '@/lib/credits';
 import { log } from '@/lib/logger';
 import { buildCachedPrompt } from './prompt-cache';
+import { extractJson } from './json-envelope';
 import { beginDelegationScope, endDelegationScope, setDelegationContext } from '@/lib/capabilities/delegation';
 import { hermesRoute } from '@/lib/ai/hermes';
 import { parseBatch, runBatch, batchSummary, MAX_BATCH, type BatchItemResult } from './batch';
@@ -456,11 +457,10 @@ function summarizeProposal(tool: string, args: Record<string, any>, extraCaps?: 
   return `${title}: ${JSON.stringify(args)}`;
 }
 
-function extractJson(raw: string): any | null {
-  const m = raw.match(/\{[\s\S]*\}/);
-  if (!m) return null;
-  try { return JSON.parse(m[0]); } catch { return null; }
-}
+// The JSON-envelope parser lives in ./json-envelope — a pure function with no
+// dependencies, so it can be tested directly against the real model responses
+// that broke it rather than through the whole agent loop.
+
 
 /** The user-facing line for one route-pass envelope (Packet 10.2 Part B).
  *
