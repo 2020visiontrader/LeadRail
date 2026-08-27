@@ -31,6 +31,22 @@ export interface UploadedAttachment {
   chars: number;
   status: 'ready' | 'image' | 'video' | 'unreadable';
   note?: string | null;
+  /** Set when this chip came from the library picker rather than an upload —
+   *  see the picker below for why `remove()` treats the two differently. */
+  fromLibrary?: boolean;
+  title?: string | null;
+}
+
+/** The shape `GET /api/assistant/attachments?all=1` returns — the account-wide
+ *  list, not the per-conversation one. See listAllAttachments. */
+interface LibraryDoc {
+  id: string;
+  filename: string;
+  title: string | null;
+  scope: string;
+  bytes: number;
+  status: string;
+  chars?: number;
 }
 
 // Video is here now that the assistant can read one (lib/video). It is decoded
@@ -103,9 +119,56 @@ export default function Attachments({ conversationId, attachments, onChange, dis
   const own = useAttachmentUpload({ conversationId, attachments, onChange });
   const { upload, uploading, error } = uploader ?? own;
 
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [libraryDocs, setLibraryDocs] = useState<LibraryDoc[]>([]);
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [libraryError, setLibraryError] = useState<string | null>(null);
+
   async function remove(id: string) {
+    const removed = attachments.find((a) => a.id === id);
     onChange(attachments.filter((a) => a.id !== id));
+    // A library document is shared across every chat — deleting the row here
+    // would remove it from every OTHER conversation and every scheduled run
+    // that reads it too, when all the person meant was "not in THIS message".
+    // Only an ordinary upload, which exists solely because it was dropped into
+    // this chat, gets deleted when its chip goes away.
+    if (removed?.fromLibrary) return;
     await fetch(`/api/assistant/attachments/${id}`, { method: 'DELETE' }).catch(() => {});
+  }
+
+  async function openPicker() {
+    setPickerOpen((open) => !open);
+    if (pickerOpen || libraryDocs.length || libraryLoading) return;
+    setLibraryLoading(true);
+    setLibraryError(null);
+    try {
+      const res = await fetch('/api/assistant/attachments?all=1');
+      const json = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(json?.error || 'Could not load the document library.');
+      const docs: LibraryDoc[] = (json?.attachments || []).filter((d: LibraryDoc) => d.scope === 'library');
+      setLibraryDocs(docs);
+    } catch (e: any) {
+      setLibraryError(e?.message || 'Could not load the document library.');
+    } finally {
+      setLibraryLoading(false);
+    }
+  }
+
+  function attachFromLibrary(doc: LibraryDoc) {
+    if (attachments.some((a) => a.id === doc.id)) { setPickerOpen(false); return; }
+    onChange([...attachments, {
+      id: doc.id,
+      filename: doc.filename,
+      title: doc.title,
+      kind: 'library',
+      bytes: doc.bytes,
+      chars: doc.chars ?? 0,
+      // A library doc's own status ('ready' | 'image' | 'video' | 'unreadable')
+      // maps directly onto the chip states this component already renders.
+      status: (['ready', 'image', 'video', 'unreadable'].includes(doc.status) ? doc.status : 'ready') as UploadedAttachment['status'],
+      fromLibrary: true,
+    }]);
+    setPickerOpen(false);
   }
 
   return (
@@ -126,8 +189,8 @@ export default function Attachments({ conversationId, attachments, onChange, dis
                     : 'border-[var(--border-default)] bg-[var(--bg-raised)] text-[var(--text-secondary)]'
                 }`}
               >
-                <span aria-hidden>{bad ? '!' : video ? '▶' : image ? '▣' : '▤'}</span>
-                <span className="truncate">{a.filename}</span>
+                <span aria-hidden>{a.fromLibrary ? '★' : bad ? '!' : video ? '▶' : image ? '▣' : '▤'}</span>
+                <span className="truncate">{a.title || a.filename}</span>
                 {/* The count is the proof it was actually read. "Attached" alone
                     is a claim; "8,412 characters" is evidence. */}
                 <span className="shrink-0 opacity-70">
@@ -169,18 +232,65 @@ export default function Attachments({ conversationId, attachments, onChange, dis
         className="hidden"
         onChange={(e) => { void upload(Array.from(e.target.files || [])); e.target.value = ''; }}
       />
-      <button
-        type="button"
-        disabled={disabled}
-        onClick={() => inputRef.current?.click()}
-        aria-label="Attach a document"
-        title="Attach a document for context"
-        className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-default)] text-[var(--text-secondary)] transition hover:bg-[var(--bg-raised)] hover:text-[var(--text-primary)] disabled:opacity-40"
-      >
-        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
-          <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-        </svg>
-      </button>
+      <div className="flex items-center gap-1.5">
+        <button
+          type="button"
+          disabled={disabled}
+          onClick={() => inputRef.current?.click()}
+          aria-label="Attach a document"
+          title="Attach a document for context"
+          className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-default)] text-[var(--text-secondary)] transition hover:bg-[var(--bg-raised)] hover:text-[var(--text-primary)] disabled:opacity-40"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+          </svg>
+        </button>
+
+        {/* Pulls a document already saved to the account library into THIS
+            chat, rather than requiring it be re-uploaded — see Settings ->
+            Workspace -> Documents, the only place that saves one to the
+            library in the first place. */}
+        <div className="relative">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={openPicker}
+            aria-label="Attach a saved document from your library"
+            title="Attach from your document library"
+            className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-default)] text-[var(--text-secondary)] transition hover:bg-[var(--bg-raised)] hover:text-[var(--text-primary)] disabled:opacity-40"
+          >
+            <span aria-hidden className="text-[13px] leading-none">★</span>
+          </button>
+
+          {pickerOpen && (
+            <div className="absolute bottom-full right-0 z-10 mb-2 max-h-64 w-64 overflow-y-auto rounded-lg border border-[var(--border-default)] bg-[var(--bg-surface)] p-1.5 shadow-lg">
+              {libraryLoading && <div className="p-2 text-[11px] text-[var(--text-muted)]">Loading…</div>}
+              {libraryError && <div className="p-2 text-[11px] text-[var(--text-negative)]">{libraryError}</div>}
+              {!libraryLoading && !libraryError && libraryDocs.length === 0 && (
+                <div className="p-2 text-[11px] text-[var(--text-muted)]">
+                  No library documents yet — save one from Settings → Workspace → Documents.
+                </div>
+              )}
+              {libraryDocs.map((doc) => {
+                const already = attachments.some((a) => a.id === doc.id);
+                return (
+                  <button
+                    key={doc.id}
+                    type="button"
+                    disabled={already}
+                    onClick={() => attachFromLibrary(doc)}
+                    className="flex w-full items-center gap-1.5 truncate rounded-md px-2 py-1.5 text-left text-[12px] text-[var(--text-primary)] transition hover:bg-[var(--bg-raised)] disabled:opacity-40"
+                  >
+                    <span aria-hidden>★</span>
+                    <span className="truncate">{doc.title || doc.filename}</span>
+                    {already && <span className="ml-auto shrink-0 text-[10px] text-[var(--text-muted)]">added</span>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

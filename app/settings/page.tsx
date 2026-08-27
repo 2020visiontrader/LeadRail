@@ -14,7 +14,8 @@ import SocialAutomations from '@/components/SocialAutomations';
 import Approvals from '@/components/Approvals';
 import { SOCIAL_PROVIDERS, TOKEN_PROVIDERS, connectedAccountsFor, type TokenProviderSpec } from '@/lib/social/providers';
 import SettingsConsole, { type SettingsGroup } from '@/components/SettingsConsole';
-import { IconConnections, IconOutreach, IconPersonas, IconUsage, IconSequences, IconAdmin, IconPrivacy, IconJourneys, IconCampaigns } from '@/components/icons';
+import { IconConnections, IconOutreach, IconPersonas, IconUsage, IconSequences, IconAdmin, IconPrivacy, IconJourneys, IconCampaigns, IconTemplates } from '@/components/icons';
+import DocumentLibrary from '@/components/settings/DocumentLibrary';
 
 interface Connection {
   provider: string;
@@ -628,6 +629,7 @@ export default function Settings() {
         { id: 'connections', label: 'Connections', icon: <IconConnections /> },
         { id: 'senders', label: 'Sender profiles', icon: <IconOutreach /> },
         { id: 'personas', label: 'Personas', icon: <IconPersonas /> },
+        { id: 'documents', label: 'Documents', icon: <IconTemplates /> },
       ],
     },
     {
@@ -658,6 +660,10 @@ export default function Settings() {
       title: 'Personas',
       description:
         'Specialists your assistant can adopt or consult. Pick one to frame a conversation, or write your own — a persona is a name, a role, and instructions in your words.',
+    },
+    documents: {
+      title: 'Documents',
+      description: 'Every file your assistant has been given, across every chat. Save one to the library and it is available in every chat, every plan and every scheduled run.',
     },
     budgets: { title: 'Budgets', description: 'Monthly spend limits. Anything that costs money is refused past the cap.' },
     scheduled: { title: 'Scheduled tasks', description: 'Work your assistant runs on a schedule, unattended.' },
@@ -703,6 +709,7 @@ export default function Settings() {
           {active === 'connections' && <ClientConnections connections={connections} onChange={load} />}
           {active === 'senders' && <SenderProfiles />}
           {active === 'personas' && <Personas />}
+          {active === 'documents' && <DocumentLibrary />}
           {active === 'budgets' && <Budgets />}
           {active === 'scheduled' && <ScheduledTasks />}
           {active === 'automations' && <Automations />}

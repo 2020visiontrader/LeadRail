@@ -1,6 +1,6 @@
 import { withApi, requireSession, errorResponse, badRequest } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
-import { ingestAttachment, listAttachments, MAX_UPLOAD_BYTES } from '@/lib/documents/attachments';
+import { ingestAttachment, listAttachments, listAllAttachments, MAX_UPLOAD_BYTES } from '@/lib/documents/attachments';
 import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
@@ -9,10 +9,21 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 // GET /api/assistant/attachments?conversationId= — what is attached here.
+// GET /api/assistant/attachments?all=1 — every document on the account, for
+// the document library screen. This is a DIFFERENT question than the
+// conversation-scoped one above: the library needs every row regardless of
+// which chat (if any) it is bound to, including files nobody has opened a
+// chat with in months. `?all=1` is additive rather than a separate route
+// because both answer "what attachments does this account have" — only the
+// filter differs, and the settings panel and the composer's library picker
+// both just need a query param away from the endpoint they already call.
 async function GET__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   try {
+    if (request.nextUrl.searchParams.get('all')) {
+      return NextResponse.json({ attachments: await listAllAttachments(session.accountId) });
+    }
     const conversationId = request.nextUrl.searchParams.get('conversationId');
     return NextResponse.json({ attachments: await listAttachments(session.accountId, conversationId) });
   } catch (e) {

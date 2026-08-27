@@ -236,6 +236,95 @@ export async function listAttachments(accountId: string, conversationId?: string
   return (data || []) as Attachment[];
 }
 
+/** The two values migration 067's CHECK constraint allows. Kept as a runtime
+ *  list (not just a TypeScript union) because the value that reaches this
+ *  function came off the wire — a TypeScript type is erased by the time a
+ *  request body is parsed, and a Postgres CHECK violation is a much uglier
+ *  500 than a 400 the route can explain. */
+export const ATTACHMENT_SCOPES = ['conversation', 'library'] as const;
+export type AttachmentScope = (typeof ATTACHMENT_SCOPES)[number];
+
+/**
+ * Every attachment on the account, newest first — the account-wide inventory
+ * a settings page needs, as opposed to `listAttachments`'s per-conversation
+ * view (which folds in library rows via `.or(...)` but still requires a
+ * conversation to scope against). There is no conversation here: this IS the
+ * library screen, so it has to see rows regardless of which chat, if any,
+ * they are bound to.
+ */
+export async function listAllAttachments(accountId: string): Promise<Attachment[]> {
+  if (!dbReady()) return [];
+  // Deliberately NOT `select('*')`. This screen can list every document an
+  // account has ever uploaded, and `extracted_text` is that document's full
+  // parsed content — up to the 200,000-character extraction cap per file. A
+  // library of even a few dozen files would otherwise ship megabytes of text
+  // nobody asked to see just to render a name and a size. The columns below
+  // are exactly what the settings panel and the library picker render.
+  const { data, error } = await supabase
+    .from('assistant_attachments')
+    .select('id, account_id, conversation_id, filename, title, scope, mime_type, bytes, kind, status, note, chars, created_at')
+    .eq('account_id', accountId)
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  return (data || []) as Attachment[];
+}
+
+/**
+ * Rename or re-scope an attachment. This is the ONLY writer of `scope`, which
+ * is why the validation lives here rather than trusting the caller: `scope`
+ * feeds a column with a CHECK constraint (migration 067), and a value that
+ * fails that constraint turns into a raw Postgres error rather than the
+ * friendly 400 a settings toggle deserves. Validating here, once, means every
+ * caller — the PATCH route today, whatever calls this next — gets the same
+ * guarantee instead of having to remember to check first.
+ *
+ * Account scope is applied INSIDE the query, never taken on trust from the
+ * caller — the same reason `attachmentUrl` and `deleteAttachment` above do
+ * it: an id from another tenant has to read as "not found", not as their file.
+ */
+export async function updateAttachment(
+  accountId: string,
+  id: string,
+  patch: { scope?: string; title?: string | null },
+): Promise<Attachment | null> {
+  const update: Record<string, unknown> = {};
+
+  if (patch.scope !== undefined) {
+    if (!ATTACHMENT_SCOPES.includes(patch.scope as AttachmentScope)) {
+      throw new Error(`scope must be one of: ${ATTACHMENT_SCOPES.join(', ')}`);
+    }
+    update.scope = patch.scope;
+  }
+
+  if (patch.title !== undefined) {
+    // An all-whitespace title is a clear-it gesture, not a name — storing it
+    // verbatim would leave the row indistinguishable from a real title of
+    // spaces and defeat the "title if set, else filename" fallback the UI
+    // relies on.
+    const trimmed = patch.title === null ? null : patch.title.trim();
+    update.title = trimmed || null;
+  }
+
+  if (!Object.keys(update).length) {
+    // Nothing to write. Read-and-return rather than issuing a no-op UPDATE,
+    // which some PostgREST configurations reject outright.
+    const { data } = await supabase
+      .from('assistant_attachments').select('*')
+      .eq('id', id).eq('account_id', accountId).maybeSingle();
+    return (data as Attachment) ?? null;
+  }
+
+  const { data, error } = await supabase
+    .from('assistant_attachments')
+    .update(update)
+    .eq('id', id)
+    .eq('account_id', accountId)
+    .select('*')
+    .maybeSingle();
+  if (error) throw error;
+  return (data as Attachment) ?? null;
+}
+
 export async function attachmentUrl(accountId: string, id: string): Promise<string | null> {
   const { data } = await supabase
     .from('assistant_attachments').select('storage_path')
