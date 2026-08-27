@@ -129,6 +129,12 @@ vi.mock('@/lib/agent/memory', () => ({
   loadTranscriptResult: (id: any, acc: any) => loadTranscriptResult(id, acc),
   loadCarryover: (id: any, acc: any) => loadCarryover(id, acc),
   ingestCarryoverFacts: (acc: any, memo: any) => ingestCarryoverFacts(acc, memo),
+  // In-flight run bookkeeping (migration 072) — irrelevant to what this file
+  // tests (a client disconnecting mid-turn), but the route now imports these
+  // unconditionally, so they need a no-op stand-in or the import itself
+  // throws before runAgentStream is ever reached.
+  markConversationRunning: async () => {},
+  clearConversationRunning: async () => {},
 }));
 
 // Controllable: the test releases the gate to simulate the agent run reaching
