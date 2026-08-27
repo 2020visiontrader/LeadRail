@@ -49,6 +49,10 @@ export interface Plan {
   stepsUsed: number;
   expiresAt: string;
   lastError: string | null;
+  /** Skill slugs pinned when the plan was written — see migration 066. */
+  skills: string[];
+  /** Persona pinned at creation, or null for the default assistant. */
+  personaId: string | null;
   steps: PlanStep[];
 }
 
@@ -66,6 +70,8 @@ function toPlan(r: any, steps: any[]): Plan {
     brandId: r.brand_id ?? null, objective: r.objective, status: r.status,
     maxSteps: r.max_steps, stepsUsed: r.steps_used, expiresAt: r.expires_at,
     lastError: r.last_error ?? null,
+    skills: Array.isArray(r.skills) ? r.skills : [],
+    personaId: r.persona_id ?? null,
     steps: steps.map(toStep).sort((a, b) => a.seq - b.seq),
   };
 }
@@ -87,6 +93,10 @@ export async function createPlan(args: {
   createdBy?: string | null;
   maxSteps?: number;
   requireApproval?: boolean;
+  /** Pinned for the life of the plan, so every resumed step is worked under
+   *  the same guidance rather than whatever this tick's message routes to. */
+  skills?: string[];
+  personaId?: string | null;
 }): Promise<Plan | null> {
   const titles = args.steps.map((s) => String(s || '').trim()).filter(Boolean).slice(0, MAX_PLAN_STEPS);
   if (!titles.length) return null;
@@ -104,6 +114,8 @@ export async function createPlan(args: {
         max_steps: Math.min(Math.max(1, args.maxSteps ?? DEFAULT_PLAN_BUDGET), DEFAULT_PLAN_BUDGET),
         expires_at: new Date(Date.now() + PLAN_TTL_MS).toISOString(),
         created_by: args.createdBy ?? null,
+        skills: args.skills ?? [],
+        persona_id: args.personaId ?? null,
       }])
       .select()
       .single();

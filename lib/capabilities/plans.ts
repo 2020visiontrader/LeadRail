@@ -25,6 +25,9 @@ import {
   createPlan, getPlan, activePlanForConversation, completeStep, blockStep,
   cancelPlans, renderPlan, MAX_PLAN_STEPS,
 } from '@/lib/plans/store';
+import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
+import { hermesRoute } from '@/lib/ai/hermes';
+import { selectPersonasForRequest } from '@/lib/agent/personas';
 
 export const PLAN_CAPABILITIES: Capability[] = [
   {
@@ -43,10 +46,42 @@ export const PLAN_CAPABILITIES: Capability[] = [
       steps: z.array(z.string().min(1)).min(2).max(MAX_PLAN_STEPS),
     }),
     run: async (accountId, a, ctx?: any) => {
+      // STRUCTURE THE PLAN AGAINST THE OBJECTIVE, then pin what it chose.
+      //
+      // Two selections, both made ONCE and both against the objective rather
+      // than against a step's wording:
+      //
+      //   skills  — routed through Hermes, the same shortlist-then-classify
+      //             path an ordinary turn uses. Pinning ALL enabled skills
+      //             would not be selection at all, and the catalog is 353.
+      //   persona — chosen the same way. Without pinning, a plan worked one
+      //             step per tick gets a strategist on step 1 and an analyst
+      //             on step 4: the voice and the judgement change mid-job
+      //             without anyone asking for it.
+      //
+      // Both degrade to nothing on failure: a plan with no pinned skills routes
+      // per turn as before, and no persona means the default assistant.
+      let skills: string[] = [];
+      let personaId: string | null = null;
+      try {
+        const enabled = await loadEnabledSkillsForAgent(accountId);
+        const enabledSlugs = new Set(enabled.map((sk: any) => sk.slug).filter(Boolean));
+        const routed = await hermesRoute(a.objective, {});
+        // Intersect: Hermes routes over the whole catalog, but enabled-ness
+        // always wins — the same rule selectSkillsForTurn applies.
+        skills = (routed.skillIds || []).filter((slug: string) => enabledSlugs.has(slug));
+      } catch { /* routes per turn instead */ }
+      try {
+        const picked = await selectPersonasForRequest(accountId, a.objective, 1);
+        personaId = picked[0]?.id ?? null;
+      } catch { /* default assistant */ }
+
       const plan = await createPlan({
         accountId,
         objective: a.objective,
         steps: a.steps,
+        skills,
+        personaId,
         conversationId: ctx?.conversationId ?? null,
         brandId: ctx?.brandId ?? null,
         createdBy: ctx?.requestedBy ?? null,
@@ -60,6 +95,11 @@ export const PLAN_CAPABILITIES: Capability[] = [
         planId: plan.id,
         status: plan.status,
         steps: plan.steps.map((s) => ({ seq: s.seq, title: s.title })),
+        // Surfaced so the operator can see how the work was framed before
+        // approving it — a plan mode that hides its own reasoning is just a
+        // delay.
+        usingSkills: plan.skills,
+        persona: plan.personaId ? 'a specialist' : 'the default assistant',
         note: plan.status === 'draft'
           ? 'Saved as a draft. Nothing will run until the user approves it.'
           : 'Saved. Work the first step now.',

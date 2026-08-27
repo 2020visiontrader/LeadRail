@@ -23,6 +23,7 @@
 // silently, and this codebase already has enough of those.
 
 import { log } from '@/lib/logger';
+import { improvePrompt } from '@/lib/ai/prompt-improver';
 import {
   runnablePlans, nextStep, claimStep, completeStep, blockStep,
   recordProgress, renderPlan, MAX_STEP_ATTEMPTS, type Plan,
@@ -88,18 +89,38 @@ async function advance(plan: Plan): Promise<'completed' | 'blocked' | 'idle' | '
       // The plan block is already in the grounding (lib/agent/context.ts), so
       // this names the ONE step rather than restating the objective — otherwise
       // the model re-plans instead of executing.
-      message: [
-        `Work ONLY this step of the current plan, then stop:`,
-        `  Step ${step.seq}: ${step.title}`,
-        '',
-        'When it is finished, call completePlanStep with its stepId and one sentence saying what came of it.',
-        `The stepId is: ${step.id}`,
-        'If it genuinely cannot be done — something is missing that only the user can supply — call blockPlanStep with the reason instead. Do not skip work merely because it is hard.',
-      ].join('\n'),
+      // Structured through the same prompt-improver the generation paths use
+      // (lib/ai/prompt-improver.ts): GOAL / INPUTS / RULES / DELIVERABLE. A
+      // resumed step arrives with no conversational lead-up, so an ad-hoc
+      // sentence is exactly the shallow one-liner that scaffolding exists to
+      // fix — and every step of every plan should be framed the same way.
+      message: improvePrompt({
+        goal: `Complete step ${step.seq} of the current plan: ${step.title}`,
+        inputs: {
+          'Plan objective': plan.objective,
+          'This step': step.title,
+          'Step id': step.id,
+          'Steps already done': String(plan.steps.filter((x) => x.status === 'done').length),
+          'Previous step outcome': plan.steps.find((x) => x.seq === step.seq - 1)?.result ?? undefined,
+        },
+        rules: [
+          'Work ONLY this step. Do not start the next one, and do not redo a finished one.',
+          'The full plan is in your context above — read it rather than re-planning.',
+          'When the step is finished, call completePlanStep with the step id and ONE sentence saying what came of it.',
+          'If it genuinely cannot be done because something is missing that only the user can supply, call blockPlanStep with the reason. Do not park work merely because it is hard.',
+        ],
+        deliverable: 'The step carried out, and completePlanStep (or blockPlanStep) called for it.',
+      }),
       conversationId: plan.conversationId ?? undefined,
       brandContext: plan.brandId ? { id: plan.brandId } : undefined,
       maxSteps: STEPS_PER_PLAN_STEP,
       requestedBy: `plan:${plan.id}`,
+      // The guidance the plan was written under, not whatever this step's
+      // wording would route to — see migration 066.
+      pinnedSkills: plan.skills,
+      // Same reasoning: the persona the plan was written for, so the voice and
+      // judgement do not change between step 1 and step 4.
+      ...(plan.personaId ? { personaId: plan.personaId } : {}),
     });
 
     if (result.status === 'needs_approval') {

@@ -200,6 +200,11 @@ export interface RunAgentInput {
    *  A delegate may not delegate further and may not raise approvals — see the
    *  bounds documented there. Absent for every ordinary caller. */
   isDelegate?: boolean;
+  /** Skill slugs pinned by a plan (migration 066). When present these REPLACE
+   *  per-turn routing: a plan worked one step per tick would otherwise get
+   *  different guidance on each step, because selectSkillsForTurn routes
+   *  against the message and every step is a different message. */
+  pinnedSkills?: string[];
   /** Plan mode: the turn writes a plan and stops, instead of executing it.
    *  Set by the caller (a UI toggle), never by the model — the model must not
    *  be able to decide it is allowed to skip the operator's go-ahead. */
@@ -315,7 +320,7 @@ function promptCacheKey(accountId: string | undefined, personaBlock?: string, ex
   return [accountId || 'anon', personaBlock ? 'p' : '-', String(Object.keys(externalTools || {}).length)].join(':');
 }
 
-function systemPrompt(brandName?: string, agentContext?: string, carryover?: CarryoverMemo | null, personaBlock?: string, skillsGuidance?: string, externalTools?: Record<string, AgentTool>, accountId?: string): string {
+function systemPrompt(brandName?: string, agentContext?: string, carryover?: CarryoverMemo | null, personaBlock?: string, skillsGuidance?: string, externalTools?: Record<string, AgentTool>, accountId?: string, planOnly?: boolean): string {
   const staticSections: string[] = [
     // ---- STATIC (stable across every turn for an account) -------------------
     'You are LeadRail AI — the operator copilot built into the LeadRail platform. Think of yourself the way a great chief-of-staff works: you understand the whole platform, you know this account and its ventures, you reason things through in plain language, and you actually DO the work by using LeadRail\'s tools. You are conversational and intellectually engaged — you can discuss strategy, weigh options, and explain your thinking, not just fire off tool calls.',
@@ -389,6 +394,15 @@ function systemPrompt(brandName?: string, agentContext?: string, carryover?: Car
   // across a turn's sixteen steps, which is the whole point.
   const dynamicSections: string[] = [
     '',
+    // Volatile on purpose: this changes per turn, and a cached static prefix
+    // would carry one turn's mode into the next.
+    planOnly
+      ? [
+          'PLAN MODE IS ON FOR THIS TURN. Do NOT do the work.',
+          'Call createPlan with an objective and ordered steps, then answer with action:"final" describing the plan in plain language and asking whether to go ahead or change it.',
+          'Read-only tools are fine if you genuinely need them to write a sensible plan. Do not call anything that writes, sends, spends or changes state — not even something the user seems to have already asked for.',
+        ].join('\n')
+      : '',
     agentContext || (brandName ? `The user is working in the "${brandName}" venture; prefer it when a venture is needed and not otherwise specified.` : ''),
     carryover ? '\n' + carryoverBlock(carryover) : '',
   ];
@@ -1303,14 +1317,19 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
   const { systemBlock: personaBlock, modelId: personaModelId } = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
   const allEnabledSkills = await loadEnabledSkillsForAgent(accountId);
   // Hermes picks the 1-4 that apply to THIS request instead of injecting all.
-  const enabledSkills = await selectSkillsForTurn(allEnabledSkills, input.message, brandContext?.name);
+  // Pinned skills (a plan) REPLACE routing; otherwise route against this turn.
+  // Filtered against what the account actually has enabled, so a stale pin
+  // cannot resurrect a skill that was since turned off.
+  const enabledSkills = input.pinnedSkills?.length
+    ? allEnabledSkills.filter((sk) => input.pinnedSkills!.includes(sk.slug))
+    : await selectSkillsForTurn(allEnabledSkills, input.message, brandContext?.name);
   // Packet 4: this account's connected, enabled external-MCP-client tools for
   // THIS turn only — a pure cached DB read (see lib/capabilities/external-mcp.ts),
   // never a network call, so it cannot add hot-path latency or hang the turn.
   const externalCaps = await loadExternalCapabilities(accountId);
   const extraTools = toolsFromCapabilities(externalCaps);
   const extraCapsByName: Record<string, Capability> = Object.fromEntries(externalCaps.map((c) => [c.name, c]));
-  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId);
+  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId, input.planOnly);
   const messages: ChatMessage[] = capTranscript(input.transcript || []);
   const steps: AgentStep[] = [];
 
@@ -1805,10 +1824,15 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
   // Hermes picks the 1-4 that apply to THIS request instead of injecting all.
   // This is the one hop that must stay sequential — it genuinely depends on
   // allEnabledSkills (which skills exist to route over).
-  const enabledSkills = await selectSkillsForTurn(allEnabledSkills, input.message, brandContext?.name);
+  // Pinned skills (a plan) REPLACE routing; otherwise route against this turn.
+  // Filtered against what the account actually has enabled, so a stale pin
+  // cannot resurrect a skill that was since turned off.
+  const enabledSkills = input.pinnedSkills?.length
+    ? allEnabledSkills.filter((sk) => input.pinnedSkills!.includes(sk.slug))
+    : await selectSkillsForTurn(allEnabledSkills, input.message, brandContext?.name);
   const extraTools = toolsFromCapabilities(externalCaps);
   const extraCapsByName: Record<string, Capability> = Object.fromEntries(externalCaps.map((c) => [c.name, c]));
-  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId);
+  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId, input.planOnly);
   const messages: ChatMessage[] = capTranscript(input.transcript || []);
 
   if (input.message) messages.push({ role: 'user', content: input.message });

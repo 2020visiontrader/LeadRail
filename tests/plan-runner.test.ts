@@ -80,13 +80,31 @@ describe('advances one step at a time', () => {
     expect(steps.find((s) => s.id === 's2')!.status).toBe('pending');
   });
 
-  it('names the single step in the prompt rather than the objective', async () => {
-    // The plan block is already in the grounding; restating the objective makes
-    // the model re-plan instead of executing.
+  it('frames the step through the prompt-improver, naming that one step', async () => {
+    // Structured GOAL/INPUTS/RULES/DELIVERABLE rather than an ad-hoc sentence:
+    // a resumed step arrives with no conversational lead-up, which is exactly
+    // the shallow one-liner that scaffolding exists to fix.
     await tick();
     const msg = String(runAgent.mock.calls[0]?.[0]?.message ?? '');
-    expect(msg).toContain('Step 1: First');
-    expect(msg).toContain('s1');
+    expect(msg).toContain('GOAL:');
+    expect(msg).toContain('DELIVERABLE:');
+    expect(msg).toContain('First');          // this step's title
+    expect(msg).toContain('s1');             // its id, so it can be closed
+    // Told to read the plan, not rewrite it — restating the objective as a
+    // task is what makes the model re-plan instead of execute.
+    expect(msg).toMatch(/read it rather than re-planning/i);
+  });
+
+  it('carries the pinned skills and persona so guidance cannot drift', async () => {
+    // A plan is worked one step per tick and each step is a different message.
+    // Without pinning, step 3 routes to different skills than step 1 and the
+    // work changes character partway through.
+    plans[0].skills = ['seo', 'ads'];
+    plans[0].persona_id = 'persona-1';
+    await tick();
+    const input = runAgent.mock.calls[0]?.[0];
+    expect(input?.pinnedSkills).toEqual(['seo', 'ads']);
+    expect(input?.personaId).toBe('persona-1');
   });
 
   it('passes the conversation so grants and memory apply to the run', async () => {

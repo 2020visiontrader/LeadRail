@@ -84,6 +84,12 @@ async function POST__impl(request: NextRequest) {
   const personaId: string | undefined = typeof body?.personaId === 'string' && body.personaId ? body.personaId : undefined;
   const personaMentions = parseMentions(message);
 
+  // PLAN MODE. The turn writes a plan and stops instead of executing it, so
+  // the operator sees the shape of the work before any of it runs. A request
+  // flag, never a model decision: the model must not be able to decide it is
+  // allowed to skip the go-ahead.
+  const planOnly = body?.planOnly === true;
+
   const result = await runAgent({
     accountId: session.accountId,
     message,
@@ -96,6 +102,7 @@ async function POST__impl(request: NextRequest) {
     personaMentions,
     requestedBy: session.email,
     conversationId,
+    planOnly,
   });
   const savedId = await saveConversation({
     id: conversationId, accountId: session.accountId, brandId: brandId ?? null,
