@@ -30,10 +30,27 @@ export function zoAskConfigured(): boolean {
   return KEY.length > 0;
 }
 
+// Model ids that mean "use whatever the Zo account is set to" rather than
+// naming a model on the wire.
+//
+// `__default__` is the `ai_models.model_id` of the registry's
+// "Zo Ask (account default)" row (migration 023_ai_providers.sql). It is a
+// SENTINEL, and until now nothing read it as one: lib/ai/providers.ts passes
+// `model: model.model_id` straight into zoAskChat, so every account-registry
+// chat call posted `{"input": "...", "model_name": "__default__"}` and Zo Ask
+// answered 502. That is the whole of the "Zo Ask outage" — 76 consecutive
+// failures on the registry path while the ladder path, which passes no model
+// and so omits the field, logged 31 successes against the same key in the same
+// minutes.
+//
+// This is the right boundary for the check: it is where a stored id becomes a
+// wire value, so it also covers any future caller that forwards the sentinel.
+const DEFAULT_MODEL_SENTINELS = new Set(['__default__', 'default', 'auto', '']);
+
 async function ask(input: string, modelOverride?: string): Promise<string> {
   const model = modelOverride || MODEL;
   const body: { input: string; model_name?: string } = { input };
-  if (typeof model === 'string' && model.length > 0) {
+  if (typeof model === 'string' && !DEFAULT_MODEL_SENTINELS.has(model.trim())) {
     body.model_name = model;
   }
   const ctrl = new AbortController();
