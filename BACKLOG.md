@@ -88,10 +88,21 @@ per provider — or the providers that do not are documented here.
 
 ## Found during the 2026-08-27 tick audit — not yet scoped
 
-- **`agent_conversations` and `agent_memory` are missing from `EXPORT_TABLES`**
-  (`lib/privacy.ts:95`). The account data export — the GDPR/CCPA subject-access
-  path — omits the entire assistant chat history. A compliance gap, not just a
-  missing feature.
+- ~~**`agent_conversations` and `agent_memory` are missing from
+  `EXPORT_TABLES`.**~~ **RESOLVED 2026-08-27** (`4751e4a`, `da04553`). Turned
+  out to be far larger than the two tables: the export covered 20 of 84
+  account-scoped tables, and separately leaked `integration_connections.
+  secret_encrypted` — the allow-list was under-inclusive on user data and
+  over-inclusive on credentials at the same time. Two more defects surfaced
+  during review: `sequence_enrollments` and `referrals` were listed for export
+  but have no `account_id`, so the bundle had been shipping `{"error": ...}` in
+  place of their data and nothing read it; and `approvals.args_encrypted`
+  (ciphertext of full tool-call args) escaped the secret pattern.
+  Now: every account-scoped table is exported or excluded-with-a-reason, each
+  export scope declares real columns, secrets match by pattern including
+  `_encrypted`/`_hash`, and drift tests read `migrations/*.sql` so a new
+  unclassified table, a missing scope column, or a new secret column turns the
+  suite red. Tenant isolation is tested per scope kind.
 - **`agent_conversations` has no deletion path at all.** No `DELETE` handler on
   either conversations route, no `deleted_at` column, no UI affordance. The
   soft-delete + `purge_soft_deleted` pattern covers `contacts`, `companies`,
