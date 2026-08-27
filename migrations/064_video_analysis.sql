@@ -1,3 +1,8 @@
+-- RENUMBERED 061 -> 064 during integration. 061 was already taken by
+-- 061_memory_graph.sql, which is APPLIED IN PRODUCTION; 062 by approval_grants
+-- (also applied) and 063 by agent_plans on claude/agent-plans-9ve4f1. Numbering
+-- is the only thing that changed — the DDL is untouched.
+--
 -- Frame and pace data for an uploaded video.
 --
 -- WHY IT IS NOT A COLUMN ON assistant_attachments. That table stores extracted
