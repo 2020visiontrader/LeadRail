@@ -175,6 +175,8 @@ const TOOL_VERB: Record<string, string> = {
   recallSubject: 'Checking what I know about this',
   recallHistory: 'Looking at how this changed over time',
   listObservedPatterns: 'Reviewing what I have noticed',
+  listStandingApprovals: 'Checking what you have already approved',
+  revokeStandingApproval: 'Turning that permission back off',
   forgetFact: 'Forgetting that',
   listFacts: 'Checking what I remember',
   describeTools: 'Working out what I can do here',

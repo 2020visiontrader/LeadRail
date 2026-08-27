@@ -187,6 +187,12 @@ export interface AutomatedExecutionInput {
    * row is unambiguously distinguishable in the audit trail from a
    * human-approved send. */
   requestedBy: string;
+  /** Migration 062. Set when the call ran under a standing grant rather than a
+   *  per-call approval, so the ledger can answer "what did that grant cover". */
+  grantId?: string | null;
+  conversationId?: string | null;
+  /** The human who created the grant — they authorised this call, earlier. */
+  decidedBy?: string | null;
 }
 
 /** Packet 7.3 — the automation runner's audit trail. Unlike createApproval
@@ -210,6 +216,13 @@ export async function recordExecutedApproval(accountId: string, input: Automated
     state: 'executed',
     requested_by: input.requestedBy,
     executed_at: new Date().toISOString(),
+    // Migration 062: when this ran under a standing grant, the ledger says so
+    // and points at the grant. An action covered by a grant must be MORE
+    // reviewable than a hand-approved one, not less — it is the case where
+    // nobody looked at the time.
+    conversation_id: (input as any).conversationId ?? null,
+    grant_id: (input as any).grantId ?? null,
+    decided_by: (input as any).decidedBy ?? null,
   };
   if (vaultConfigured()) {
     row.args_encrypted = encryptSecret(JSON.stringify(input.args || {}));

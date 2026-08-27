@@ -30,7 +30,8 @@ import {
 import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
 import { composeAnswer } from './compose';
 import { stripAiMarkers } from '@/lib/ai/humanizer';
-import { createApproval, consumeApprovalForExecution, markApprovedByToolAndArgs, ApprovalExecutionError } from '@/lib/approvals/store';
+import { createApproval, consumeApprovalForExecution, markApprovedByToolAndArgs, recordExecutedApproval, ApprovalExecutionError } from '@/lib/approvals/store';
+import { consumeGrant, isGrantable } from '@/lib/approvals/grants';
 import { markParseOutcome } from '@/lib/credits';
 import { log } from '@/lib/logger';
 import { buildCachedPrompt } from './prompt-cache';
@@ -1383,6 +1384,43 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
         messages.push(observation(obs));
         continue;
       }
+      // STANDING GRANT (migration 062). The operator may already have said
+      // "yes, for all fifty" once. enrichLead is per-lead and carries the spend
+      // gate, so without this a pool of 50 is 50 cards for a decision that was
+      // made at batch scale — and three of those cards lapsed unanswered in
+      // production, which is what approval fatigue looks like in the data.
+      //
+      // Fails CLOSED: any error, expiry, exhaustion or missing conversation id
+      // returns null and the normal card is raised. The failure mode in the
+      // other direction is spending money nobody approved.
+      const grantGate = capabilityFor(tool, extraCapsByName)?.gate;
+      if (isGrantable(grantGate)) {
+        const claimed = await consumeGrant(accountId, input.conversationId, tool);
+        if (claimed) {
+          const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
+          // The ledger must still show this. An action covered by a grant is
+          // the one nobody looked at as it happened, so it needs MORE of an
+          // audit trail than a hand-approved one, not less.
+          void recordExecutedApproval(accountId, {
+            tool, title: def.title, summary: summarizeProposal(tool, args, extraCapsByName, extraTools),
+            args, requestedBy: `grant:${claimed.grantId}`,
+            grantId: claimed.grantId,
+            conversationId: input.conversationId ?? null,
+            decidedBy: input.requestedBy ?? null,
+          }).catch((e) => log.warn('approval: grant-covered execution not audited', {
+            accountId, tool, grantId: claimed.grantId, error: String(e?.message || e),
+          }));
+
+          lastToolName = tool;
+          toolCalls[tool] = (toolCalls[tool] || 0) + 1;
+          seen.add(`${tool}:${JSON.stringify(args)}`);
+          const obs = observationFor(tool, args, res, extraCapsByName);
+          steps.push({ thought: narrationFor(parsed), tool, args, observation: obs });
+          messages.push(observation(obs, obsLimitFor(tool, extraCapsByName)));
+          continue;
+        }
+      }
+
       const proposal: AgentProposal = { tool, title: def.title, args, summary: summarizeProposal(tool, args, extraCapsByName, extraTools) };
       // Additive: persist the proposal so it survives a closed tab and gets an
       // actor trail (migration 028_approvals.sql). Best-effort — a failure
@@ -1744,6 +1782,47 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
         messages.push(observation(obs));
         continue;
       }
+      // STANDING GRANT (migration 062). The operator may already have said
+      // "yes, for all fifty" once. enrichLead is per-lead and carries the spend
+      // gate, so without this a pool of 50 is 50 cards for a decision that was
+      // made at batch scale — and three of those cards lapsed unanswered in
+      // production, which is what approval fatigue looks like in the data.
+      //
+      // Fails CLOSED: any error, expiry, exhaustion or missing conversation id
+      // returns null and the normal card is raised. The failure mode in the
+      // other direction is spending money nobody approved.
+      const grantGate = capabilityFor(tool, extraCapsByName)?.gate;
+      if (isGrantable(grantGate)) {
+        const claimed = await consumeGrant(accountId, input.conversationId, tool);
+        if (claimed) {
+          const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
+          // The ledger must still show this. An action covered by a grant is
+          // the one nobody looked at as it happened, so it needs MORE of an
+          // audit trail than a hand-approved one, not less.
+          void recordExecutedApproval(accountId, {
+            tool, title: def.title, summary: summarizeProposal(tool, args, extraCapsByName, extraTools),
+            args, requestedBy: `grant:${claimed.grantId}`,
+            grantId: claimed.grantId,
+            conversationId: input.conversationId ?? null,
+            decidedBy: input.requestedBy ?? null,
+          }).catch((e) => log.warn('approval: grant-covered execution not audited', {
+            accountId, tool, grantId: claimed.grantId, error: String(e?.message || e),
+          }));
+
+          lastToolName = tool;
+          toolCalls[tool] = (toolCalls[tool] || 0) + 1;
+          seen.add(`${tool}:${JSON.stringify(args)}`);
+          const obs = observationFor(tool, args, res, extraCapsByName);
+          const obsLimit = obsLimitFor(tool, extraCapsByName);
+          // Same events a normal tool call emits, so the live trace shows the
+          // work rather than going silent just because nobody was asked.
+          emit({ type: 'observation', text: truncate(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
+          emitAnalysis(emit, analysisFor(tool, args, res, extraCapsByName));
+          messages.push(observation(obs, obsLimit));
+          continue;
+        }
+      }
+
       const proposal: AgentProposal = { tool, title: def.title, args, summary: summarizeProposal(tool, args, extraCapsByName, extraTools) };
       // Additive persistence — see the matching comment in runAgent above.
       // Best-effort; never blocks the existing needs_approval/resume flow.
