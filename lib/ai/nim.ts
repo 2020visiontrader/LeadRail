@@ -252,7 +252,12 @@ async function completeStreamWith(
     res = await fetch(`${BASE}/chat/completions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: MODEL, messages, temperature, max_tokens: maxTokens, stream: true }),
+      body: JSON.stringify({
+        model: MODEL, messages, temperature, max_tokens: maxTokens, stream: true,
+        // See readSseDeltas: without this an OpenAI-dialect stream reports no
+        // usage, which is why streamed calls never recorded tokens.
+        stream_options: { include_usage: true },
+      }),
       signal: ctrl.signal,
     });
   } catch (e: any) {

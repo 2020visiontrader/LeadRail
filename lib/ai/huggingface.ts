@@ -95,7 +95,12 @@ async function callHF(
     return await fetch(`${BASE}/chat/completions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model, messages, temperature, max_tokens: maxTokens, stream }),
+      body: JSON.stringify({
+        model, messages, temperature, max_tokens: maxTokens, stream,
+        // Only meaningful when streaming; a non-streaming response carries
+        // `usage` unconditionally. See readSseDeltas.
+        ...(stream ? { stream_options: { include_usage: true } } : {}),
+      }),
       signal: ctrl.signal,
     });
   } catch (e: any) {
