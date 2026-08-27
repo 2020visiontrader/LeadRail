@@ -54,9 +54,12 @@ export async function recordAiUsage(entry: {
   latencyMs?: number | null;
   ok: boolean;
   error?: string | null;
-}): Promise<void> {
+  /** agent_conversations.id, when the caller has one (migration 060). Absent
+   *  for every pre-060 caller, so those rows keep the NULL they always had. */
+  conversationId?: string | null;
+}): Promise<string | null> {
   try {
-    await supabase.from('ai_usage').insert([{
+    const { data } = await supabase.from('ai_usage').insert([{
       account_id: entry.accountId,
       provider_id: entry.providerId ?? null,
       model_id: entry.modelId ?? null,
@@ -67,9 +70,37 @@ export async function recordAiUsage(entry: {
       latency_ms: entry.latencyMs ?? null,
       ok: entry.ok,
       error: entry.error ?? null,
-    }]);
+      conversation_id: entry.conversationId ?? null,
+    }])
+      // The id is returned so the CALLER can later record whether the response
+      // it got was actually usable — see markParseOutcome. Nothing else changes
+      // about this insert; returning null on failure keeps it best-effort.
+      .select('id')
+      .single();
+    return (data as any)?.id ?? null;
   } catch {
     // best-effort; never break the caller's AI response over a logging failure
+    return null;
+  }
+}
+
+/**
+ * Record whether a response that was already logged turned out to be usable.
+ *
+ * `ok` on an ai_usage row is written the moment a tier returns text, which is
+ * the only thing the router knows. Whether that text satisfied the caller's
+ * contract — for the agent loop, being one parseable JSON envelope — is a fact
+ * only the caller learns, and later. Without this the two were the same column,
+ * and a model answering in prose was indistinguishable from a real success.
+ *
+ * Best-effort and fire-and-forget, exactly like the insert above: an
+ * observability write must never fail a turn the user is waiting on.
+ */
+export async function markParseOutcome(usageRowId: string, parseOk: boolean): Promise<void> {
+  try {
+    await supabase.from('ai_usage').update({ parse_ok: parseOk }).eq('id', usageRowId);
+  } catch {
+    /* best-effort */
   }
 }
 

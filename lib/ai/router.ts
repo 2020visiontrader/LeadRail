@@ -152,10 +152,12 @@ interface Candidate {
 async function logUsage(entry: {
   accountId: string; candidate: Candidate; kind: 'text' | 'chat'; ok: boolean; error?: string; latencyMs: number;
   usage?: TokenUsage | null;
-}): Promise<void> {
+  conversationId?: string;
+}): Promise<string | null> {
   try {
     const { recordAiUsage } = await import('@/lib/credits');
-    await recordAiUsage({
+    return await recordAiUsage({
+      conversationId: entry.conversationId ?? null,
       accountId: entry.accountId,
       // Null for a ladder tier — it is not one of the account's configured
       // models and pointing the row at one would misattribute it.
@@ -170,7 +172,7 @@ async function logUsage(entry: {
       tokensIn: entry.usage?.tokensIn ?? null,
       tokensOut: entry.usage?.tokensOut ?? null,
     });
-  } catch { /* logging must never break the caller */ }
+  } catch { return null; /* logging must never break the caller */ }
 }
 
 /** The account's configured chain, or [] when it has none. Never throws —
@@ -222,12 +224,27 @@ function ladderCandidates(
  * seeing "OpenRouter failed (404)" is being told what the final attempt hit,
  * not what the first one did.
  */
+/** Optional observability threading (migration 060). Absent for every caller
+ *  that predates it, so those calls behave exactly as before.
+ *
+ *  `onUsageRow` hands the caller the ai_usage row id for the attempt that
+ *  ANSWERED, so it can later record whether the response was actually usable
+ *  (markParseOutcome). It is invoked off a fire-and-forget write, so on a fast
+ *  turn a caller may reach its parse step before the id arrives — that
+ *  undercounts, it never miscounts. Closing that race would mean awaiting a DB
+ *  round-trip inside every model call, which is not worth it. */
+interface UsageTrace {
+  conversationId?: string;
+  onUsageRow?: (id: string) => void;
+}
+
 async function runCandidates(
   fn: string,
   candidates: Candidate[],
   accountId: string | undefined,
   kind: 'text' | 'chat',
   size: CallSize,
+  trace?: UsageTrace,
 ): Promise<string> {
   // Eligibility BEFORE health, because they answer different kinds of question.
   // Health is a preference and can be overruled by circumstance; capability
@@ -253,7 +270,15 @@ async function runCandidates(
       // failure it is, so a model that always returns nothing shows up.
       if (!text) throw new Error(`${candidate.label} returned an empty response`);
       recordSuccess(candidate.id, latencyMs);
-      if (accountId) void logUsage({ accountId, candidate, kind, ok: true, latencyMs, usage });
+      // Still ok:true — the transport DID succeed, and that is the only thing
+      // this layer can honestly assert. Whether the text was USABLE is a
+      // separate fact the caller learns later and reports via parse_ok; before
+      // migration 060 the two were the same column, so a model answering in
+      // prose was indistinguishable from a real success.
+      if (accountId) {
+        void logUsage({ accountId, candidate, kind, ok: true, latencyMs, usage, conversationId: trace?.conversationId })
+          .then((id) => { if (id) trace?.onUsageRow?.(id); });
+      }
       log.info('ai router: candidate answered', { fn, candidate: candidate.id, latencyMs });
       return text;
     } catch (err: any) {
@@ -263,6 +288,7 @@ async function runCandidates(
         void logUsage({
           accountId, candidate, kind, ok: false,
           error: String(err?.message || err).slice(0, 300), latencyMs,
+          conversationId: trace?.conversationId,
         });
       }
       log.warn('ai router: candidate failed', { fn, candidate: candidate.id, error: String(err?.message || err) });
@@ -289,6 +315,11 @@ export async function generateText(opts: {
   accountId?: string;
   /** Specific ai_models.id to try before the account's active/fallback chain. */
   modelId?: string;
+  /** agent_conversations.id to stamp on the ai_usage row (migration 060). */
+  conversationId?: string;
+  /** Receives the ai_usage row id of the attempt that answered, so the caller
+   *  can record whether the response was usable. See UsageTrace. */
+  onUsageRow?: (id: string) => void;
 }): Promise<string> {
   const registry = await registryCandidates(opts.accountId, opts.modelId, undefined, undefined, (resolved) =>
     callModel(resolved, { system: opts.system, prompt: opts.prompt, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens }),
@@ -303,7 +334,9 @@ export async function generateText(opts: {
   return runCandidates('generateText', [...registry, ...ladder], opts.accountId, 'text', {
     promptTokens: estimateTokens((opts.system || '') + opts.prompt),
     wantOutputTokens: opts.maxOutputTokens,
-  });
+  },
+    { conversationId: opts.conversationId, onUsageRow: opts.onUsageRow },
+  );
 }
 
 export async function generateChat(opts: {
@@ -320,6 +353,11 @@ export async function generateChat(opts: {
   accountId?: string;
   /** Specific ai_models.id to try before the account's active/fallback chain. */
   modelId?: string;
+  /** agent_conversations.id to stamp on the ai_usage row (migration 060). */
+  conversationId?: string;
+  /** Receives the ai_usage row id of the attempt that answered, so the caller
+   *  can record whether the response was usable. See UsageTrace. */
+  onUsageRow?: (id: string) => void;
   /** Task hint (Packet 8.1) — prefers models tagged `good` for this task, e.g.
    *  'draft' for the compose pass. Reorders the chain; never excludes. */
   task?: string;
@@ -345,7 +383,9 @@ export async function generateChat(opts: {
     // capability, but no more than this", so a model under the ceiling is
     // satisfying the request rather than failing it.
     wantOutputTokens: opts.maxOutputTokens,
-  });
+  },
+    { conversationId: opts.conversationId, onUsageRow: opts.onUsageRow },
+  );
 }
 
 /**
@@ -389,5 +429,7 @@ export async function streamChat(
     // capability, but no more than this", so a model under the ceiling is
     // satisfying the request rather than failing it.
     wantOutputTokens: opts.maxOutputTokens,
-  });
+  },
+    { conversationId: opts.conversationId, onUsageRow: opts.onUsageRow },
+  );
 }

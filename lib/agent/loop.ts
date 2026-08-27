@@ -31,6 +31,7 @@ import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
 import { composeAnswer } from './compose';
 import { stripAiMarkers } from '@/lib/ai/humanizer';
 import { createApproval, consumeApprovalForExecution, markApprovedByToolAndArgs, ApprovalExecutionError } from '@/lib/approvals/store';
+import { markParseOutcome } from '@/lib/credits';
 import { log } from '@/lib/logger';
 import { buildCachedPrompt } from './prompt-cache';
 import { beginDelegationScope, endDelegationScope, setDelegationContext } from '@/lib/capabilities/delegation';
@@ -477,6 +478,20 @@ function salvageFinalMessage(raw: string): string | null {
  *  the tools had already run and the evidence was already in hand. */
 const MAX_JSON_RETRIES = 2;
 
+/** How much of a contract-breaking reply is echoed back to the model, and kept
+ *  in the persisted transcript, before the nudge.
+ *
+ *  WHY IT IS ECHOED AT ALL. The nudge says "Your last reply was not valid
+ *  JSON" — but that reply was never pushed into `messages`. It was dropped at
+ *  the `continue` below, so the model was being asked to correct something it
+ *  could not see, and the raw text was gone the moment the turn returned. Seven
+ *  real failures were recovered from production transcripts by finding these
+ *  nudges; not one of them had the offending output attached.
+ *
+ *  WHY IT IS CAPPED. A runaway response must not be able to push the transcript
+ *  past the model's window on the one turn that is already going wrong. */
+const RAW_ECHO_CHARS = Number(process.env.AGENT_RAW_ECHO_CHARS) || 2_000;
+
 /** The nudge text for retry n. The second one is deliberately blunter and
  *  narrower than the first: by then the model has already ignored the polite
  *  version, and asking only for the `final` shape gets an answer out of a model
@@ -485,6 +500,40 @@ function jsonNudge(attempt: number): string {
   return attempt <= 1
     ? 'Respond with ONLY one JSON object using the "tool" or "final" shape.'
     : 'Your last reply was not valid JSON, so it could not be used. Reply with ONE JSON object and nothing else: {"action":"final","message":"<your answer to the user>"}. No prose outside it, no code fences.';
+}
+
+/** The shared retry step for a route pass that broke the JSON contract.
+ *
+ *  BOTH runAgent and runAgentStream must call this — their handling of the
+ *  envelope is required to stay identical, the same rule that already governs
+ *  observationFor/narrationFor. It lives here so the two loops cannot drift on
+ *  the one path that exists to diagnose them.
+ *
+ *  Order is load-bearing: the failing reply is pushed as the assistant's own
+ *  turn BEFORE the nudge, so "your last reply was not valid JSON" finally has a
+ *  referent, and so the text survives the turn — `messages` is what
+ *  saveConversation persists.
+ */
+function pushJsonRetry(
+  messages: ChatMessage[],
+  raw: string,
+  attempt: number,
+  ctx: { accountId?: string; step: number; afterTool?: string | null },
+): void {
+  messages.push({ role: 'assistant', content: truncate(raw, RAW_ECHO_CHARS) });
+  // Persisted to app_logs (log.warn, lib/logger.ts). The terminal log.error
+  // further down has never fired once across 34k rows, because it sits behind
+  // BOTH exhausted retries AND failed salvage — so a failure that a retry
+  // rescues was, until now, completely unobservable. This is the line that
+  // makes the recoverable ones countable.
+  log.warn('agent: model output failed JSON contract', {
+    accountId: ctx.accountId,
+    step: ctx.step,
+    attempt,
+    afterTool: ctx.afterTool ?? null,
+    rawPreview: raw.slice(0, 500),
+  });
+  messages.push({ role: 'user', content: jsonNudge(attempt) });
 }
 
 /** Last resort before a turn is declared a failure.
@@ -1218,9 +1267,16 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
   let lastToolName: string | undefined;
   for (let i = 0; i < stepCap; i++) {
     let raw: string;
+    // Set by the router once the ai_usage row for the attempt that ANSWERED has
+    // been written, so this turn can report back whether the text was usable
+    // (markParseOutcome, below). May still be null when we reach the parse —
+    // the usage write is fire-and-forget — which undercounts, never miscounts.
+    let usageRowId: string | null = null;
     try {
       raw = await generateChat({
         system, messages, temperature: 0.2,
+        conversationId: input.conversationId,
+        onUsageRow: (id) => { usageRowId = id; },
         // No fixed maxOutputTokens — see AGENT_ROUTE_CEILING.
         maxOutputCeiling: AGENT_ROUTE_CEILING,
         accountId,
@@ -1242,10 +1298,14 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
     }
 
     const parsed = extractJson(raw);
+    // The ONLY place that knows whether a transport-successful response was
+    // usable. `ok` on the row is already true by now; parse_ok is the column
+    // that separates "text came back" from "text we could act on".
+    if (usageRowId) void markParseOutcome(usageRowId, Boolean(parsed));
     if (!parsed || (parsed.action !== 'tool' && parsed.action !== 'final')) {
       if (jsonRetries < MAX_JSON_RETRIES) {
         jsonRetries++;
-        messages.push({ role: 'user', content: jsonNudge(jsonRetries) });
+        pushJsonRetry(messages, raw, jsonRetries, { accountId, step: i, afterTool: lastToolName });
         continue;
       }
       const salv = salvageFinalMessage(raw);
@@ -1560,9 +1620,16 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
     // trace renders in a burst at the end instead of showing motion.
     emit({ type: 'step_start', text: i === 0 ? 'Thinking through your request…' : 'Working through the next step…' });
     let raw: string;
+    // Set by the router once the ai_usage row for the attempt that ANSWERED has
+    // been written, so this turn can report back whether the text was usable
+    // (markParseOutcome, below). May still be null when we reach the parse —
+    // the usage write is fire-and-forget — which undercounts, never miscounts.
+    let usageRowId: string | null = null;
     try {
       raw = await generateChat({
         system, messages, temperature: 0.2,
+        conversationId: input.conversationId,
+        onUsageRow: (id) => { usageRowId = id; },
         // No fixed maxOutputTokens — see AGENT_ROUTE_CEILING.
         maxOutputCeiling: AGENT_ROUTE_CEILING,
         accountId,
@@ -1585,10 +1652,14 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
     }
 
     const parsed = extractJson(raw);
+    // The ONLY place that knows whether a transport-successful response was
+    // usable. `ok` on the row is already true by now; parse_ok is the column
+    // that separates "text came back" from "text we could act on".
+    if (usageRowId) void markParseOutcome(usageRowId, Boolean(parsed));
     if (!parsed || (parsed.action !== 'tool' && parsed.action !== 'final')) {
       if (jsonRetries < MAX_JSON_RETRIES) {
         jsonRetries++;
-        messages.push({ role: 'user', content: jsonNudge(jsonRetries) });
+        pushJsonRetry(messages, raw, jsonRetries, { accountId, step: i, afterTool: lastToolName });
         continue;
       }
       const salv = salvageFinalMessage(raw);
