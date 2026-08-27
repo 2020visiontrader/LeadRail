@@ -10,14 +10,13 @@ export const dynamic = 'force-dynamic';
 // failures and internal diagnosis, not something a client account should see
 // about itself or (worse) about other tenants.
 //
-// NOT account-scoped, and deliberately left that way rather than patched here:
-// listTickets() reads the whole support_tickets table with no account_id
-// filter, and fileFailure() accepts an accountId that most callers never pass
-// (most failures are not attributable to one tenant). Filtering here on
-// session.accountId would silently hide the account-less rows that are most
-// of the board, and would not be the fix anyway — CONSTRAINTS forbids editing
-// lib/support/*.ts, so a real per-tenant board is a follow-up for whoever owns
-// that file, not this route.
+// Account-scoped via session.accountId: listTickets() requires an accountId
+// and returns that tenant's tickets plus the account-less platform tickets
+// (account_id IS NULL) that are most of the board — see the filter's own
+// comment in lib/support/tickets.ts. `session.role === 'owner'` is per-account,
+// not platform-wide, so passing session.accountId here (rather than nothing,
+// or another tenant's id) is what keeps an owner of account A from seeing
+// account B's tickets.
 async function GET__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
@@ -29,7 +28,7 @@ async function GET__impl(request: NextRequest) {
     const status = sp.get('status') as TicketStatus | null;
     const limitParam = sp.get('limit');
     const limit = limitParam ? Math.min(parseInt(limitParam, 10), 500) : undefined;
-    const tickets = await listTickets({ status: status ?? undefined, limit });
+    const tickets = await listTickets(session.accountId, { status: status ?? undefined, limit });
     // TICKET_COLUMNS travels with every list response rather than the client
     // importing it directly from lib/support/tickets — that module pulls in
     // lib/db (a server-only Supabase client with a service-role key) at

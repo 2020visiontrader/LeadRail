@@ -13,13 +13,21 @@ function guardRole(session: { role: string }) {
 
 // GET /api/support/tickets/:id — one ticket plus its event history, for the
 // board's detail view. Same owner/admin gate as the list route.
+//
+// getTicket is scoped to session.accountId and returns null both for an id
+// that does not exist and for an id belonging to another tenant — the same
+// "unknown ticket" 400 either way. That indistinguishability is deliberate,
+// mirroring the comment on GET /api/agent/conversations/[id]: telling an
+// owner "that ticket exists, you just can't see it" is itself a leak (an
+// existence oracle for ids across every other tenant), so both cases must
+// look identical from here.
 async function GET__impl(request: NextRequest, { params }: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
   const forbidden = guardRole(session);
   if (forbidden) return forbidden;
   try {
-    const result = await getTicket(params.id);
+    const result = await getTicket(params.id, session.accountId);
     if (!result) return badRequest('unknown ticket');
     return NextResponse.json(result);
   } catch (err) {
@@ -56,6 +64,11 @@ async function PATCH__impl(request: NextRequest, { params }: { params: { id: str
       isHuman: true,
       note: typeof body?.note === 'string' ? body.note : undefined,
       resolution: typeof body?.resolution === 'string' ? body.resolution : undefined,
+      // Scopes both the visibility check and the update itself to this
+      // caller's tenant — see moveTicket's comment in lib/support/tickets.ts.
+      // Without it a signed-in owner of account A could move account B's
+      // tickets; session.role === 'owner' is per-account, not platform-wide.
+      accountId: session.accountId,
     });
     return NextResponse.json({ ticket });
   } catch (err: any) {

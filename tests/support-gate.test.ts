@@ -18,7 +18,7 @@ vi.mock('@/lib/db', () => ({
   supabase: {
     from: (table: string) => {
       const chain: any = {
-        select: () => chain, eq: () => chain, order: () => chain, limit: () => chain,
+        select: () => chain, eq: () => chain, or: () => chain, order: () => chain, limit: () => chain,
         // insert must be awaitable AND chainable: recordEvent awaits it
         // directly, while the filing paths call .select().single() on it.
         insert: () => {
@@ -30,7 +30,16 @@ vi.mock('@/lib/db', () => ({
         },
         update: (patch: any) => {
           if (table === 'support_tickets') Object.assign(state.ticket, patch);
-          return { eq: () => ({ select: () => ({ single: async () => ({ data: state.ticket, error: null }) }) }) };
+          // .eq('id', ...) is followed by an optional .or(...) — moveTicket's
+          // scopeUpdate re-applies the account-id filter to the UPDATE itself
+          // (see the comment on moveTicketCore in lib/support/tickets.ts).
+          // This single-ticket mock does not model account scoping at all, so
+          // .or is a no-op chain link here, same as .eq.
+          const afterEq: any = {
+            or: () => afterEq,
+            select: () => ({ single: async () => ({ data: state.ticket, error: null }) }),
+          };
+          return { eq: () => afterEq };
         },
         maybeSingle: async () => ({ data: table === 'support_tickets' ? state.ticket : null, error: null }),
         then: (r: any) => Promise.resolve({ data: [], error: null }).then(r),
@@ -46,17 +55,17 @@ beforeEach(() => { state.ticket = { id: 't1', status: 'proposed', title: 'x' }; 
 
 describe('what an agent may not do', () => {
   it('refuses to let an agent accept a proposed fix', async () => {
-    await expect(moveTicket({ id: 't1', to: 'accepted', actor: 'agent', isHuman: false }))
+    await expect(moveTicket({ id: 't1', to: 'accepted', actor: 'agent', isHuman: false, accountId: 'acct-1' }))
       .rejects.toThrow(/decision for a person/i);
   });
 
   it('refuses to let an agent skip straight to resolved', async () => {
-    await expect(moveTicket({ id: 't1', to: 'resolved', actor: 'agent', isHuman: false }))
+    await expect(moveTicket({ id: 't1', to: 'resolved', actor: 'agent', isHuman: false, accountId: 'acct-1' }))
       .rejects.toThrow(/cannot move/i);
   });
 
   it('refuses to let an agent ship a fix by moving it to verifying', async () => {
-    await expect(moveTicket({ id: 't1', to: 'verifying', actor: 'agent', isHuman: false }))
+    await expect(moveTicket({ id: 't1', to: 'verifying', actor: 'agent', isHuman: false, accountId: 'acct-1' }))
       .rejects.toThrow(/cannot move/i);
   });
 });
@@ -64,32 +73,32 @@ describe('what an agent may not do', () => {
 describe('what an agent may do', () => {
   it('diagnoses a triaged ticket', async () => {
     state.ticket.status = 'triage';
-    const r = await moveTicket({ id: 't1', to: 'diagnosed', actor: 'agent', isHuman: false });
+    const r = await moveTicket({ id: 't1', to: 'diagnosed', actor: 'agent', isHuman: false, accountId: 'acct-1' });
     expect(r.status).toBe('diagnosed');
   });
 
   it('closes something that turned out to be expected behaviour', async () => {
     state.ticket.status = 'triage';
-    const r = await moveTicket({ id: 't1', to: 'wont_fix', actor: 'agent', isHuman: false });
+    const r = await moveTicket({ id: 't1', to: 'wont_fix', actor: 'agent', isHuman: false, accountId: 'acct-1' });
     expect(r.status).toBe('wont_fix');
   });
 
   it('reopens a fix that did not hold — closing is unsafe, reopening is not', async () => {
     state.ticket.status = 'verifying';
-    const r = await moveTicket({ id: 't1', to: 'triage', actor: 'agent', isHuman: false });
+    const r = await moveTicket({ id: 't1', to: 'triage', actor: 'agent', isHuman: false, accountId: 'acct-1' });
     expect(r.status).toBe('triage');
   });
 });
 
 describe('what a person may do', () => {
   it('accepts the proposal the agent could not', async () => {
-    const r = await moveTicket({ id: 't1', to: 'accepted', actor: 'sam@example.com', isHuman: true });
+    const r = await moveTicket({ id: 't1', to: 'accepted', actor: 'sam@example.com', isHuman: true, accountId: 'acct-1' });
     expect(r.status).toBe('accepted');
   });
 
   it('stamps the verification clock on entry to verifying', async () => {
     state.ticket.status = 'accepted';
-    const r = await moveTicket({ id: 't1', to: 'verifying', actor: 'sam@example.com', isHuman: true });
+    const r = await moveTicket({ id: 't1', to: 'verifying', actor: 'sam@example.com', isHuman: true, accountId: 'acct-1' });
     // Without this the verifier has no "since when", and silence before the fix
     // would count as evidence the fix worked.
     expect(r.fix_deployed_at).toBeTruthy();

@@ -184,7 +184,46 @@ export async function fileReport(input: {
   return { ticketId: data.id };
 }
 
-export async function listTickets(opts?: { status?: TicketStatus; limit?: number }): Promise<Ticket[]> {
+/**
+ * List tickets visible to ONE account: tickets filed for that account, plus
+ * platform tickets (`account_id IS NULL`) that are not attributable to any
+ * single tenant and must stay visible to every admin — most production
+ * failures land there. Same shape as the account_id-OR-null filter in
+ * lib/content/store.ts / lib/skills/store.ts / app/api/logs/route.ts, applied
+ * INSIDE the query rather than after the fetch, per the house pattern (see
+ * listAttachments in lib/documents/attachments.ts, loadConversation in
+ * lib/agent/memory.ts).
+ *
+ * `accountId` is REQUIRED, not optional/defaulted. This used to be an
+ * optional filter that no caller actually passed, which meant every read went
+ * unscoped: `session.role === 'owner'` is per-account, not platform-wide, so
+ * an owner of account A saw every tenant's tickets. Requiring the parameter
+ * turns a missed call site into a compile error instead of a silent leak. The
+ * one caller that legitimately needs every tenant's tickets — the triage
+ * background job, which runs on a schedule with no session — uses
+ * listTicketsSystemWide below instead of a default value on this function.
+ */
+export async function listTickets(accountId: string, opts?: { status?: TicketStatus; limit?: number }): Promise<Ticket[]> {
+  if (!dbReady()) return [];
+  let q = supabase.from('support_tickets').select('*')
+    .or(`account_id.eq.${accountId},account_id.is.null`);
+  if (opts?.status) q = q.eq('status', opts.status);
+  const { data, error } = await q
+    .order('last_seen', { ascending: false })
+    .limit(opts?.limit ?? 200);
+  if (error) throw error;
+  return (data || []) as Ticket[];
+}
+
+/**
+ * Every ticket on the platform, across every tenant. NOT the default and not
+ * reachable by omitting an argument — see listTickets above. This exists
+ * solely for the triage background job (lib/support/triage.ts), which has no
+ * session and no single account to scope to: its job is to work every open
+ * ticket regardless of who filed it. Any other caller wanting "everything"
+ * should be treated as a bug, not accommodated here.
+ */
+export async function listTicketsSystemWide(opts?: { status?: TicketStatus; limit?: number }): Promise<Ticket[]> {
   if (!dbReady()) return [];
   let q = supabase.from('support_tickets').select('*');
   if (opts?.status) q = q.eq('status', opts.status);
@@ -195,7 +234,32 @@ export async function listTickets(opts?: { status?: TicketStatus; limit?: number
   return (data || []) as Ticket[];
 }
 
-export async function getTicket(id: string): Promise<{ ticket: Ticket; events: any[] } | null> {
+/**
+ * One ticket plus its event history, scoped to `accountId` the same way
+ * listTickets is. The filter is inside the SELECT, not a check performed
+ * after fetching by id — an id belonging to another tenant must come back
+ * exactly like an id that does not exist at all (null), never a distinct
+ * "forbidden" outcome. That is what keeps this from being an existence
+ * oracle for ids you cannot see — same requirement as the comments on
+ * app/api/agent/conversations/[id]/route.ts.
+ */
+export async function getTicket(id: string, accountId: string): Promise<{ ticket: Ticket; events: any[] } | null> {
+  if (!dbReady()) return null;
+  const { data } = await supabase.from('support_tickets').select('*')
+    .eq('id', id)
+    .or(`account_id.eq.${accountId},account_id.is.null`)
+    .maybeSingle();
+  if (!data) return null;
+  const { data: events } = await supabase
+    .from('support_ticket_events').select('*').eq('ticket_id', id).order('created_at', { ascending: false }).limit(50);
+  return { ticket: data as Ticket, events: events || [] };
+}
+
+/** Unscoped counterpart to getTicket, for the same reason
+ *  listTicketsSystemWide exists — the triage background job diagnoses and
+ *  proposes fixes for tickets across every tenant and has no accountId of
+ *  its own to scope to. */
+export async function getTicketSystemWide(id: string): Promise<{ ticket: Ticket; events: any[] } | null> {
   if (!dbReady()) return null;
   const { data } = await supabase.from('support_tickets').select('*').eq('id', id).maybeSingle();
   if (!data) return null;
@@ -205,23 +269,25 @@ export async function getTicket(id: string): Promise<{ ticket: Ticket; events: a
 }
 
 /**
- * Move a ticket, enforcing who is allowed to move it where.
+ * Move a ticket, enforcing who is allowed to move it where AND enforcing that
+ * the caller can see the ticket at all.
  *
  * `actor` is not decoration. It decides whether the transition is permitted at
  * all, and it is written to the audit trail, so "who decided this was fine?"
  * stays answerable months later.
+ *
+ * Shared by moveTicket and moveTicketSystemWide below — `current` is fetched
+ * by whichever getTicket variant the caller already used to establish
+ * visibility, and `scopeUpdate` re-applies that same scope to the UPDATE
+ * itself (defense in depth: even though `current` already proved visibility,
+ * the write is scoped too, matching deleteConversation's account_id filter in
+ * lib/agent/memory.ts — "in the query, never applied after the fetch").
  */
-export async function moveTicket(input: {
-  id: string;
-  to: TicketStatus;
-  actor: string;
-  /** True only for a real signed-in person. The agent path passes false and is
-   *  held to AGENT_ALLOWED. */
-  isHuman: boolean;
-  note?: string;
-  resolution?: string;
-}): Promise<Ticket> {
-  const current = await getTicket(input.id);
+async function moveTicketCore(
+  input: { id: string; to: TicketStatus; actor: string; isHuman: boolean; note?: string; resolution?: string },
+  current: { ticket: Ticket; events: any[] } | null,
+  scopeUpdate: (q: any) => any,
+): Promise<Ticket> {
   if (!current) throw new Error('No such ticket.');
   const from = current.ticket.status;
 
@@ -243,12 +309,55 @@ export async function moveTicket(input: {
   // verifier measures against actually starts.
   if (input.to === 'verifying') patch.fix_deployed_at = new Date().toISOString();
 
-  const { data, error } = await supabase
-    .from('support_tickets').update(patch).eq('id', input.id).select('*').single();
+  const { data, error } = await scopeUpdate(
+    supabase.from('support_tickets').update(patch).eq('id', input.id),
+  ).select('*').single();
   if (error) throw error;
 
   await recordEvent(input.id, 'status', input.actor, input.note, from, input.to);
   return data as Ticket;
+}
+
+/**
+ * Move a ticket, scoped to `accountId` exactly like getTicket. A ticket
+ * belonging to another tenant must behave identically to an unknown id —
+ * `getTicket` returns null for both, so both fail with the same "No such
+ * ticket." rather than one leaking a distinct "yes it exists, but you can't
+ * touch it" signal (no existence oracle — see getTicket's comment).
+ */
+export async function moveTicket(input: {
+  id: string;
+  to: TicketStatus;
+  actor: string;
+  /** True only for a real signed-in person. The agent path passes false and is
+   *  held to AGENT_ALLOWED. */
+  isHuman: boolean;
+  note?: string;
+  resolution?: string;
+  accountId: string;
+}): Promise<Ticket> {
+  const current = await getTicket(input.id, input.accountId);
+  return moveTicketCore(input, current, (q) =>
+    q.or(`account_id.eq.${input.accountId},account_id.is.null`));
+}
+
+/**
+ * Unscoped counterpart to moveTicket, for the triage background job only
+ * (lib/support/triage.ts) — same reason listTicketsSystemWide and
+ * getTicketSystemWide exist: no session, no single account to scope to,
+ * genuinely platform-wide work. Always the agent path: a background job is
+ * never a signed-in human, so `isHuman` is not a parameter here — it is
+ * fixed to false rather than left for a caller to set wrong.
+ */
+export async function moveTicketSystemWide(input: {
+  id: string;
+  to: TicketStatus;
+  actor: string;
+  note?: string;
+  resolution?: string;
+}): Promise<Ticket> {
+  const current = await getTicketSystemWide(input.id);
+  return moveTicketCore({ ...input, isHuman: false }, current, (q) => q);
 }
 
 /** Attach an assessment without moving the card. Kept separate from moveTicket

@@ -39,7 +39,18 @@
 
 import { supabase, dbReady } from '@/lib/db';
 import { generateChat } from '@/lib/ai/router';
-import { fileFailure, getTicket, attachAssessment, moveTicket, listTickets } from './tickets';
+import {
+  fileFailure, attachAssessment,
+  // This whole module is the triage BACKGROUND JOB (see the file banner
+  // above): it runs on a schedule with no session and no single account to
+  // scope to, and its purpose is to triage every open failure across the
+  // whole platform, not one tenant's. That is a genuinely different thing
+  // from a signed-in owner reading their own account's tickets, so it uses
+  // the explicit System*Wide functions rather than a fabricated accountId or
+  // a permissive default — see the comments on listTicketsSystemWide,
+  // getTicketSystemWide and moveTicketSystemWide in ./tickets.
+  getTicketSystemWide, moveTicketSystemWide, listTicketsSystemWide,
+} from './tickets';
 
 /** Statuses worth filing. 401/403/404 are excluded by default: on a public
  *  surface they are mostly the app correctly refusing something, and a board
@@ -143,7 +154,10 @@ const DIAGNOSE_SYSTEM = [
 /** The diagnostician. triage → diagnosed, or straight to wont_fix when the
  *  system was behaving correctly all along. */
 export async function diagnoseTicket(ticketId: string, accountId?: string): Promise<{ ok: boolean; note: string }> {
-  const found = await getTicket(ticketId);
+  // Unscoped read: this is the platform job diagnosing a platform failure,
+  // not a user reading another tenant's data. `accountId` here (used below
+  // for generateChat's billing/routing) is unrelated to ticket visibility.
+  const found = await getTicketSystemWide(ticketId);
   if (!found) return { ok: false, note: 'No such ticket.' };
   const t = found.ticket;
 
@@ -184,8 +198,8 @@ export async function diagnoseTicket(ticketId: string, accountId?: string): Prom
     // between a board that stays readable and one that drowns in its own
     // correct behaviour.
     const to = p.fixability === 'expected' ? 'wont_fix' : 'diagnosed';
-    await moveTicket({
-      id: ticketId, to, actor: 'agent', isHuman: false,
+    await moveTicketSystemWide({
+      id: ticketId, to, actor: 'agent',
       note: p.fixability === 'expected' ? 'Diagnosed as expected behaviour, not a fault.' : undefined,
       resolution: p.fixability === 'expected' ? String(p.diagnosis || '').slice(0, 500) : undefined,
     });
@@ -222,7 +236,9 @@ const PROPOSE_SYSTEM = [
 
 /** The fixer. diagnosed → proposed. Proposes; never applies. */
 export async function proposeFix(ticketId: string, accountId?: string): Promise<{ ok: boolean; note: string }> {
-  const found = await getTicket(ticketId);
+  // Unscoped read — see diagnoseTicket above for why: this job triages
+  // platform failures, not one tenant's data.
+  const found = await getTicketSystemWide(ticketId);
   if (!found) return { ok: false, note: 'No such ticket.' };
   const t = found.ticket;
   if (!t.diagnosis) return { ok: false, note: 'Diagnose it first — a fix proposed without one is a guess.' };
@@ -255,7 +271,7 @@ export async function proposeFix(ticketId: string, accountId?: string): Promise<
       proposedFix: String(p.fix).slice(0, 4000),
       confidence: ['low', 'moderate', 'high'].includes(p.confidence) ? p.confidence : 'low',
     });
-    await moveTicket({ id: ticketId, to: 'proposed', actor: 'agent', isHuman: false });
+    await moveTicketSystemWide({ id: ticketId, to: 'proposed', actor: 'agent' });
     return { ok: true, note: 'A fix is proposed and waiting for a decision.' };
   } catch (e: any) {
     return { ok: false, note: String(e?.message || e).slice(0, 200) };
@@ -278,13 +294,15 @@ export async function runTriageCycle(opts?: { accountId?: string; maxPerStage?: 
   const sweep = await sweepLogs();
 
   let diagnosed = 0;
-  for (const t of (await listTickets({ status: 'triage', limit: cap }))) {
+  // System-wide sweep of the columns an agent owns — see the import comment
+  // above for why this job legitimately reads across every tenant.
+  for (const t of (await listTicketsSystemWide({ status: 'triage', limit: cap }))) {
     const r = await diagnoseTicket(t.id, opts?.accountId);
     if (r.ok) diagnosed++; else notes.push(`${t.title}: ${r.note}`);
   }
 
   let proposed = 0;
-  for (const t of (await listTickets({ status: 'diagnosed', limit: cap }))) {
+  for (const t of (await listTicketsSystemWide({ status: 'diagnosed', limit: cap }))) {
     // External and expected causes get no proposal — there is nothing for us
     // to change, and inventing one anyway is how a board fills with work that
     // cannot be done.

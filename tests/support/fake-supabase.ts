@@ -46,6 +46,12 @@ class Query implements PromiseLike<{ data: any; error: any }> {
   private payload: any = null;
   private rowMode: 'one' | 'maybe' | null = null;
   private orderBy: { col: string; asc: boolean }[] = [];
+  // One .or(...) call's clauses, ANDed with `filters` but OR'd against each
+  // other — models PostgREST's `.or('a.eq.1,b.is.null')`. Only `eq` and
+  // `is.null` are parsed because that is the entire vocabulary the account-id
+  // scoping filter (lib/support/tickets.ts and its siblings) actually uses;
+  // anything else is a bug in the caller, not something to silently accept.
+  private orFilters: { col: string; op: string; val: string }[] | null = null;
 
   constructor(private table: FakeTable, private tableName: string, private onWrite?: () => void) {}
 
@@ -53,6 +59,13 @@ class Query implements PromiseLike<{ data: any; error: any }> {
   insert(rows: any) { this.op = 'insert'; this.payload = Array.isArray(rows) ? rows : [rows]; return this; }
   update(patch: any) { this.op = 'update'; this.payload = patch; return this; }
   eq(col: string, val: any) { this.filters.push([col, val]); return this; }
+  or(filterStr: string) {
+    this.orFilters = filterStr.split(',').map((clause) => {
+      const [col, op, ...rest] = clause.split('.');
+      return { col, op, val: rest.join('.') };
+    });
+    return this;
+  }
   order(col: string, opts?: { ascending?: boolean }) {
     this.orderBy.push({ col, asc: opts?.ascending !== false }); return this;
   }
@@ -60,7 +73,14 @@ class Query implements PromiseLike<{ data: any; error: any }> {
   maybeSingle() { this.rowMode = 'maybe'; return this; }
   single() { this.rowMode = 'one'; return this; }
 
-  private matches(row: any) { return this.filters.every(([c, v]) => row[c] === v); }
+  private matches(row: any) {
+    if (!this.filters.every(([c, v]) => row[c] === v)) return false;
+    if (!this.orFilters) return true;
+    return this.orFilters.some(({ col, op, val }) => {
+      if (op === 'is') return val === 'null' ? row[col] === null || row[col] === undefined : row[col] === val;
+      return row[col] === val; // 'eq' — string comparison, matching how ids/account ids are compared here
+    });
+  }
 
   private run(): { data: any; error: any } {
     let out: any[];
