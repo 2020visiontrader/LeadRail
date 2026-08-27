@@ -22,7 +22,6 @@
 // human reads later, and the content of what someone attached or asked is
 // not something a failure report needs to carry to be actionable.
 
-import { fileFailure } from '@/lib/support/tickets';
 import { log } from '@/lib/logger';
 
 export interface StreamFailureReport {
@@ -51,6 +50,21 @@ export interface StreamFailureReport {
  */
 export async function reportStreamFailure(input: StreamFailureReport): Promise<void> {
   try {
+    // LAZY IMPORT, ON PURPOSE. This is a failure path — it only runs after a
+    // turn has already gone wrong. `lib/support/tickets` pulls in the whole
+    // support-ticket module chain (lib/db's supabase client, fingerprinting,
+    // etc.), and a static `import` at the top of this file made every module
+    // graph that reaches app/api/agent/stream/route.ts (which imports this
+    // file unconditionally) eagerly load that chain at module-load time, for
+    // a function most turns never call. That cost ~9s of module load and
+    // pushed tests/regressions.test.ts and tests/parity.test.ts past their
+    // 30s hook timeout. Loading it here, only when a failure is actually
+    // being reported, keeps the common path cheap. Do NOT "tidy" this back
+    // to a static import — the whole point is to defer the cost, not just
+    // relocate it. The dynamic import can itself reject (e.g. if the module
+    // fails to load); that's caught by the same try/catch as fileFailure
+    // itself, so this function still never throws.
+    const { fileFailure } = await import('@/lib/support/tickets');
     await fileFailure({
       accountId: input.accountId,
       shape: {
