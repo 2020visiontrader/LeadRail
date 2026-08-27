@@ -15,6 +15,7 @@
 // the caller resumes the loop with that one approved call. Account scope always
 // comes from the server session — never from the (round-tripped) transcript.
 
+import { BUDGET } from '@/lib/ai/context-budget';
 import { generateChat, textConfigured, type ChatMessage } from '@/lib/ai/router';
 import {
   TOOLS, runTool, toolCatalogForPrompt, toolCatalogStaged, AGENT_STAGED_CATALOG, capabilityFor,
@@ -61,7 +62,7 @@ const AGENT_COMPOSE = process.env.AGENT_COMPOSE !== '0';
 // built on the whole thing. Raised 4x, and bounded by the compose block cap
 // (OBSERVATION_BLOCK_CHARS) which is what ultimately reaches the final answer.
 export const OBSERVATION_CHAR_LIMIT =
-  Number(process.env.AGENT_OBSERVATION_CHARS) || 24_000;
+  Number(process.env.AGENT_OBSERVATION_CHARS) || BUDGET.observationChars;
 
 // Long-chat handoff thresholds (token estimate over the running transcript).
 // Soft → nudge the user to start a fresh chat (context carried over). Hard →
@@ -77,8 +78,8 @@ export const OBSERVATION_CHAR_LIMIT =
 //
 // The headroom left under 200k is deliberate: the system prompt, the tool
 // catalog and the grounding block all sit outside this estimate.
-export const SOFT_TOKEN_LIMIT = Number(process.env.AGENT_SOFT_TOKENS || 120_000);
-export const HARD_TOKEN_LIMIT = Number(process.env.AGENT_HARD_TOKENS || 160_000);
+export const SOFT_TOKEN_LIMIT = Number(process.env.AGENT_SOFT_TOKENS) || BUDGET.softTokens;
+export const HARD_TOKEN_LIMIT = Number(process.env.AGENT_HARD_TOKENS) || BUDGET.hardTokens;
 
 export function compactionLevel(tokenEstimate: number): 'soft' | 'hard' | null {
   if (tokenEstimate >= HARD_TOKEN_LIMIT) return 'hard';

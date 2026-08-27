@@ -38,6 +38,7 @@
 //           extracting nothing is the worst option, because it looks like it
 //           worked.
 
+import { BUDGET } from '@/lib/ai/context-budget';
 import { supabase, dbReady } from '@/lib/db';
 import { putPrivate, signUrl, ensurePrivateBucket } from '@/lib/storage';
 import { extractDeckText, isSupportedDeck } from '@/lib/ai/deck';
@@ -49,10 +50,38 @@ export const ATTACHMENT_URL_TTL = 60 * 60;
  *  server-side, never from a Content-Length header the client controls. */
 export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
-/** How much of one document reaches the model in a turn. A 60k-character
- *  contract would crowd out the conversation it was attached to; the full text
- *  stays on the row and can be searched. */
-export const CONTEXT_CHAR_BUDGET = 12_000;
+/**
+ * How much attached document text reaches the model in a turn.
+ *
+ * THIS USED TO BE A FLAT 12,000 CHARACTERS, and that number defeated the
+ * feature it was capping. Dictation exists precisely so a long spoken brief can
+ * be handed to the assistant in one go; a 34,000-character voice note arriving
+ * as 12,000 means the assistant analyses a third of what was said and never
+ * says which third. Sizing the budget below what the model can actually read is
+ * throwing away the capability that was paid for.
+ *
+ * So the budget is derived from the CONTEXT WINDOW of the tier that answers,
+ * not from a constant. `AGENT_CONTEXT_WINDOW_TOKENS` describes that tier — the
+ * default of 200k matches the primary tier (Zo Ask, a Claude model); set it to
+ * 1_000_000 on a million-token model and attachments scale with it.
+ *
+ * ATTACHMENT_SHARE is why this is a fraction rather than the whole window: the
+ * same prompt also carries the system block, the tool catalog (162
+ * capabilities), the grounding sections and the running transcript, and the
+ * model still needs room to answer. Handing 100% of the window to one document
+ * produces a call that cannot be completed rather than a thorough one.
+ *
+ * ~4 characters per token is the same estimate lib/ai/eligibility.ts uses; the
+ * two must agree, or the router filters on a size the prompt builder did not
+ * respect.
+ */
+export function contextCharBudget(): number {
+  return Number(process.env.ATTACHMENT_CONTEXT_CHARS) || BUDGET.attachmentChars;
+}
+
+/** @deprecated Read `contextCharBudget()` — kept so existing importers and the
+ *  attachment-context test keep compiling. */
+export const CONTEXT_CHAR_BUDGET = contextCharBudget();
 
 const IMAGE_EXT = ['png', 'jpg', 'jpeg', 'gif', 'webp', 'heic'];
 
@@ -245,7 +274,7 @@ export function attachmentContextBlock(attachments: Attachment[]): string {
     '',
   ];
 
-  let budget = CONTEXT_CHAR_BUDGET;
+  let budget = contextCharBudget();
   for (const a of attachments) {
     lines.push(`--- BEGIN DOCUMENT: ${a.filename} (${a.kind}, ${a.bytes} bytes) ---`);
     if (a.status === 'image' || a.status === 'video') {
@@ -262,7 +291,7 @@ export function attachmentContextBlock(attachments: Attachment[]): string {
       lines.push(slice);
       if (slice.length < a.extracted_text.length) {
         // Say so, rather than letting a truncated contract look complete.
-        lines.push(`[…truncated. ${a.extracted_text.length - slice.length} more characters are on file and can be searched.]`);
+        lines.push(`[…truncated here. ${a.extracted_text.length - slice.length} more characters are on file — call readAttachment with filename "${a.filename}" and an offset to read further, or a query to find a passage.]`);
       }
     }
     lines.push(`--- END DOCUMENT: ${a.filename} ---`);

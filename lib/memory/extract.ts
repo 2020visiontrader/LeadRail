@@ -18,6 +18,7 @@
 //    token usage differently, two agent loops each handling a JSON failure
 //    differently.
 
+import { BUDGET } from '@/lib/ai/context-budget';
 import { supabase } from '@/lib/db';
 import { log } from '@/lib/logger';
 import { generateChat } from '@/lib/ai/router';
@@ -34,7 +35,7 @@ const BATCH_SIZE = Number(process.env.MEMORY_EXTRACT_BATCH) || 5;
 const MAX_FACTS_PER_CONVERSATION = 12;
 /** Transcript characters handed to the extractor. The tail matters more than
  *  the head — decisions land at the end of a conversation. */
-const TRANSCRIPT_CHARS = 12_000;
+const TRANSCRIPT_CHARS = BUDGET.extractionChars;
 
 const EXTRACTION_SYSTEM = [
   'You extract durable facts from a CRM/marketing conversation for long-term memory.',
