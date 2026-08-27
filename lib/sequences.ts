@@ -3,6 +3,7 @@ import { sendOutreachEmail, SuppressedError } from '@/lib/outreach';
 import { createActivity } from '@/lib/crm';
 import { normalizeBusinessHours, nextBusinessTime, type BusinessHours } from '@/lib/business-hours';
 import { classifyReply } from '@/lib/reply-classifier';
+import { log } from '@/lib/logger';
 
 // Scheduling jitter (± up to this many ms) so follow-ups don't fire in a
 // detectable burst — cheap deliverability hygiene.
@@ -330,6 +331,63 @@ async function resolveContent(subj: string | null, body: string | null, template
   return { subject, html };
 }
 
+// Staleness floor (BACKLOG.md #3): the tick has never run reliably in
+// production, so a due-but-unprocessed enrollment can sit for a long time
+// before a drain finally picks it up. Sending it then would be a month-stale
+// marketing email landing out of nowhere in a real inbox. An enrollment
+// overdue by more than this many hours is paused instead of sent — a human
+// decides whether to resume or drop it, rather than the drain silently
+// skipping ahead to the next step (which would drop content the sequence's
+// author intended to send) or silently sending stale content (which is the
+// defect this guards against).
+const DEFAULT_STALE_HOURS = 48;
+function staleHoursFloor(): number {
+  const raw = process.env.SEQUENCE_STALE_HOURS;
+  const n = raw != null && raw !== '' ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_STALE_HOURS;
+}
+
+/** Split claimed rows into ones still within the staleness floor and ones past it. */
+function splitStale<T extends { next_run_at: string }>(rows: T[], floorHours: number, now: number): { fresh: T[]; stale: T[] } {
+  const floorMs = floorHours * 3600 * 1000;
+  const fresh: T[] = [];
+  const stale: T[] = [];
+  for (const r of rows) {
+    const overdueMs = now - new Date(r.next_run_at).getTime();
+    (overdueMs > floorMs ? stale : fresh).push(r);
+  }
+  return { fresh, stale };
+}
+
+/**
+ * Pause enrollments that have sat due for longer than the staleness floor,
+ * rather than send them or silently advance past the step. Applied in TS
+ * after rows come back from either the atomic claim RPC or the plain-select
+ * fallback, so the floor holds regardless of which path ran.
+ */
+async function pauseStaleEnrollments(stale: any[], floorHours: number, now: number): Promise<number> {
+  await Promise.all(
+    stale.map(async (enr) => {
+      const overdueHours = Math.round((now - new Date(enr.next_run_at).getTime()) / 3600000);
+      const reason = `paused: stale (overdue ${overdueHours}h, floor ${floorHours}h)`;
+      log.warn('sequence enrollment paused: stale', {
+        enrollmentId: enr.id,
+        sequenceId: enr.sequence_id,
+        overdueHours,
+        floorHours,
+        nextRunAt: enr.next_run_at,
+      });
+      await supabase.from('sequence_enrollments').update({
+        status: 'paused',
+        last_event: reason,
+        claim_id: null,
+        locked_until: null,
+      }).eq('id', enr.id);
+    }),
+  );
+  return stale.length;
+}
+
 /**
  * Drain due enrollments. Called from POST /api/hermes/tick (single cron).
  * Runs the current step by type, then advances current_step + next_run_at, or
@@ -360,7 +418,17 @@ export async function processDueEnrollments(limit = 25) {
   } else {
     due = claimed.data || [];
   }
-  if (!due.length) return { processed: 0, considered: 0, stopped, capped: 0 };
+  if (!due.length) return { processed: 0, considered: 0, stopped, capped: 0, stale: 0 };
+
+  // 2b) Staleness floor. A due row that has sat unprocessed for longer than the
+  //     floor is paused, not sent — see pauseStaleEnrollments above. Applied
+  //     here so it covers both the RPC claim path and the fallback select.
+  const considered = due.length;
+  const floorHours = staleHoursFloor();
+  const { fresh, stale } = splitStale(due, floorHours, Date.now());
+  const staleCount = stale.length ? await pauseStaleEnrollments(stale, floorHours, Date.now()) : 0;
+  due = fresh;
+  if (!due.length) return { processed: 0, considered, stopped, capped: 0, stale: staleCount };
 
   // 3) Resolve contacts (for per-account cap) and precompute per-account
   //    sent-today counts + caps once per tick.
@@ -540,5 +608,5 @@ export async function processDueEnrollments(limit = 25) {
       }
     }
   }
-  return { processed, considered: due.length, stopped, capped };
+  return { processed, considered, stopped, capped, stale: staleCount };
 }
