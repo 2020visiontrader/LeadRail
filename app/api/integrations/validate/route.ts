@@ -242,6 +242,15 @@ async function POST__impl(request: NextRequest) {
     return NextResponse.json(response);
 
   } catch (error: any) {
+    // storeSocialCredential throws { code: 'vault_not_configured' } when
+    // AI_VAULT_KEY is unset — a deployment problem, not a bad token. errorResponse()
+    // below drops both the message and the code and reports a generic 500, which
+    // reads to the user exactly like a rejected token and invites them to retype a
+    // correct one forever. Surface it as its own response so the UI (which only
+    // ever sees `data.error` — see lib/api.ts apiSend) can tell the two apart.
+    if (error?.code === 'vault_not_configured') {
+      return NextResponse.json({ error: 'vault_not_configured' }, { status: 503 });
+    }
     if (error.message?.includes('HTTP 4')) {
       return NextResponse.json({ error: `Token rejected by provider: ${error.message}` }, { status: 401 });
     }

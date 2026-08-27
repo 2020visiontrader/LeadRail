@@ -12,7 +12,7 @@ import ScheduledTasks from '@/components/ScheduledTasks';
 import Automations from '@/components/Automations';
 import SocialAutomations from '@/components/SocialAutomations';
 import Approvals from '@/components/Approvals';
-import { SOCIAL_PROVIDERS } from '@/lib/social/providers';
+import { SOCIAL_PROVIDERS, TOKEN_PROVIDERS, connectedAccountsFor, type TokenProviderSpec } from '@/lib/social/providers';
 import SettingsConsole, { type SettingsGroup } from '@/components/SettingsConsole';
 import { IconConnections, IconOutreach, IconPersonas, IconUsage, IconSequences, IconAdmin, IconPrivacy, IconJourneys, IconCampaigns } from '@/components/icons';
 
@@ -318,6 +318,149 @@ function KnowledgeSources({ connections, onChange }: { connections: Connection[]
   );
 }
 
+// ---- Token-based scheduling & distribution tools ----
+// Buffer and GoHighLevel, as distinct from the OAuth destinations above: the
+// user pastes one long-lived token (the Notion flow in KnowledgeSources is the
+// model) instead of clicking through an OAuth consent screen. The token is
+// validated by /api/integrations/validate and stored through the encrypted
+// vault column (lib/social/credentials.ts) — never `meta`, never echoed back.
+function TokenTools({ connections, onChange }: { connections: Connection[]; onChange: () => void }) {
+  const [openKey, setOpenKey] = useState<string | null>(null);
+  const [tokenValue, setTokenValue] = useState('');
+  const [extraValue, setExtraValue] = useState('');
+  const [busy, setBusy] = useState<string | null>(null);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  function openFor(spec: TokenProviderSpec) {
+    setOpenKey(spec.key);
+    setTokenValue('');
+    setExtraValue('');
+    setMsg(null);
+  }
+
+  async function connect(spec: TokenProviderSpec) {
+    if (!tokenValue.trim()) return;
+    if (spec.extraField && !extraValue.trim()) return;
+    setBusy(spec.key);
+    setMsg(null);
+    try {
+      const body: Record<string, string> = { provider: spec.key, token: tokenValue.trim() };
+      if (spec.extraField) body[spec.extraField.key] = extraValue.trim();
+      const r = await apiSend<{ external_name?: string }>('/api/integrations/validate', 'POST', body);
+      setMsg({ ok: true, text: `${spec.label} connected — ${r.external_name || 'account'}` });
+      // Never render the token back — clear it on success rather than keeping
+      // it around in state.
+      setTokenValue('');
+      setExtraValue('');
+      setOpenKey(null);
+      onChange();
+    } catch (e: any) {
+      const message: string = e?.message || '';
+      if (message === 'vault_not_configured') {
+        setMsg({
+          ok: false,
+          text: `This deployment is missing its encryption configuration, so it can't store any token right now — this isn't a problem with your ${spec.label} token. Ask whoever manages this deployment to set AI_VAULT_KEY, then try again.`,
+        });
+      } else if (message.toLowerCase().includes('rejected') || message.includes('401')) {
+        setMsg({ ok: false, text: `That token was rejected by ${spec.label}. Check you copied it in full and it hasn't expired.` });
+      } else {
+        setMsg({ ok: false, text: message || `Could not connect ${spec.label}` });
+      }
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function disconnect(key: string) {
+    setBusy(key);
+    try {
+      await apiSend('/api/social/disconnect', 'POST', { provider: key });
+      onChange();
+    } catch {
+      /* surfaced on next load */
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Buffer &amp; GoHighLevel</h3>
+        <p className="mt-1 text-sm text-slate-500">
+          An alternate route to the same social accounts above, not a different job: paste one Buffer or
+          GoHighLevel token to reach the channels you&apos;ve already connected there, instead of authorizing each
+          platform through the cards above one at a time. Reach for this if you already schedule through Buffer or
+          run social from GoHighLevel; use the cards above if you don&apos;t, or you want LeadRail&apos;s own
+          comment and insights tools on a connected page.
+        </p>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2">
+        {TOKEN_PROVIDERS.map((s) => {
+          const acct = connectedAccountsFor(connections, s.key)[0];
+          const isOpen = openKey === s.key;
+          return (
+            <div key={s.key} className="flex flex-col gap-3 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="flex items-start justify-between">
+                <div className="flex items-center gap-3">
+                  <span className="flex h-9 w-9 items-center justify-center rounded-lg text-sm font-bold text-white" style={{ backgroundColor: s.brand }}>
+                    {s.label.charAt(0)}
+                  </span>
+                  <div><h3 className="font-semibold">{s.label}</h3><p className="text-sm text-slate-500">{s.desc}</p></div>
+                </div>
+                <Badge tone={acct ? 'green' : 'gray'}>{acct ? 'connected' : 'off'}</Badge>
+              </div>
+
+              {acct && (
+                <ul className="space-y-1.5">
+                  <ConnectionRow c={acct} busy={busy === s.key} onDisconnect={() => disconnect(s.key)} />
+                </ul>
+              )}
+
+              {isOpen ? (
+                <div className="space-y-2 rounded-lg bg-slate-50 p-3">
+                  <p className="text-xs text-slate-600">{s.helpText}</p>
+                  <Input
+                    type="password"
+                    label={`${s.label} token`}
+                    placeholder="Paste token"
+                    value={tokenValue}
+                    onChange={(e) => setTokenValue((e.target as HTMLInputElement).value)}
+                  />
+                  {s.extraField && (
+                    <Input
+                      label={s.extraField.label}
+                      placeholder={s.extraField.placeholder}
+                      value={extraValue}
+                      onChange={(e) => setExtraValue((e.target as HTMLInputElement).value)}
+                    />
+                  )}
+                  <div className="flex gap-2">
+                    <Button
+                      onClick={() => connect(s)}
+                      loading={busy === s.key}
+                      disabled={!tokenValue.trim() || (Boolean(s.extraField) && !extraValue.trim())}
+                      className="flex-1 text-xs"
+                    >
+                      Connect
+                    </Button>
+                    <Button variant="ghost" onClick={() => { setOpenKey(null); setMsg(null); }} className="text-xs">Cancel</Button>
+                  </div>
+                </div>
+              ) : (
+                <Button variant={acct ? 'ghost' : 'secondary'} className="w-full text-xs" onClick={() => openFor(s)}>
+                  {acct ? `Reconnect ${s.label}` : `Connect ${s.label}`}
+                </Button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      {msg && <p className={`text-xs ${msg.ok ? 'text-[var(--text-positive)]' : 'text-[var(--text-negative)]'}`}>{msg.text}</p>}
+    </div>
+  );
+}
+
 // ---- Social connections ----
 // Users connect THEIR OWN accounts via OAuth into LeadRail's apps. No app IDs,
 // no env vars, no backend service names — that's the Postiz/Buffer model.
@@ -404,6 +547,10 @@ function ClientConnections({ connections, onChange }: { connections: Connection[
 
       <div className="border-t border-slate-200 pt-6">
         <KnowledgeSources connections={connections} onChange={onChange} />
+      </div>
+
+      <div className="border-t border-slate-200 pt-6">
+        <TokenTools connections={connections} onChange={onChange} />
       </div>
     </div>
   );
