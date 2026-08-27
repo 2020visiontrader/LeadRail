@@ -607,6 +607,10 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
           // Only sent when a message is being sent — resuming an approval must
           // never be re-interpreted as a planning turn.
           ...(planMode && payload.message ? { planOnly: true } : {}),
+          // The ids the message MEANS. A file dropped into a new chat was
+          // uploaded before that chat had an id, so it landed unbound and no
+          // prompt could ever see it. Naming them here is what binds them.
+          ...(attachments.length ? { attachmentIds: attachments.map((a) => a.id) } : {}),
         }),
       });
       if (from) pendingFromRef.current = undefined;
@@ -798,9 +802,23 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
   // conversationId is treated as a NEW conversation, so firing two would split
   // one thread into two. Waiting for the id preserves the thread while keeping
   // the composer live.
-  const canSend = input.trim().length > 0;
+  // An attachment ALONE is a valid request. "Here, look at this" is a complete
+  // instruction, and requiring text to go with it meant a dropped file could
+  // not be acted on at all without inventing a sentence to accompany it.
+  const canSend = input.trim().length > 0 || attachments.length > 0;
   const send = () => {
     const m = input.trim();
+    // An attachment with no words is still a request. Rather than inventing an
+    // instruction the user did not give, say plainly what happened and let the
+    // assistant decide whether it can act or should ask — which is what a
+    // person handed a document without a brief would do.
+    if (!m && attachments.length) {
+      const names = attachments.map((a) => a.filename).join(', ');
+      const stand = `I've attached ${attachments.length === 1 ? 'a file' : `${attachments.length} files`} (${names}) with no instruction. Read it, tell me what it is and what you can see in it, then either say what you'd do with it or ask me what I want.`;
+      onFirstMessage?.(names);
+      run({ message: stand });
+      return;
+    }
     if (!m) return;
     setInput('');
     onFirstMessage?.(m);

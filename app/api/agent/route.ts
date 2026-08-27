@@ -1,3 +1,4 @@
+import { bindAttachments } from '@/lib/documents/attachments';
 import { withApi, requireSession, badRequest } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/db';
@@ -77,7 +78,18 @@ async function POST__impl(request: NextRequest) {
   const carryover = fromId ? await loadCarryover(fromId, session.accountId) : null;
 
   // Full grounding block — platform + venture + account snapshot + durable memory.
-  const agentContext = await loadAgentContext({ accountId: session.accountId, brandId, brandName, query: message, conversationId });
+  // BEFORE the context is assembled, or the prompt is built without them.
+  // A file dropped into a new chat uploaded before the chat had an id, so it
+  // landed with conversation_id NULL and listAttachments could never see it.
+  // The client names the ids it meant; this claims the unbound ones.
+  const attachmentIds: string[] = Array.isArray(body?.attachmentIds)
+    ? body.attachmentIds.filter((x: unknown) => typeof x === 'string').slice(0, 20)
+    : [];
+  if (attachmentIds.length && conversationId) {
+    await bindAttachments(session.accountId, attachmentIds, conversationId).catch(() => 0);
+  }
+
+  const agentContext = await loadAgentContext({ accountId: session.accountId, brandId, brandName, query: message, conversationId, attachmentIds });
 
   // Optional persona routing (migration 024). Both fields are optional/absent
   // for every existing caller, so this is a no-op unless the client opts in.

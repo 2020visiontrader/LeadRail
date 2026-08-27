@@ -316,3 +316,81 @@ export function attachmentContextBlock(attachments: Attachment[]): string {
   }
   return lines.join('\n');
 }
+
+/**
+ * Bind uploaded attachments to the conversation that is sending them.
+ *
+ * WHY THIS IS NEEDED AT SEND TIME RATHER THAN UPLOAD TIME. A file dropped into
+ * a NEW chat is uploaded before that chat has an id — the id only exists once
+ * the first turn has streamed back and the server has saved a conversation. So
+ * the upload wrote `conversation_id = NULL`, and listAttachments, which filters
+ * by conversation, could never see it again. The file uploaded perfectly and
+ * was invisible to every prompt: "take a look at the doc attached" against a
+ * document the assistant was never shown.
+ *
+ * The message now carries the ids it means, and this binds them. Only rows that
+ * are still unbound are claimed — a scoped update, so one conversation can
+ * never adopt another's attachment by guessing an id.
+ */
+export async function bindAttachments(
+  accountId: string,
+  attachmentIds: string[],
+  conversationId: string,
+): Promise<number> {
+  const ids = (attachmentIds || []).filter((id) => /^[0-9a-f-]{36}$/i.test(id));
+  if (!ids.length || !conversationId) return 0;
+  try {
+    const { data, error } = await supabase
+      .from('assistant_attachments')
+      .update({ conversation_id: conversationId })
+      .eq('account_id', accountId)
+      .in('id', ids)
+      .is('conversation_id', null)   // never steal a bound one
+      .select('id');
+    if (error || !Array.isArray(data)) return 0;
+    return data.length;
+  } catch {
+    return 0;
+  }
+}
+
+/** Attachments uploaded but not yet bound to any conversation — the ones a
+ *  turn is about to claim. Used when a message arrives with no explicit ids
+ *  (an older client), so a dropped file is not silently lost. */
+export async function unboundAttachments(accountId: string): Promise<Attachment[]> {
+  if (!dbReady()) return [];
+  try {
+    const { data } = await supabase
+      .from('assistant_attachments')
+      .select('*')
+      .eq('account_id', accountId)
+      .is('conversation_id', null)
+      .gte('created_at', new Date(Date.now() - 60 * 60 * 1000).toISOString())
+      .order('created_at', { ascending: false })
+      .limit(10);
+    return (data || []) as Attachment[];
+  } catch {
+    return [];
+  }
+}
+
+/** Load attachments by explicit id, regardless of what they are bound to.
+ *
+ *  THE FIRST-TURN CASE. On a brand new chat there is no conversation id yet
+ *  when the first message is sent, so bindAttachments has nothing to bind to
+ *  and a conversation-scoped read finds nothing. The client named the ids it
+ *  meant; this reads exactly those. Scoped by account, so an id from another
+ *  tenant returns nothing rather than their file. */
+export async function attachmentsByIds(accountId: string, ids: string[]): Promise<Attachment[]> {
+  const clean = (ids || []).filter((id) => /^[0-9a-f-]{36}$/i.test(id)).slice(0, 20);
+  if (!clean.length || !dbReady()) return [];
+  try {
+    const { data } = await supabase
+      .from('assistant_attachments').select('*')
+      .eq('account_id', accountId).in('id', clean)
+      .order('created_at', { ascending: false });
+    return (data || []) as Attachment[];
+  } catch {
+    return [];
+  }
+}

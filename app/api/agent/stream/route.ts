@@ -1,3 +1,4 @@
+import { bindAttachments } from '@/lib/documents/attachments';
 import { requireSession, badRequest } from '@/lib/http';
 import { NextRequest } from 'next/server';
 import { supabase } from '@/lib/db';
@@ -102,6 +103,9 @@ export async function POST(request: NextRequest) {
   // flag, never a model decision: the model must not be able to decide it is
   // allowed to skip the go-ahead.
   const planOnly = body?.planOnly === true;
+  const attachmentIds: string[] = Array.isArray(body?.attachmentIds)
+    ? body.attachmentIds.filter((x: unknown) => typeof x === 'string').slice(0, 20)
+    : [];
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
@@ -143,10 +147,19 @@ export async function POST(request: NextRequest) {
         // not their data. This is also the approve-resume path's context source.
         // These three are independent reads — fetched concurrently now that
         // they're inside the stream, instead of serially blocking the response.
+        // BEFORE the context is assembled, or the prompt is built without them.
+        // A file dropped into a new chat uploaded before the chat had an id, so
+        // it landed with conversation_id NULL and listAttachments could never
+        // see it. The client names the ids it meant; this claims the unbound
+        // ones. Awaited, not raced with loadAgentContext — binding after the
+        // context read would be the same bug one line later.
+        if (attachmentIds.length && conversationId) {
+          await bindAttachments(session.accountId, attachmentIds, conversationId).catch(() => 0);
+        }
         const [transcriptResult, carryover, agentContext] = await Promise.all([
           loadTranscriptResult(conversationId, session.accountId),
           fromId ? loadCarryover(fromId, session.accountId) : Promise.resolve(null),
-          loadAgentContext({ accountId: session.accountId, brandId, brandName, query: message, conversationId }),
+          loadAgentContext({ accountId: session.accountId, brandId, brandName, query: message, conversationId, attachmentIds }),
         ]);
         // WHAT THE PERSON SAID IS DURABLE FROM HERE, whatever happens next.
         //

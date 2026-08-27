@@ -13,7 +13,7 @@
 import { supabase, getConnections } from '@/lib/db';
 import { LIVE_SOCIALS } from '@/lib/social/providers';
 import { loadVentureContext } from '@/lib/ai/venture-context';
-import { listAttachments, attachmentContextBlock } from '@/lib/documents/attachments';
+import { listAttachments, attachmentContextBlock, attachmentsByIds } from '@/lib/documents/attachments';
 import { recallMemoryDigest } from './memory';
 import { resolveSubjects } from '@/lib/memory/resolve';
 import { loadSubjectMemory } from '@/lib/memory/project';
@@ -40,6 +40,9 @@ export interface AgentContextInput {
   accountId: string;
   brandId?: string;
   brandName?: string;
+  /** Ids the message explicitly names. Read directly, because on the FIRST turn
+   *  of a new chat there is no conversation to have bound them to yet. */
+  attachmentIds?: string[];
   /** Current user message — enables semantic (meaning-based) memory recall.
    *  Omitted → durable memory falls back to recency-only (unchanged). */
   query?: string;
@@ -241,9 +244,22 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
   })();
 
   const attachmentSection = (async () => {
-    if (!input.conversationId) return null;
+    if (!input.conversationId && !input.attachmentIds?.length) return null;
     try {
-      const files = await listAttachments(accountId, input.conversationId);
+      // Union of what this conversation has (plus the account library) and what
+      // the message explicitly named. The second half is what makes a file
+      // dropped into a NEW chat visible on its very first turn — there is no
+      // conversation id to have bound it to yet.
+      const [byConversation, byId] = await Promise.all([
+        input.conversationId ? listAttachments(accountId, input.conversationId) : Promise.resolve([]),
+        input.attachmentIds?.length ? attachmentsByIds(accountId, input.attachmentIds) : Promise.resolve([]),
+      ]);
+      const seen = new Set<string>();
+      const files = [...byId, ...byConversation].filter((f: any) => {
+        if (seen.has(f.id)) return false;
+        seen.add(f.id);
+        return true;
+      });
       return files.length ? attachmentContextBlock(files) : null;
     } catch { return null; /* a failed read must not blank the whole context */ }
   })();
