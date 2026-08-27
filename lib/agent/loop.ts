@@ -508,6 +508,26 @@ function salvageFinalMessage(raw: string): string | null {
  *  push the route pass into writing prose, and the user saw them all die as
  *  "I couldn't complete that request. Please rephrase and try again." — after
  *  the tools had already run and the evidence was already in hand. */
+/**
+ * Wall-clock ceiling on one turn.
+ *
+ * MAX_STEPS bounds how many times a turn may loop; nothing bounded how LONG.
+ * Those are different limits, and only one of them was set. Observed in
+ * production: turns of 6, 9 and 18 minutes, each burning its step budget on
+ * retries while the person who asked sat watching a spinner. Eighteen minutes
+ * is not a slow answer, it is an abandoned one.
+ *
+ * Checked BEFORE each step rather than after, so the deadline caps the wait
+ * instead of being noticed once it has already been exceeded. Passing it does
+ * not fail the turn: the loop breaks into the forced-final it already has, so
+ * the user gets an answer built from whatever was actually gathered. A partial
+ * answer now beats a complete one nobody waited for.
+ *
+ * Sized above the slow-but-real case — the primary tier can legitimately take
+ * ~2 minutes on a large prompt, and a turn may take several such steps.
+ */
+const TURN_DEADLINE_MS = Number(process.env.AGENT_TURN_DEADLINE_MS) || 5 * 60 * 1000;
+
 const MAX_JSON_RETRIES = 2;
 
 /** How much of a contract-breaking reply is echoed back to the model, and kept
@@ -1420,7 +1440,17 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
   // Which tool produced the most recent observation, so a model-call failure can
   // report what it was reacting to (failures after a tool differ from cold ones).
   let lastToolName: string | undefined;
+  const turnDeadline = Date.now() + TURN_DEADLINE_MS;
   for (let i = 0; i < stepCap; i++) {
+    // Before the step, not after: the point is to bound the wait, not to
+    // notice afterwards that it was exceeded. Breaking lands in the forced
+    // final below, so the turn answers from what it has.
+    if (Date.now() > turnDeadline) {
+      log.warn('agent: turn deadline reached, answering with what it has', {
+        accountId, step: i, deadlineMs: TURN_DEADLINE_MS, afterTool: lastToolName ?? null,
+      });
+      break;
+    }
     let raw: string;
     // Set by the router once the ai_usage row for the attempt that ANSWERED has
     // been written, so this turn can report back whether the text was usable
@@ -1913,7 +1943,17 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
   // Which tool produced the most recent observation, so a model-call failure can
   // report what it was reacting to (failures after a tool differ from cold ones).
   let lastToolName: string | undefined;
+  const turnDeadline = Date.now() + TURN_DEADLINE_MS;
   for (let i = 0; i < stepCap; i++) {
+    // Before the step, not after: the point is to bound the wait, not to
+    // notice afterwards that it was exceeded. Breaking lands in the forced
+    // final below, so the turn answers from what it has.
+    if (Date.now() > turnDeadline) {
+      log.warn('agent: turn deadline reached, answering with what it has', {
+        accountId, step: i, deadlineMs: TURN_DEADLINE_MS, afterTool: lastToolName ?? null,
+      });
+      break;
+    }
     // Live "working" step BEFORE the blocking model call (from main): without
     // it the first event of a step only lands after generateChat returns, so the
     // trace renders in a burst at the end instead of showing motion.

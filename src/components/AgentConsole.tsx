@@ -2,6 +2,9 @@
 import { useRef, useState, useEffect } from 'react';
 import Button from '@/components/Button';
 import Markdown from '@/components/Markdown';
+import {
+  consumeEventStream, finalizeStream, closeOpenSteps as closeSteps,
+} from '@/lib/agent/stream-outcome';
 import { apiGet, apiSend } from '@/lib/api';
 import VoiceInput from '@/components/composer/VoiceInput';
 import Attachments, { useAttachmentUpload, type UploadedAttachment } from '@/components/composer/Attachments';
@@ -539,15 +542,10 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
       return next;
     });
 
-  /** Mark every unfinished step as finished. `failed` marks tool steps as
-   *  having failed rather than merely stopped, so the trace does not show a
-   *  green tick on a call that never returned. */
+  /** Thin wrapper over the shared implementation, which lives in
+   *  lib/agent/stream-outcome so it can be tested against real SSE bytes. */
   function closeOpenSteps(t: any, failed = false) {
-    for (const step of t.steps || []) {
-      if (step.kind === 'error' || step.done) continue;
-      step.done = true;
-      if (failed && step.kind === 'tool') step.ok = false;
-    }
+    closeSteps(t.steps || [], failed);
   }
 
   const turnSeq = useRef(0);
@@ -627,32 +625,33 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     if (!res.body) { patchAssistant((t) => t.steps.push({ kind: 'error', text: 'No response stream.' })); endRun(turnId); return; }
 
     const reader = res.body.getReader();
-    try {
-    const decoder = new TextDecoder();
-    let buf = '';
-    // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buf += decoder.decode(value, { stream: true });
-      const frames = buf.split('\n\n');
-      buf = frames.pop() || '';
-      for (const frame of frames) {
-        const line = frame.split('\n').find((l) => l.startsWith('data: '));
-        if (!line) continue;
-        const data = line.slice(6);
-        if (data === '[DONE]') continue;
-        let e: any;
-        try { e = JSON.parse(data); } catch { continue; }
-        handleEvent(e, turnId);
-      }
-      }
-    } catch (e: any) {
-      // Same rule: an abort mid-stream is the user stopping, not a fault.
-      if (e?.name !== 'AbortError') {
-        patchAssistant((t) => { closeOpenSteps(t, true); t.steps.push({ kind: 'error', text: 'The connection dropped mid-answer.' }); });
-      }
-    }
+
+    // The read loop and the end-of-stream decision both live in
+    // lib/agent/stream-outcome, so tests drive real SSE bytes through the exact
+    // code this runs. See the notes there.
+    const { sawTerminal, transportFailed } = await consumeEventStream({
+      reader,
+      onEvent: (e) => handleEvent(e, turnId),
+      isAborted: () => aborter.signal.aborted,
+      onTransportError: () => {
+        patchAssistant((t) => {
+          closeOpenSteps(t, true);
+          t.steps.push({ kind: 'error', text: 'The connection dropped mid-answer.' });
+        });
+      },
+    });
+
+    // A stream that ends cleanly WITHOUT a terminal event is still a failure —
+    // that is what left steps spinning for hours on turns that had already
+    // errored server-side. `transportFailed` is excluded because it has just
+    // been reported above; an abort, because that is the user pressing Stop.
+    patchAssistant((t) => {
+      finalizeStream({
+        steps: t.steps || [],
+        sawTerminal: sawTerminal || transportFailed,
+        aborted: aborter.signal.aborted,
+      });
+    });
     endRun(turnId);
   }
 
