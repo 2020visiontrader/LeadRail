@@ -357,7 +357,7 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
       patchTurn(id, (t: any) => {
         t.status = 'error';
         closeOpenSteps(t, true);
-        t.steps.push({ kind: 'error', text: 'Stopped. The server may still finish this turn and save it.' });
+        t.steps.push({ kind: 'error', text: 'Stopped. The server will finish this turn and save it — the answer will be here when you come back to this chat.' });
       });
     }
     abortersRef.current.clear();

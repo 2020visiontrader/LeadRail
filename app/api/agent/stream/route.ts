@@ -6,6 +6,7 @@ import { runAgentStream, agentConfigured, generateCarryover, type AgentEvent } f
 import { loadAgentContext } from '@/lib/agent/context';
 import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts } from '@/lib/agent/memory';
 import { parseMentions } from '@/lib/agent/personas';
+import { createStreamGuard } from '@/lib/agent/stream-guard';
 import type { ChatMessage } from '@/lib/ai/router';
 import { log } from '@/lib/logger';
 
@@ -110,7 +111,13 @@ export async function POST(request: NextRequest) {
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
-      const send = (e: any) => controller.enqueue(encoder.encode(`data: ${JSON.stringify(e)}\n\n`));
+      // Guards every write against the client having already disconnected —
+      // see lib/agent/stream-guard.ts. Once the client is gone `send` becomes
+      // a silent no-op rather than throwing, so the run below keeps going and
+      // reaches `saveConversation` regardless of whether anyone is still
+      // listening.
+      const guard = createStreamGuard({ controller, encoder, streamId, log });
+      const send = guard.send;
       // Fire the instant the connection opens — before any DB work starts.
       // Loading transcript/carryover/agentContext below used to run BEFORE the
       // Response (and therefore the stream) was even returned, so the client's
@@ -180,7 +187,7 @@ export async function POST(request: NextRequest) {
             message: 'Could not load this conversation just now, so nothing was run — your history is safe and untouched. Try again in a moment.',
           });
           terminalSent = true;
-          controller.close();
+          guard.close();
           closeStream('transcript unreadable');
           return;
         }
@@ -262,8 +269,8 @@ export async function POST(request: NextRequest) {
               .catch(() => { /* best-effort */ });
           }
         }
-        controller.enqueue(encoder.encode('data: [DONE]\n\n'));
-        controller.close();
+        guard.sendRaw('data: [DONE]\n\n');
+        guard.close();
         closeStream('done');
       }
     },
