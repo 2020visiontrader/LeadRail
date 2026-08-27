@@ -16,6 +16,7 @@
 // comes from the server session — never from the (round-tripped) transcript.
 
 import { BUDGET } from '@/lib/ai/context-budget';
+import { contextCharBudget } from '@/lib/documents/attachments';
 import { generateChat, textConfigured, type ChatMessage } from '@/lib/ai/router';
 import {
   TOOLS, runTool, toolCatalogForPrompt, toolCatalogStaged, AGENT_STAGED_CATALOG, capabilityFor,
@@ -989,15 +990,96 @@ const MAX_FANOUT_DELEGATES = 3;
 const MAX_FANOUT_STEPS_PER_DELEGATE = 4;
 const MAX_FANOUT_TOTAL_STEPS = MAX_FANOUT_DELEGATES * MAX_FANOUT_STEPS_PER_DELEGATE; // hard ceiling, constraint (2) above
 
-/** Detect a fan-out turn: 2+ @mentioned enabled personas AND an enabled
- *  coordinator configured for the account. Returns null (never throws) for
- *  every other case, so the caller falls back to today's single-persona /
- *  framing-only behavior in resolvePersonaForTurn unchanged. */
+// attachmentContextBlock() (lib/documents/attachments.ts) always OPENS its
+// output with this exact line when there is at least one attachment, and
+// loadAgentContext (lib/agent/context.ts) appends the attachment section LAST
+// — after platform brief, venture, snapshot, memory, plan. So this marker
+// splits agentContext cleanly in two: everything before it is small, static
+// grounding; everything from it to the end is the attached-document text.
+const ATTACHMENT_MARKER = 'ATTACHED DOCUMENTS — the user attached these to this conversation.';
+
+// How much of the attached material a ROUTING decision — "who should work
+// this" — is allowed to see. Deliberately tiny next to contextCharBudget()
+// (which can be hundreds of thousands of characters on a large-window tier):
+// selectPersonasForRequest is keyword/topic matching against a persona's
+// ROLE, not comprehension of the document's substance, so the opening of the
+// attached block (its title, its first paragraph) carries essentially the
+// same routing signal the full 34,000 characters would. Spending a
+// six-figure character budget on a decision that needs a few hundred is
+// exactly the kind of oversized-context risk Defect 4 is about, just at the
+// routing step instead of the delegate step — so it gets the same discipline.
+const ROUTING_DIGEST_CHARS = 1200;
+
+/** Bounded excerpt of the ATTACHED-DOCUMENT portion of agentContext — never
+ *  the static grounding sections, never the whole thing. Empty string when
+ *  nothing is attached (agentContext is populated for reasons that have
+ *  nothing to do with a file — venture/account/memory grounding runs on every
+ *  turn regardless). Exported so a test can pin the boundary directly. */
+export function attachmentDigest(agentContext: string | undefined, maxChars: number): string {
+  if (!agentContext) return '';
+  const idx = agentContext.indexOf(ATTACHMENT_MARKER);
+  if (idx === -1) return '';
+  return agentContext.slice(idx, idx + maxChars);
+}
+
+/** What ONE delegate gets to read out of agentContext, given a fan-out of
+ *  `delegateCount` delegates.
+ *
+ *  DEFECT 4: this used to be `agentContext: input.agentContext` handed to
+ *  every delegate verbatim — a 34,456-character document duplicated N times
+ *  into N concurrent prompts, all in flight together. Oversized, duplicated
+ *  context arriving on every delegate's slowest, most model-call-heavy path
+ *  at once is the prime suspect for the observed failure (the stream route's
+ *  `!terminalSent` fallback — no terminal event at all).
+ *
+ *  FIX: keep the small static grounding sections intact (cheap, and every
+ *  delegate needs the same venture/account grounding an ordinary turn gets),
+ *  but divide the ATTACHED-DOCUMENT allowance across the delegates so the
+ *  attachment text reaching ALL of them COMBINED never exceeds
+ *  contextCharBudget() — the same allowance a single ordinary (non-fanout)
+ *  turn is already permitted to read. Reusing that existing budget helper
+ *  (rather than inventing a second number here, per the task's own
+ *  instruction) is what keeps a fan-out from spending more attachment budget
+ *  in aggregate than one agent ever could. A delegate that genuinely needs
+ *  more than its slice can still call readDocument for the rest — the same
+ *  tool an ordinary turn would reach for on truncation (see the
+ *  "…truncated here" note attachmentContextBlock leaves in the text). */
+export function delegateContext(agentContext: string | undefined, delegateCount: number): string | undefined {
+  if (!agentContext) return undefined;
+  const idx = agentContext.indexOf(ATTACHMENT_MARKER);
+  if (idx === -1) return agentContext; // nothing attached to bound — grounding sections alone are small
+  const head = agentContext.slice(0, idx);
+  const perDelegateDocBudget = Math.max(2_000, Math.floor(contextCharBudget() / Math.max(1, delegateCount)));
+  const doc = agentContext.slice(idx, idx + perDelegateDocBudget);
+  return head + doc;
+}
+
+/** Detect a fan-out turn: 2+ @mentioned enabled personas, OR (when fewer than
+ *  two were named) 2+ personas the ASSISTANT auto-selects for the request —
+ *  in both cases requires an enabled coordinator configured for the account.
+ *  Returns null (never throws) for every other case, so the caller falls back
+ *  to today's single-persona / framing-only behavior in resolvePersonaForTurn
+ *  unchanged.
+ *
+ *  `kind` on the result tells the caller WHICH path fired, because the two
+ *  are handled differently upstream (Defect 3): an explicit "@Ada @Nia" is
+ *  the user naming the team themselves — honour it immediately, same as
+ *  before. An AUTO-selected fan-out is the assistant's own inference, and
+ *  that inference must be informed by what's actually attached, not just the
+ *  cover sentence — hence `contextDigest` (a bounded excerpt of the attached
+ *  material, see attachmentDigest above) being folded into the text
+ *  selectPersonasForRequest scores against, and `emit`, when given,
+ *  announcing that the material was read. That announcement is the visible
+ *  trace line that was missing entirely in the production evidence: the user
+ *  could see "Milo is working on the messaging" but nothing ever said the
+ *  document had been opened first. */
 async function resolveCoordinatorFanout(
   accountId: string,
   personaMentions?: string[],
   input_message?: string,
-): Promise<{ coordinator: PersonaRow; delegates: PersonaRow[] } | null> {
+  contextDigest?: string,
+  emit?: (e: AgentEvent) => void,
+): Promise<{ coordinator: PersonaRow; delegates: PersonaRow[]; kind: 'explicit' | 'auto' } | null> {
   try {
     // Explicit @mentions still win — if someone names the team, honour it.
     // Otherwise the ASSISTANT picks, because the user has no reason to know
@@ -1006,16 +1088,22 @@ async function resolveCoordinatorFanout(
     let matched = personaMentions?.length
       ? await resolveMentionedPersonas(accountId, personaMentions)
       : [];
-    if (matched.length < 2) {
-      const auto = await selectPersonasForRequest(accountId, input_message || '', MAX_FANOUT_DELEGATES);
-      // One match is a specialist question, not a team question — let the normal
-      // single-agent path handle it rather than convening a fan-out of one.
-      if (auto.length >= 2) matched = auto;
+    if (matched.length >= 2) {
+      const coordinator = await getCoordinator(accountId);
+      if (!coordinator) return null;
+      return { coordinator, delegates: matched, kind: 'explicit' };
     }
-    if (matched.length < 2) return null;
+    // Below this point: nothing (or fewer than two) explicit mentions — an
+    // AUTO-selected fan-out, which is the branch Defect 2/3 are about.
+    if (contextDigest) emit?.({ type: 'thought', text: 'Reading the attached material…' });
+    const routingText = contextDigest ? `${input_message || ''}\n\n${contextDigest}` : (input_message || '');
+    const auto = await selectPersonasForRequest(accountId, routingText, MAX_FANOUT_DELEGATES);
+    // One match is a specialist question, not a team question — let the normal
+    // single-agent path handle it rather than convening a fan-out of one.
+    if (auto.length < 2) return null;
     const coordinator = await getCoordinator(accountId);
     if (!coordinator) return null;
-    return { coordinator, delegates: matched };
+    return { coordinator, delegates: auto, kind: 'auto' };
   } catch {
     return null;
   }
@@ -1101,12 +1189,18 @@ async function runFanoutDelegates(
     });
   };
 
+  // Defect 4 — see delegateContext() above: bound what each delegate reads
+  // out of agentContext instead of broadcasting the full attachment blob to
+  // every one of them. Computed once, outside the map, because the division
+  // is over the WHOLE fan-out (delegates.length), not per-delegate.
+  const boundedContext = delegateContext(input.agentContext, delegates.length);
+
   const settled = await Promise.all(delegates.map(async (persona) => {
     try {
       const result = await runAgent({
         accountId,                 // constraint (4) — never a different account
         message: input.message,
-        agentContext: input.agentContext,
+        agentContext: boundedContext,
         personaId: persona.id,
         maxSteps: perDelegate,
         requestedBy: input.requestedBy,
@@ -1338,7 +1432,12 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
   // step in the normal single-persona loop below, never a fresh fan-out —
   // that is what keeps "approve one action" from ever re-triggering N more.
   if (!input.approve && !input.personaId) {
-    const fanout = await resolveCoordinatorFanout(accountId, input.personaMentions, input.message);
+    // Defect 2 — see resolveCoordinatorFanout's comment: an AUTO-selected
+    // fan-out reasons about what's actually attached, not just the sentence
+    // that came with it. No `emit` here — runAgent (unlike runAgentStream)
+    // has no live channel to announce "reading the attached material" on.
+    const digest = attachmentDigest(input.agentContext, ROUTING_DIGEST_CHARS);
+    const fanout = await resolveCoordinatorFanout(accountId, input.personaMentions, input.message, digest);
     if (fanout) return runCoordinatorFanout(accountId, fanout, input);
   }
   const { systemBlock: personaBlock, modelId: personaModelId } = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
@@ -1848,9 +1947,20 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
   // back truthy the other three results are simply discarded for the fanout
   // path below, which is cheap relative to the latency this saves on the
   // common case.
+  // Defect 2/3 — see resolveCoordinatorFanout's comment. `digest` is what lets
+  // an AUTO-selected fan-out actually reason about the attached material
+  // before deciding to delegate, instead of pattern-matching the bare
+  // sentence; `emit` is what puts that reading on the visible trace, which is
+  // exactly what the user could not see in the evidence that opened this fix
+  // (three delegate steps, never a line saying the document was opened). An
+  // EXPLICIT multi-mention ("@Milo @Ezra") never reads this digest at all —
+  // the user named the team, so resolveCoordinatorFanout returns kind:
+  // 'explicit' before ever touching selectPersonasForRequest, unchanged from
+  // before this fix.
+  const digest = attachmentDigest(input.agentContext, ROUTING_DIGEST_CHARS);
   const [fanout, personaResult, allEnabledSkills, externalCaps] = await Promise.all([
     (!input.approve && !input.personaId)
-      ? resolveCoordinatorFanout(accountId, input.personaMentions, input.message)
+      ? resolveCoordinatorFanout(accountId, input.personaMentions, input.message, digest, emit)
       : Promise.resolve(null),
     resolvePersonaForTurn(accountId, input.personaId, input.personaMentions),
     loadEnabledSkillsForAgent(accountId),
