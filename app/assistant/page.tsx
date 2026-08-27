@@ -283,6 +283,7 @@ export default function AssistantPage() {
           <div key={t.key} className={t.key === activeKey ? 'h-full' : 'hidden'} role="tabpanel">
             <AgentConsole
               conversationId={t.conversationId}
+              key={`${t.key}-${t.conversationId ?? 'new'}`}
               onConversationId={(id) => handleConversationId(t.key, id)}
               onFirstMessage={(text) => handleFirstMessage(t.key, text)}
             />

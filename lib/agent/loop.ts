@@ -1906,6 +1906,41 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
     seen.add(sig);
     toolCalls[tool] = (toolCalls[tool] || 0) + 1;
 
+    // readDocument re-read guard (LeadRail attachment re-read loop fix).
+    // A document already hydrated into agentContext must not be re-read merely
+    // because the model asks for the same content again. Only block when the
+    // requested passage is already covered by the hydrated context; a genuinely
+    // different offset/query still runs.
+    if (tool === 'readDocument' && typeof args?.document === 'string' && input.agentContext) {
+      const docRef = args.document.trim();
+      const markerIdx = input.agentContext.indexOf(ATTACHMENT_MARKER);
+      if (markerIdx !== -1) {
+        const material = input.agentContext.slice(markerIdx);
+        const beginMarker = `--- BEGIN DOCUMENT: `;
+        const endMarker = `--- END DOCUMENT: `;
+        const beginIdx = material.toLowerCase().indexOf(beginMarker.toLowerCase());
+        const endIdx = material.toLowerCase().indexOf(endMarker.toLowerCase());
+        const hydrated = beginIdx !== -1 && endIdx !== -1
+          ? material.slice(beginIdx, endIdx)
+          : '';
+        const hydratedLower = hydrated.toLowerCase();
+        const docMentioned = hydratedLower.includes(docRef.toLowerCase());
+        if (docMentioned) {
+          const offset = typeof args.offset === 'number' ? args.offset : 0;
+          const query = typeof args.query === 'string' && args.query.trim() ? args.query.trim().toLowerCase() : '';
+          const covered = query
+            ? hydratedLower.includes(query)
+            : offset < hydrated.length;
+          if (covered) {
+            const obs = `That document is already in your context above. Use what is already shown rather than calling readDocument again. If you need a passage outside the shown excerpt, call readDocument with a different offset or query.`;
+            steps.push({ thought: narrationFor(parsed), tool, args, observation: obs });
+            messages.push(observation(obs));
+            continue;
+          }
+        }
+      }
+    }
+
     const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id, toolCtx);
     const obs = observationFor(tool, args, res, extraCapsByName);
     lastToolName = tool;
@@ -1923,8 +1958,7 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
       ...(personaModelId ? { accountId, modelId: personaModelId } : {}),
     });
     const p = extractJson(raw);
-    if (p?.action === 'final' && p.message) return { status: 'done', message: String(p.message), transcript: messages, steps };
-  } catch { /* fall through */ }
+    if (p?.action === 'final' && p.message) return { status: 'done', message: String(p.message), transcript: messages, steps };  } catch { /* fall through */ }
   return { status: 'error', message: 'I gathered the details but had trouble summarizing. Please ask again a bit more specifically.', transcript: messages, steps };
 }
 
@@ -2426,6 +2460,41 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
     }
     seen.add(sig);
     toolCalls[tool] = (toolCalls[tool] || 0) + 1;
+
+    // readDocument re-read guard (LeadRail attachment re-read loop fix).
+    // A document already hydrated into agentContext must not be re-read merely
+    // because the model asks for the same content again. Only block when the
+    // requested passage is already covered by the hydrated context; a genuinely
+    // different offset/query still runs.
+    if (tool === 'readDocument' && typeof args?.document === 'string' && input.agentContext) {
+      const docRef = args.document.trim();
+      const markerIdx = input.agentContext.indexOf(ATTACHMENT_MARKER);
+      if (markerIdx !== -1) {
+        const material = input.agentContext.slice(markerIdx);
+        const beginMarker = `--- BEGIN DOCUMENT: `;
+        const endMarker = `--- END DOCUMENT: `;
+        const beginIdx = material.toLowerCase().indexOf(beginMarker.toLowerCase());
+        const endIdx = material.toLowerCase().indexOf(endMarker.toLowerCase());
+        const hydrated = beginIdx !== -1 && endIdx !== -1
+          ? material.slice(beginIdx, endIdx)
+          : '';
+        const hydratedLower = hydrated.toLowerCase();
+        const docMentioned = hydratedLower.includes(docRef.toLowerCase());
+        if (docMentioned) {
+          const offset = typeof args.offset === 'number' ? args.offset : 0;
+          const query = typeof args.query === 'string' && args.query.trim() ? args.query.trim().toLowerCase() : '';
+          const covered = query
+            ? hydratedLower.includes(query)
+            : offset < hydrated.length;
+          if (covered) {
+            const obs = `That document is already in your context above. Use what is already shown rather than calling readDocument again. If you need a passage outside the shown excerpt, call readDocument with a different offset or query.`;
+            emit({ type: 'observation', text: obs, ok: true, tool });
+            messages.push(observation(obs));
+            continue;
+          }
+        }
+      }
+    }
 
     emit({ type: 'tool', tool, title: def.title, args });
     const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id, toolCtx);
