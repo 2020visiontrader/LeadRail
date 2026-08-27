@@ -47,6 +47,33 @@ export interface ConversationRow {
  * Create or update a conversation row and return its id. Pass `id` to update an
  * existing conversation; omit it to create a new one. Never throws.
  */
+/**
+ * How much of a stored conversation one write may discard.
+ *
+ * THE GUARD MIGRATION 059 DESIGNED, FINALLY ATTACHED. That migration added
+ * `message_count` so a shrinking write would "match no rows instead of
+ * destroying one" — and the column has been written on every save since and
+ * used as a condition nowhere. The protection existed only in a comment.
+ *
+ * WHY TOKENS, NOT MESSAGE COUNT. Message count is a proxy for "how much is
+ * here" and a poor one: forty one-word replies are worth less than five turns
+ * carrying tool results. Tokens measure the thing actually at risk.
+ *
+ * WHY A RATIO, NOT `<=`. This is the part that inverts if you get it wrong. A
+ * plain "never shrink" rule — on tokens OR on message count — would block
+ * capTranscript (lib/agent/loop.ts), which deliberately drops the oldest
+ * messages once a transcript passes its bound. That is a CORRECT shrink, and
+ * refusing it would be the same class of bug in the opposite direction.
+ *
+ * What separates the two is magnitude, not direction. capTranscript stops the
+ * moment it is back under the bound, so its worst single-turn drop is one
+ * message — at most ~6% of the bound, since an observation is itself capped.
+ * A truncation bug replaces a long history with one message: a drop of ~99%.
+ * Refusing to discard more than half sits with 8x headroom above the first and
+ * nowhere near the second.
+ */
+const SHRINK_TOLERANCE = Number(process.env.CONVERSATION_SHRINK_TOLERANCE) || 2;
+
 export async function saveConversation(args: {
   id?: string;
   accountId: string;
@@ -90,6 +117,11 @@ export async function saveConversation(args: {
       // caller keeps the id it had, and the next turn tries the same row again.
       const { data, error } = await supabase.from('agent_conversations')
         .update(row).eq('id', args.id).eq('account_id', args.accountId)
+        // THE GUARD. Proceed only where what is stored is at most
+        // SHRINK_TOLERANCE x what is being written — i.e. this save is not
+        // throwing away more than half the conversation. A catastrophic
+        // shrink matches no rows and writes nothing.
+        .lte('token_estimate', tokenEstimate * SHRINK_TOLERANCE)
         .select('id').maybeSingle();
       if (error) {
         log.error('saveConversation: update failed, refusing to fork', error, {
@@ -98,9 +130,39 @@ export async function saveConversation(args: {
         return null;
       }
       if (data?.id) return data.id;
-      // No error and no row: the id is genuinely stale or belongs to another
-      // account. Inserting is right here — this is the only path that should
-      // ever reach it with an id in hand.
+
+      // ZERO ROWS IS NOW AMBIGUOUS, AND THE TWO CASES DEMAND OPPOSITE ACTIONS.
+      //
+      // Before the guard, no-error-and-no-row could only mean a stale id, so
+      // falling through to INSERT was right. With the guard it ALSO means the
+      // write was refused — and inserting there would fork the conversation:
+      // the user's chat splits in two, the client is handed the new id, and
+      // the original becomes unreachable. That is the exact "my chat
+      // disappeared" symptom this guard exists to prevent, caused by the
+      // guard. A fix that produces the bug it prevents is worse than no fix.
+      //
+      // So: re-read. The row still being there means the guard rejected us.
+      const { data: existing } = await supabase.from('agent_conversations')
+        .select('id, token_estimate, message_count')
+        .eq('id', args.id).eq('account_id', args.accountId).maybeSingle();
+
+      if (existing) {
+        // Refuse, exactly as the error branch above does. The caller keeps its
+        // id, and the next turn writes against the real row. Loud, because a
+        // rejection means two writers are fighting over one conversation and
+        // one of them just lost a turn's work.
+        log.error('saveConversation: refused a shrinking write', undefined, {
+          conversationId: args.id,
+          storedTokens: (existing as any).token_estimate,
+          writingTokens: tokenEstimate,
+          storedMessages: (existing as any).message_count,
+          writingMessages: args.transcript.length,
+        });
+        return null;
+      }
+
+      // Genuinely stale, or another account's. Inserting is right here — and
+      // now it is the ONLY thing that reaches this line.
       log.warn('saveConversation: id matched no row, creating a new conversation', {
         conversationId: args.id,
       });

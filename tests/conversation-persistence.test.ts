@@ -13,7 +13,9 @@ vi.mock('./embeddings', () => ({ embedPassage: vi.fn(), embedQuery: vi.fn(), toP
  *  terminal call resolves to whatever this builder was given. */
 function builder(result: any) {
   const b: any = {};
-  for (const m of ['select', 'update', 'insert', 'eq', 'order', 'limit', 'in', 'ilike']) {
+  // `lte` is the shrink guard's filter (see saveConversation). Omitting it made
+  // the guarded update throw a TypeError that the outer catch swallowed as null.
+  for (const m of ['select', 'update', 'insert', 'eq', 'lte', 'order', 'limit', 'in', 'ilike']) {
     b[m] = () => b;
   }
   b.maybeSingle = async () => result;
@@ -46,11 +48,19 @@ describe('saveConversation', () => {
   });
 
   it('still inserts when the id genuinely matches no row', async () => {
-    // No error and no row is a stale or foreign id, and a new conversation is
-    // the right answer there. Only the ERROR case must refuse.
+    // No error and no row USED to mean only one thing — a stale or foreign id,
+    // where a new conversation is right. Since the shrink guard was attached it
+    // has two meanings, because a refused write also matches no rows. So the
+    // save now RE-READS to tell them apart, and this mock has to model that
+    // read: `select` returning no row is what "genuinely stale" looks like.
+    //
+    // The distinction matters enormously. If a refused write were mistaken for
+    // a stale id, the insert below would fork the conversation — the precise
+    // failure the guard exists to prevent. See tests/conversation-write-guard.
     const inserts: any[] = [];
     mockFrom.mockImplementation(() => ({
       update: () => builder({ data: null, error: null }),
+      select: () => builder({ data: null, error: null }),   // the row is really gone
       insert: (row: any) => { inserts.push(row); return builder({ data: { id: 'NEW' }, error: null }); },
     }));
     const { saveConversation } = await import('@/lib/agent/memory');
