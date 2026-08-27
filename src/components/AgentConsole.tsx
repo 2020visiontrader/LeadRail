@@ -43,7 +43,14 @@ interface Finding { id: string; claimId: string; severity: 'low' | 'medium' | 'h
 interface Verdict { summary: string; findingIds: string[] }
 
 interface Proposal { tool: string; title: string; args: Record<string, any>; summary: string; approvalId?: string }
-type Turn = { role: 'user' } & { text: string; id?: string } | {
+type Turn = { role: 'user' } & {
+  text: string; id?: string;
+  // Durable evidence of what actually went WITH this message — see the
+  // Defect 1 fix in run(). Rehydrated turns (transcriptToTurns) never carry
+  // this: attachment bindings aren't part of the persisted transcript, only
+  // steps and messages are, so a reload shows the text without it.
+  attachments?: UploadedAttachment[];
+} | {
   role: 'assistant'; text: string; steps: Step[];
   evidence?: Record<string, string>; claims?: Claim[]; findings?: Finding[]; verdict?: Verdict;
 };
@@ -244,6 +251,37 @@ const TOOL_VERB: Record<string, string> = {
   diagnosePipeline: 'Checking the pipeline for stalled deals',
 };
 const verbFor = (tool: string, title: string) => TOOL_VERB[tool] || title || 'Working';
+
+// --- Defect 1 (attachments never cleared after a send) — pure helpers -----
+//
+// Extracted so the state transitions can be pinned by a real unit test: the
+// project has no DOM test environment (vitest runs 'node', not jsdom — see
+// vitest.config.ts — and the suite only collects tests/**/*.test.ts, never
+// .tsx), so a component-render test isn't available here the way it would be
+// elsewhere. Pulling the actual decision logic out into plain functions means
+// the test exercises the REAL code Attachments/run() call, not a
+// reimplementation of it — the same reasoning lib/agent/json-envelope.ts and
+// lib/agent/stream-outcome.ts follow for the same structural reason.
+
+/** What THIS turn is allowed to claim from the composer's attachment list.
+ *  Only a real message-carrying send may claim them — an approve-resume
+ *  (`payload.approve` set, no `payload.message`) must not, or a file sitting
+ *  unsent in the composer while an unrelated approval is confirmed would be
+ *  wrongly swept up into that resume and vanish from the composer with
+ *  nothing ever having been said about it. */
+export function attachmentsForTurn(hasMessage: boolean, current: UploadedAttachment[]): UploadedAttachment[] {
+  return hasMessage ? current : [];
+}
+
+/** What the composer's attachment list becomes once a turn that claimed
+ *  `sent` has been successfully dispatched. Filters by id rather than
+ *  resetting to `[]` outright, so a file dropped into the composer WHILE that
+ *  turn was still on the wire — never part of what it sent — survives. */
+export function clearSentAttachments(current: UploadedAttachment[], sent: UploadedAttachment[]): UploadedAttachment[] {
+  if (!sent.length) return current;
+  const sentIds = new Set(sent.map((a) => a.id));
+  return current.filter((a) => !sentIds.has(a.id));
+}
 
 interface PersonaOption { id: string; name: string; avatar?: string | null }
 
@@ -652,7 +690,22 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     // Queue behind the first run until the thread has an id (see the note on
     // awaitConversationId). No-op for every run after the first.
     const mustWait = !conversationIdRef.current && activeRuns.size > 0;
-    if (payload.message) setTurns((p) => [...p, { id: `${turnId}-u`, role: 'user', text: payload.message }]);
+    // Snapshot NOW, not read fresh later. The composer's attachment list is
+    // live state — someone can drop another file while this turn is still on
+    // the wire — so "what this turn is sending" has to be fixed at the moment
+    // it starts, both for the request body below and for what gets cleared
+    // once it lands and what the user's own bubble displays as having gone
+    // with it. Only a real message-carrying send (never an approve-resume,
+    // which has no payload.message) can claim the composer's attachments —
+    // otherwise a file sitting unsent in the composer while an unrelated
+    // approval is confirmed would wrongly show up as if it had gone with it.
+    const turnAttachments = attachmentsForTurn(Boolean(payload.message), attachments);
+    if (payload.message) {
+      setTurns((p) => [...p, {
+        id: `${turnId}-u`, role: 'user', text: payload.message,
+        ...(turnAttachments.length ? { attachments: turnAttachments } : {}),
+      }]);
+    }
     setTurns((p) => [...p, { id: turnId, role: 'assistant', text: '', steps: [] }]);
 
     // Consumed here, cleared once the request is actually on the wire (below) —
@@ -686,10 +739,29 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
           // The ids the message MEANS. A file dropped into a new chat was
           // uploaded before that chat had an id, so it landed unbound and no
           // prompt could ever see it. Naming them here is what binds them.
-          ...(attachments.length ? { attachmentIds: attachments.map((a) => a.id) } : {}),
+          ...(turnAttachments.length ? { attachmentIds: turnAttachments.map((a) => a.id) } : {}),
         }),
       });
       if (from) pendingFromRef.current = undefined;
+      // DEFECT 1 FIX. This used to never happen at all: setAttachments was
+      // only ever called from the uploader's onChange, so the chip stayed in
+      // the composer after a successful send — which looked like the send had
+      // failed — and the SAME document rode along again on the next message,
+      // silently duplicating it into that prompt too.
+      //
+      // Cleared HERE, once the fetch has actually returned a response, not
+      // earlier and not later: the attachment ids are already on their way to
+      // the server (they were serialised into the body above) the moment
+      // fetch resolves, so keeping them in the composer past this point would
+      // only make them fire again on the next turn. Clearing before the fetch
+      // even settles would drop them from a request that never went out — and
+      // a request that THREW below (caught in the block right after) never
+      // reached the server at all, so it must not clear either; that is why
+      // this line sits inside the try, after the await, before the catch.
+      // Filtered by id rather than reset to [] outright, so a file dropped
+      // into the composer WHILE this request was in flight — not part of what
+      // this turn sent — survives.
+      setAttachments((prev) => clearSentAttachments(prev, turnAttachments));
     } catch (e: any) {
       // A deliberate stop is not a fault, and stopAll has already written the
       // trace line. Saying "connection failed" here would blame the network for
@@ -1039,7 +1111,24 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
         )}
         {turns.map((t, i) =>
           t.role === 'user' ? (
-            <div key={t.id || i} className="flex justify-end">
+            <div key={t.id || i} className="flex flex-col items-end gap-1">
+              {/* What actually went with this message — see the Defect 1 fix.
+                  Rendered on the message it was sent with, not the composer
+                  (which has already cleared it), so there is durable proof of
+                  what was attached instead of the chip just disappearing. */}
+              {!!t.attachments?.length && (
+                <div className="flex max-w-[80%] flex-wrap justify-end gap-1.5">
+                  {t.attachments.map((a: UploadedAttachment) => (
+                    <span
+                      key={a.id}
+                      className="truncate rounded-full border border-[var(--border-default)] bg-[var(--bg-canvas)] px-2.5 py-1 text-xs text-[var(--text-secondary)]"
+                      title={a.filename}
+                    >
+                      📎 {a.filename}
+                    </span>
+                  ))}
+                </div>
+              )}
               <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl bg-[var(--brand)] px-4 py-2 text-sm text-white">{t.text}</div>
             </div>
           ) : (
