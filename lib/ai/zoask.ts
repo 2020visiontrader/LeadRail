@@ -3,6 +3,8 @@
 // endpoint with a BYOK model id; on error/timeout the router falls through to
 // OpenCode Go, then NVIDIA NIM. Admin/account-scoped generation only.
 
+import { parseRetryAfterMs } from './health';
+
 const KEY =
   process.env.ZO_Api_Key ||
   process.env.ZO_API_KEY ||
@@ -81,7 +83,9 @@ async function ask(input: string, modelOverride?: string): Promise<string> {
     const detail = (await res.text().catch(() => '')).slice(0, 300);
     const err: any = new Error(`Zo Ask failed (${res.status})`);
     err.code = res.status === 401 || res.status === 403 ? 'auth' : 'upstream';
+    err.status = res.status;
     err.detail = detail;
+    if (res.status === 429) err.retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'));
     throw err;
   }
   const json = await res.json();

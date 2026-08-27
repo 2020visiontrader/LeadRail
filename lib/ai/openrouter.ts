@@ -9,6 +9,7 @@
 import { readSseDeltas } from './opencode';
 import { reportOpenAIUsage } from './usage';
 import { log } from '@/lib/logger';
+import { parseRetryAfterMs } from './health';
 
 // Default output budget when a caller does not specify one.
 //
@@ -200,6 +201,7 @@ async function completeWith(MODEL: string, messages: OpenAIMessage[], temperatur
     err.code = res.status === 401 || res.status === 403 ? 'auth' : 'upstream';
     err.status = res.status;   // read by shouldTryNextModel() to decide on fallback
     err.detail = detail;
+    if (res.status === 429) err.retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'));
     throw err;
   }
   const json = await res.json();
@@ -285,6 +287,7 @@ async function completeStreamWith(
     err.code = res.status === 401 || res.status === 403 ? 'auth' : 'upstream';
     err.status = res.status;   // read by shouldTryNextModel() to decide on fallback
     err.detail = detail;
+    if (res.status === 429) err.retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'));
     throw err;
   }
   if (!res.body) {

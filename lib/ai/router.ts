@@ -32,7 +32,7 @@
 
 import type { ChatMessage } from './opencode';
 import { withUsageCapture, type TokenUsage } from './usage';
-import { orderByHealth, recordSuccess, recordFailure, healthSnapshot } from './health';
+import { orderByHealth, recordSuccess, recordFailure, healthSnapshot, classifyFailure } from './health';
 import { filterEligible, estimateTokens, type CallSize } from './eligibility';
 import * as opencode from './opencode';
 import { zoAskConfigured, zoAskText, zoAskChat } from './zoask';
@@ -145,6 +145,16 @@ interface Candidate {
    *  ai_models row to point at. */
   resolved?: ResolvedModel;
   run: () => Promise<string>;
+}
+
+/** Provider hint fed to health.ts's classifyFailure/resetPeriodFor, so a
+ *  quota_exhausted candidate parks against ITS provider's reset period (see
+ *  AI_QUOTA_RESET_PERIOD_<PROVIDER>) rather than the global default. A ladder
+ *  tier's id already IS its provider name ('huggingface', 'openrouter', …);
+ *  a registry candidate has no such name, so its provider's `kind` column
+ *  (the closest thing it has) stands in instead. */
+function providerHint(candidate: Candidate): string | undefined {
+  return candidate.resolved?.provider.kind ?? candidate.id;
 }
 
 /** Best-effort usage logging; imported lazily inside the try so a circular
@@ -283,7 +293,7 @@ async function runCandidates(
       return text;
     } catch (err: any) {
       const latencyMs = Date.now() - start;
-      recordFailure(candidate.id);
+      recordFailure(candidate.id, classifyFailure(err, providerHint(candidate)));
       if (accountId) {
         void logUsage({
           accountId, candidate, kind, ok: false,
