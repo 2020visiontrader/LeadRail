@@ -44,7 +44,9 @@ interface Expectation {
 
 // Ordered by migration so a run of failures reads as "everything from N is
 // missing", which is the usual shape when a deploy skipped a batch.
-const EXPECTATIONS: Expectation[] = [
+// Exported (only) so a test can assert specific entries exist without
+// standing up a database — checkSchemaDrift itself still needs one.
+export const EXPECTATIONS: Expectation[] = [
   { table: 'agent_conversations', columns: ['transcript', 'carryover'], migration: '022', breaks: 'the assistant cannot persist or reload a chat' },
   { table: 'skills', columns: ['instructions'], migration: '025', breaks: 'no skill guidance reaches the assistant' },
   { table: 'mcp_clients', columns: ['url', 'transport', 'auth_header_encrypted'], migration: '026', breaks: 'external MCP servers cannot be registered' },
@@ -75,6 +77,25 @@ const EXPECTATIONS: Expectation[] = [
   { table: 'platform_specs', columns: ['aspect_ratios', 'format_family', 'hook_hold_seconds'], migration: '054', breaks: 'the format router cannot tell short-form from static, and safe zones are unknown' },
   { table: 'research_findings', columns: ['pass', 'finding', 'superseded_at'], migration: '055', breaks: 'research is not stored, so every sweep starts from nothing' },
   { table: 'brand_intakes', columns: ['raw_description', 'status'], migration: '055', breaks: 'a brand description cannot be captured, so the front door does not open' },
+  { table: 'support_tickets', columns: ['status', 'fingerprint'], migration: '056', breaks: 'a production failure cannot be filed or deduplicated onto the support board' },
+  { table: 'support_ticket_events', columns: ['kind', 'actor'], migration: '056', breaks: 'ticket moves have no audit trail — who accepted what cannot be answered later' },
+  { table: 'assistant_attachments', columns: ['filename', 'storage_path', 'extracted_text'], migration: '057', breaks: 'a document dropped into a chat cannot be stored or read back' },
+  { table: 'ai_models', columns: ['context_window', 'cost_per_mtok_in', 'cost_per_mtok_out'], migration: '058', breaks: 'the model selector cannot exclude a model too small for the prompt, and cost is not a tiebreak' },
+  { table: 'agent_conversations', columns: ['message_count'], migration: '059', breaks: 'a failed transcript read is no longer refused — a save can silently truncate a conversation to one message' },
+  { table: 'memory_edges', columns: ['subject_type', 'subject_id', 'predicate', 'fact', 'tier', 'invalid_at'], migration: '061', breaks: 'subject-scoped memory cannot be written or recalled — retrieval falls back to whatever agent_memory still has' },
+  { table: 'memory_subjects', columns: ['body', 'version'], migration: '061', breaks: 'the per-subject memory projection a live turn reads cannot be built or safely updated' },
+  { table: 'agent_conversations', columns: ['memory_extracted_at'], migration: '061', breaks: 'the memory extractor has no watermark and re-reads full conversation history on every tick' },
+  { table: 'approval_grants', columns: ['conversation_id', 'tool', 'uses_remaining', 'expires_at'], migration: '062', breaks: 'a standing per-tool approval cannot be granted or consumed — every sensitive call falls back to a fresh approval card' },
+  { table: 'approvals', columns: ['grant_id'], migration: '062', breaks: 'an action executed under a standing grant is not linked back to it, breaking the audit trail for blanket approvals' },
+  { table: 'agent_plans', columns: ['objective', 'status', 'conversation_id', 'max_steps', 'expires_at'], migration: '063', breaks: 'a multi-step agent task cannot be created or resumed — long-running work is force-finalled at the step limit and forgets where it left off' },
+  { table: 'agent_plan_steps', columns: ['seq', 'title', 'status'], migration: '063', breaks: 'a plan has no cursor into its own steps, so resuming it cannot tell what is already done' },
+  { table: 'scheduled_tasks', columns: ['conversation_id'], migration: '063', breaks: 'a scheduled run cannot resume its conversation — every tick starts cold and loses access to grants and memory' },
+  { table: 'video_analyses', columns: ['attachment_id', 'duration_seconds', 'transcript'], migration: '064', breaks: 'an analysed video\'s shots, pace and transcript cannot be stored or retrieved after upload' },
+  { table: 'agent_plans', columns: ['skills', 'persona_id'], migration: '066', breaks: 'a plan\'s skills and persona are not pinned, so guidance and voice can drift between one step and the next' },
+  { table: 'assistant_attachments', columns: ['scope', 'title'], migration: '067', breaks: 'a document cannot be saved to the account-wide library or given a human label, so it stays trapped in the chat it was dropped into' },
+  { table: 'memory_edges', columns: ['promoted_by', 'promoted_at'], migration: '068', breaks: 'a Tier-2 pattern can never be promoted to Tier-1 — the update fails outright rather than promoting without provenance' },
+  { table: 'agent_conversations', columns: ['deleted_at'], migration: '069', breaks: 'a user cannot delete a single chat — the delete path fails' },
+  { table: 'agent_conversations', columns: ['running_since'], migration: '072', breaks: 'a returning user is not shown that their turn is still in progress — the "still working on it" signal is silently lost, not that chat itself breaks' },
 ];
 
 export interface DriftFinding {
