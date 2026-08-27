@@ -16,6 +16,7 @@
 // limit today. Set high enough to mean "as much as the model will give", and
 // override with AI_MAX_OUTPUT_TOKENS.
 import { reportOpenAIUsage, reportUsage } from './usage';
+import { parseRetryAfterMs } from './health';
 
 const DEFAULT_MAX_OUT = Number(process.env.AI_MAX_OUTPUT_TOKENS) || 16000;
 
@@ -99,7 +100,9 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
     const err: any = new Error(`OpenCode failed (${res.status})`);
     // 401/403 from OpenCode covers both bad key and CreditsError (billing).
     err.code = res.status === 401 || res.status === 403 ? 'auth' : 'upstream';
+    err.status = res.status;
     err.detail = detail;
+    if (res.status === 429) err.retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'));
     throw err;
   }
   const json = await res.json();
@@ -265,7 +268,9 @@ async function completeStream(
     const detail = (await res.text().catch(() => '')).slice(0, 300);
     const err: any = new Error(`OpenCode failed (${res.status})`);
     err.code = res.status === 401 || res.status === 403 ? 'auth' : 'upstream';
+    err.status = res.status;
     err.detail = detail;
+    if (res.status === 429) err.retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'));
     throw err;
   }
   if (!res.body) {

@@ -25,6 +25,7 @@ const DEFAULT_MAX_OUT = Number(process.env.AI_MAX_OUTPUT_TOKENS) || 16000;
 
 import { readSseDeltas } from './opencode';
 import { reportOpenAIUsage } from './usage';
+import { parseRetryAfterMs } from './health';
 
 const BASE = 'https://router.huggingface.co/v1';
 const KEY = process.env.HUGGINGFACE_API_KEY || process.env.HF_TOKEN || '';
@@ -120,6 +121,10 @@ function throwForResponse(res: Response, model: string, detail: string): never {
   err.code = res.status === 401 || res.status === 402 || res.status === 403 ? 'auth' : 'upstream';
   err.status = res.status;
   err.detail = detail;
+  // 402 here is the monthly-credit-depleted case documented above — 429 is a
+  // separate, survivable, per-request rate limit. Only the latter carries a
+  // Retry-After the taxonomy in lib/ai/health.ts can honour.
+  if (res.status === 429) err.retryAfterMs = parseRetryAfterMs(res.headers.get('retry-after'));
   throw err;
 }
 
