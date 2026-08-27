@@ -12,8 +12,9 @@
 // Nothing was ever deleted. This is the missing pointer.
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { apiGet } from '@/lib/api';
+import { apiGet, apiSend } from '@/lib/api';
 import Button from '@/components/Button';
+import { useToast } from '@/components/ToastProvider';
 
 interface ConversationRow {
   id: string;
@@ -52,11 +53,13 @@ export default function ChatHistory({
   /** Ids already open, so the list can say so rather than opening a duplicate. */
   openIds: string[];
 }) {
+  const { notify } = useToast();
   const [rows, setRows] = useState<ConversationRow[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
   const [query, setQuery] = useState('');
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   // Guards against an older request landing after a newer one and overwriting
   // it — the classic search race, where typing fast leaves you looking at
   // results for a prefix you already replaced.
@@ -94,6 +97,28 @@ export default function ChatHistory({
     const t = setTimeout(() => load({ q: query, append: false }), 250);
     return () => clearTimeout(t);
   }, [query, open, load]);
+
+  const deleteConversation = useCallback(async (row: ConversationRow, e: React.MouseEvent) => {
+    e.stopPropagation();   // don't also trigger the row's "open this chat" click
+    // Destructive, and this is the exact panel that exists because users
+    // already believed chats were being lost — so the wording has to be
+    // unambiguous about what happens and that it isn't final right away.
+    const ok = window.confirm(
+      `Delete "${row.title || 'Untitled chat'}"? It disappears from your history now and is permanently ` +
+      `removed after 30 days. It cannot be reopened once deleted.`,
+    );
+    if (!ok) return;
+    setDeletingId(row.id);
+    try {
+      await apiSend(`/api/agent/conversations/${row.id}`, 'DELETE');
+      setRows((prev) => prev.filter((r) => r.id !== row.id));
+      notify('Chat deleted', 'success');
+    } catch (e: any) {
+      notify(e?.message || 'Failed to delete chat', 'error');
+    } finally {
+      setDeletingId(null);
+    }
+  }, [notify]);
 
   useEffect(() => {
     if (!open) return;
@@ -140,10 +165,18 @@ export default function ChatHistory({
 
           {rows.map((r) => {
             const isOpen = openIds.includes(r.id);
+            const isDeleting = deletingId === r.id;
             return (
-              <button
+              <div
                 key={r.id}
-                onClick={() => { onOpenConversation(r.id, r.title || 'Chat'); onClose(); }}
+                role="button"
+                tabIndex={0}
+                onClick={() => { if (!isDeleting) { onOpenConversation(r.id, r.title || 'Chat'); onClose(); } }}
+                onKeyDown={(e) => {
+                  if ((e.key === 'Enter' || e.key === ' ') && !isDeleting) {
+                    onOpenConversation(r.id, r.title || 'Chat'); onClose();
+                  }
+                }}
                 className="flex w-full items-center justify-between gap-3 border-b border-[var(--border)] px-4 py-3 text-left hover:bg-[var(--bg-canvas)]"
               >
                 <span className="min-w-0 flex-1 truncate text-sm text-[var(--text-primary)]">
@@ -152,7 +185,17 @@ export default function ChatHistory({
                 <span className="shrink-0 text-xs text-[var(--text-secondary)]">
                   {isOpen ? 'already open' : when(r.updated_at)}
                 </span>
-              </button>
+                <button
+                  type="button"
+                  aria-label={`Delete "${r.title || 'Untitled chat'}"`}
+                  title="Delete chat"
+                  disabled={isDeleting}
+                  onClick={(e) => deleteConversation(r, e)}
+                  className="shrink-0 rounded-md px-2 py-1 text-xs text-[var(--text-secondary)] hover:bg-[var(--status-negative)]/10 hover:text-[var(--status-negative)] disabled:opacity-50"
+                >
+                  {isDeleting ? '…' : 'Delete'}
+                </button>
+              </div>
             );
           })}
 

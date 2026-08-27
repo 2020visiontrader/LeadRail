@@ -1,6 +1,6 @@
 import { withApi, requireSession, errorResponse } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
-import { loadTranscript } from '@/lib/agent/memory';
+import { loadTranscript, deleteConversation } from '@/lib/agent/memory';
 import { pendingApprovalForConversation } from '@/lib/approvals/store';
 
 export const dynamic = 'force-dynamic';
@@ -31,5 +31,30 @@ async function GET__impl(request: NextRequest, { params }: { params: { id: strin
   }
 }
 
+// DELETE /api/agent/conversations/:id — soft-delete (migration 069). The chat
+// disappears from the history list and from the transcript read immediately;
+// hard-purged after the retention window (DEFAULT_GRACE_DAYS, lib/privacy.ts)
+// once the retention scheduler exists to run purge_soft_deleted (see
+// BACKLOG.md §2 — not yet).
+//
+// Account scope is ALWAYS the session's, applied inside deleteConversation's
+// query, never derived from the request. Deleting an id belonging to another
+// account must be indistinguishable from deleting an unknown id — same as the
+// GET handler's comment above: this must not become an existence oracle. So
+// the response never varies with WHY nothing matched (unknown id, someone
+// else's id, or already deleted) — only with whether ok is a boolean the
+// caller can safely ignore either way.
+async function DELETE__impl(request: NextRequest, { params }: { params: { id: string } }) {
+  const { session, error } = await requireSession(request);
+  if (error) return error;
+  try {
+    const deleted = await deleteConversation(session.accountId, params.id);
+    return NextResponse.json({ ok: true, deleted });
+  } catch (e) {
+    return errorResponse(e);
+  }
+}
+
 // --- request logging (auto-wrapped) ---
 export const GET = withApi(GET__impl as any, { route: '/api/agent/conversations/[id]', method: 'GET' });
+export const DELETE = withApi(DELETE__impl as any, { route: '/api/agent/conversations/[id]', method: 'DELETE' });

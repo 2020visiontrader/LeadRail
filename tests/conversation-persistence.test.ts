@@ -13,9 +13,11 @@ vi.mock('./embeddings', () => ({ embedPassage: vi.fn(), embedQuery: vi.fn(), toP
  *  terminal call resolves to whatever this builder was given. */
 function builder(result: any) {
   const b: any = {};
-  // `lte` is the shrink guard's filter (see saveConversation). Omitting it made
-  // the guarded update throw a TypeError that the outer catch swallowed as null.
-  for (const m of ['select', 'update', 'insert', 'eq', 'lte', 'order', 'limit', 'in', 'ilike']) {
+  // `lte` is the shrink guard's filter, `is` is the soft-delete exclusion
+  // filter (migration 069) — see saveConversation/loadConversation/
+  // listConversationsForAccount. Omitting either makes the guarded query
+  // throw a TypeError that the outer catch swallowed as null.
+  for (const m of ['select', 'update', 'insert', 'eq', 'lte', 'is', 'order', 'limit', 'in', 'ilike']) {
     b[m] = () => b;
   }
   b.maybeSingle = async () => result;

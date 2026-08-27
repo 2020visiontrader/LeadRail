@@ -30,6 +30,13 @@ function makeClient() {
         select() { return q; },
         eq(c: string, v: any) { q._f.push((r: Row) => r[c] === v); return q; },
         lte(c: string, v: any) { q._f.push((r: Row) => (r[c] ?? 0) <= v); return q; },
+        // migration 069's soft-delete exclusion filter. Seeded rows here never
+        // carry deleted_at, so `IS NULL` (v === null) always matches them —
+        // this suite is about the shrink guard, not deletion.
+        is(c: string, v: any) {
+          q._f.push((r: Row) => (v === null ? (r[c] === null || r[c] === undefined) : r[c] === v));
+          return q;
+        },
         insert(payload: Row) {
           const created = { id: `conv-${++idSeq}`, ...payload };
           rows.push(created); inserted.push(created);

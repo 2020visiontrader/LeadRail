@@ -18,6 +18,14 @@ vi.mock('@/lib/db', () => ({
         _f: [] as ((r: any) => boolean)[], _limit: Infinity, _desc: true,
         select() { return q; },
         eq(c: string, v: any) { q._f.push((r: any) => r[c] === v); return q; },
+        // migration 069's soft-delete exclusion filter. Seeded rows here never
+        // carry deleted_at, so `IS NULL` (v === null) always matches — this
+        // suite is about paging/search, not deletion (see
+        // tests/conversation-deletion.test.ts for that).
+        is(c: string, v: any) {
+          q._f.push((r: any) => (v === null ? (r[c] === null || r[c] === undefined) : r[c] === v));
+          return q;
+        },
         lt(c: string, v: any) { lastFilters.lt = { c, v }; q._f.push((r: any) => r[c] < v); return q; },
         ilike(c: string, v: any) {
           lastFilters.ilike = { c, v };

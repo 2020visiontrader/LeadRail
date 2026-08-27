@@ -122,6 +122,13 @@ export async function saveConversation(args: {
         // throwing away more than half the conversation. A catastrophic
         // shrink matches no rows and writes nothing.
         .lte('token_estimate', tokenEstimate * SHRINK_TOLERANCE)
+        // A conversation the user deleted must not be resurrected by a save
+        // that was already in flight (migration 069). Excluding deleted rows
+        // here makes this update match zero rows against a deleted
+        // conversation, same as any other "matched no rows" case, and the
+        // re-read below tells THIS one apart from a stale id or a refused
+        // shrink so it does not fall through to the insert path.
+        .is('deleted_at', null)
         .select('id').maybeSingle();
       if (error) {
         log.error('saveConversation: update failed, refusing to fork', error, {
@@ -131,20 +138,40 @@ export async function saveConversation(args: {
       }
       if (data?.id) return data.id;
 
-      // ZERO ROWS IS NOW AMBIGUOUS, AND THE TWO CASES DEMAND OPPOSITE ACTIONS.
+      // ZERO ROWS IS NOW AMBIGUOUS, AND THE CASES DEMAND DIFFERENT ACTIONS.
       //
       // Before the guard, no-error-and-no-row could only mean a stale id, so
-      // falling through to INSERT was right. With the guard it ALSO means the
-      // write was refused — and inserting there would fork the conversation:
-      // the user's chat splits in two, the client is handed the new id, and
-      // the original becomes unreachable. That is the exact "my chat
-      // disappeared" symptom this guard exists to prevent, caused by the
+      // falling through to INSERT was right. With the shrink guard it can ALSO
+      // mean the write was refused — and inserting there would fork the
+      // conversation: the user's chat splits in two, the client is handed the
+      // new id, and the original becomes unreachable. That is the exact "my
+      // chat disappeared" symptom this guard exists to prevent, caused by the
       // guard. A fix that produces the bug it prevents is worse than no fix.
       //
-      // So: re-read. The row still being there means the guard rejected us.
+      // Migration 069 adds a THIRD case: the row is gone from this query only
+      // because it was soft-deleted. Inserting there would be its own kind of
+      // resurrection — the deleted content reappears, silently, under a new
+      // id, in the user's chat list, moments after they deleted it. So the
+      // re-read below is unfiltered on deleted_at: it must see a deleted row
+      // in order to refuse the insert for it, same refusal as the shrink case.
       const { data: existing } = await supabase.from('agent_conversations')
-        .select('id, token_estimate, message_count')
+        .select('id, token_estimate, message_count, deleted_at')
         .eq('id', args.id).eq('account_id', args.accountId).maybeSingle();
+
+      if (existing && (existing as any).deleted_at) {
+        // The conversation was deleted after this turn's read and before its
+        // write landed. Deleted means gone: do not write the new content back
+        // onto the deleted row (that would silently undelete it) and do not
+        // insert it as a fresh conversation either (that would silently
+        // resurrect the same content under a new id, defeating the deletion
+        // just as surely). The turn's reply is lost from persistence, same as
+        // it would be for any other resource a user just deleted out from
+        // under an in-flight write.
+        log.warn('saveConversation: refused a write to a deleted conversation', {
+          conversationId: args.id,
+        });
+        return null;
+      }
 
       if (existing) {
         // Refuse, exactly as the error branch above does. The caller keeps its
@@ -192,7 +219,12 @@ export async function saveConversation(args: {
  *  and a row belonging to another account still returns null. */
 export async function loadConversation(id: string, accountId: string): Promise<ConversationRow | null> {
   const { data, error } = await supabase.from('agent_conversations')
-    .select('*').eq('id', id).eq('account_id', accountId).maybeSingle();
+    .select('*').eq('id', id).eq('account_id', accountId)
+    // Soft-deleted (migration 069): excluded from every read, same as
+    // deleted_at IS NULL on contacts/companies/deals/brands. A deleted
+    // conversation reads exactly like an unknown one — no existence oracle.
+    .is('deleted_at', null)
+    .maybeSingle();
   if (error) {
     const err: any = new Error('Could not read the conversation');
     err.cause = error;
@@ -300,6 +332,9 @@ export async function listConversationsForAccount(
     let q = supabase.from('agent_conversations')
       .select('id, title, updated_at, token_estimate')
       .eq('account_id', accountId)
+      // Soft-deleted (migration 069): excluded from the list immediately,
+      // same as deleted_at IS NULL on contacts/companies/deals/brands.
+      .is('deleted_at', null)
       .order('updated_at', { ascending: false })
       // One extra row is the page-end signal: if it comes back, there is more.
       // Cheaper and more honest than a COUNT, which would be a second query
@@ -318,6 +353,29 @@ export async function listConversationsForAccount(
     };
   } catch {
     return { conversations: [], nextCursor: null };
+  }
+}
+
+/** Soft-delete one conversation (migration 069). Disappears from the list and
+ *  from the transcript read immediately; hard-purged by purge_soft_deleted
+ *  after DEFAULT_GRACE_DAYS (lib/privacy.ts), same shape as
+ *  contacts/companies/deals/brands.
+ *
+ *  Returns whether a row was actually soft-deleted — false for an unknown id,
+ *  an id belonging to another account, AND an id already deleted, which are
+ *  indistinguishable to the caller by design (no existence oracle: the
+ *  account_id filter is in the query, never applied after the fetch, and
+ *  "already gone" reads the same as "never yours"). */
+export async function deleteConversation(accountId: string, id: string): Promise<boolean> {
+  if (!id) return false;
+  try {
+    const { data } = await supabase.from('agent_conversations')
+      .update({ deleted_at: new Date().toISOString() })
+      .eq('id', id).eq('account_id', accountId).is('deleted_at', null)
+      .select('id');
+    return Array.isArray(data) && data.length > 0;
+  } catch {
+    return false;
   }
 }
 
