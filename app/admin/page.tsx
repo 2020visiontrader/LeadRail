@@ -1,6 +1,5 @@
 'use client';
 import { useEffect, useState } from 'react';
-import Link from 'next/link';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import PlatformBackend from '@/components/PlatformBackend';
 import Diagnostics from '@/components/Diagnostics';
@@ -9,24 +8,41 @@ import AiUsage from '@/components/AiUsage';
 import McpClients from '@/components/McpClients';
 import ActivityFeed from '@/components/ActivityFeed';
 import Skills from '@/components/Skills';
+import LogsPanel from '@/components/admin/LogsPanel';
 import SettingsConsole, { type SettingsGroup } from '@/components/SettingsConsole';
 import { IconPlatform, IconActivities, IconLogs, IconModels, IconSkills, IconUsage, IconConnections } from '@/components/icons';
 
+// Every tab id the console can select — used to validate an incoming `?tab=`
+// query param (e.g. from the /logs redirect) so an unknown or absent value
+// falls back to the default tab instead of rendering an empty console.
+const TAB_IDS = ['backend', 'diagnostics', 'activity', 'logs', 'models', 'skills', 'usage', 'mcp'] as const;
+const DEFAULT_TAB = 'backend';
+
 // Owner Admin portal — the one place platform-ops surfaces live: infra/service
-// keys (Platform backend), the live request feed (Live activity), and a link
-// into the full filterable Logs page. Client accounts never reach this route;
-// on a non-owner it renders the same "owners only" notice the Logs page uses.
+// keys (Platform backend), the live request feed (Live activity), and the full
+// filterable Logs tab (formerly its own /logs route with no guard of its own;
+// it now inherits this page's gate). Client accounts never reach this route;
+// on a non-owner it renders the same "owners only" notice Logs used to show.
 export default function AdminPage() {
   const [isOwner, setIsOwner] = useState<boolean | null>(null);
-  const [active, setActive] = useState('backend');
+  const [active, setActive] = useState(DEFAULT_TAB);
   // The OAuth callback lands back here with a result in the query string —
   // it cannot render its own page, so this is where the user finds out what
   // happened. Cleared from the URL once read so a refresh does not repeat it.
   const [oauthMsg, setOauthMsg] = useState<{ ok: boolean; text: string } | null>(null);
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
+    // `?tab=` preselects a tab (used by the retired /logs route's redirect).
+    // An unknown or absent value is left alone so `active` keeps its default
+    // rather than the console rendering nothing.
+    const tab = q.get('tab');
+    if (tab && (TAB_IDS as readonly string[]).includes(tab)) setActive(tab);
+
     const r = q.get('mcp_oauth');
-    if (!r) return;
+    if (!r) {
+      if (tab) window.history.replaceState({}, '', '/admin');
+      return;
+    }
     const detail = q.get('detail');
     const server = q.get('server');
     const MAP: Record<string, { ok: boolean; text: string }> = {
@@ -68,6 +84,7 @@ export default function AdminPage() {
         { id: 'backend', label: 'Backend', icon: <IconPlatform /> },
         { id: 'diagnostics', label: 'Diagnostics', icon: <IconActivities /> },
         { id: 'activity', label: 'Live activity', icon: <IconLogs /> },
+        { id: 'logs', label: 'Logs', icon: <IconLogs /> },
       ],
     },
     {
@@ -86,6 +103,7 @@ export default function AdminPage() {
     backend: { title: 'Backend', description: 'Which service keys and infrastructure this deployment has configured.' },
     diagnostics: { title: 'Diagnostics', description: 'What is reachable right now, and what is failing.' },
     activity: { title: 'Live activity', description: 'The system feed as it happens. Full history is in Logs.' },
+    logs: { title: 'Logs', description: 'Every API action, with errors and latency. Auto-refreshes every 15s.' },
     models: {
       title: 'Providers & models',
       description: 'The AI providers this platform routes through and the ladder it falls back down. Not visible to client accounts.',
@@ -118,18 +136,20 @@ export default function AdminPage() {
         description={meta.description}
         actions={
           active === 'activity' ? (
-            <Link
-              href="/logs"
+            <button
+              type="button"
+              onClick={() => setActive('logs')}
               className="rounded-md border border-[var(--border-default)] px-3 py-1.5 text-[13px] transition hover:bg-[var(--bg-raised)]"
             >
               Full logs →
-            </Link>
+            </button>
           ) : undefined
         }
       >
         {active === 'backend' && <PlatformBackend />}
         {active === 'diagnostics' && <Diagnostics />}
         {active === 'activity' && <div className="h-[560px]"><ActivityFeed /></div>}
+        {active === 'logs' && <LogsPanel />}
         {active === 'models' && <ModelsProviders />}
         {/* Moved here from /settings. A skill's instructions are spliced into
             the assistant's system prompt, above the user's own message — that

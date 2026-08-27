@@ -7,7 +7,7 @@ import {
   IconDashboard, IconAssistant, IconLeads, IconEnrichment, IconCompanies, IconDeals,
   IconSegments, IconActivities, IconInbox, IconOutreach, IconSequences, IconJourneys,
   IconTemplates, IconForms, IconContent, IconPipeline, IconCampaigns, IconAnalytics,
-  IconAmbassador, IconSettings, IconAdmin, IconLogs,
+  IconAmbassador, IconSettings, IconAdmin,
 } from '@/components/icons';
 
 // GROUPED NAVIGATION.
@@ -21,8 +21,9 @@ import {
 // The order is the order of the work: you look at the state of things, you
 // build the list, you reach out, you make the material, you read the result.
 //
-// Settings/Admin/Logs live OUTSIDE the groups, pinned to the bottom rail —
-// they are not a job, they are where you go to change how the jobs behave.
+// Settings/Admin live OUTSIDE the groups, pinned to the bottom rail — they
+// are not a job, they are where you go to change how the jobs behave. Logs
+// is reached from inside Admin now, not its own rail entry.
 interface NavItem { href: string; label: string; icon: (p: { size?: number }) => JSX.Element }
 interface NavGroup { id: string; label: string; items: NavItem[] }
 
@@ -77,12 +78,15 @@ const NAV_GROUPS: NavGroup[] = [
   },
 ];
 
-// Pinned below the groups. Settings is for everyone; the other two are
-// platform-admin and never rendered for a client account.
+// Pinned below the groups. Settings is for everyone; Admin is platform-admin
+// and never rendered for a client account.
+//
+// Logs used to have its own entry here (and its own /logs route with no role
+// guard of its own — see app/logs/page.tsx). It is now a tab inside Admin, so
+// there is nothing left to link to it separately from the nav.
 const UTILITY_NAV: NavItem[] = [{ href: '/settings', label: 'Settings', icon: IconSettings }];
 const OWNER_NAV: NavItem[] = [
   { href: '/admin', label: 'Admin', icon: IconAdmin },
-  { href: '/logs', label: 'Logs', icon: IconLogs },
 ];
 
 // Flat list of every reachable item — the mobile header and any lookup that
