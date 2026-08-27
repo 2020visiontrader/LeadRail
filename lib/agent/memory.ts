@@ -269,20 +269,55 @@ export interface ConversationSummary {
  *  transcript one conversation at a time via loadTranscript.
  *
  *  The account filter is in the query, never applied after the fetch. */
+export interface ConversationPage {
+  conversations: ConversationSummary[];
+  /** Pass back as `cursor` for the next page. Null when this is the last. */
+  nextCursor: string | null;
+}
+
+/**
+ * One page of an account's conversations, newest first.
+ *
+ * CURSOR, NOT OFFSET. The list is ordered by `updated_at`, which CHANGES as
+ * conversations are used — so an offset drifts under you: reply to an old chat
+ * while paging and it jumps to the front, shifting everything and making page 2
+ * repeat a row page 1 already showed. A cursor keyed on the sort column cannot
+ * do that.
+ *
+ * Added before the UI exists rather than after. The endpoint previously
+ * returned a flat 30 with no way to reach anything older, and this account is
+ * already at 28 — building a history surface against that assumption and
+ * retrofitting paging later is the more expensive order.
+ */
 export async function listConversationsForAccount(
   accountId: string,
   limit = 30,
-): Promise<ConversationSummary[]> {
+  cursor?: string | null,
+  search?: string | null,
+): Promise<ConversationPage> {
   const n = Math.min(Math.max(Math.trunc(limit) || 30, 1), 100);
   try {
-    const { data } = await supabase.from('agent_conversations')
+    let q = supabase.from('agent_conversations')
       .select('id, title, updated_at, token_estimate')
       .eq('account_id', accountId)
       .order('updated_at', { ascending: false })
-      .limit(n);
-    return (data || []) as ConversationSummary[];
+      // One extra row is the page-end signal: if it comes back, there is more.
+      // Cheaper and more honest than a COUNT, which would be a second query
+      // whose answer is stale the moment a turn lands.
+      .limit(n + 1);
+    if (cursor) q = q.lt('updated_at', cursor);
+    if (search && search.trim()) q = q.ilike('title', `%${search.trim()}%`);
+
+    const { data } = await q;
+    const rows = (data || []) as ConversationSummary[];
+    const hasMore = rows.length > n;
+    const page = hasMore ? rows.slice(0, n) : rows;
+    return {
+      conversations: page,
+      nextCursor: hasMore ? (page[page.length - 1]?.updated_at ?? null) : null,
+    };
   } catch {
-    return [];
+    return { conversations: [], nextCursor: null };
   }
 }
 

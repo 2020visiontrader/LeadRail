@@ -1,6 +1,7 @@
 'use client';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import AgentConsole from '@/components/AgentConsole';
+import ChatHistory from '@/components/assistant/ChatHistory';
 
 // ============================================================================
 // ASSISTANT WORKSPACE — up to 4 simultaneous chats
@@ -29,6 +30,17 @@ import AgentConsole from '@/components/AgentConsole';
 // PERSISTENCE: tabs live in localStorage, so a reload restores every open chat,
 // not just the active one. The active tab is also mirrored into ?c= so a URL is
 // shareable and the back button behaves.
+//
+// A TAB IS A POINTER, NOT THE RECORD. localStorage holds which four chats are
+// open — nothing more. The conversations themselves live in agent_conversations
+// and are reached through the history panel, which is backed by
+// /api/agent/conversations.
+//
+// That distinction is the whole fix. The tab bar used to be the ONLY route back
+// to a conversation: nothing called the list endpoint, so closing a tab to make
+// room permanently lost the way back. Twenty-eight conversations sat intact and
+// unreachable while it looked like refreshing had deleted them. Closing a tab
+// must never mean losing a chat, and now it cannot.
 
 const STORAGE_KEY = 'leadrail.assistant.tabs';
 const MAX_TABS = 4;
@@ -41,13 +53,37 @@ interface ChatTab {
   title: string;
 }
 
+function freshKey(): string {
+  return `t${Date.now()}-${Math.random().toString(16).slice(2, 6)}`;
+}
+
 function newTab(n: number): ChatTab {
-  return { key: `t${Date.now()}-${Math.random().toString(16).slice(2, 6)}`, title: `Chat ${n}` };
+  return { key: freshKey(), title: `Chat ${n}` };
+}
+
+/**
+ * Point a tab slot at an existing conversation.
+ *
+ * THE KEY MUST CHANGE, and this is not cosmetic. Panes are rendered
+ * `key={t.key}`, and AgentConsole seeds `conversationIdRef` from its
+ * `conversationId` prop with `useRef(...)` — which only reads the prop on the
+ * FIRST render. Reusing a slot's key while swapping the conversation would
+ * leave that ref pointing at the previous chat, and the new conversation's
+ * turns would be saved into the old one. A new key forces a remount, so the
+ * ref seeds from the right id.
+ */
+function tabForConversation(conversationId: string, title: string): ChatTab {
+  return { key: freshKey(), conversationId, title };
 }
 
 export default function AssistantPage() {
   const [tabs, setTabs] = useState<ChatTab[]>([]);
   const [activeKey, setActiveKey] = useState<string>('');
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [capNotice, setCapNotice] = useState(false);
+  // Most-recently-focused first. A ref, not state: it feeds an eviction
+  // decision inside a setState updater and must not itself trigger a render.
+  const recentRef = useRef<string[]>([]);
 
   // Restore on mount. A malformed or empty store falls back to a single fresh
   // chat rather than rendering nothing.
@@ -82,6 +118,11 @@ export default function AssistantPage() {
     try { localStorage.setItem(STORAGE_KEY, JSON.stringify(tabs)); } catch { /* quota/private mode */ }
   }, [tabs]);
 
+  useEffect(() => {
+    if (!activeKey) return;
+    recentRef.current = [activeKey, ...recentRef.current.filter((k: string) => k !== activeKey)];
+  }, [activeKey]);
+
   // Mirror the active conversation into the URL without adding history entries —
   // replaceState, so Back still leaves the assistant rather than cycling tabs.
   useEffect(() => {
@@ -106,9 +147,47 @@ export default function AssistantPage() {
     );
   }, []);
 
+  /**
+   * Open a conversation from history in a tab.
+   *
+   * Already open -> focus it rather than opening a second pane onto the same
+   * conversation. Two panes on one chat is the concurrent-write case the
+   * save guard exists to catch, and there is no reason to invite it here.
+   *
+   * At capacity -> the LEAST RECENTLY FOCUSED slot is repointed. Its
+   * conversation is not touched, not closed and not lost: it is one click away
+   * in history, which is precisely what makes evicting a slot safe now and
+   * was not before.
+   */
+  const openConversation = useCallback((conversationId: string, title: string) => {
+    setTabs((prev) => {
+      const existing = prev.find((t) => t.conversationId === conversationId);
+      if (existing) { setActiveKey(existing.key); return prev; }
+
+      const t = tabForConversation(conversationId, title);
+      setActiveKey(t.key);
+      if (prev.length < MAX_TABS) return [...prev, t];
+
+      // Evict the oldest slot in focus order. `recent` is maintained on every
+      // activation below; anything missing from it is treated as coldest.
+      const order = recentRef.current;
+      const coldest = [...prev].sort(
+        (a, b) => (order.indexOf(a.key) === -1 ? -1 : order.indexOf(a.key))
+                - (order.indexOf(b.key) === -1 ? -1 : order.indexOf(b.key)),
+      )[0];
+      return prev.map((x) => (x.key === coldest.key ? t : x));
+    });
+  }, []);
+
   const addTab = () => {
     setTabs((prev) => {
-      if (prev.length >= MAX_TABS) return prev;
+      if (prev.length >= MAX_TABS) {
+        // It used to `return prev` — the button simply did nothing, with no
+        // explanation. Now it says why, and points at the thing that makes the
+        // cap harmless.
+        setCapNotice(true);
+        return prev;
+      }
       const t = newTab(prev.length + 1);
       setActiveKey(t.key);
       return [...prev, t];
@@ -134,6 +213,17 @@ export default function AssistantPage() {
           Plain-language commands, executed step by step — you approve anything that spends money.
         </p>
       </div>
+
+      {capNotice && (
+        <div className="shrink-0 rounded-lg border border-[var(--border-default)] bg-[var(--bg-raised)] px-3 py-2 text-[13px] text-[var(--text-secondary)]">
+          Four chats can be open at once. Close one, or{' '}
+          <button className="underline" onClick={() => { setCapNotice(false); setHistoryOpen(true); }}>
+            open one from history
+          </button>{' '}
+          — nothing is lost either way, every chat stays in history.
+          <button className="ml-2 text-[var(--text-muted)] underline" onClick={() => setCapNotice(false)}>dismiss</button>
+        </div>
+      )}
 
       <div className="flex shrink-0 flex-wrap items-center gap-1.5" role="tablist" aria-label="Assistant chats">
         {tabs.map((t) => {
@@ -167,6 +257,12 @@ export default function AssistantPage() {
             </div>
           );
         })}
+        <button
+          onClick={() => setHistoryOpen(true)}
+          className="rounded-lg border border-[var(--border-default)] px-3 py-1.5 text-[13px] text-[var(--text-secondary)] transition hover:bg-[var(--bg-raised)] hover:text-[var(--text-primary)]"
+        >
+          History
+        </button>
         {tabs.length < MAX_TABS && (
           <button
             onClick={addTab}
@@ -193,6 +289,12 @@ export default function AssistantPage() {
           </div>
         ))}
       </div>
+      <ChatHistory
+        open={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        onOpenConversation={openConversation}
+        openIds={tabs.map((t) => t.conversationId).filter(Boolean) as string[]}
+      />
     </div>
   );
 }
