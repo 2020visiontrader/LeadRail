@@ -11,11 +11,53 @@
  *
  * Usage:  bun run migrations/push.ts
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 // @ts-ignore - 'bun' is a runtime module; this script is executed with `bun run`, not tsc.
 import { SQL } from 'bun';
 
-const sql = readFileSync(new URL('./apply_all.sql', import.meta.url), 'utf8');
+/**
+ * Every numbered migration, in order.
+ *
+ * THIS USED TO READ apply_all.sql AND NOTHING ELSE, which made the documented
+ * path silently wrong. apply_all.sql had drifted: migrations 056 through 060
+ * existed as numbered files and had reached production by some other route,
+ * while apply_all.sql — the only thing this script read — did not contain them.
+ * Anyone adding 061 and running `bun run migrations/push.ts` would have applied
+ * NOTHING and been told it succeeded.
+ *
+ * The failure is silent twice over, which is why it survived: the script exits
+ * 0, and the missing column only surfaces later as an insert failing inside a
+ * catch that swallows it (recordAiUsage does exactly this). Concatenating the
+ * real files removes the second source of truth rather than trying to keep two
+ * in step.
+ *
+ * Safe because every migration in this directory is idempotent — verified: all
+ * 69 use CREATE TABLE IF NOT EXISTS and ADD COLUMN IF NOT EXISTS. Re-running
+ * the full set is a no-op on an up-to-date database, which is what makes
+ * "just run them all, in order" a sound strategy at this size.
+ */
+function loadMigrations(): { name: string; sql: string }[] {
+  const dir = dirname(fileURLToPath(import.meta.url));
+  return readdirSync(dir)
+    .filter((f) => /^\d{3}_.*\.sql$/.test(f))   // numbered only; skips apply_all.sql
+    .sort()                                      // zero-padded, so lexical IS numeric
+    .map((f) => ({ name: f, sql: readFileSync(join(dir, f), 'utf8') }));
+}
+
+const migrations = loadMigrations();
+if (!migrations.length) {
+  console.error('No numbered migrations found — refusing to run an empty batch.');
+  process.exit(1);
+}
+console.log(`Applying ${migrations.length} migrations: ${migrations[0].name} … ${migrations[migrations.length - 1].name}`);
+
+// Separators name each file, so a failure reports WHICH migration broke rather
+// than a line number in a concatenation nobody can map back.
+const sql = migrations
+  .map((m) => `-- ─────────── ${m.name} ───────────\n${m.sql}`)
+  .join('\n\n');
 
 async function viaManagementApi(token: string, ref: string) {
   const res = await fetch(`https://api.supabase.com/v1/projects/${ref}/database/query`, {
@@ -61,7 +103,7 @@ if (dbUrl) {
       'Provide ONE of:\n' +
       '  • DATABASE_URL  (Supabase → Settings → Database → Connection string → URI)\n' +
       '  • SUPABASE_ACCESS_TOKEN=sbp_…  (Supabase → Account → Access Tokens) + SUPABASE_PROJECT_REF\n' +
-      'Zero-secret path: paste migrations/apply_all.sql into the Supabase SQL Editor and Run.'
+      'Zero-secret path: paste each migrations/NNN_*.sql into the Supabase SQL Editor in order and Run.'
   );
   process.exit(1);
 }

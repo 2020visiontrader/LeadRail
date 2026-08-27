@@ -22,7 +22,7 @@
 
 import { z } from 'zod';
 import { obj, S, type Capability } from './types';
-import { writeEdge, activeEdges, beliefHistory, promotionCandidates } from '@/lib/memory/edges';
+import { writeEdge, activeEdges, beliefHistory, promotionCandidates, promoteEdge, demoteEdge } from '@/lib/memory/edges';
 import { projectSubjectWithRetry } from '@/lib/memory/project';
 import { TIER2_PROMOTION_THRESHOLD, exclusionFor } from '@/lib/memory/tiers';
 import { isSubjectType, SUBJECT_TYPES, type SubjectRef } from '@/lib/memory/types';
@@ -142,6 +142,53 @@ export const SUBJECT_MEMORY_CAPABILITIES: Capability[] = [
     },
   },
   {
+    name: 'promoteObservation',
+    domain: 'memory',
+    title: 'Approve a pattern as a rule',
+    description:
+      'Turn an observed pattern into something the assistant may act on by itself. Use ONLY when the user explicitly approves a specific observation — never to tidy up the queue, and never on your own reading of the evidence. Call listObservedPatterns first to get the id.',
+    // `standing_rule`, and this is the whole point: it creates something that
+    // later runs WITHOUT a human in the loop, so it raises an approval card
+    // rather than executing. That is the promotion gate — not a separate
+    // mechanism, the one the platform already has.
+    //
+    // Deliberately NOT grantable for a session either (GRANTABLE_GATES in
+    // lib/approvals/grants.ts excludes standing_rule): a blanket "approve all
+    // promotions this chat" would be precisely the compounding failure the
+    // tier split exists to prevent.
+    gate: 'standing_rule',
+    inputSchema: obj({ observationId: S.string }, ['observationId']),
+    zod: z.object({ observationId: z.string().min(1) }),
+    run: async (accountId, a, ctx?: any) => {
+      const res = await promoteEdge(accountId, a.observationId, ctx?.requestedBy || 'unknown');
+      if (!res.promoted) return { promoted: false, reason: res.reason };
+      return {
+        promoted: true,
+        fact: res.fact,
+        note: 'The assistant may now act on this. Ask it to stop at any time and it becomes an observation again.',
+      };
+    },
+    summarize: (a: any) =>
+      `Make an observed pattern into a standing rule. From now on the assistant will act on it on its own, in every future campaign, until you withdraw it.`,
+  },
+  {
+    name: 'demoteObservation',
+    domain: 'memory',
+    title: 'Stop acting on a pattern',
+    description:
+      'Withdraw a pattern the assistant was allowed to act on, returning it to a mere observation. Use the moment the user says to stop relying on something.',
+    // Never sensitive: withdrawing the system's permission to act must not
+    // itself wait on permission.
+    gate: 'internal_write',
+    inputSchema: obj({ observationId: S.string }, ['observationId']),
+    zod: z.object({ observationId: z.string().min(1) }),
+    run: async (accountId, a) => ({ demoted: await demoteEdge(accountId, a.observationId) }),
+    digest: (_a, r: any) => {
+      if (!r) return '';
+      return r.demoted ? 'That is an observation again — I will not act on it.' : 'Nothing to withdraw.';
+    },
+  },
+  {
     name: 'listObservedPatterns',
     domain: 'memory',
     title: 'List observed patterns awaiting review',
@@ -157,6 +204,9 @@ export const SUBJECT_MEMORY_CAPABILITIES: Capability[] = [
         // Named to make the status unmistakable to the model: these are NOT
         // rules, and nothing here may be acted on as if it were.
         awaitingApproval: rows.map((e) => ({
+          // The id is what makes the queue actionable — without it the list is
+          // something to read and nothing to do.
+          observationId: e.id,
           observation: e.fact,
           subject: `${e.subjectType}:${e.subjectId}`,
           timesSeen: e.occurrences,

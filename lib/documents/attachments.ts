@@ -90,6 +90,9 @@ function ext(name: string): string {
 }
 
 export interface Attachment {
+  /** 'conversation' | 'library' — see migration 067. */
+  scope?: string;
+  title?: string | null;
   id: string;
   account_id: string;
   conversation_id: string | null;
@@ -222,7 +225,12 @@ export async function ingestAttachment(input: {
 export async function listAttachments(accountId: string, conversationId?: string | null): Promise<Attachment[]> {
   if (!dbReady()) return [];
   let q = supabase.from('assistant_attachments').select('*').eq('account_id', accountId);
-  if (conversationId) q = q.eq('conversation_id', conversationId);
+  // Library documents (migration 067) reach EVERY chat, so a brand book saved
+  // once is present in the next conversation, in a plan step, and in a
+  // scheduled run — none of which is "a chat someone dropped a file into".
+  // Without the `or`, a conversation filter excluded them and the library was
+  // a table nothing read.
+  if (conversationId) q = q.or(`conversation_id.eq.${conversationId},scope.eq.library`);
   const { data, error } = await q.order('created_at', { ascending: false }).limit(50);
   if (error) throw error;
   return (data || []) as Attachment[];
@@ -276,7 +284,9 @@ export function attachmentContextBlock(attachments: Attachment[]): string {
 
   let budget = contextCharBudget();
   for (const a of attachments) {
-    lines.push(`--- BEGIN DOCUMENT: ${a.filename} (${a.kind}, ${a.bytes} bytes) ---`);
+    const label = a.title || a.filename;
+    const origin = a.scope === 'library' ? 'saved to this account, available in every chat' : 'attached to this conversation';
+    lines.push(`--- BEGIN DOCUMENT: ${label} (${a.kind}, ${a.bytes} bytes, ${origin}) ---`);
     if (a.status === 'image' || a.status === 'video') {
       // These have no text and are not failures. "No text could be read" on a
       // video the assistant can actually watch reads as broken, and the note
@@ -291,10 +301,10 @@ export function attachmentContextBlock(attachments: Attachment[]): string {
       lines.push(slice);
       if (slice.length < a.extracted_text.length) {
         // Say so, rather than letting a truncated contract look complete.
-        lines.push(`[…truncated here. ${a.extracted_text.length - slice.length} more characters are on file — call readAttachment with filename "${a.filename}" and an offset to read further, or a query to find a passage.]`);
+        lines.push(`[…truncated here. ${a.extracted_text.length - slice.length} more characters are on file — call readDocument with document "${a.title || a.filename}" and an offset to read further, or a query to find a passage.]`);
       }
     }
-    lines.push(`--- END DOCUMENT: ${a.filename} ---`);
+    lines.push(`--- END DOCUMENT: ${label} ---`);
     lines.push('');
     if (budget <= 0) {
       const shown = attachments.indexOf(a) + 1;

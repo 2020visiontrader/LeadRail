@@ -125,6 +125,17 @@ describe('Regression Guard 1: Sensitive Baseline', () => {
     'enrollInSequence',
     'hideSocialComment',
     'launchCampaign',
+    // Promoting an observed pattern to an operational one. 'standing_rule' is
+    // the correct class and the reason is the sharpest on this list: what it
+    // creates is a belief the system then acts on in EVERY future campaign
+    // without being asked again. A wrong tier-1 fact about one contact costs
+    // one relationship; a wrongly-promoted pattern about "what works" steers
+    // budget and creative until somebody notices.
+    //
+    // Its twin, demoteObservation, is deliberately NOT here — withdrawing the
+    // system's permission to act must never queue behind an approval, the same
+    // reasoning that keeps disableAutomation off this list.
+    'promoteObservation',
     'publishSocialPost',
     'replyToSocialComment',
     'replyToThread',

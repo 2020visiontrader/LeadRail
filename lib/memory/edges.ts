@@ -241,3 +241,72 @@ export async function beliefHistory(
     return [];
   }
 }
+
+/**
+ * Promote an observed pattern into an established fact the system may act on.
+ *
+ * THE GATE THIS IS THE OTHER HALF OF. A Tier 2 edge is something the system
+ * NOTICED — "short subject lines did better" — and the whole point of the tier
+ * split is that noticing is not the same as knowing. A wrong Tier 1 fact about
+ * one contact costs one relationship; a wrongly-promoted pattern about what
+ * works steers every future campaign until somebody notices. So promotion is
+ * the one memory transition that a human must make, and this function refuses
+ * to be called any other way: `approvedBy` is required, and the capability that
+ * reaches it carries the `standing_rule` gate, which means it raises an
+ * approval card rather than executing.
+ *
+ * Recorded, not silent: the promotion writes its own provenance so "why does
+ * the system believe this" has an answer with a name and a date on it.
+ */
+export async function promoteEdge(
+  accountId: string,
+  edgeId: string,
+  approvedBy: string,
+): Promise<{ promoted: boolean; fact?: string; reason?: string }> {
+  try {
+    const { data } = await supabase
+      .from('memory_edges').select('*')
+      .eq('account_id', accountId).eq('id', edgeId).maybeSingle();
+    if (!data) return { promoted: false, reason: 'not found' };
+    const edge = rowToEdge(data);
+    if (edge.invalidAt) return { promoted: false, reason: 'that observation is no longer current' };
+    if (edge.tier === 1) return { promoted: false, reason: 'already established' };
+
+    const { error } = await supabase
+      .from('memory_edges')
+      .update({
+        tier: 1,
+        promoted_by: approvedBy,
+        promoted_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', edgeId)
+      .eq('account_id', accountId)
+      .eq('tier', 2);              // guard: only ever 2 -> 1, never a re-promote
+    if (error) return { promoted: false, reason: 'could not record it' };
+
+    log.info('memory: pattern promoted to operational', {
+      accountId, edgeId, actorEmail: approvedBy,
+      subject: `${edge.subjectType}:${edge.subjectId}`, occurrences: edge.occurrences,
+    });
+    return { promoted: true, fact: edge.fact };
+  } catch {
+    return { promoted: false, reason: 'could not record it' };
+  }
+}
+
+/** Demote an established fact back to observed — the undo. Deliberately NOT
+ *  sensitive at the capability layer: withdrawing the system's permission to
+ *  act on something must never queue behind an approval. */
+export async function demoteEdge(accountId: string, edgeId: string): Promise<boolean> {
+  try {
+    const { data } = await supabase
+      .from('memory_edges')
+      .update({ tier: 2, promoted_by: null, promoted_at: null, updated_at: new Date().toISOString() })
+      .eq('account_id', accountId).eq('id', edgeId).eq('tier', 1)
+      .select('id');
+    return Array.isArray(data) && data.length > 0;
+  } catch {
+    return false;
+  }
+}
