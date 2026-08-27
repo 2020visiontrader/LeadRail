@@ -38,18 +38,32 @@ const BASE = 'https://openrouter.ai/api/v1';
 // OpenRouter model here routes through a different upstream provider, so a
 // 429/error on one is NOT evidence the next will also fail — worth trying.
 //
-// Verified live against OpenRouter's current catalog (2026-08-19): pulled
-// GET /models (17 total ":free" models right now), smoke-tested every
-// candidate with a real chat completion. Deliberately spans multiple
-// upstream providers so a single vendor incident (like the NIM stale-key
-// outage this chain exists to prevent) can't take out the whole tier:
-//   nvidia/nemotron-3-ultra-550b-a55b:free  200 OK, 1M ctx  (Nvidia)
-//   openai/gpt-oss-20b:free                 200 OK          (OpenAI OSS weights)
-//   z-ai/glm-5.2:free                       200 OK          (Zhipu)
+// Verified live against OpenRouter's current catalog (2026-08-27): pulled
+// GET /models (17 total ":free" models right now) and smoke-tested every
+// candidate that had gone stale with a real chat completion. Four entries
+// from the previous pass had been quietly retired from the free tier since
+// (each returns 404 "unavailable for free... use this slug instead" or "no
+// endpoints found") and were removed rather than left to eat a failed
+// round-trip on every call: nvidia/nemotron-3-nano-30b-a3b:free (this was
+// the chain LEADER — every single call was paying for its 404 before falling
+// through), openai/gpt-oss-20b:free, nvidia/nemotron-nano-12b-v2-vl:free,
+// nvidia/nemotron-nano-9b-v2:free. A fifth bug found in the same pass:
+// deepseek/deepseek-v4-flash-latest was returning 400 "not a valid model
+// ID" — not 404/429/402, so shouldTryNextModel() never even advanced past
+// it, meaning a request that reached this tier died outright instead of
+// falling through. OpenRouter's actual alias for this id carries a leading
+// `~` (confirmed via a live completions call, resolves to
+// deepseek-v4-flash-0731) — an unusual character for a slug, which is why an
+// earlier version of this file's own test suite asserted a leading `~`
+// could never be valid. It can; that assertion was wrong.
+// Deliberately spans multiple upstream providers so a single vendor incident
+// (like the NIM stale-key outage this chain exists to prevent) can't take
+// out the whole tier:
 //   nvidia/nemotron-3.5-lightning:free      200 OK          (Nvidia, fast)
+//   nvidia/nemotron-3-ultra-550b-a55b:free  200 OK, 1M ctx  (Nvidia)
+//   z-ai/glm-5.2:free                       200 OK          (Zhipu)
 //   google/gemma-4-26b-a4b-it:free          200 OK          (Google)
 //   dots-studio/dots-3-note-preview:free    200 OK          (dots.llm)
-//   nvidia/nemotron-3-nano-30b-a3b:free     200 OK          (Nvidia, smaller/fast)
 //   google/gemma-4-31b-it:free              429 rate-limited upstream — excluded
 // Order: strongest general-purpose free model first, then providers rotate,
 // then deepseek-v4-flash as a paid-but-fractional-cent last resort so the
@@ -57,15 +71,11 @@ const BASE = 'https://openrouter.ai/api/v1';
 export const MODEL_CHAIN = (process.env.OPENROUTER_MODEL
   ? [process.env.OPENROUTER_MODEL]
   : [
-      // ── ORDERED BY MEASURED LATENCY (probe 2026-08-19).
-      // Led with nemotron-3-ultra-550b (4.7s); nemotron-3-nano answers in 392ms.
-      // Bigger is not faster, and for a 700-token routing envelope it is not
-      // better either — the 550B model is the wrong tool for the job the chain
-      // leader actually does.
-      'nvidia/nemotron-3-nano-30b-a3b:free',
+      // nemotron-3.5-lightning leads: fast (sub-second on the probe that
+      // demoted nano), and — unlike nano-30b-a3b, which used to lead this
+      // chain — still actually free.
       'nvidia/nemotron-3.5-lightning:free',
       'dots-studio/dots-3-note-preview:free',
-      'openai/gpt-oss-20b:free',
       'google/gemma-4-26b-a4b-it:free',
       // BOTH DeepSeek entries are paid, and the OpenRouter account carries
       // credit, so they are reachable rather than a guaranteed 402. `-latest`
@@ -74,7 +84,7 @@ export const MODEL_CHAIN = (process.env.OPENROUTER_MODEL
       // The pinned id stays directly behind it as the stable fallback — if the
       // alias is ever repointed at something that regresses, the chain still
       // has a known-good snapshot to fall through to.
-      'deepseek/deepseek-v4-flash-latest',
+      '~deepseek/deepseek-v4-flash-latest',
       'deepseek/deepseek-v4-flash',
       'nvidia/nemotron-3-ultra-550b-a55b:free',
       // ── Verified present in the provider catalog, not yet latency-tested.
@@ -85,8 +95,6 @@ export const MODEL_CHAIN = (process.env.OPENROUTER_MODEL
       'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
       'google/gemma-4-31b-it:free',
       'nvidia/nemotron-3-super-120b-a12b:free',
-      'nvidia/nemotron-nano-12b-v2-vl:free',
-      'nvidia/nemotron-nano-9b-v2:free',
       // ── Added on request 2026-08-26, not yet latency-tested.
       'minimax/minimax-m3:free',
       // Was pinned to the BOTTOM on 2026-08-19 after probing 429 (rate-limited,
