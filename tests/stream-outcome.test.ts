@@ -74,8 +74,10 @@ describe('a stream that just stops', () => {
     const note = steps[steps.length - 1];
     expect(note.kind).toBe('error');
     expect(note.text).toBe(DEAD_STREAM_MESSAGE);
-    // It must not imply the work was lost — it was saved server-side.
-    expect(note.text).toContain('Nothing was lost');
+    // It must state what actually survived, not a blanket "nothing was
+    // lost" claim — and it must never point at an internal page like Logs.
+    expect(note.text).toContain('saved');
+    expect(note.text).not.toMatch(/logs|admin/i);
   });
 });
 

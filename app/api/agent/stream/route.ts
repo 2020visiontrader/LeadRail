@@ -7,6 +7,8 @@ import { loadAgentContext } from '@/lib/agent/context';
 import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts, markConversationRunning, clearConversationRunning } from '@/lib/agent/memory';
 import { parseMentions } from '@/lib/agent/personas';
 import { createStreamGuard } from '@/lib/agent/stream-guard';
+import { providersLookDown, turnFailureMessage } from '@/lib/agent/failure-copy';
+import { reportStreamFailure } from '@/lib/agent/failure-report';
 import type { ChatMessage } from '@/lib/ai/router';
 import { log } from '@/lib/logger';
 
@@ -260,8 +262,30 @@ export async function POST(request: NextRequest) {
           },
         );
       } catch (e: any) {
-        send({ type: 'error', message: e?.message || 'Agent failed' });
+        const down = providersLookDown();
+        send({
+          type: 'error',
+          message: turnFailureMessage({ reason: 'exception', providersDown: down, hadAttachment: attachmentIds.length > 0 }),
+        });
         terminalSent = true;
+        // Best-effort, and defended TWICE: reportStreamFailure already
+        // swallows its own errors (see its comment), and this call site
+        // catches again regardless — reporting a failure must never become a
+        // second way to lose `saveConversation` in the finally block below,
+        // which is exactly the bug class tests/stream-disconnect.test.ts
+        // exists to catch for the guard's own send() calls.
+        try {
+          await reportStreamFailure({
+            accountId: session.accountId,
+            conversationId,
+            route: '/api/agent/stream',
+            reason: 'exception',
+            detail: String(e?.message || e || 'unknown error').slice(0, 500),
+            providersDown: down,
+          });
+        } catch (reportErr) {
+          log.error('agent stream: reportStreamFailure threw despite its own guard', reportErr, { streamId });
+        }
       } finally {
         // Clear the in-flight flag UNCONDITIONALLY — success, error, or a
         // client that vanished mid-turn all reach this block, which is
@@ -285,10 +309,29 @@ export async function POST(request: NextRequest) {
         // only party that knows a turn ended. A client-side timeout would have
         // to guess, and would eventually give up on a turn that was fine.
         if (!terminalSent) {
+          const down = providersLookDown();
           send({
             type: 'error',
-            message: 'That turn ended without producing an answer. Nothing was sent or charged. Try again — if it repeats, the model provider is likely failing.',
+            message: turnFailureMessage({ reason: 'incomplete', providersDown: down, hadAttachment: attachmentIds.length > 0 }),
           });
+          // Best-effort, same double-guard as the catch block above — a
+          // recurring "no terminal event" failure should increment a counter
+          // on the support board, not just nag the customer to retry
+          // something the health state may already show is doomed.
+          try {
+            await reportStreamFailure({
+              accountId: session.accountId,
+              conversationId,
+              route: '/api/agent/stream',
+              reason: 'incomplete',
+              detail: down
+                ? 'Stream closed with no terminal event; AI providers are currently quarantined.'
+                : 'Stream closed with no terminal event (finally reached with terminalSent still false).',
+              providersDown: down,
+            });
+          } catch (reportErr) {
+            log.error('agent stream: reportStreamFailure threw despite its own guard', reportErr, { streamId });
+          }
         }
         // Persist the conversation and tell the client its id so follow-up turns
         // and the carryover handoff can reference it.

@@ -49,8 +49,21 @@ export function parseSseFrames(buf: string): { events: any[]; rest: string } {
   return { events, rest };
 }
 
+// This is the copy shown when the CLIENT never received a terminal event at
+// all — not even the server's own failure message, which means the
+// connection itself broke (a platform edge cut it, the process died) rather
+// than the turn completing with an error the server got to report. Because
+// nothing reached the client, there is no health state to read here the way
+// app/api/agent/stream/route.ts can (see lib/agent/failure-copy.ts) — this
+// is intentionally the generic "could not be completed" case, not a guess at
+// why. It must still be honest about what survived and must never point at
+// an internal page: the previous copy ("ask again, or check Logs") sent a
+// non-admin user to a page their role guard refuses to open, and told
+// everyone to retry a request the system sometimes already knew would fail
+// again. See app/api/agent/stream/route.ts and lib/agent/failure-copy.ts for
+// the server-side, health-aware variants of the same principle.
 export const DEAD_STREAM_MESSAGE =
-  'That run ended without finishing. Nothing was lost — ask again, or check Logs.';
+  'Your message is saved, but this turn could not be completed. Try again in a moment.';
 
 /**
  * Decide what a finished stream leaves behind.
