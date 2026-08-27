@@ -86,6 +86,18 @@ function imageNote(): string {
   return 'This is an image, so there is no text to extract from it. Describe what you need from it in the message and it can be looked at directly.';
 }
 
+/** Video extensions the browser can decode, which is where a video IS read —
+ *  see src/lib/video-extract.ts. Nothing is parsed server-side. */
+const VIDEO_EXT = ['mp4', 'mov', 'webm', 'm4v'];
+
+/** A video is not unreadable, which is what it would otherwise be marked. It
+ *  carries no extractable text and is read by a different route entirely, and
+ *  an amber "nothing could be read" chip on a file the assistant can in fact
+ *  watch would send someone off to convert it for nothing. */
+function videoNote(): string {
+  return 'This is a video. Its frames and speech were read at upload — call analyseUploadedVideo with this attachment id to get the shot structure, pacing and transcript.';
+}
+
 /**
  * Take an uploaded file: store the bytes privately, extract what text there is,
  * and record both.
@@ -110,8 +122,9 @@ export async function ingestAttachment(input: {
 
   const kind = ext(input.filename);
   const isImage = IMAGE_EXT.includes(kind);
-  if (!isImage && !isSupportedDeck(input.filename)) {
-    throw new Error(`.${kind || '?'} files cannot be read. Supported: PDF, DOCX, PPTX, XLSX, CSV, TXT, MD, JSON, and images.`);
+  const isVideo = VIDEO_EXT.includes(kind);
+  if (!isImage && !isVideo && !isSupportedDeck(input.filename)) {
+    throw new Error(`.${kind || '?'} files cannot be read. Supported: PDF, DOCX, PPTX, XLSX, CSV, TXT, MD, JSON, images, and video.`);
   }
 
   // Prepare the bucket and say so if it cannot be. ensurePrivateBucket never
@@ -145,6 +158,9 @@ export async function ingestAttachment(input: {
   if (isImage) {
     note = imageNote();
     status = 'image';
+  } else if (isVideo) {
+    note = videoNote();
+    status = 'video';
   } else {
     const res = await extractDeckText(input.filename, input.bytes, 200_000);
     if (res.ok) {
@@ -164,7 +180,7 @@ export async function ingestAttachment(input: {
     mime_type: input.mimeType ?? null,
     bytes: input.bytes.length,
     storage_path: path,
-    kind: isImage ? 'image' : kind,
+    kind: isImage ? 'image' : isVideo ? 'video' : kind,
     extracted_text: text || null,
     chars: text.length,
     status,
@@ -232,7 +248,12 @@ export function attachmentContextBlock(attachments: Attachment[]): string {
   let budget = CONTEXT_CHAR_BUDGET;
   for (const a of attachments) {
     lines.push(`--- BEGIN DOCUMENT: ${a.filename} (${a.kind}, ${a.bytes} bytes) ---`);
-    if (a.status !== 'ready' || !a.extracted_text) {
+    if (a.status === 'image' || a.status === 'video') {
+      // These have no text and are not failures. "No text could be read" on a
+      // video the assistant can actually watch reads as broken, and the note
+      // says which route to take instead.
+      lines.push(`[${a.note || 'No text in this file.'}]`);
+    } else if (a.status !== 'ready' || !a.extracted_text) {
       // Named, not omitted.
       lines.push(`[No text could be read. ${a.note || ''}]`.trim());
     } else {
