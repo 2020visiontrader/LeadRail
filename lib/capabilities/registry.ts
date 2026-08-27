@@ -12,6 +12,7 @@ import { GOAL_CAPABILITIES } from './goals';
 import { MEMORY_CAPABILITIES } from './memory';
 import { SUBJECT_MEMORY_CAPABILITIES } from './subject-memory';
 import { APPROVAL_CAPABILITIES } from './approvals';
+import { PLAN_CAPABILITIES } from './plans';
 import { SOCIAL_CAPABILITIES } from './social';
 import { SOCIAL_AUTOMATION_CAPABILITIES } from './social-automations';
 import { DEAL_CAPABILITIES } from './deals';
@@ -70,6 +71,7 @@ const ALL: Capability[] = [
   ...MEMORY_CAPABILITIES,
   ...SUBJECT_MEMORY_CAPABILITIES,
   ...APPROVAL_CAPABILITIES,
+  ...PLAN_CAPABILITIES,
   ...SOCIAL_CAPABILITIES,
   ...SOCIAL_AUTOMATION_CAPABILITIES,
   ...DEAL_CAPABILITIES,
@@ -113,6 +115,7 @@ const CATALOG_ORDER: string[] = [
   'rememberFact', 'forgetFact', 'listFacts',
   'declareContext', 'recallSubject', 'recallHistory', 'listObservedPatterns',
   'listStandingApprovals', 'revokeStandingApproval',
+  'createPlan', 'completePlanStep', 'blockPlanStep', 'getPlan', 'cancelPlan',
   // --- appended by Packet 2.2-S (social). Appended after 1.1's three, never
   // sorted: every name above must keep its exact order or the prompt catalog
   // the model routes against changes.

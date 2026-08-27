@@ -198,6 +198,10 @@ export interface RunAgentInput {
    *  A delegate may not delegate further and may not raise approvals — see the
    *  bounds documented there. Absent for every ordinary caller. */
   isDelegate?: boolean;
+  /** Plan mode: the turn writes a plan and stops, instead of executing it.
+   *  Set by the caller (a UI toggle), never by the model — the model must not
+   *  be able to decide it is allowed to skip the operator's go-ahead. */
+  planOnly?: boolean;
   /** Optional override of MAX_STEPS for THIS call only (Packet 6.2). Used
    *  exclusively to give each delegate in a coordinator fan-out a smaller
    *  step budget than a normal top-level turn — never set by ordinary
@@ -1192,6 +1196,15 @@ async function runCoordinatorFanoutStream(
 
 async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
   const { accountId, brandContext } = input;
+  // Server-derived context handed to every tool call. The MODEL never supplies
+  // these: a conversation id it could set would be forgeable, and plans, grants
+  // and memory are all keyed on it.
+  const toolCtx = {
+    conversationId: input.conversationId ?? null,
+    brandId: brandContext?.id ?? null,
+    requestedBy: input.requestedBy ?? null,
+    planOnly: Boolean(input.planOnly),
+  };
   // Packet 6.2: only ever enter fan-out on a fresh turn — never mid-resume
   // (input.approve set) and never when the caller already pinned a single
   // explicit personaId. A resumed approval always finishes as one ordinary
@@ -1247,7 +1260,7 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
     } catch (e: any) {
       return { status: 'error', message: approvalRefusal(e), transcript: messages, steps };
     }
-    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
+    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id, toolCtx);
     const obs = observationFor(tool, args, res, extraCapsByName);
     const obsLimit = obsLimitFor(tool, extraCapsByName);
     steps.push({ tool, args, observation: truncate(obs, obsLimit) });
@@ -1397,7 +1410,7 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
       if (isGrantable(grantGate)) {
         const claimed = await consumeGrant(accountId, input.conversationId, tool);
         if (claimed) {
-          const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
+          const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id, toolCtx);
           // The ledger must still show this. An action covered by a grant is
           // the one nobody looked at as it happened, so it needs MORE of an
           // audit trail than a hand-approved one, not less.
@@ -1461,7 +1474,7 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
     seen.add(sig);
     toolCalls[tool] = (toolCalls[tool] || 0) + 1;
 
-    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
+    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id, toolCtx);
     const obs = observationFor(tool, args, res, extraCapsByName);
     lastToolName = tool;
     const obsLimit = obsLimitFor(tool, extraCapsByName);
@@ -1584,6 +1597,15 @@ function emitAnalysis(emit: (e: AgentEvent) => void, analysis: Analysis | null):
 // "harmonize" the streaming/compose paths.
 async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) => void): Promise<void> {
   const { accountId, brandContext } = input;
+  // Server-derived context handed to every tool call. The MODEL never supplies
+  // these: a conversation id it could set would be forgeable, and plans, grants
+  // and memory are all keyed on it.
+  const toolCtx = {
+    conversationId: input.conversationId ?? null,
+    brandId: brandContext?.id ?? null,
+    requestedBy: input.requestedBy ?? null,
+    planOnly: Boolean(input.planOnly),
+  };
   // Packet 6.2 — same fan-out gate as runAgent above; see the comment there.
   // These four reads don't depend on each other, so they run concurrently
   // instead of as one sequential chain — on an ordinary (non-fanout) turn this
@@ -1632,7 +1654,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
       return;
     }
     emit({ type: 'tool', tool, title: approveDef.title, args });
-    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
+    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id, toolCtx);
     const obs = observationFor(tool, args, res, extraCapsByName);
     const obsLimit = obsLimitFor(tool, extraCapsByName);
     emit({ type: 'observation', text: truncate(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
@@ -1795,7 +1817,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
       if (isGrantable(grantGate)) {
         const claimed = await consumeGrant(accountId, input.conversationId, tool);
         if (claimed) {
-          const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
+          const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id, toolCtx);
           // The ledger must still show this. An action covered by a grant is
           // the one nobody looked at as it happened, so it needs MORE of an
           // audit trail than a hand-approved one, not less.
@@ -1861,7 +1883,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
     toolCalls[tool] = (toolCalls[tool] || 0) + 1;
 
     emit({ type: 'tool', tool, title: def.title, args });
-    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
+    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id, toolCtx);
     const obs = observationFor(tool, args, res, extraCapsByName);
     const obsLimit = obsLimitFor(tool, extraCapsByName);
     emit({ type: 'observation', text: truncate(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });

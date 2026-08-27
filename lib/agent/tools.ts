@@ -6,7 +6,7 @@
 
 import { z } from 'zod';
 import { CAPABILITIES, CAPABILITY_BY_NAME, stagedCatalogText } from '@/lib/capabilities/registry';
-import { isSensitive, type Capability } from '@/lib/capabilities/types';
+import { isSensitive, type Capability, type CapabilityContext } from '@/lib/capabilities/types';
 import { assertWithinBudget } from '@/lib/budgets/store';
 
 export interface AgentTool {
@@ -17,7 +17,7 @@ export interface AgentTool {
   inputSchema: Record<string, any>;
   zod: z.ZodTypeAny;
   sensitive?: boolean;
-  run: (accountId: string, args: any) => Promise<any>;
+  run: (accountId: string, args: any, ctx?: CapabilityContext) => Promise<any>;
 }
 
 export const TOOLS: Record<string, AgentTool> = Object.fromEntries(
@@ -127,6 +127,9 @@ export async function runTool(
    *  Omitted by the MCP server on purpose — an API key has no "selected brand",
    *  so there is nothing to default and its behaviour is unchanged. */
   defaultBrandId?: string,
+  /** Turn-scoped, server-derived context (migration 063). Optional so the MCP
+   *  server path — which has no conversation — is unchanged. */
+  ctx?: CapabilityContext,
 ): Promise<ToolRunResult> {
   const tool = TOOLS[name] ?? extraTools?.[name];
   if (!tool) return { ok: false, error: `Unknown tool: ${name}` };
@@ -168,7 +171,7 @@ export async function runTool(
   }
 
   try {
-    return { ok: true, result: await tool.run(accountId, parsed.data) };
+    return { ok: true, result: await tool.run(accountId, parsed.data, ctx) };
   } catch (e: any) {
     return { ok: false, error: e?.message || 'tool error' };
   }

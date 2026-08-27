@@ -17,6 +17,7 @@ import { listAttachments, attachmentContextBlock } from '@/lib/documents/attachm
 import { recallMemoryDigest } from './memory';
 import { resolveSubjects } from '@/lib/memory/resolve';
 import { loadSubjectMemory } from '@/lib/memory/project';
+import { activePlanForConversation, renderPlan } from '@/lib/plans/store';
 
 // A static description of what LeadRail is and how its pieces fit together, so
 // the copilot can explain features and route plain-language tasks to the right
@@ -219,6 +220,26 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
     } catch { return null; /* memory omitted */ }
   })();
 
+  // THE PLAN CURSOR. Without this the model rebuilds "where am I" from the
+  // transcript every turn — which is what caps long work at MAX_STEPS and makes
+  // a resumed run start over. With it, step position is state.
+  const planSection = (async () => {
+    if (!input.conversationId) return null;
+    try {
+      const plan = await activePlanForConversation(accountId, input.conversationId);
+      if (!plan) return null;
+      if (plan.status === 'draft') {
+        return [
+          'A PLAN IS DRAFTED AND AWAITING THE USER\'S GO-AHEAD. Do not start executing it.',
+          'Show it to them and ask whether to proceed or change it.',
+          '',
+          renderPlan(plan),
+        ].join('\n');
+      }
+      return renderPlan(plan);
+    } catch { return null; }
+  })();
+
   const attachmentSection = (async () => {
     if (!input.conversationId) return null;
     try {
@@ -227,14 +248,16 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
     } catch { return null; /* a failed read must not blank the whole context */ }
   })();
 
-  const [venture, snapshot, social, memory, subjectMemory, attachments] = await Promise.all([
-    ventureSection, snapshotSection, socialSection, memorySection, subjectMemorySection, attachmentSection,
+  const [venture, snapshot, social, memory, subjectMemory, plan, attachments] = await Promise.all([
+    ventureSection, snapshotSection, socialSection, memorySection, subjectMemorySection, planSection, attachmentSection,
   ]);
 
   const sections: string[] = [PLATFORM_BRIEF];
   // subjectMemory after the account-wide digest: it is more specific, and
   // recency in the prompt favours what comes later.
-  for (const s of [venture, snapshot, social, memory, subjectMemory]) if (s) sections.push(s);
+  // The plan goes LAST of the trusted sections: it is the most immediately
+  // actionable thing in the prompt, and recency is what the model attends to.
+  for (const s of [venture, snapshot, social, memory, subjectMemory, plan]) if (s) sections.push(s);
   // LAST, deliberately. Untrusted document text goes closest to the user's own
   // message so the boundary between "what the platform knows" and "what a file
   // claims" is unambiguous — and so no trusted instruction follows it, which is
