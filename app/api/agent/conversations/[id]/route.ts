@@ -1,6 +1,6 @@
 import { withApi, requireSession, errorResponse } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
-import { loadTranscript, deleteConversation } from '@/lib/agent/memory';
+import { loadTranscript, deleteConversation, isConversationRunning } from '@/lib/agent/memory';
 import { pendingApprovalForConversation } from '@/lib/approvals/store';
 
 export const dynamic = 'force-dynamic';
@@ -21,11 +21,18 @@ async function GET__impl(request: NextRequest, { params }: { params: { id: strin
     // chat re-surfaces the card inline, rather than leaving the proposal
     // reachable only from the approval queue. Never fails the read: a chat that
     // loads without its approval is far better than one that does not load.
-    const [transcript, pendingApproval] = await Promise.all([
+    // `running` surfaces the in-flight flag from migration 072 (best-effort,
+    // never throws — see isConversationRunning) so the client's mount-time
+    // rehydration effect can tell "a turn is still working on this" apart
+    // from "the last answer really is all there is". A stale flag (a process
+    // that died mid-turn) already reads as false — the staleness cutoff lives
+    // in isConversationRunning, not here.
+    const [transcript, pendingApproval, running] = await Promise.all([
       loadTranscript(params.id, session.accountId),
       pendingApprovalForConversation(session.accountId, params.id).catch(() => null),
+      isConversationRunning(params.id, session.accountId),
     ]);
-    return NextResponse.json({ id: params.id, transcript, pendingApproval });
+    return NextResponse.json({ id: params.id, transcript, pendingApproval, running });
   } catch (e) {
     return errorResponse(e);
   }

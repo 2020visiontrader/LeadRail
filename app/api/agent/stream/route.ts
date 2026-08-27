@@ -4,7 +4,7 @@ import { NextRequest } from 'next/server';
 import { supabase } from '@/lib/db';
 import { runAgentStream, agentConfigured, generateCarryover, type AgentEvent } from '@/lib/agent/loop';
 import { loadAgentContext } from '@/lib/agent/context';
-import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts } from '@/lib/agent/memory';
+import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts, markConversationRunning, clearConversationRunning } from '@/lib/agent/memory';
 import { parseMentions } from '@/lib/agent/personas';
 import { createStreamGuard } from '@/lib/agent/stream-guard';
 import type { ChatMessage } from '@/lib/ai/router';
@@ -160,8 +160,24 @@ export async function POST(request: NextRequest) {
         // see it. The client names the ids it meant; this claims the unbound
         // ones. Awaited, not raced with loadAgentContext — binding after the
         // context read would be the same bug one line later.
+        //
+        // For a BRAND-NEW chat `conversationId` is still undefined here — it
+        // does not exist until the opening `saveConversation` below mints one
+        // — so this guard is false and nothing binds yet. `attachmentsBound`
+        // tracks that so the retry after the id is minted (below) fires
+        // exactly once, never skipped and never duplicated.
+        let attachmentsBound = false;
         if (attachmentIds.length && conversationId) {
-          await bindAttachments(session.accountId, attachmentIds, conversationId).catch(() => 0);
+          await bindAttachments(session.accountId, attachmentIds, conversationId)
+            .then(() => { attachmentsBound = true; })
+            .catch((e) => {
+              // A bind failure used to be indistinguishable from one that never
+              // ran (.catch(() => 0) swallowed it silently). It must not fail
+              // the turn — the file is still visible to THIS turn via
+              // attachmentsByIds in loadAgentContext, which doesn't need the
+              // bind — but a later turn losing the file is worth a log line.
+              log.error('agent stream: bindAttachments failed', e, { streamId, conversationId, attachmentIds });
+            });
         }
         const [transcriptResult, carryover, agentContext] = await Promise.all([
           loadTranscriptResult(conversationId, session.accountId),
@@ -204,7 +220,28 @@ export async function POST(request: NextRequest) {
           if (openedId) {
             conversationId = openedId;
             send({ type: 'conversation', conversationId: openedId });
+            // THE RETRY THIS TURN EXISTS FOR. On a brand-new chat the guard
+            // above was false (no id yet), so the bind was skipped rather than
+            // done — not retried, per the old code, which is how a row kept
+            // conversation_id NULL forever. Now that this turn minted an id,
+            // bind against it — but only if the earlier attempt didn't already
+            // run (an existing chat that already had conversationId at the
+            // top), so a file is never bound twice.
+            if (attachmentIds.length && !attachmentsBound) {
+              await bindAttachments(session.accountId, attachmentIds, openedId).catch((e) => {
+                log.error('agent stream: bindAttachments (new-chat retry) failed', e, { streamId, conversationId: openedId, attachmentIds });
+              });
+            }
           }
+        }
+
+        // Mark this conversation as having a turn in progress (migration 072)
+        // — before runAgentStream, which is the part that can legitimately
+        // take minutes. Cleared unconditionally in the `finally` below. Only
+        // meaningful once an id exists: an approve-resume or an existing chat
+        // has one already; a brand-new chat has one from the block above.
+        if (conversationId) {
+          await markConversationRunning(conversationId, session.accountId);
         }
 
         await runAgentStream(
@@ -226,6 +263,16 @@ export async function POST(request: NextRequest) {
         send({ type: 'error', message: e?.message || 'Agent failed' });
         terminalSent = true;
       } finally {
+        // Clear the in-flight flag UNCONDITIONALLY — success, error, or a
+        // client that vanished mid-turn all reach this block, which is
+        // exactly why it (not runAgentStream's own completion) is where this
+        // lives. A conversation left "running" forever is what the staleness
+        // cutoff in isConversationRunning exists to survive, but clearing it
+        // here is what makes a RETURNING user see the answer promptly instead
+        // of waiting out that cutoff for no reason.
+        if (conversationId) {
+          await clearConversationRunning(conversationId, session.accountId);
+        }
         // THE GUARANTEE: this stream never closes silently.
         //
         // A turn could complete its work and then fail on the way out — the

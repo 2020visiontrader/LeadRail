@@ -367,6 +367,14 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
   }
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [compaction, setCompaction] = useState<{ level: 'soft' | 'hard'; tokenEstimate: number } | null>(null);
+  // Set by the mount-time rehydration effect below when the conversation we
+  // just loaded is marked running server-side (migration 072): a turn is
+  // still in progress on a connection this tab never opened (started before
+  // navigation, or in a tab that's gone). Without this the effect just
+  // repaints the SAVED transcript — the question, no answer, no spinner,
+  // indistinguishable from "it stopped". Cleared once the poll below sees the
+  // answer land, or gives up past the staleness cutoff.
+  const [resumingRun, setResumingRun] = useState(false);
   const [handingOver, setHandingOver] = useState(false);
   const [personas, setPersonas] = useState<PersonaOption[]>([]);
   const [selectedPersonaId, setSelectedPersonaId] = useState<string | undefined>(undefined);
@@ -444,37 +452,107 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
   // just repaints it, so a refresh no longer looks like the chat is gone.
   // Rehydrated assistant turns carry no steps (steps are live-run telemetry, not
   // persisted) and render through the SAME <Markdown> bubble as live ones.
+  //
+  // RUN-IN-PROGRESS HANDLING (migration 072). A run is only ever an open HTTP
+  // connection — nothing server-side records "in progress" except that
+  // connection's own liveness, and this component unmounts on navigation. So
+  // arriving here mid-turn used to be indistinguishable from the turn having
+  // silently died: the GET below returns the last SAVED transcript, which for
+  // a run still writing its answer is just the user's question. `running`
+  // (from GET /api/agent/conversations/:id) says whether the server still has
+  // a turn in flight on this conversation; when it does, this polls the same
+  // endpoint until the flag clears (the answer landed — repaint it) or the
+  // poll gives up. Deliberately NOT a reattach to the original SSE stream —
+  // that connection is gone and the server-side run doesn't need one; the
+  // answer is already guaranteed to persist (stream-guard.ts), so re-reading
+  // the saved transcript is the entire mechanism this needs.
   useEffect(() => {
     if (!conversationId) return;
     let cancelled = false;
-    apiGet<{
+    let pollTimer: ReturnType<typeof setTimeout> | undefined;
+    const pollStartedAt = Date.now();
+    // How often to check back, and how long to keep checking. The interval is
+    // a UX choice (frequent enough to feel responsive, not so frequent it
+    // hammers the endpoint). The timeout MIRRORS RUNNING_STALE_MS in
+    // lib/agent/memory.ts — that file is server-only (imports the Supabase
+    // client) and cannot be imported into this client component, so the value
+    // is duplicated here rather than shared; keep the two in sync by hand if
+    // either changes. Past this point the server itself would already treat
+    // the flag as stale, so continuing to poll could never see it clear.
+    const POLL_INTERVAL_MS = 3000;
+    const POLL_TIMEOUT_MS = 6 * 60 * 1000;
+
+    type ConversationPayload = {
       transcript: Array<{ role: string; content: string }>;
       pendingApproval?: { id: string; tool: string; title?: string; summary?: string } | null;
-    }>(`/api/agent/conversations/${encodeURIComponent(conversationId)}`)
+      running?: boolean;
+    };
+
+    const applyPayload = (d: ConversationPayload) => {
+      const rows = Array.isArray(d.transcript) ? d.transcript : [];
+      setTurns(transcriptToTurns(rows));
+      // Re-surface a proposal that is still waiting, IN THE CHAT IT CAME FROM.
+      //
+      // The approval row is written before the needs_approval event is sent,
+      // because execution is gated on it. So a turn that threw, was stopped,
+      // or was navigated away from left a queue entry and no card — and the
+      // work looked like it had silently gone somewhere else. Live work now
+      // comes back where it was proposed; a SCHEDULED task has no
+      // conversation, so its approvals stay queue-only, which is right —
+      // nobody is watching a chat at 3am.
+      if (d.pendingApproval) {
+        setProposal({
+          approvalId: d.pendingApproval.id,
+          tool: d.pendingApproval.tool,
+          title: d.pendingApproval.title,
+          summary: d.pendingApproval.summary,
+        } as any);
+      }
+    };
+
+    const fetchOnce = () => apiGet<ConversationPayload>(`/api/agent/conversations/${encodeURIComponent(conversationId)}`);
+
+    const poll = () => {
+      if (cancelled) return;
+      if (Date.now() - pollStartedAt > POLL_TIMEOUT_MS) {
+        // Gave up — mirrors the server's own staleness cutoff. If the run
+        // really is still alive past this point the next reopen of this chat
+        // (or a manual refresh) tries again from scratch.
+        setResumingRun(false);
+        return;
+      }
+      fetchOnce()
+        .then((d) => {
+          if (cancelled) return;
+          if (!d.running) {
+            applyPayload(d);
+            setResumingRun(false);
+            return;
+          }
+          pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
+        })
+        .catch(() => {
+          // best-effort: stop rather than poll forever against a failing read.
+          if (!cancelled) setResumingRun(false);
+        });
+    };
+
+    fetchOnce()
       .then((d) => {
         if (cancelled) return;
-        const rows = Array.isArray(d.transcript) ? d.transcript : [];
-        setTurns(transcriptToTurns(rows));
-        // Re-surface a proposal that is still waiting, IN THE CHAT IT CAME FROM.
-        //
-        // The approval row is written before the needs_approval event is sent,
-        // because execution is gated on it. So a turn that threw, was stopped,
-        // or was navigated away from left a queue entry and no card — and the
-        // work looked like it had silently gone somewhere else. Live work now
-        // comes back where it was proposed; a SCHEDULED task has no
-        // conversation, so its approvals stay queue-only, which is right —
-        // nobody is watching a chat at 3am.
-        if (d.pendingApproval) {
-          setProposal({
-            approvalId: d.pendingApproval.id,
-            tool: d.pendingApproval.tool,
-            title: d.pendingApproval.title,
-            summary: d.pendingApproval.summary,
-          } as any);
+        applyPayload(d);
+        if (d.running) {
+          setResumingRun(true);
+          pollTimer = setTimeout(poll, POLL_INTERVAL_MS);
         }
       })
       .catch(() => { /* best-effort: an empty console is still usable */ });
-    return () => { cancelled = true; };
+
+    return () => {
+      cancelled = true;
+      if (pollTimer) clearTimeout(pollTimer);
+      setResumingRun(false);
+    };
   }, [conversationId]);
 
   // Fetch available personas on mount. Additive: only populated when the
@@ -981,6 +1059,17 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
               )}
             </div>
           ),
+        )}
+        {resumingRun && (
+          // Only ever set by the mount-time rehydration effect: a turn this
+          // tab never started (or lost the connection to) is still running
+          // server-side. Not a step row — those belong to a run THIS tab is
+          // driving, and this one is coming back from somewhere else, so it
+          // renders as its own line rather than borrowing that machinery.
+          <div className="flex items-center gap-2 text-sm text-[var(--text-muted)]">
+            <span className="h-2 w-2 animate-pulse rounded-full bg-[var(--brand)]" />
+            Still working on this — the answer will appear here when it&rsquo;s ready.
+          </div>
         )}
         {compaction && (
           <div className="animate-fade-in rounded-xl border border-[#D97706] bg-[color-mix(in_srgb,#D97706_8%,transparent)] p-4">

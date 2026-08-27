@@ -394,6 +394,66 @@ export async function loadCarryover(fromId: string, accountId: string): Promise<
   return row?.carryover ?? null;
 }
 
+// --- in-flight run state (migration 072) ------------------------------------
+//
+// A run exists ONLY as an open HTTP connection to the stream route — there is
+// no agent_runs/agent_jobs table. AgentConsole.tsx unmounts on navigation, so
+// coming back to a conversation mid-turn used to repaint the last SAVED
+// transcript (the question, no answer, no spinner) — indistinguishable from
+// "it stopped". These three functions are the entire mechanism: the route
+// marks the conversation running when a turn starts and clears it in its
+// `finally` (guaranteed to run, same block that already guarantees
+// saveConversation runs); the GET conversations/[id] route surfaces the
+// (staleness-checked) result so the client can poll instead of assuming dead.
+
+/** A running_since older than this is treated as not-running. Guards against
+ *  a process that dies mid-turn (crash, killed container) and therefore never
+ *  reaches the `finally` that would clear the flag — without this, that one
+ *  conversation would read as "running" forever. Set above the stream route's
+ *  own maxDuration (300s, app/api/agent/stream/route.ts) with a buffer, so an
+ *  honestly-still-running turn near that limit is never mistaken for stale. */
+export const RUNNING_STALE_MS = 6 * 60 * 1000;
+
+/** Mark a conversation as having a turn in progress. Best-effort: a failure
+ *  here must not fail the turn — worst case the client's rehydration effect
+ *  simply doesn't know to poll, same as before this existed. */
+export async function markConversationRunning(id: string, accountId: string): Promise<void> {
+  try {
+    await supabase.from('agent_conversations')
+      .update({ running_since: new Date().toISOString() })
+      .eq('id', id).eq('account_id', accountId);
+  } catch { /* best-effort */ }
+}
+
+/** Clear a conversation's in-flight flag. Called unconditionally from the
+ *  stream route's `finally`, whether the turn succeeded, errored, or the
+ *  client disconnected — that block already runs no matter what, which is
+ *  exactly the guarantee this needs to ride on rather than duplicate. */
+export async function clearConversationRunning(id: string, accountId: string): Promise<void> {
+  try {
+    await supabase.from('agent_conversations')
+      .update({ running_since: null })
+      .eq('id', id).eq('account_id', accountId);
+  } catch { /* best-effort */ }
+}
+
+/** Whether a conversation currently has a turn in progress, per the staleness
+ *  cutoff above. Tenant-scoped in the query, never after the fetch. Never
+ *  throws — a failed read here should degrade to "not running" (the worst
+ *  case is the UI not offering to poll), not break the conversation load. */
+export async function isConversationRunning(id: string, accountId: string): Promise<boolean> {
+  try {
+    const { data } = await supabase.from('agent_conversations')
+      .select('running_since').eq('id', id).eq('account_id', accountId)
+      .is('deleted_at', null).maybeSingle();
+    const since = (data as any)?.running_since;
+    if (!since) return false;
+    return Date.now() - new Date(since).getTime() < RUNNING_STALE_MS;
+  } catch {
+    return false;
+  }
+}
+
 // --- durable facts ---------------------------------------------------------
 
 export interface MemoryFact {
