@@ -9,6 +9,19 @@ import { useCallback, useRef, useState } from 'react';
 // everything except the document they just attached, and nothing on screen
 // suggests anything went wrong. So an unreadable file gets an amber chip and
 // says why, rather than looking identical to one that worked.
+//
+// WHY THE UPLOAD IS A HOOK AND NOT JUST A COMPONENT. Drag-and-drop used to live
+// on this component's own wrapper — which renders NOTHING until there is an
+// attachment or a drag in progress. A div with no children has no height and no
+// hit area, so on an empty composer there was, quite literally, nowhere to drop
+// a file. Dragging one in did nothing at all and the only route left was the
+// paperclip, which is exactly what it looked like from the outside.
+//
+// The drop target has to be the whole console, which is a different component.
+// Rather than pass callbacks down and drag state up, the upload itself is a
+// hook: the chip list and the console-wide drop and paste handlers all run the
+// same code, so a file cannot arrive by one route and be handled differently
+// from another.
 
 export interface UploadedAttachment {
   id: string;
@@ -16,11 +29,14 @@ export interface UploadedAttachment {
   kind: string;
   bytes: number;
   chars: number;
-  status: 'ready' | 'image' | 'unreadable';
+  status: 'ready' | 'image' | 'video' | 'unreadable';
   note?: string | null;
 }
 
-const ACCEPT = '.pdf,.docx,.pptx,.xlsx,.xls,.csv,.txt,.md,.json,.png,.jpg,.jpeg,.gif,.webp';
+// Video is here now that the assistant can read one (lib/video). It is decoded
+// in the browser before anything is sent, so the size of the file on disk is
+// not the size of the upload.
+const ACCEPT = '.pdf,.docx,.pptx,.xlsx,.xls,.csv,.txt,.md,.json,.png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.webm,.m4v';
 
 function humanSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -33,16 +49,26 @@ interface Props {
   attachments: UploadedAttachment[];
   onChange: (next: UploadedAttachment[]) => void;
   disabled?: boolean;
+  /** Supplied by the console so a drop and the paperclip share one in-flight
+   *  list. Omitted, this component makes its own. */
+  uploader?: AttachmentUploader;
 }
 
-export default function Attachments({ conversationId, attachments, onChange, disabled }: Props) {
+export interface AttachmentUploader {
+  upload: (files: File[]) => Promise<void>;
+  uploading: string[];
+  error: string | null;
+}
+
+/** The one upload path. Everything that can receive a file — the paperclip, a
+ *  drop anywhere on the console, a paste — goes through this. */
+export function useAttachmentUpload({ conversationId, attachments, onChange }: {
+  conversationId?: string;
+  attachments: UploadedAttachment[];
+  onChange: (next: UploadedAttachment[]) => void;
+}): AttachmentUploader {
   const [uploading, setUploading] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [dragging, setDragging] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
-  // Drag events fire for every child element, so a boolean flag flickers.
-  // Counting enter/leave is the only version that survives nested nodes.
-  const dragDepth = useRef(0);
 
   const upload = useCallback(async (files: File[]) => {
     if (!files.length) return;
@@ -66,35 +92,30 @@ export default function Attachments({ conversationId, attachments, onChange, dis
     }
   }, [attachments, conversationId, onChange]);
 
+  return { upload, uploading, error };
+}
+
+export default function Attachments({ conversationId, attachments, onChange, disabled, uploader }: Props) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  // The console owns the uploader when it has one, so a drop and a paperclip
+  // click share the same in-flight list — two independent uploaders would show
+  // a file as "reading…" in one place and finished in the other.
+  const own = useAttachmentUpload({ conversationId, attachments, onChange });
+  const { upload, uploading, error } = uploader ?? own;
+
   async function remove(id: string) {
     onChange(attachments.filter((a) => a.id !== id));
     await fetch(`/api/assistant/attachments/${id}`, { method: 'DELETE' }).catch(() => {});
   }
 
   return (
-    <div
-      onDragEnter={(e) => { e.preventDefault(); dragDepth.current++; setDragging(true); }}
-      onDragLeave={(e) => { e.preventDefault(); if (--dragDepth.current <= 0) { dragDepth.current = 0; setDragging(false); } }}
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={(e) => {
-        e.preventDefault();
-        dragDepth.current = 0;
-        setDragging(false);
-        if (!disabled) void upload(Array.from(e.dataTransfer.files || []));
-      }}
-      className={dragging ? 'rounded-lg outline-dashed outline-2 outline-offset-2 outline-[var(--brand)]' : ''}
-    >
-      {dragging && (
-        <p className="px-3 pb-1 text-[11px] font-medium text-[var(--brand)]">
-          Drop to attach — the assistant will read it as context for this conversation.
-        </p>
-      )}
-
+    <div>
       {(attachments.length > 0 || uploading.length > 0 || error) && (
         <div className="flex flex-wrap gap-1.5 px-3 pb-2">
           {attachments.map((a) => {
             const bad = a.status === 'unreadable';
             const image = a.status === 'image';
+            const video = a.status === 'video';
             return (
               <span
                 key={a.id}
@@ -105,12 +126,12 @@ export default function Attachments({ conversationId, attachments, onChange, dis
                     : 'border-[var(--border-default)] bg-[var(--bg-raised)] text-[var(--text-secondary)]'
                 }`}
               >
-                <span aria-hidden>{bad ? '!' : image ? '▣' : '▤'}</span>
+                <span aria-hidden>{bad ? '!' : video ? '▶' : image ? '▣' : '▤'}</span>
                 <span className="truncate">{a.filename}</span>
                 {/* The count is the proof it was actually read. "Attached" alone
                     is a claim; "8,412 characters" is evidence. */}
                 <span className="shrink-0 opacity-70">
-                  {bad ? 'unreadable' : image ? 'image' : `${a.chars.toLocaleString()} chars`}
+                  {bad ? 'unreadable' : video ? 'video' : image ? 'image' : `${a.chars.toLocaleString()} chars`}
                 </span>
                 <button
                   type="button"

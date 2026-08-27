@@ -93,3 +93,25 @@ describe('never silently losing a file', () => {
     expect(block).toMatch(/further attachment\(s\) not shown/i);
   });
 });
+
+// A video and an image carry no text and are NOT failures. Marking them
+// "unreadable" would send someone off to convert a file the assistant can
+// already read.
+describe('files with no text', () => {
+  it('does not call a video unreadable', () => {
+    const block = attachmentContextBlock([
+      { id: '1', filename: 'ad.mp4', status: 'video', extracted_text: null, chars: 0,
+        note: 'This is a video. Its frames and speech were read at upload — call analyseUploadedVideo with this attachment id.' } as any,
+    ]);
+    expect(block).not.toMatch(/No text could be read/);
+    expect(block).toContain('analyseUploadedVideo');
+  });
+
+  it('still names a genuinely unreadable file as one', () => {
+    const block = attachmentContextBlock([
+      { id: '2', filename: 'scan.pdf', status: 'unreadable', extracted_text: null, chars: 0,
+        note: 'This PDF has no text layer.' } as any,
+    ]);
+    expect(block).toMatch(/No text could be read/);
+  });
+});
