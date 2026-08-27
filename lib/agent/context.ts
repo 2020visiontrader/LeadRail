@@ -15,6 +15,8 @@ import { LIVE_SOCIALS } from '@/lib/social/providers';
 import { loadVentureContext } from '@/lib/ai/venture-context';
 import { listAttachments, attachmentContextBlock } from '@/lib/documents/attachments';
 import { recallMemoryDigest } from './memory';
+import { resolveSubjects } from '@/lib/memory/resolve';
+import { loadSubjectMemory } from '@/lib/memory/project';
 
 // A static description of what LeadRail is and how its pieces fit together, so
 // the copilot can explain features and route plain-language tasks to the right
@@ -191,6 +193,32 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
   // Documents the user dropped into this conversation. Fetched alongside the
   // rest rather than in the route, so both the streaming and non-streaming
   // entry points get them and cannot drift apart.
+  // SUBJECT-SCOPED MEMORY (migration 061). Entity resolution runs first — which
+  // contact/deal/campaign/brand is this turn about — and then ONE keyed read
+  // per subject, never a graph traversal on the live path.
+  //
+  // This is a different question from the digest above. The digest asks "what
+  // do we know that is semantically near this message"; this asks "what do we
+  // know about the record being discussed". Semantic nearness is a poor proxy
+  // for aboutness: a question about Jane's renewal will surface whatever
+  // embeds close to renewal language, which may be another account's deal.
+  //
+  // Degrades to nothing: an unresolvable message contributes no block and the
+  // turn is grounded exactly as it is today.
+  const subjectMemorySection = (async () => {
+    try {
+      const subjects = await resolveSubjects({
+        accountId,
+        message: input.query,
+        brandId,
+        brandName: input.brandName,
+      });
+      if (!subjects.length) return null;
+      const block = await loadSubjectMemory(accountId, subjects);
+      return block || null;
+    } catch { return null; /* memory omitted */ }
+  })();
+
   const attachmentSection = (async () => {
     if (!input.conversationId) return null;
     try {
@@ -199,12 +227,14 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
     } catch { return null; /* a failed read must not blank the whole context */ }
   })();
 
-  const [venture, snapshot, social, memory, attachments] = await Promise.all([
-    ventureSection, snapshotSection, socialSection, memorySection, attachmentSection,
+  const [venture, snapshot, social, memory, subjectMemory, attachments] = await Promise.all([
+    ventureSection, snapshotSection, socialSection, memorySection, subjectMemorySection, attachmentSection,
   ]);
 
   const sections: string[] = [PLATFORM_BRIEF];
-  for (const s of [venture, snapshot, social, memory]) if (s) sections.push(s);
+  // subjectMemory after the account-wide digest: it is more specific, and
+  // recency in the prompt favours what comes later.
+  for (const s of [venture, snapshot, social, memory, subjectMemory]) if (s) sections.push(s);
   // LAST, deliberately. Untrusted document text goes closest to the user's own
   // message so the boundary between "what the platform knows" and "what a file
   // claims" is unambiguous — and so no trusted instruction follows it, which is
