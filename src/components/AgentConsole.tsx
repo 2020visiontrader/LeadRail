@@ -4,7 +4,7 @@ import Button from '@/components/Button';
 import Markdown from '@/components/Markdown';
 import { apiGet, apiSend } from '@/lib/api';
 import VoiceInput from '@/components/composer/VoiceInput';
-import Attachments, { type UploadedAttachment } from '@/components/composer/Attachments';
+import Attachments, { useAttachmentUpload, type UploadedAttachment } from '@/components/composer/Attachments';
 
 // Live agentic console. Streams the assistant's real reasoning from
 // /api/agent/stream and renders it Claude-desktop style: one plain-language
@@ -44,6 +44,9 @@ type Turn = { role: 'user' } & { text: string; id?: string } | {
 // Map internal tool names to plain-language present-tense actions.
 const TOOL_VERB: Record<string, string> = {
   listVentures: 'Checking your brands',
+  watchVideoUrl: 'Analysing that video',
+  checkVideoAnalysis: 'Checking the video analysis',
+  analyseUploadedVideo: 'Watching your video',
   listAdAccounts: 'Looking up your ad accounts',
   listCampaigns: 'Pulling up your campaigns',
   listConversations: 'Reading recent conversations',
@@ -362,6 +365,43 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
   // transcript is over the threshold. The banner is an offer, not a status line
   // — show it once per chat and never again, even if the user dismisses it.
   const compactionShownRef = useRef(false);
+
+  // DROPPING A FILE ANYWHERE ON THE CONSOLE.
+  //
+  // These handlers used to live on the Attachments component's own wrapper,
+  // which renders nothing until there is an attachment or a drag already in
+  // progress — so on an empty composer it had no height and no hit area, and
+  // dragging a file in did nothing whatsoever. The only way in was the
+  // paperclip, which is precisely how it looked.
+  //
+  // The target is the whole console now: the message list, the composer, the
+  // gap between them. Wherever the file lands, it lands.
+  const uploader = useAttachmentUpload({ conversationId: conversationIdRef.current, attachments, onChange: setAttachments });
+  const [dragging, setDragging] = useState(false);
+  // Drag events fire for every child element, so a boolean flickers as the
+  // pointer crosses a nested node. Counting enter/leave is the only version
+  // that survives a deep tree.
+  const dragDepth = useRef(0);
+
+  const onDrop = (e: React.DragEvent) => {
+    const files = Array.from(e.dataTransfer?.files || []);
+    if (!files.length) return;   // a dragged text selection is not a file
+    e.preventDefault();
+    dragDepth.current = 0;
+    setDragging(false);
+    if (!busy && !dictating) void uploader.upload(files);
+  };
+
+  // Pasting a file is the other way people actually do this — a screenshot
+  // straight from the clipboard, or a file copied out of a folder. Both arrive
+  // as clipboardData.files.
+  const onPaste = (e: React.ClipboardEvent) => {
+    const files = Array.from(e.clipboardData?.files || []);
+    if (!files.length) return;   // an ordinary text paste must keep working
+    e.preventDefault();
+    if (!busy && !dictating) void uploader.upload(files);
+  };
+
   // Set once, by the carryover handoff, and consumed by the very next request.
   // `from` reseeds a fresh chat from the previous one's memo; sending it twice
   // would re-inject the same carryover block into an already-seeded chat.
@@ -811,7 +851,34 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     // viewport and the PAGE scrolled — the workspace shifted while you typed.
     // The parent now owns the height; the message list below is the only
     // scroller, so the composer stays put.
-    <div className="flex h-full min-h-0 flex-col rounded-2xl border border-[var(--border-default)] bg-[var(--bg-surface)] shadow-[var(--shadow-card)]">
+    <div
+      onDragEnter={(e) => {
+        // Only for an actual file. Dragging selected text across the console
+        // should not put it into "drop to attach" mode.
+        if (!Array.from(e.dataTransfer?.types || []).includes('Files')) return;
+        e.preventDefault(); dragDepth.current++; setDragging(true);
+      }}
+      onDragLeave={(e) => { e.preventDefault(); if (--dragDepth.current <= 0) { dragDepth.current = 0; setDragging(false); } }}
+      // Without preventDefault here the browser takes the drop itself and
+      // navigates away to the file — the tab is replaced by a PDF and the
+      // conversation is gone.
+      onDragOver={(e) => { if (Array.from(e.dataTransfer?.types || []).includes('Files')) e.preventDefault(); }}
+      onDrop={onDrop}
+      onPaste={onPaste}
+      className={`relative flex h-full min-h-0 flex-col rounded-2xl border bg-[var(--bg-surface)] shadow-[var(--shadow-card)] transition ${
+        dragging ? 'border-[var(--brand)] border-dashed' : 'border-[var(--border-default)]'
+      }`}
+    >
+      {dragging && (
+        // Covers the console rather than sitting above the composer: the
+        // feedback has to appear wherever the pointer is, or a drop over the
+        // message list looks unsupported.
+        <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-2xl bg-[color-mix(in_srgb,var(--brand)_10%,transparent)]">
+          <p className="rounded-lg bg-[var(--bg-surface)] px-4 py-2 text-sm font-medium text-[var(--brand)] shadow-[var(--shadow-card)]">
+            Drop to attach — I&rsquo;ll read it as context for this conversation.
+          </p>
+        </div>
+      )}
       <div className="flex-1 space-y-4 overflow-y-auto p-5" aria-live="polite">
         {turns.length === 0 && (
           <div className="mx-auto mt-10 max-w-md text-center text-sm text-[var(--text-muted)]">
@@ -885,6 +952,7 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
             attachments={attachments}
             onChange={setAttachments}
             disabled={busy || dictating}
+            uploader={uploader}
           />
           <textarea
             rows={2}

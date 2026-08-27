@@ -37,6 +37,7 @@ import { log } from '@/lib/logger';
 import { buildCachedPrompt } from './prompt-cache';
 import { beginDelegationScope, endDelegationScope, setDelegationContext } from '@/lib/capabilities/delegation';
 import { hermesRoute } from '@/lib/ai/hermes';
+import { parseBatch, runBatch, batchSummary, MAX_BATCH, type BatchItemResult } from './batch';
 
 // A multi-part request ("research these five agencies, then tailor outreach")
 // needs a list call, a web search per company, and then the answer — 10 steps
@@ -327,12 +328,16 @@ function systemPrompt(brandName?: string, agentContext?: string, carryover?: Car
     '',
     'HOW YOU RESPOND: on EACH turn output ONE JSON object and nothing else — no prose outside it, no markdown fences. Use exactly one shape:',
     '  {"thought":"<short plain-language sentence describing what you\'re doing/thinking>","action":"tool","tool":"<toolName>","args":{...}}',
+    `  {"thought":"<short plain-language sentence>","action":"tool","tool":"<toolName>","calls":[{...args},{...args}]}   <- run the SAME tool over many inputs AT ONCE`,
     '  {"thought":"<short plain-language sentence>","action":"final","message":"<your full reply to the user>"}',
     'The "thought" is shown to the user live as your thinking step — write it as a human sentence ("Checking your active campaigns…"), never a raw tool name.',
     'You MAY split that one field into two, in either shape — both are optional and either may be omitted:',
     '  "plan": your own internal reasoning about what to do next. It is NEVER shown to the user, so be as technical as you like.',
     '  "narration": the single line the user reads instead of "thought". Short, plain language, present tense, no tool, vendor, or model names ("Pulling this month\'s numbers…").',
     'When "narration" is present it replaces "thought" in the live trace. When it is absent, "thought" is used exactly as described above — so omitting both new fields is always safe.',
+    '',
+    `WHEN YOU HAVE MANY OF THE SAME THING TO DO, USE "calls" — do NOT do them one per step. Revealing twenty leads is ONE decision applied to twenty rows, not twenty decisions: put all twenty argument sets in "calls" and they run together in a single step. Doing them one at a time runs out of steps long before the work is finished, so a list handled one-per-step is a job that never completes. Use "args" only for a genuinely single action. Never send both. At most ${MAX_BATCH} per batch — if you have more, do ${MAX_BATCH} in one step and the rest in the next.`,
+    'A batch of an action that needs approval is ONE approval covering the whole batch, so the user sees a single card naming every item rather than being asked the same question twenty times.',
     '',
     'HOW YOU WORK:',
     '- Ground every answer in this account\'s real data — use the context above and the tools; never invent numbers, leads, or campaigns.',
@@ -784,6 +789,86 @@ async function resolvePersonaForTurn(
     }
   }
   return {};
+}
+
+
+/**
+ * Re-raise a proposal whose approval lapsed before it could run.
+ *
+ * WHY ONLY `expired`. The other refusals must NOT come back:
+ *   not_approved     — the person said no, or never said yes. Re-proposing is
+ *                      nagging past a decision.
+ *   already_executed — it ran. Re-proposing is a second spend.
+ *   args_mismatch    — the details moved between approval and execution, which
+ *                      is a signal something is wrong, not a timing accident.
+ *
+ * An expiry is the one case where nothing was decided and nothing happened: the
+ * clock simply ran out. The agent is still holding the exact tool and args, so
+ * ending the turn and telling the person to type "propose again" throws away
+ * everything it already knows and makes them redo a turn to reach the identical
+ * card. This raises that card directly.
+ *
+ * It is NOT a bypass. The new approval is a fresh row with a fresh clock, and a
+ * person still has to click it. Nothing executes on the strength of a lapsed
+ * approval — which is the property the expiry existed to protect.
+ */
+async function reproposeAfterExpiry(
+  accountId: string,
+  tool: string,
+  args: Record<string, any>,
+  def: { title: string },
+  opts: {
+    conversationId?: string;
+    requestedBy?: string;
+    extraCapsByName?: Record<string, Capability>;
+    extraTools?: Record<string, AgentTool>;
+  },
+): Promise<AgentProposal | null> {
+  try {
+    const proposal: AgentProposal = {
+      tool, title: def.title, args,
+      summary: summarizeProposal(tool, args, opts.extraCapsByName, opts.extraTools),
+    };
+    const row = await createApproval(accountId, {
+      tool, title: def.title, summary: proposal.summary, args,
+      conversationId: opts.conversationId ?? null,
+      requestedBy: opts.requestedBy ?? null,
+      gate: capabilityFor(tool, opts.extraCapsByName)?.gate,
+    });
+    proposal.approvalId = row.id;
+    return proposal;
+  } catch {
+    // Could not persist the new proposal. Fall back to the plain refusal —
+    // offering a card that can never be approved is worse than saying so.
+    return null;
+  }
+}
+
+
+/** Human summary for a batch approval card. Names every item, because the whole
+ *  point of one card for many actions is that the person can see what all of
+ *  them are — a card reading "reveal 25 people" with no names is a worse gate
+ *  than twenty-five separate cards, not a better one. */
+function summarizeBatchProposal(
+  tool: string,
+  calls: { args: Record<string, any> }[],
+  extraCaps?: Record<string, Capability>,
+  extraTools?: Record<string, AgentTool>,
+): string {
+  const lines = calls.map((c, i) => `${i + 1}. ${summarizeProposal(tool, c.args, extraCaps, extraTools)}`);
+  return `${calls.length} actions, all of them ${tool}:\n${lines.join('\n')}`;
+}
+
+/** Fold a batch's results into one observation. Every item is reported,
+ *  successes and failures alike: the model has to be able to tell WHICH of the
+ *  twenty-five did not work, or its next step is a guess. */
+function batchObservation(tool: string, results: BatchItemResult[], extraCaps?: Record<string, Capability>): string {
+  const lines = results.map((r) =>
+    r.ok
+      ? `[${r.index + 1}] ok — ${observationFor(tool, r.args, { ok: true, result: r.result }, extraCaps)}`
+      : `[${r.index + 1}] FAILED — ${r.error || 'no reason given'}`,
+  );
+  return `${batchSummary(tool, results)}\n${lines.join('\n')}`;
 }
 
 /**
@@ -1258,13 +1343,42 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
     try {
       await consumeApprovalForExecution(accountId, approvalId, tool, args);
     } catch (e: any) {
+      if (e?.code === 'expired') {
+        const def = TOOLS[tool] ?? extraTools[tool];
+        const proposal = def && await reproposeAfterExpiry(accountId, tool, args, def, {
+          conversationId: input.conversationId, requestedBy: input.requestedBy,
+          extraCapsByName, extraTools,
+        });
+        if (proposal) {
+          messages.push(pendingApprovalObservation(tool));
+          return {
+            status: 'needs_approval',
+            message: `That approval lapsed before I could run it, so nothing happened. Here it is again — ${proposal.summary}`,
+            proposal, transcript: messages, steps,
+          };
+        }
+      }
       return { status: 'error', message: approvalRefusal(e), transcript: messages, steps };
     }
-    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id, toolCtx);
-    const obs = observationFor(tool, args, res, extraCapsByName);
-    const obsLimit = obsLimitFor(tool, extraCapsByName);
-    steps.push({ tool, args, observation: truncate(obs, obsLimit) });
-    messages.push(observation(obs, obsLimit));
+    // A BATCH approval resumes as a batch. The row's args are the whole batch
+    // ({calls:[...]}), which is what makes the hash cover every item — so
+    // handing that object to runTool as if it were one call's arguments would
+    // fail validation and lose an approval the user had just granted.
+    const approvedBatch = parseBatch(args);
+    if (approvedBatch.kind === 'batch') {
+      const results = await runBatch(approvedBatch.calls, (a) => runTool(tool, accountId, a, extraTools, extraCapsByName, brandContext?.id, toolCtx));
+      const obs = batchObservation(tool, results, extraCapsByName);
+      const perCall = obsLimitFor(tool, extraCapsByName);
+      const obsLimit = perCall === undefined ? undefined : perCall * Math.min(approvedBatch.calls.length, 4);
+      steps.push({ tool, args, observation: truncate(obs, obsLimit) });
+      messages.push(observation(obs, obsLimit));
+    } else {
+      const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id, toolCtx);
+      const obs = observationFor(tool, args, res, extraCapsByName);
+      const obsLimit = obsLimitFor(tool, extraCapsByName);
+      steps.push({ tool, args, observation: truncate(obs, obsLimit) });
+      messages.push(observation(obs, obsLimit));
+    }
   }
 
   let jsonRetries = 0;
@@ -1383,6 +1497,68 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
       unknownTools++;
       steps.push({ thought: narrationFor(parsed), tool });
       messages.push(unknownToolObservation(tool, knownToolNames, unknownTools));
+      continue;
+    }
+
+    // BATCH. One tool, many argument sets, ONE step — see lib/agent/batch.ts.
+    // Checked before every guard below because the guards are about how many
+    // DECISIONS a turn makes, and a batch is one decision however many rows it
+    // touches.
+    const batch = parseBatch(parsed);
+    if (batch.kind === 'invalid') {
+      // A malformed batch is a correctable mistake, not a dead turn: say what
+      // was wrong and let the next step fix it.
+      steps.push({ thought: narrationFor(parsed), tool, observation: batch.reason });
+      messages.push(observation(`That batch was not valid: ${batch.reason}`));
+      continue;
+    }
+    if (batch.kind === 'batch') {
+      const calls = batch.calls;
+      if (def.sensitive) {
+        if (input.isDelegate) {
+          const obs = `You cannot run "${tool}" — it needs the operator's approval and you are answering as a specialist. Say what you recommend and why, and let the operator's own assistant propose it.`;
+          steps.push({ tool, observation: obs });
+          messages.push(observation(obs));
+          continue;
+        }
+        // ONE approval for the whole batch. The args carried on the row are the
+        // batch itself, so the hash covers every item: what gets executed is
+        // exactly what was approved, and a batch cannot grow between the card
+        // and the run.
+        const batchArgs = { calls: calls.map((c) => c.args) };
+        const proposal: AgentProposal = {
+          tool, title: def.title, args: batchArgs,
+          summary: summarizeBatchProposal(tool, calls, extraCapsByName, extraTools),
+        };
+        try {
+          const row = await createApproval(accountId, {
+            tool, title: def.title, summary: proposal.summary, args: batchArgs,
+            conversationId: input.conversationId ?? null,
+            requestedBy: input.requestedBy ?? null,
+            gate: capabilityFor(tool, extraCapsByName)?.gate,
+          });
+          proposal.approvalId = row.id;
+        } catch {
+          return { status: 'error', message: "I couldn't record that action for your approval, so I haven't run it. Please try again.", transcript: messages, steps };
+        }
+        steps.push({ thought: narrationFor(parsed), tool, args: batchArgs });
+        messages.push(pendingApprovalObservation(tool));
+        return { status: 'needs_approval', message: proposal.summary, proposal, transcript: messages, steps };
+      }
+
+      // Counts as ONE call against the duplicate guard, for the same reason.
+      toolCalls[tool] = (toolCalls[tool] || 0) + 1;
+      const results = await runBatch(calls, (a) => runTool(tool, accountId, a, extraTools, extraCapsByName, brandContext?.id, toolCtx));
+      const obs = batchObservation(tool, results, extraCapsByName);
+      lastToolName = tool;
+      // A batch observation carries N results, so the per-call limit would clip
+      // it to roughly one. Scaled, but not by the full N — the point of the
+      // limit is that one step cannot swallow the context window, and a batch
+      // of 25 must not be 25x the budget. Undefined stays undefined (no limit).
+      const perCall = obsLimitFor(tool, extraCapsByName);
+      const obsLimit = perCall === undefined ? undefined : perCall * Math.min(calls.length, 4);
+      steps.push({ thought: narrationFor(parsed), tool, args: { calls: calls.map((c) => c.args) }, observation: truncate(obs, obsLimit) });
+      messages.push(observation(obs, obsLimit));
       continue;
     }
 
@@ -1650,16 +1826,47 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
     try {
       await consumeApprovalForExecution(accountId, approvalId, tool, args);
     } catch (e: any) {
+      // Same rule as runAgent: an EXPIRED approval comes straight back as a
+      // fresh card rather than ending the turn. See reproposeAfterExpiry for
+      // why only expiry qualifies.
+      if (e?.code === 'expired') {
+        const proposal = await reproposeAfterExpiry(accountId, tool, args, approveDef, {
+          conversationId: input.conversationId, requestedBy: input.requestedBy,
+          extraCapsByName, extraTools,
+        });
+        if (proposal) {
+          messages.push(pendingApprovalObservation(tool));
+          emit({
+            type: 'needs_approval',
+            proposal,
+            message: `That approval lapsed before I could run it, so nothing happened. Here it is again — ${proposal.summary}`,
+            transcript: messages,
+          });
+          return;
+        }
+      }
       emit({ type: 'error', message: approvalRefusal(e) });
       return;
     }
-    emit({ type: 'tool', tool, title: approveDef.title, args });
-    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id, toolCtx);
-    const obs = observationFor(tool, args, res, extraCapsByName);
-    const obsLimit = obsLimitFor(tool, extraCapsByName);
-    emit({ type: 'observation', text: truncate(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
-    emitAnalysis(emit, analysisFor(tool, args, res, extraCapsByName));
-    messages.push(observation(obs, obsLimit));
+    // Batch resume — see the matching note in runAgent.
+    const approvedBatch = parseBatch(args);
+    if (approvedBatch.kind === 'batch') {
+      emit({ type: 'tool', tool, title: `${approveDef.title} — ${approvedBatch.calls.length} at once`, args });
+      const results = await runBatch(approvedBatch.calls, (a) => runTool(tool, accountId, a, extraTools, extraCapsByName, brandContext?.id, toolCtx));
+      const obs = batchObservation(tool, results, extraCapsByName);
+      const perCall = obsLimitFor(tool, extraCapsByName);
+      const obsLimit = perCall === undefined ? undefined : perCall * Math.min(approvedBatch.calls.length, 4);
+      emit({ type: 'observation', text: truncate(obs, obsLimit), ok: results.every((r) => r.ok), tool });
+      messages.push(observation(obs, obsLimit));
+    } else {
+      emit({ type: 'tool', tool, title: approveDef.title, args });
+      const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id, toolCtx);
+      const obs = observationFor(tool, args, res, extraCapsByName);
+      const obsLimit = obsLimitFor(tool, extraCapsByName);
+      emit({ type: 'observation', text: truncate(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
+      emitAnalysis(emit, analysisFor(tool, args, res, extraCapsByName));
+      messages.push(observation(obs, obsLimit));
+    }
   }
 
   let jsonRetries = 0;
@@ -1793,6 +2000,61 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
       unknownTools++;
       emit({ type: 'observation', text: `Unknown tool "${tool}".`, ok: false });
       messages.push(unknownToolObservation(tool, knownToolNames, unknownTools));
+      continue;
+    }
+
+    // BATCH — the streaming half of the branch in runAgent. Identical rules;
+    // see the note there. Kept in step per the LOOP-CONTROL INVARIANT.
+    const batch = parseBatch(parsed);
+    if (batch.kind === 'invalid') {
+      emit({ type: 'observation', text: `That batch was not valid: ${batch.reason}`, ok: false });
+      messages.push(observation(`That batch was not valid: ${batch.reason}`));
+      continue;
+    }
+    if (batch.kind === 'batch') {
+      const calls = batch.calls;
+      if (def.sensitive) {
+        if (input.isDelegate) {
+          const obs = `You cannot run "${tool}" — it needs the operator's approval and you are answering as a specialist. Say what you recommend and why, and let the operator's own assistant propose it.`;
+          emit({ type: 'observation', text: obs, ok: false });
+          messages.push(observation(obs));
+          continue;
+        }
+        const batchArgs = { calls: calls.map((c) => c.args) };
+        const proposal: AgentProposal = {
+          tool, title: def.title, args: batchArgs,
+          summary: summarizeBatchProposal(tool, calls, extraCapsByName, extraTools),
+        };
+        try {
+          const row = await createApproval(accountId, {
+            tool, title: def.title, summary: proposal.summary, args: batchArgs,
+            conversationId: input.conversationId ?? null,
+            requestedBy: input.requestedBy ?? null,
+            gate: capabilityFor(tool, extraCapsByName)?.gate,
+          });
+          proposal.approvalId = row.id;
+        } catch {
+          emit({ type: 'error', message: "I couldn't record that action for your approval, so I haven't run it. Please try again." });
+          return;
+        }
+        messages.push(pendingApprovalObservation(tool));
+        emit({ type: 'needs_approval', proposal, message: proposal.summary, transcript: messages });
+        return;
+      }
+
+      toolCalls[tool] = (toolCalls[tool] || 0) + 1;
+      emit({ type: 'tool', tool, title: `${def.title} — ${calls.length} at once`, args: { calls: calls.map((c) => c.args) } });
+      const results = await runBatch(calls, (a) => runTool(tool, accountId, a, extraTools, extraCapsByName, brandContext?.id, toolCtx));
+      const obs = batchObservation(tool, results, extraCapsByName);
+      const perCall = obsLimitFor(tool, extraCapsByName);
+      const obsLimit = perCall === undefined ? undefined : perCall * Math.min(calls.length, 4);
+      emit({
+        type: 'observation', text: truncate(obs, obsLimit), tool,
+        // ok only when EVERY call worked: a batch that half-failed must not
+        // render with a plain tick, which is what "mostly fine" looks like.
+        ok: results.every((r) => r.ok),
+      });
+      messages.push(observation(obs, obsLimit));
       continue;
     }
 

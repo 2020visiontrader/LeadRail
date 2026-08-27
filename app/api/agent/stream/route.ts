@@ -6,8 +6,36 @@ import { loadAgentContext } from '@/lib/agent/context';
 import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts } from '@/lib/agent/memory';
 import { parseMentions } from '@/lib/agent/personas';
 import type { ChatMessage } from '@/lib/ai/router';
+import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
+// Both were MISSING on this route while every other API route sets them. The
+// default runtime is not guaranteed to be Node, and this handler needs Node
+// streams; and with no maxDuration the platform applies its own default, which
+// on a turn that legitimately runs for minutes is a stream cut off mid-answer
+// with nothing said about why.
+export const runtime = 'nodejs';
+export const maxDuration = 300;
+
+// CONCURRENCY INSTRUMENTATION.
+//
+// Reported symptom: a second chat will not start until the first one finishes.
+// Nothing in this route serialises — no lock, no queue, no rate limit — and the
+// client holds its state per tab, so the cause is somewhere neither the code
+// nor a screenshot can show: the browser's per-origin connection limit, or the
+// platform running one request at a time.
+//
+// Guessing between those has already cost more than measuring will. This counts
+// streams that are open IN THIS PROCESS and stamps each one with an id, which
+// splits the question in a single log read:
+//
+//   B logs "received" only after A logs "closed"  -> nothing reached the server
+//     while A was running. The block is in the browser or the platform edge,
+//     not in this code.
+//   B logs "received" straight away, openStreams: 2 -> both are running here
+//     and the second is merely slow. That is the routing latency, not a lock.
+let openStreams = 0;
+let streamSeq = 0;
 
 // POST /api/agent/stream — same executor as /api/agent, streamed as SSE so the
 // UI renders each thinking/tool step live. Body: { message?, brandId?, conversationId?, approve? }.
@@ -18,14 +46,25 @@ export const dynamic = 'force-dynamic';
 export async function POST(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
+  const streamId = `s${++streamSeq}`;
+  openStreams += 1;
+  log.info('agent stream: received', { streamId, openStreams });
+  let closed = false;
+  const closeStream = (reason: string) => {
+    if (closed) return;
+    closed = true;
+    openStreams -= 1;
+    log.info('agent stream: closed', { streamId, reason, openStreams });
+  };
   if (!agentConfigured()) {
+    closeStream('not configured');
     return new Response(JSON.stringify({ error: 'LeadRail AI is temporarily unavailable', code: 'not_configured' }), {
       status: 409, headers: { 'Content-Type': 'application/json' },
     });
   }
 
   let body: any;
-  try { body = await request.json(); } catch { return badRequest('invalid JSON body'); }
+  try { body = await request.json(); } catch { closeStream('bad body'); return badRequest('invalid JSON body'); }
 
   const message: string | undefined = typeof body?.message === 'string' ? body.message : undefined;
   // approvalId is REQUIRED (Packet 0.1) — execution is gated on a persisted
@@ -38,8 +77,8 @@ export async function POST(request: NextRequest) {
         args: (body.approve.args && typeof body.approve.args === 'object') ? body.approve.args : {},
       }
     : undefined;
-  if (!message && !approve) return badRequest('provide a message, or an approved action including its approvalId');
-  if (typeof message === 'string' && message.length > 8000) return badRequest('message too long');
+  if (!message && !approve) { closeStream('bad request'); return badRequest('provide a message, or an approved action including its approvalId'); }
+  if (typeof message === 'string' && message.length > 8000) { closeStream('message too long'); return badRequest('message too long'); }
 
   let brandId: string | undefined;
   let brandName: string | undefined;
@@ -123,6 +162,7 @@ export async function POST(request: NextRequest) {
           });
           terminalSent = true;
           controller.close();
+          closeStream('transcript unreadable');
           return;
         }
 
@@ -205,7 +245,15 @@ export async function POST(request: NextRequest) {
         }
         controller.enqueue(encoder.encode('data: [DONE]\n\n'));
         controller.close();
+        closeStream('done');
       }
+    },
+    // Fires when the client goes away — a closed tab, a Stop, a dropped
+    // connection. Without it the counter only ever went down on a clean finish,
+    // so an abandoned stream would read as still open forever and the number
+    // this exists to measure would drift into meaninglessness.
+    cancel(reason) {
+      closeStream(`cancelled: ${String(reason ?? 'client went away').slice(0, 80)}`);
     },
   });
 

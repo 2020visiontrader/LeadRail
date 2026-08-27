@@ -15,7 +15,7 @@
 // ai_providers is empty, so that path never runs and these literals ARE the hard
 // limit today. Set high enough to mean "as much as the model will give", and
 // override with AI_MAX_OUTPUT_TOKENS.
-import { reportOpenAIUsage } from './usage';
+import { reportOpenAIUsage, reportUsage } from './usage';
 
 const DEFAULT_MAX_OUT = Number(process.env.AI_MAX_OUTPUT_TOKENS) || 16000;
 
@@ -141,12 +141,53 @@ export async function readSseDeltas(
   const decoder = new TextDecoder();
   let buf = '';
 
+  // TOKEN ACCOUNTING FOR STREAMED RESPONSES.
+  //
+  // Every streaming tier in this codebase funnels through this function —
+  // opencode, nim, openrouter, huggingface, and both branches of the
+  // registry path in providers.ts. That made it the one place where usage
+  // could be captured without six copies drifting apart, which is the same
+  // reasoning that put reportOpenAIUsage in one place for the non-streaming
+  // half (see lib/ai/usage.ts).
+  //
+  // It was worth fixing here because the numbers were essentially never
+  // recorded: of 364 ai_usage rows, exactly ONE carried tokens. Every client
+  // called reportOpenAIUsage from its non-streaming complete() only, and the
+  // agent — the thing that makes almost all the calls — streams.
+  //
+  // Accumulated across frames rather than read from one, because the two
+  // dialects deliver it differently: an OpenAI-compatible gateway sends a
+  // single final chunk carrying the whole block (and only when the request
+  // asked, via stream_options.include_usage), while Anthropic splits it —
+  // input_tokens on `message_start`, output_tokens on `message_delta`.
+  // Reporting each frame as it arrived would let the second erase the first,
+  // since reportUsage is last-writer-wins by design.
+  //
+  // Reported ONCE, after the stream ends, so the accumulation cannot leak
+  // across a fallback to another model: a stream that has emitted frames is
+  // never retried (status-code failures arrive before the first delta).
+  let tokensIn: number | null = null;
+  let tokensOut: number | null = null;
+  const noteUsage = (evt: any) => {
+    const u = evt?.usage ?? evt?.message?.usage;
+    if (!u) return;
+    const i = u.prompt_tokens ?? u.input_tokens;
+    const o = u.completion_tokens ?? u.output_tokens;
+    if (typeof i === 'number' && Number.isFinite(i)) tokensIn = i;
+    if (typeof o === 'number' && Number.isFinite(o)) tokensOut = o;
+  };
+
   const handleLine = (raw: string) => {
     const line = raw.trim();
     if (!line.startsWith('data:')) return;
     const payload = line.slice(5).trim();
     if (!payload || payload === '[DONE]') return;
-    try { onEvent(JSON.parse(payload)); } catch { /* skip a malformed frame */ }
+    let evt: any;
+    try { evt = JSON.parse(payload); } catch { return; /* skip a malformed frame */ }
+    // Usage is noted even if the consumer throws on this frame — the numbers
+    // describe the call that was already made either way.
+    noteUsage(evt);
+    onEvent(evt);
   };
 
   // eslint-disable-next-line no-constant-condition
@@ -161,6 +202,9 @@ export async function readSseDeltas(
     }
   }
   if (buf) handleLine(buf);
+  // NULL, not 0, when the tier reported nothing — "does not tell us" and "used
+  // no tokens" are different facts (see lib/ai/usage.ts).
+  if (tokensIn != null || tokensOut != null) reportUsage({ tokensIn, tokensOut });
 }
 
 /** Streaming twin of `complete()`. Same request shape, same error shapes, same
@@ -186,6 +230,12 @@ async function completeStream(
     temperature,
     max_tokens: maxTokens,
     stream: true,
+    // Ask the gateway to append a final chunk carrying the token counts.
+    // Without it an OpenAI-dialect stream reports no usage at all, which is
+    // why 363 of 364 ai_usage rows had NULL tokens. OpenAI-compatible only —
+    // deliberately NOT sent on the Anthropic branch, where it is not a valid
+    // parameter and usage arrives unprompted on message_start/message_delta.
+    stream_options: { include_usage: true },
   };
   // Same DeepSeek rule as complete(): thinking ON burns the whole budget on
   // hidden reasoning_content and returns nothing usable.
