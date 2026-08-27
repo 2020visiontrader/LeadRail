@@ -33,6 +33,7 @@ import { PIPELINE_CAPABILITIES } from './pipeline';
 import { CRM_AUTOMATION_CAPABILITIES } from './crm-automations';
 import { WORKSPACE_CAPABILITIES } from './workspace';
 import { CONTENT_CAPABILITIES } from './content';
+import { VIDEO_CAPABILITIES } from './video';
 import { DELIVERABLE_CAPABILITIES } from './deliverables';
 import { DELEGATION_CAPABILITIES } from './delegation';
 import { SUPPRESSION_CAPABILITIES } from './suppressions';
@@ -82,6 +83,7 @@ const ALL: Capability[] = [
   ...CRM_AUTOMATION_CAPABILITIES,
   ...WORKSPACE_CAPABILITIES,
   ...CONTENT_CAPABILITIES,
+  ...VIDEO_CAPABILITIES,
   ...DELIVERABLE_CAPABILITIES,
   ...DELEGATION_CAPABILITIES,
   ...SUPPRESSION_CAPABILITIES,
@@ -192,6 +194,12 @@ const CATALOG_ORDER: string[] = [
   // instead of leaving the model to narrate its result in prose. Appended,
   // never sorted, same reason as every entry above.
   'diagnosePipeline',
+  // --- appended 2026-08-26: the assistant could GENERATE video and never watch
+  // one. Two paths, split by who owns the footage: an uploaded file is decoded
+  // in the browser and every frame read for cuts and pace, while a link to
+  // someone else's published video goes to Higgsfield rather than being
+  // downloaded by us. Appended, never sorted, same reason as every entry above.
+  'watchVideoUrl', 'checkVideoAnalysis', 'analyseUploadedVideo',
 ];
 
 const byName = new Map(ALL.map((c) => [c.name, c]));

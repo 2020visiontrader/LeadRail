@@ -93,6 +93,23 @@ export async function higgsfieldUnavailableReason(accountId: string): Promise<st
 const VIDEO_TOOLS = ['generate_video', 'image2video', 'generate_video_batch'];
 const STATUS_TOOLS = ['job_display', 'jobs_wait', 'show_generation_by_ids'];
 
+/** Hosted analysis of an EXISTING video, in preference order.
+ *
+ *  WHY THIS ROUTE EXISTS RATHER THAN A DOWNLOADER. Every open-source "watch a
+ *  video" skill shells out to yt-dlp and pulls the file down. That is fine on
+ *  one person's laptop and is something else entirely here: LeadRail is a
+ *  hosted product, so it would be our servers fetching from YouTube, TikTok and
+ *  Instagram on behalf of paying customers, systematically, from one address.
+ *  That is a terms-of-service problem and a liability, not a technical choice —
+ *  the same reasoning that ruled out cookie-session scraping for Instagram.
+ *
+ *  So a URL the account does not own is handed to a service that has its own
+ *  relationship with the platform. `virality_predictor` is listed last because
+ *  it answers a narrower question (will this perform) than the analysers above
+ *  it, but it is a real answer when nothing else is exposed. */
+const ANALYSIS_TOOLS = ['video_analysis_create', 'video_analysis_status', 'virality_predictor'];
+const ANALYSIS_STATUS_TOOLS = ['video_analysis_status', 'video_analysis_jobs', 'job_display'];
+
 function pickTool(available: string[], preferred: string[]): string | null {
   for (const name of preferred) if (available.includes(name)) return name;
   return null;
@@ -192,4 +209,68 @@ function extractVideo(result: any): VideoResult {
   if (statusMatch) out.status = statusMatch[1];
 
   return out;
+}
+
+export interface VideoAnalysisResult {
+  jobId?: string;
+  status?: string;
+  /** Whatever the analyser reported. Deliberately not normalised — see the note
+   *  on generateVideo: this platform does not own that contract and a shape
+   *  written against a guess is how the first version of this file went wrong. */
+  raw?: any;
+}
+
+/**
+ * Analyse a video that already exists, by URL, through the account's Higgsfield
+ * connection.
+ *
+ * The URL is never fetched by LeadRail. It is passed to a service that has its
+ * own agreement with the platform hosting it — see ANALYSIS_TOOLS above for why
+ * that distinction is the whole point of this function.
+ */
+export async function analyseVideoUrl(
+  accountId: string,
+  input: { url: string; question?: string },
+): Promise<VideoAnalysisResult> {
+  const conn = await getHiggsfieldConnection(accountId);
+  if (!conn) throw new Error('No Higgsfield MCP server is registered for this account.');
+
+  const tool = pickTool(conn.tools, ANALYSIS_TOOLS);
+  if (!tool) {
+    throw new Error(
+      conn.tools.length
+        ? `The Higgsfield connection does not expose a video-analysis tool. It offers: ${conn.tools.slice(0, 12).join(', ')}.`
+        : 'The Higgsfield connection has not discovered any tools yet — test it under Admin → MCP servers.',
+    );
+  }
+
+  const { url, authHeader } = await credentialsFor(accountId, conn.id);
+  const res = await callTool(url, authHeader, tool, {
+    video_url: input.url,
+    ...(input.question ? { prompt: input.question } : {}),
+  });
+  if (!res.ok) throw new Error(res.error || 'The video analysis failed.');
+
+  const r: any = res.result;
+  return {
+    jobId: r?.job_id || r?.id || undefined,
+    status: r?.status || undefined,
+    raw: r,
+  };
+}
+
+/** Check on an analysis that was still running. Mirrors getVideoStatus. */
+export async function getVideoAnalysisStatus(accountId: string, jobId: string): Promise<VideoAnalysisResult> {
+  const conn = await getHiggsfieldConnection(accountId);
+  if (!conn) throw new Error('No Higgsfield MCP server is registered for this account.');
+
+  const tool = pickTool(conn.tools, ANALYSIS_STATUS_TOOLS);
+  if (!tool) throw new Error('The Higgsfield connection does not expose an analysis-status tool.');
+
+  const { url, authHeader } = await credentialsFor(accountId, conn.id);
+  const res = await callTool(url, authHeader, tool, { job_id: jobId, id: jobId });
+  if (!res.ok) throw new Error(res.error || 'Could not read the analysis status.');
+
+  const r: any = res.result;
+  return { jobId, status: r?.status || undefined, raw: r };
 }

@@ -50,6 +50,9 @@ type Turn = { role: 'user' } & { text: string; id?: string } | {
 // Map internal tool names to plain-language present-tense actions.
 const TOOL_VERB: Record<string, string> = {
   listVentures: 'Checking your brands',
+  watchVideoUrl: 'Analysing that video',
+  checkVideoAnalysis: 'Checking the video analysis',
+  analyseUploadedVideo: 'Watching your video',
   listAdAccounts: 'Looking up your ad accounts',
   listCampaigns: 'Pulling up your campaigns',
   listConversations: 'Reading recent conversations',
