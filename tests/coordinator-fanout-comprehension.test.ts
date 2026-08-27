@@ -21,11 +21,14 @@
 // path, not the parts").
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { readFileSync } from 'fs';
+import path from 'path';
 
 const generateChat = vi.fn();
 const runTool = vi.fn();
 let selectPersonasCalls: { message: string }[] = [];
 let selectPersonasImpl: (accountId: string, message: string, max: number) => Promise<any[]>;
+let resolveMentionedImpl: (accountId: string, mentions: string[]) => Promise<any[]>;
 
 const COORDINATOR = { id: 'coord-1', name: 'Ada', role: 'Coordinator', is_coordinator: true, enabled: true, model_id: null };
 const MILO = { id: 'p-milo', name: 'Milo', role: 'Copywriter', is_coordinator: false, enabled: true, model_id: null };
@@ -51,7 +54,7 @@ vi.mock('@/lib/agent/tools', () => ({
 vi.mock('@/lib/capabilities/external-mcp', () => ({ loadExternalCapabilities: async () => [] }));
 vi.mock('@/lib/agent/personas', () => ({
   loadPersonaForAgent: async () => null,
-  resolveMentionedPersonas: async () => [],
+  resolveMentionedPersonas: async (accountId: string, mentions: string[]) => resolveMentionedImpl(accountId, mentions),
   getCoordinator: async () => COORDINATOR,
   selectPersonasForRequest: async (accountId: string, message: string, max: number) => {
     selectPersonasCalls.push({ message });
@@ -93,6 +96,7 @@ beforeEach(() => {
   runTool.mockReset();
   selectPersonasCalls = [];
   selectPersonasImpl = async () => []; // no auto fan-out unless a test opts in
+  resolveMentionedImpl = async () => []; // no explicit mentions unless a test opts in
 });
 
 // A document big enough to be the thing the evidence in the bug report
@@ -244,9 +248,12 @@ describe('Defect 3 — an auto-selected fan-out does not bypass comprehension', 
     await runAgent({ accountId: 'acct-1', message: 'summarize this document', agentContext: ctx });
     // The ordinary single-agent system prompt is built from input.agentContext
     // verbatim (systemPrompt(..., input.agentContext, ...)) — comprehension of
-    // the full document is unchanged for the path that isn't delegating.
-    const call = generateChat.mock.calls[0]?.[0];
-    expect(call.system).toContain(MARKER);
+    // the full document is unchanged for the path that isn't delegating. A
+    // comprehension-pass call runs FIRST now (over the material, not the
+    // system prompt) before the fan-out gate falls through to this ordinary
+    // loop, so this looks across every call rather than assuming index 0.
+    const call = generateChat.mock.calls.map((c) => c[0]).find((c) => String(c?.system || '').includes(MARKER));
+    expect(call).toBeTruthy();
   });
 });
 
@@ -296,5 +303,181 @@ describe('Defect 4 — delegate context is bounded, not N full copies', () => {
     } finally {
       restoreBudgetEnv();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The comprehension pass (lib/agent/comprehension.ts) — added after the tests
+// above shipped, once a live reproduction against the REAL production
+// transcript (tests/fixtures/meeting-transcript.txt, copied verbatim from the
+// file that produced the trace in the bug report) showed the digest-based fix
+// above was not enough: a 1,200-character HEAD SLICE of a 34,649-character
+// pitch/demo/Q&A transcript is dominated by the caller's opening small talk
+// ("we are equity agency… over 20 million kind of Euros in revenue…"), which
+// is exactly the money-and-agency vocabulary that mis-routed the turn to a
+// numbers persona and a spend persona in production.
+// ---------------------------------------------------------------------------
+
+const REAL_TRANSCRIPT = readFileSync(
+  path.join(__dirname, 'fixtures', 'meeting-transcript.txt'),
+  'utf8',
+);
+
+// A stand-in for a real comprehension response, grounded in what the real
+// transcript is ACTUALLY about (a creator-analytics product pitch, live demo,
+// and investor Q&A) rather than its opening sentence.
+const PITCH_UNDERSTANDING = {
+  ask: 'Analyse the attached sales call transcript.',
+  askType: 'analyse',
+  material: {
+    kind: 'sales call transcript',
+    subject: 'a creator-analytics product pitch, live demo, and investor Q&A',
+    participants: ['Speaker 1', 'Speaker 2'],
+    keyPoints: ['Pitches a creator-analytics dashboard product', 'Walks through a live product demo', 'Investor Q&A on the product and market'],
+  },
+  outputShape: 'a summary of the pitch, demo, and open questions',
+  needs: ['product analysis', 'copywriting'],
+};
+
+/** Route every generateChat call through: comprehension-shaped requests (the
+ *  comprehend() system prompt) get `understandingJson`; everything else (a
+ *  delegate's own ReAct route pass, the coordinator's synthesis pass) gets
+ *  the ordinary FINAL envelope. Mirrors production exactly: comprehend() and
+ *  the agent loop's route pass share the same generateChat, distinguished
+ *  only by what they ask for. */
+function mockComprehensionAs(understandingJson: any | null) {
+  generateChat.mockImplementation(async (opts: any) => {
+    if (/comprehension pass/i.test(String(opts?.system || ''))) {
+      if (understandingJson === null) throw new Error('comprehension call failed');
+      return JSON.stringify(understandingJson);
+    }
+    return FINAL;
+  });
+}
+
+function bigAttachmentContextFrom(body: string): string {
+  return [
+    'ABOUT LEADRAIL (the platform you operate):\nsome static grounding here',
+    [
+      'ATTACHED DOCUMENTS — the user attached these to this conversation.',
+      '',
+      '--- BEGIN DOCUMENT: transcript.txt (txt, 34649 bytes, attached to this conversation) ---',
+      body,
+      '--- END DOCUMENT: transcript.txt ---',
+      '',
+    ].join('\n'),
+  ].join('\n\n');
+}
+
+describe('comprehension pass — the regression, reproduced against the real transcript', () => {
+  it('routes on the SUBSTANCE of the real transcript, never on its opening small talk', async () => {
+    mockComprehensionAs(PITCH_UNDERSTANDING);
+    selectPersonasImpl = async () => [MILO, EZRA];
+    const { runAgent } = await import('@/lib/agent/loop');
+    await runAgent({
+      accountId: 'acct-1',
+      message: 'analyse this transcript',
+      agentContext: bigAttachmentContextFrom(REAL_TRANSCRIPT),
+    });
+    expect(selectPersonasCalls.length).toBeGreaterThan(0);
+    const routingText = selectPersonasCalls[0].message;
+    // Reflects the substance a real comprehension pass would have found...
+    expect(routingText).toContain('creator-analytics');
+    expect(routingText).toContain('product demo');
+    // ...and is NOT dominated by the caller's opening lines about an equity
+    // agency and Euros in revenue — the literal defect from the bug report.
+    expect(routingText).not.toMatch(/equity agency/i);
+    expect(routingText).not.toMatch(/Euros in revenue/i);
+  });
+
+  it('comprehension failure falls back cleanly — the turn still runs to completion', async () => {
+    mockComprehensionAs(null); // comprehend() throws internally; must degrade, never throw out
+    selectPersonasImpl = async () => []; // fewer than 2 -> ordinary single-agent path
+    const { runAgent } = await import('@/lib/agent/loop');
+    const result = await runAgent({
+      accountId: 'acct-1',
+      message: 'analyse this transcript',
+      agentContext: bigAttachmentContextFrom(REAL_TRANSCRIPT),
+    });
+    // No throw, and the turn produced a real result — the whole point of
+    // "a failed comprehension must never fail the turn".
+    expect(result.status).not.toBe('error');
+    expect(selectPersonasCalls.length).toBeGreaterThan(0);
+  });
+
+  it('a single-capability understanding does not fan out — one job for one agent', async () => {
+    mockComprehensionAs({ ...PITCH_UNDERSTANDING, needs: ['product analysis'] });
+    // Even if persona-selection WOULD match two personas, a single-capability
+    // `needs` must never reach it — the fan-out decision is made from `needs`
+    // before selectPersonasForRequest is ever called.
+    selectPersonasImpl = async () => [MILO, EZRA];
+    const { runAgent } = await import('@/lib/agent/loop');
+    await runAgent({
+      accountId: 'acct-1',
+      message: 'analyse this transcript',
+      agentContext: bigAttachmentContextFrom(REAL_TRANSCRIPT),
+    });
+    // selectPersonasForRequest was never reached at all for the auto path.
+    expect(selectPersonasCalls.length).toBe(0);
+  });
+
+  it('a multi-capability understanding still requires selectPersonasForRequest to find 2+ personas', async () => {
+    mockComprehensionAs(PITCH_UNDERSTANDING); // needs: ['product analysis', 'copywriting']
+    selectPersonasImpl = async () => [MILO]; // only one persona actually matches
+    const { runAgent } = await import('@/lib/agent/loop');
+    const result: any = await runAgent({
+      accountId: 'acct-1',
+      message: 'analyse this transcript',
+      agentContext: bigAttachmentContextFrom(REAL_TRANSCRIPT),
+    });
+    expect(selectPersonasCalls.length).toBeGreaterThan(0);
+    // One match is a specialist question, not a team question.
+    expect(result.status).not.toBe('needs_approval');
+  });
+
+  it('an explicit multi-@mention still fans out unconditionally, bypassing comprehension entirely', async () => {
+    mockComprehensionAs(null); // if comprehension ran and failed, this proves it was never called
+    resolveMentionedImpl = async () => [MILO, EZRA]; // the user named the team explicitly
+    const runAgentLoop = await import('@/lib/agent/loop');
+    const result: any = await runAgentLoop.runAgent({
+      accountId: 'acct-1',
+      message: 'analyse this with @Milo @Ezra',
+      personaMentions: ['Milo', 'Ezra'],
+      agentContext: bigAttachmentContextFrom(REAL_TRANSCRIPT),
+    });
+    // No comprehension-shaped call was made — every generateChat call in this
+    // turn was a route-pass or synthesis call, not a "comprehension pass" one.
+    const comprehensionCalls = generateChat.mock.calls.filter((c: any[]) => /comprehension pass/i.test(String(c[0]?.system || '')));
+    expect(comprehensionCalls.length).toBe(0);
+    expect(result.status).not.toBe('error');
+  });
+
+  it('delegateContext bounds at realistic sizes — a 35k block with 2 delegates does NOT yield 35k each', async () => {
+    // Deliberately NOT overriding ATTACHMENT_CONTEXT_CHARS here: this is the
+    // realistic, un-tuned production default (a multi-megabyte allowance
+    // derived from a 1M-token window), which is exactly the case where the
+    // OLD delegateContext() silently handed each delegate the entire 35k
+    // document — the division by delegate count never bound at that size.
+    const { delegateContext } = await import('@/lib/agent/loop');
+    const ctx = bigAttachmentContextFrom(REAL_TRANSCRIPT);
+    const forTwo = delegateContext(ctx, 2)!;
+    expect(forTwo.length).toBeLessThan(REAL_TRANSCRIPT.length);
+    // Specifically: nowhere near the full 34,649-character document.
+    expect(forTwo.length).toBeLessThan(20_000);
+  });
+
+  it('each delegate receives the comprehended understanding, not just a raw slice', async () => {
+    mockComprehensionAs(PITCH_UNDERSTANDING);
+    selectPersonasImpl = async () => [MILO, EZRA];
+    const { runAgent } = await import('@/lib/agent/loop');
+    await runAgent({
+      accountId: 'acct-1',
+      message: 'analyse this transcript',
+      agentContext: bigAttachmentContextFrom(REAL_TRANSCRIPT),
+    });
+    const delegateSystemPrompts = generateChat.mock.calls
+      .map((c: any[]) => String(c[0]?.system || ''))
+      .filter((sys: string) => sys.includes('TASK UNDERSTANDING') || sys.includes('creator-analytics'));
+    expect(delegateSystemPrompts.length).toBeGreaterThan(0);
   });
 });

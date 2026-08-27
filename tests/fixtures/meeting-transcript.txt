@@ -1,0 +1,573 @@
+
+Speaker 1  (00:00)
+We're next from China and basically started to fall in love with this. I just had anyone was creating at the point I met the 
+
+Speaker 1  (00:31)
+And we are equity agency. That means we only try to manage aa plus mandates and not too many small minutes. Because we think it's much more efficient to you know, sort of build ventures around creators and not only focus on the whole sales aspect of that, they rocket over 20 million kind of Euros in revenue. 
+
+Speaker 1  (00:52)
+And accurately, the biggest k Erin agency in Europe, with a strong China focus over friends and also artists who know they're coming to China. And you know, with food underground in China, how are intelligent, like many other cities where our teams and allergy Partners are basically helping us sort of have a hospital setup for our challenge so yeah, last meeting this is what I do. Daniela told me a few things about yourself, but maybe you guys go ahead and do that. 
+
+Speaker 1  (01:22)
+Are you all the upgrade? 
+
+Speaker 2  (01:25)
+You can go head first, frankly. 
+
+Speaker 3  (01:30)
+I thought you gonna go ahead, Hey Ali, thanks for joining me appreciate your time. My name is Frank and I am one of the Partners at retention rail and I'm coming in from a marketing site, but prior to that, a little bit of my background, it's in film production media production in general, we have. On a different note. 
+
+Speaker 3  (01:50)
+We've made a production company in Toronto, which we've operated for the last 10 years and then coming on board to build retention rail over the last what 8 months. And we're pushing to essentially expand it onto pretty much our nation, which is content creation. So there's not much in terms of like a big history like yours, so Expanding my knowledge a lot more, but also bringing in the fact that in film, a lot of it is visual visual storytelling, so I'll bring it out into this company. 
+
+Speaker 2  (02:28)
+Awesome. Do you want me to God? Um, Hey, Ali? 
+
+Speaker 2  (02:35)
+Um, so I'm kind of started building this as A joke initially about 4 months ago, and halfway through our stories, seeing a pattern of how it could be, and which is where residential currently is. So what we do is like, 2 different slides to things first were autobized by every consecration platform to actually pull data from them, and we just had a call. With YouTube about a day ago and the removing all potential limits from the account of stuff. 
+
+Speaker 2  (03:03)
+So we can practically track all of you to how many other times a day we want, we don't have limits per second. We don't have Plymouth per minute, like per day per month, no matter we can pull it as much as we want. Now this is, um, we can use this to get public data which we do from every other platform. 
+
+Speaker 2  (03:19)
+We also get proprietary private data from clients who agreed to like, okay, we don't really like you don't mind you using the doubt, but yeah, apart from this, we feed this live information that we dragged throughout. The day to kind of gauge how the algorithm is moving, what kinds of videos it's rewarding in what niche And we're trying to figure out how audience are going to respond to these videos, so the Tc's is like we call you if your video is gonna go viral before you Post it base surfers, our proprietary algorithm, which is fed in from private and public data it mixes in with biosignatures that we are working on collecting right now from actual people that are watching these videos, we have started tracking pupil dilation and a few other biosignatures within, you know, people that are actually watching it to put together and map that To how and what do they see in the video? 
+
+Speaker 2  (04:18)
+So think of it. As 2 algorithms, one understands the video 1 understands what the user is feeling while he's watching the video this combined with? Performance Netflix after you post them to the platform and um, that makes up the entire leave. 
+
+Speaker 2  (04:36)
+But that is what we do. 
+
+Speaker 1  (04:39)
+Search residential, when Galileo time you basically summarized it. I'm pretty on point yesterday, looked at metro dinner and um, tell me songs like music in my ears sounds like gay look old. But everyone should use I mean, if I would tell any of my traders, no cures, a tool that Basically saves saves you off. 
+
+Speaker 1  (05:02)
+You know, exposing yourself to low engagement content. I think anyone would throw money at this, so it sounds pretty promising. I'd love to see some demo footage or laughter system use cases if you're happy to share that. 
+
+Speaker 1  (05:18)
+And other than robust, and I've asked a few questions to challenge the algorithm, but also the whole So I'll behind the platform, and also to understand that is this more of A No direct tool creator platforms is more for brands kind of b to b for like organic brand content. One is the exact use case and what does it work best for you know which category I'd love to understand those things. But first of all, if you guys will be happy to run me through demo or you could also do this in a separate call. 
+
+Speaker 1  (05:52)
+I'm open to that as well. 
+
+Speaker 2  (05:54)
+And yeah, contact a separate call for the general will be best. Why don't I go ahead and set up an account for you? So the demo is like pretty smooth and we can schedule a call next when you're available with all of us and I'll walk you through them again? 
+
+Speaker 1  (06:07)
+Awesome, sounds good. 
+
+Speaker 2  (06:11)
+And uh, on that call, I can provide you some numbers that would help you understand the algorithms or its performance. So it's not me saying algorithm algorithm. And you don't really understand like, you know what is actually happening behind the scenes, so I'll give you some numbers to look at about his performance and the samples that was used and the niches. 
+
+Speaker 2  (06:34)
+For example, in the hardware say evaluation metrics, they'll help you or better understand the actual potential of the moral. Got it. If you got Stone, just give me 1 minute my order who's at the door I'm just gonna collect a book. 
+
+Speaker 1  (06:48)
+Of course 
+
+Speaker 3  (06:50)
+I'll need to answer your question earlier about who is more prone to using the tool. Yes, we definitely won content creators in general, because we could get a larger sample size of content to essentially keep working on the model to be better. But you like and I think that's before this phase of the growth is more important. 
+
+Speaker 3  (07:16)
+But in terms of brands and agencies, they've already refined a lot of your content now is just fine. Tuning the last bits to essentially be much more efficient in terms of distribution, right? So it works both ways and we're targeting both markets. 
+
+Speaker 3  (07:34)
+For now, we are trying to pull as many individual content creators as possible Because once we're able to figure out like the most accurate metrics from that, we could just apply that on a much more larger scale to brands and enterprises. 
+
+Speaker 1  (07:53)
+Okay, and it's need Is the algorithm or is the the model behind the model constantly constantly learning through any other platforms that link themselves to? It? Is this what the idea is actually 
+
+Speaker 3  (08:09)
+It's A. It's a full loop. So because we're pulling data every single day from all the different platforms, and that data comes with the algorithm signature, it's a cost of loop, as like Instagram, for example, changes almost weekly, so it's, I think in terms of the actual I'll agree with the computations for the model because it's a provider and model that we're building in the back end. 
+
+Speaker 3  (08:34)
+He has a much better idea as to how he set it up, since he's the data engineer for it And I'm more on the front facing side in terms of like customer accusation and scaling. 
+
+Speaker 1  (08:50)
+This is so interesting and how like what is the the use cases that you have done so far that really proves? I mean, I imagine those tests be as I must have a SnapShot of whatever the platform told you before in terms of expected reach and in engagement and impressions, I like most various kpis that define whether something is viral or not. And then evening, the goal is probably to have A Like probably a very accurate number of Predictions that match the reality right is this your major kpi, or how do you? 
+
+Speaker 1  (09:33)
+How do you differ a successful use case for my not so successful use case? How do we do it 
+
+Speaker 2  (09:43)
+I was just going to halfway to figure what's going on. 
+
+Speaker 1  (09:46)
+No I was asking I was asking so if you guys would share some use cases, right? So in some some best cases, I would say, how would you determine those? Would you say it's the probability of Predictions that have it's been as close to reality as possible. 
+
+Speaker 1  (10:06)
+And when made from the platform, or what is the kbi? What do you look at in order to say okay, this is a this is where the platform let us go, and how big is the it's the error rate here, like? How often does it really work? 
+
+Speaker 1  (10:24)
+And how often does it mainly give you AI don't know. Wrong kitchen 
+
+Speaker 2  (10:30)
+Okay, all uh, 29 videos that we've tested about 14I believe is about 4% is the minimum difference from what was actually seen on YouTube. And the Mat is about 18, but it never goes above 18, this accuracy pretty much is well, it reduces the rate of error by 71% So we don't track accuracy, but we look for how close it can get. How how big is a reduction error weaking yet? 
+
+Speaker 2  (11:05)
+Got it and those specific numbers. I can share the specific numbers with you on a document when I demo to you on the next form. 
+
+Speaker 1  (11:15)
+And does it does the platform only work with YouTube? Also, the other conference as well? 
+
+Speaker 2  (11:19)
+So initially sort off for YouTube, but it is also working for Facebook, Instagram TikTok, and we're working for Snapchat. But um, getting snapshots, public data is a bit more complicated. We have access to a, how do I put it a private endpoint to pull all of that information we're working with a tort party provider. 
+
+Speaker 2  (11:45)
+It was Frank's all the public data. So we're not in any way associated or put near that a bubble. Um, so we're staying away from it, but we're able to use that out. 
+
+Speaker 2  (11:55)
+Of course, we, actually, you know, got it, and we're not actually scraping the platform will be wishes. 
+
+Speaker 1  (12:03)
+What shoes cases do you have the moat? Like on which platform do you have in the most used case song so far? 
+
+Speaker 2  (12:10)
+YouTube TikTok in this front. 
+
+Speaker 1  (12:13)
+Got it. 
+
+Speaker 2  (12:14)
+Yeah, no one uh, no 1 actually has used the platform so important for Facebook, because honestly I've never met a creator that's on Facebook buccine media. But I would say we are targeting content creators and b to b agencies, because that's where the most value would be and then. We're going to expand into e chomus and marketing specifically And then once those 2 are covered, we will be moving to entertainment and music because we have the algorithm. 
+
+Speaker 2  (12:46)
+The blueprint set up for sound based analysis for the algorithm as well. So just as it is, you know, predicts the error rate and guess it gets you close to go and borrow in full videos, it is also able to do that for Voice to select sound, so we practically just look for like you know, keeping the viewers glued to your screen. That's practically all this is everything else is just fancy words up here and there. 
+
+Speaker 2  (13:13)
+So we can do that if we can do that for video and stay static content, we can also do that for music it's very simple. 
+
+Speaker 3  (13:21)
+And just to add it to that, I mean, in terms of like, also the use cases, I think, uh, Vish, in terms of like The large part, which we didn't even think of as a major use case. Do you have enterprises who are looking for data in general? And because we're able to pull that data and it takes so long to get to get permission to pull that much data, this is another site that we could also explore as a revenue source where it's like The amount of data, especially for large enterprises, creating content doing ADS, all of that stuff, anything, video and media related, if they don't want to use the other features. 
+
+Speaker 3  (14:04)
+And they just want the data itself and that's another layer. 
+
+Speaker 2  (14:10)
+What do you do when you do charge them just to the data? One of the clients that we have quarantine a poll die from about 18 YouTube channels and they got over 3.23.3 billion views across those channels, the last month alone, and they pay us about $12001300 a month just. For pulling data, they don't use any of the AI services, and so we do that. 
+
+Speaker 2  (14:37)
+It is not something that we televised initially on the site, but there needs to be a landing page that will go up pretty soon. So we do get and sell the data. 
+
+Speaker 1  (14:50)
+What would you say in a long sentence is truly your biggest hurdle bottle lag to get a platform commercially known and used by as many people as possible. 
+
+Speaker 2  (15:03)
+That is a wonderful question. I would say marketing it. Marketing it and getting it out to people would be the first thing. 
+
+Speaker 2  (15:12)
+Cause it's been private and building for so long and I'm such a perfectionist I don't like throwing stuff out there when it's like, you know when I'm not satisfied with it, but I'm starting to realize that I'm never going to be satisfied because that's how I am. I'm always going to find an issue with the platform. I'm always going to find an issue with algorithm so if I keep working on it, I could be working on it for the next 7 years, and you guys would never see this. 
+
+Speaker 2  (15:32)
+I'm sorry, I need to 
+
+Speaker 1  (15:36)
+Are you guys doing any personal branding? Not building publing and stuff, is that something you guys do? 
+
+Speaker 3  (15:41)
+So that's what I'm currently working on. I finished building up the content engine yesterday so as um. I spoke to him earlier today. 
+
+Speaker 3  (15:52)
+We're gonna stop pushing out content on the different platforms on that, and the big part about it is also partnering up with content creators. So we have a couple of meetings lined up with pretty big content creators as well 
+
+Speaker 1  (16:05)
+You should really, you should really look at Business creators. 
+
+Speaker 3  (16:10)
+Business greatest rington. 
+
+Speaker 1  (16:12)
+Yeah, business traders, you should definitely check out a few big famous linked profiles. Also linkedives for Sun platforms lingers insanely has insanely good conversion, especially what it has a um, such a promise as your platform has but also to kind of target management and office managements, but also Agencies that consult brands on their content strategy. So this is a huge, huge thing that they would also help them a lot. 
+
+Speaker 1  (16:47)
+So and also the encouragers who do Instagram and TikTok, but more on the Built built-in public space like ekomers, creators that run like their business, and they do they Republic, and whether they would use the platform as to something they use on a daily basis to determine which carbon piece makes sense, which not. I think gets us a pretty interesting time to acknowledge to get the Penetration rate going from the beginning and you know side have as many sign as possible. 
+
+Speaker 2  (17:22)
+And let me see, although I'm scheduling a call for you to go through the application. I don't mind just logging into one of the accounts and just giving you a little walk. So it makes you find easier when you're actually using the plant 
+
+Speaker 4  (17:34)
+I'm using my mind. 
+
+Speaker 4  (17:46)
+It's because at the end, we are all busy and um. 
+
+Speaker 2  (17:50)
+Yeah, I'm very true. 
+
+Speaker 4  (17:51)
+To chop it into pieces and rip it apart. It's more. You know, I is in the game and What's song, yeah. 
+
+Speaker 2  (17:59)
+Alright, let's go ahead and to like click, okay? I want to remove channel. Awesome sign. 
+
+Speaker 2  (18:11)
+This specific client has a couple accounts connected. This is the chat interface, just just like any other, you know, feature, once it's connected, it has access to see all the data that you have for yourself, it does not probe into the client's data. So what have you've connected? 
+
+Speaker 2  (18:31)
+You can ask it any sorts of question with it, for example Is my YouTube channel performing compared to my TikTok channel, please? 
+
+Speaker 2  (19:34)
+I'll just let you read that for a second. And then I'll go on to a full on question. Thanks. 
+
+Speaker 2  (19:47)
+I'm gonna be like. Can you tell me. Why the top of Stanley period That's so well compared to Soul and longings. 
+
+Speaker 2  (20:51)
+Also, the model is trained on about 120 million videos that we currently had in our database. And we have a specific like unique features that we constructed out of it, which we can disclose, but that helps the model understand everything about the script, everything that's being said in the video, combined with say, the users, emotions, body language, you know, text overlays, things that usual models can see. Further enhance its analysis like what is giving back to you? 
+
+Speaker 2  (21:27)
+And it can also see the videos that are currently being promoted by the platform itself to further enhance its answer back to you. And so this one yeah, go it 
+
+Speaker 1  (21:40)
+So real quick. Guide me through a process. When you would say you just finished. 
+
+Speaker 1  (21:49)
+Producing a new conflict piece. And you're now you're asking yourself, is this should I upload this? What would you do with the counterpiece 
+
+Speaker 2  (21:56)
+Once the way you could Post your thumbnail in your ask her how the thumbnail would and how people would react to that thumbnail, let's start with that. Then you can do the same with title. Then I would personally go to our test video, since you've already made the content that is you post in your video over here, it analyzes the video for all those cues and the features that we're looking for understands, like the Transcript of what's been said in the video, combined with our simulator that passes them through the proprietary data set, where we have like the biological cleaning set of how people reacted to other. 
+
+Speaker 2  (22:36)
+Videos, and it maps that to what's currently like, you know, in your video and how the platform would react with all this combination of signatures. And it would tell you over here here and here in new video. Something is wrong and then on the right side of the panel, you're gonna see what was wrong in the video. 
+
+Speaker 2  (22:57)
+And how exactly you fixed it before you post it to the platform, and you will also see a predicted retention curve. It's how the viewers would stick or leave your, you know. I'll tell you. 
+
+Speaker 1  (23:09)
+Does it give you expected impressions expected, reach comments with all those kids well? 
+
+Speaker 2  (23:16)
+It does. 
+
+Speaker 1  (23:18)
+I mean, to bring me up to try to like, get me an access. I'll test this, I'll really yeah. 
+
+Speaker 2  (23:24)
+Taxis living 
+
+Speaker 1  (23:26)
+11000 sn't works. 
+
+Speaker 2  (23:28)
+Then yeah, and we're working on like our script, rider is bomb. It's built on a computational neurosology as the base. It's the study of scripts, so with the proprietary data set that we have with so other many videos, and it only keeps increasing day after day. 
+
+Speaker 2  (23:46)
+We train and retrain the model on a weekly basis. And we say, you don't have an idea you want to come one here and you want to say, ask for an idea that potentially could go viral. It would do a great job of giving you a script, but what makes it even better is we have some big old competitors say you have a specific competitor for example, could you name me one of your competitors or someone that you'd like me to look up? 
+
+Speaker 1  (24:14)
+R, Ami don't No, dad, I'm click on. Click on Instagram. Not Richard 207 RAMI dot AB. 
+
+Speaker 1  (24:28)
+U. Harb. 
+
+Speaker 2  (24:36)
+Actually, okay, uh, I might need to renewalk. 
+
+Speaker 1  (24:42)
+Every second, that's a, if it's the right handle, second. 
+
+Speaker 2  (24:46)
+No I don't. I don't think it's your issue. I think because everything is being paid out-of-pocket currently, so I'll have some services turned off, I don't think we're not using it Yeah, but YouTube's always turned on as that's one of the measure use cases. 
+
+Speaker 1  (25:02)
+Yeah, and check, can you Daniel develop? 
+
+Speaker 2  (25:06)
+Daniel 
+
+Speaker 1  (25:08)
+Delan DAL. E! N. 
+
+Speaker 3  (25:10)
+Oh, he's good, he was here in Bali this one. 
+
+Speaker 1  (25:14)
+Yeah, that's what happened. 
+
+Speaker 2  (25:19)
+On the phone, so now the second I've added it to the comparison list. It's gonna start tracking every video ever posted by him, including his Transcript systematic data, the video, the audio file. And once it's ready, say you don't want to work with us, you just want the data from us in about 1520 minutes, you'll have all this data. 
+
+Speaker 2  (25:40)
+You can simply use our mcp server to connect them to your Claude or ChatGPT and you can you know, write yourself a script with everything that he's got working for him? And we structure it for you, so our claw doesn't have to do any of the heavy lifting. We extract the patterns for you and just feed that to a quad. 
+
+Speaker 2  (25:58)
+So through us, you'd be spending a lot less tokens for Claude, and you get a lot better answers, but I would rather use our own script rider, because we obviously it's connected inside our platform, but normally do we see this combined with your comparative? We also the second you add a competitor we also find other comparison unich. So now we have like a whole and you know, lists, there's people that we could get outlaw are videos for you, from we add older, like you know, stories and structures through our algorithm, which then gives you a story that is absolutely boofed. 
+
+Speaker 2  (26:33)
+Well boofed, in the sense crazy. But let's say, give me a script for a story. About? 
+
+Speaker 4  (26:47)
+F***, let's, let's do something Ali. Let's put something like uhmm, your energy drink. 
+
+Speaker 2  (26:52)
+You guys have an idea anything. 
+
+Speaker 1  (27:00)
+Give me a script about how previiotic drinks. Can not only be healthy. But it from 
+
+Speaker 4  (27:10)
+How Will you probably have to take note? 
+
+Speaker 2  (27:13)
+It's probably order, oh yeah. 
+
+Speaker 1  (27:14)
+So you're probably not entering. Can I only be healthy, buddy lifestyle statement? 
+
+Speaker 2  (27:28)
+Done, and let's take global trends. Are you have oceans here, as like, if you don't want to use your competitors, you can use the global trends, because sometimes crossnache cross-platform videos perform well and let's do global trends just for the seculars and England zoo. It also writes the script in multiple languages. 
+
+Speaker 2  (27:57)
+All right, so let's do you see if you took shorts and I'm going to do a second video. There's different production styles videos that you can choose the script to be ready for and if you can't find one juice, choose a custom 1 for the sake of this. I'm going to use baseless. 
+
+Speaker 2  (28:14)
+And? What is that okay, concerned? So now it's going to give you some tidal options. 
+
+Speaker 2  (28:22)
+It takes a second. 
+
+Speaker 1  (28:39)
+Can you turn on Instagram and TikTok for my test as well? 
+
+Speaker 2  (28:43)
+I'd be happy that you got short. 
+
+Speaker 4  (29:03)
+And so far are we with our raising capital? I need movements on the site. 
+
+Speaker 2  (29:09)
+We have a meeting with a venture capital from Malaysia. It's on the 28th and I will be in Malaysia on the 1st of September, so I'll do some work before I head over to the UAE I've got we only have one lead so forth. 
+
+Speaker 3  (29:27)
+We actually have a note as well. I'm coming up who's gonna send his schedule. From England. 
+
+Speaker 2  (29:35)
+Yeah, I didn't know about that well, right? 
+
+Speaker 3  (29:37)
+Because it happened this morning. 
+
+Speaker 4  (29:42)
+Awesome. And how much up? How much are we raising again? 
+
+Speaker 2  (29:48)
+We're looking for one 
+
+Speaker 2  (30:04)
+Yeah, let's part alone I need to stick around how to speak to stuff, because currently it's being rule. 
+
+Speaker 4  (30:09)
+But yeah, this tense was analyzed. 
+
+Speaker 2  (30:13)
+There's uh, no, it's it's not. It's not even that it's just that cause it's only one client and currently, and we're not public yet, I'm running them off of something called cloudron on Google. So that is decent for a couple mines, but as you're scaling them to millions, it needs to go into cubannettis with its own server. 
+
+Speaker 2  (30:33)
+At which point in time, your load times will be pretty close to nothing. But what happens when you ask for something now, is it boosts up a server which takes about 60 seconds to good up and then it stores your workflow after that stop, so when no 1's using it, it's not actually charging. You, so it's like 
+
+Speaker 1  (30:51)
+It's probably Friday I wouldn't. I wouldn't wait so 1 hour and to get a it's a fed that gives me more probability for viral content. So I do not care about that from the testing 
+
+Speaker 2  (31:03)
+Yeah, no, but like I, I've just found people are very impatient these days. So the longer it takes slow stuff. 
+
+Speaker 4  (31:10)
+The creative, yes, if it's an agency behind, they don't care. 
+
+Speaker 1  (31:15)
+If you do content like I do, for example, personal branding. You would appreciate this extra waiting time, because at the end of the day, if you're really like. In content edit, it turns out to be not performing. 
+
+Speaker 1  (31:30)
+Well, it's something that frustrates you so much, I think you'd rather Give it another 10 minutes. 
+
+Speaker 2  (31:37)
+Here we go. So we have a couple options. What would you like me to click on and we'll see what happens. 
+
+Speaker 1  (31:45)
+Take a title to wide the script, as everyone will remove to your gut under the workway, in which best violence has more virtue than your bio than other than the status of wishes that we would replace across the bottle. Number 2. 
+
+Speaker 4  (32:07)
+I saw exactly the same. It's funny. Okay, so visual audio 
+
+Speaker 1  (32:20)
+Uh, the oak is good. 
+
+Speaker 2  (32:23)
+That's a good sign. 
+
+Speaker 1  (32:25)
+It strings, pack a life and then you have like a second okra. Is tricks pedala for the importance of them? The next conversation? 
+
+Speaker 1  (32:36)
+Share the silence checks out left up. Oh, it gives you a director like director's advice as well. 
+
+Speaker 2  (32:46)
+Uh, huh? And um, in a couple weeks for about to also add visuals to it. So it becomes like an entire storyboard for you. 
+
+Speaker 2  (32:56)
+So no one you can use like, because sometimes when you spoontee, people with stuff like this, they just they want to see everything right away so that they can get excited about it so right, guys is meeting it. 
+
+Speaker 1  (33:09)
+Put me on. I want to test the hell out of this. It'll be honest, let me give you the property back for this. 
+
+Speaker 1  (33:15)
+There's something that I'd love. I'd love to play with? 
+
+Speaker 2  (33:19)
+Yep, and as you can see, we chose 60 seconds for YouTube short and the last is 1 minute 60 seconds of force. So everything it does is structure around how long you want it and there's a science that goes behind writing all these scripts, and it's also constructed out of all the videos and all your comparatives, so if you add a couple, if you compared this and just give it an hour or 2, before you buy your scripts, if you like. The replies and the quality of the script that you're getting backward just increased. 
+
+Speaker 1  (33:50)
+Okay. So I have a question here, so currently my my script's in my You know, all of the scripts for my content is pulled through All of the meetings that are being transcribed and then I've and I'm also competitor channels and another AI basically corates all of this content and then gives me 10 secrets a week that I can either say ye or nay, 2 and those who didn't pay the scripts, I will work with this works with this thing called and I'll show my screen real quick. 
+
+Speaker 2  (34:32)
+Yeah, go for it. 
+
+Speaker 1  (34:35)
+Executive OS this is with the name of this this tool. Can I see my screen? 
+
+Speaker 2  (34:40)
+Yes, I can. 
+
+Speaker 1  (34:41)
+And then what you have here is all of my social media platforms. Including you know, Instagram, TikTok, LinkedIn, and everything. And now what it does is it basically gets all of this information and and builds a build my contact, my contact machinery here and then it gives you it gives the it puts the script out. 
+
+Speaker 1  (35:06)
+Is there any way we can link this tool Wish the control so that the workflow just seamlessly goes weak. 
+
+Speaker 2  (35:14)
+Do you guys? We do additional data engineering for like agency clients? We don't do them for solar bunts and graders, so that platform you just showed me, could you spell it out for me? 
+
+Speaker 2  (35:26)
+Real quick, I want to check something. 
+
+Speaker 1  (35:27)
+So that's, that's some one problem is for me. 
+
+Speaker 2  (35:32)
+But it's custom-made for you. It's custom-made, it's easy you can do like to play. 
+
+Speaker 1  (35:39)
+A 100 grand for this thing, but it's beautiful. 
+
+Speaker 2  (35:42)
+Yeah, yeah, I don't know why you pay on the ground. No, and you got over church for that. I would do that for 2010 
+
+Speaker 1  (35:50)
+Borrow 
+
+Speaker 2  (35:53)
+That's what I've done this for the past 5 years, we profit up with setting up automations for companies. There's a company course engaged in America agency prior to tourism by 2 82 90k I pulled data from Google Analytics and on, how do I say, clean them up and set them up with automation linked to baby testing. You know, or through a site and like it would like, based on their ab tests, it would then look at the data and be like light signals to them, be like this is working cut this or like stuff like that and yeah, and that like I pitched it to them. 
+
+Speaker 2  (36:30)
+As I'd left the company that I was white labeling, it You know I was working for them through another complaint idea and I was like it was like a white labeling project because I left the Indian company, I tried pitching them myself. They turned out what I'd offered and went with them where I could have set it off a lot 20 times lower cops. Oh, wow, crazy this thing they go for you. 
+
+Speaker 2  (36:50)
+Because they built it, I'd be able to access it like and get all the dot out of face. 
+
+Speaker 1  (36:56)
+It's coming up and for now we're, I can stay in your platform, just to like kind of give you a feedback that is solely based on the platform to like we do have saving my information and then so can you stop Joe? 
+
+Speaker 2  (37:09)
+Couple our platform, and whenever you're ready to bring that into this platform, we'll just create a specific view for you, so you can have everything in one control center. 
+
+Speaker 1  (37:19)
+Awesome. Okay, great guys Nali. Can you share with my email address with them. 
+
+Speaker 4  (37:25)
+Hey You are they have your email address because? 
+
+Speaker 1  (37:28)
+I don't think awesome. 
+
+Speaker 4  (37:29)
+Yeah, and happy tour. If you want, you know what I will add you to our group. 
+
+Speaker 1  (37:38)
+And then let's have a catch up call next week, I would say 
+
+Speaker 2  (37:42)
+Absolutely wonderful. Sorry, here's what I'm going to do. I'm gonna go ahead and set you up with a test account with all the limits off, so go ahead, go nuts. 
+
+Speaker 2  (37:53)
+Test them out and give me a shout up. I knew it would just take me a day cause I need to turn on every other platform for you. Because no one else is using it. 
+
+Speaker 2  (38:02)
+Uh, but I will get using it. 
+
+Speaker 1  (38:06)
+Very exciting. 
+
+Speaker 2  (38:08)
+So that you know, that's um, I'm not even kidding. There are some teachers that I have turned off because I don't want anyone using them, because everything is connected to my card and if the more they use my card gets shaped and I'm like north, I'm like. I'm not doing this. 
+
+Speaker 1  (38:25)
+That's it? I understand that all right, guys, thank you so much. 
+
+Speaker 2  (38:31)
+Yeah, lovely meet at you appreciate it. 
+
+Speaker 3  (38:35)
+Take care, guys, thank you. 
+
+Speaker 4  (38:37)
+There you guys. 
+
+Speaker 2  (38:40)
+Hello, Ark. 
+
+Speaker 3  (38:41)
+Good, what breath? That was good? 
+
+Speaker 2  (38:44)
+Yeah, funny enough. I just put together a data room for the pitch. So I knew something about the numbers that I was supposed to be telling people, and I'm like f*** The fact that he asked. 
+
+Speaker 2  (38:55)
+Yeah, I was like f***, yeah, but I even had the data room pulled up in the back and I'm like I shouldn't show this now. I'm gonna just I'm gonna go through the numbers because I don't want to Yap something and then not be able to back it app in the demo call, so I'll go through the numbers and then I'll explain. The model was numbers in on the court. 
+
+Speaker 3  (39:12)
+That's great, who's uh, Firefly no tech is still on this. Is that? Oh, that's for you and me? 
+
+Speaker 3  (39:22)
+That's funny. But did you record this? Because there's bits and pieces that I want to take? 
+
+Speaker 3  (39:28)
+I work with for the content you do not hear, did you record it? 
+
+Speaker 2  (39:36)
+Uh, prop, well, wait, you have them on your file sign. No 
+
+Speaker 3  (39:41)
+No I mean, they're like video record daytime meeting. 
+
+Speaker 2  (39:46)
+I think I recorded them on whiska. No I didn't 
+
+Speaker 3  (39:50)
+I have both recorded by wanted the video recording of the meeting as you were going to the teachers as well. 
+
+Speaker 2  (39:57)
+Let's fine, get it from Dino okay? 
+
+Speaker 3  (40:00)
+Well, you said you sent me some of the other stuff as well. I'm gonna use that as well, okay. 
+
+Speaker 2  (40:03)
+Yes, summer wait, that's it's just to know what is it's not is why? Okay? That's fine then? 
+
+Speaker 1  (40:12)
+Uh 
+
+Speaker 2  (40:13)
+Awesome sounds good. This was a good meeting that was good and if he makes a good amount, I don't think he would. Mind investing. 
+
+Speaker 3  (40:23)
+Why he's able to spend a 100k of 
+
+Speaker 2  (40:25)
+Oh, he's been a 100 kill dad. 
+
+Speaker 3  (40:28)
+One of the start The guy said that lik $30 million in revenue. Bro, that's insane, bro, that's insane Oh, wow. 
+
+Speaker 2  (40:39)
+No, but that that's the part that's nice. 

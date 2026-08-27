@@ -19,6 +19,9 @@ import { BUDGET } from '@/lib/ai/context-budget';
 import { contextCharBudget } from '@/lib/documents/attachments';
 import { generateChat, textConfigured, type ChatMessage } from '@/lib/ai/router';
 import {
+  comprehend, routingTextFor, describeMaterial, formatUnderstandingBlock, type Understanding,
+} from './comprehension';
+import {
   TOOLS, runTool, toolCatalogForPrompt, toolCatalogStaged, AGENT_STAGED_CATALOG, capabilityFor,
   toolsFromCapabilities, type AgentTool,
 } from './tools';
@@ -1014,13 +1017,51 @@ const ROUTING_DIGEST_CHARS = 1200;
  *  the static grounding sections, never the whole thing. Empty string when
  *  nothing is attached (agentContext is populated for reasons that have
  *  nothing to do with a file — venture/account/memory grounding runs on every
- *  turn regardless). Exported so a test can pin the boundary directly. */
+ *  turn regardless). Exported so a test can pin the boundary directly.
+ *
+ *  ONLY used as the FALLBACK routing input now, when the real comprehension
+ *  pass (comprehend(), lib/agent/comprehension.ts) fails or is skipped — see
+ *  resolveCoordinatorFanout below. It is exactly the head slice that produced
+ *  the reproduced defect (a numbers persona and a spend persona picked from
+ *  the caller's opening small talk on a 34,649-character pitch transcript),
+ *  which is why it is no longer the PRIMARY routing input; it is kept only
+ *  because SOME routing signal beats none when comprehension itself fails. */
 export function attachmentDigest(agentContext: string | undefined, maxChars: number): string {
   if (!agentContext) return '';
   const idx = agentContext.indexOf(ATTACHMENT_MARKER);
   if (idx === -1) return '';
   return agentContext.slice(idx, idx + maxChars);
 }
+
+/** The FULL, unbounded ATTACHED-DOCUMENT portion of agentContext — what the
+ *  comprehension pass reads (it owns its own bounding via
+ *  sampleAcrossDocument, which samples across the document rather than
+ *  slicing its head, unlike attachmentDigest above). undefined when nothing
+ *  is attached. */
+export function attachmentMaterial(agentContext: string | undefined): string | undefined {
+  if (!agentContext) return undefined;
+  const idx = agentContext.indexOf(ATTACHMENT_MARKER);
+  if (idx === -1) return undefined;
+  return agentContext.slice(idx);
+}
+
+/** Hard ceiling on what ONE fan-out delegate reads out of the attached
+ *  material, independent of contextCharBudget().
+ *
+ *  WHY A SEPARATE NUMBER FROM contextCharBudget(): that budget is derived
+ *  from the ANSWERING model's context window (now 1,000,000 tokens, since
+ *  the primary tiers are 1M-window models) via a 50% share — 2,000,000
+ *  characters. Divided across even a handful of delegates that never binds
+ *  at realistic attachment sizes: a 35,238-character transcript split two
+ *  ways stays comfortably under 1,000,000 characters per delegate, so
+ *  delegateContext() silently handed each delegate the ENTIRE document
+ *  anyway — the exact duplication Defect 4 was supposed to have fixed, just
+ *  hiding behind a budget number that grew past the point of ever binding.
+ *  contextCharBudget() answers "how much could the model hold"; this answers
+ *  "how much does ONE delegate — which also receives a comprehended
+ *  UNDERSTANDING of the whole document via formatUnderstandingBlock, and can
+ *  call readDocument for more — actually need out of the raw text". */
+const DELEGATE_MATERIAL_CHARS = Number(process.env.DELEGATE_MATERIAL_CHARS) || 16_000;
 
 /** What ONE delegate gets to read out of agentContext, given a fan-out of
  *  `delegateCount` delegates.
@@ -1034,57 +1075,76 @@ export function attachmentDigest(agentContext: string | undefined, maxChars: num
  *
  *  FIX: keep the small static grounding sections intact (cheap, and every
  *  delegate needs the same venture/account grounding an ordinary turn gets),
- *  but divide the ATTACHED-DOCUMENT allowance across the delegates so the
+ *  divide the ATTACHED-DOCUMENT allowance across the delegates so the
  *  attachment text reaching ALL of them COMBINED never exceeds
- *  contextCharBudget() — the same allowance a single ordinary (non-fanout)
- *  turn is already permitted to read. Reusing that existing budget helper
- *  (rather than inventing a second number here, per the task's own
- *  instruction) is what keeps a fan-out from spending more attachment budget
- *  in aggregate than one agent ever could. A delegate that genuinely needs
- *  more than its slice can still call readDocument for the rest — the same
- *  tool an ordinary turn would reach for on truncation (see the
- *  "…truncated here" note attachmentContextBlock leaves in the text). */
-export function delegateContext(agentContext: string | undefined, delegateCount: number): string | undefined {
+ *  contextCharBudget(), AND cap each delegate's own slice at
+ *  DELEGATE_MATERIAL_CHARS so the bound actually BINDS at realistic
+ *  attachment sizes instead of only at the (now enormous) window-derived
+ *  ceiling. A delegate that genuinely needs more than its slice can still
+ *  call readDocument for the rest — the same tool an ordinary turn would
+ *  reach for on truncation (see the "…truncated here" note
+ *  attachmentContextBlock leaves in the text).
+ *
+ *  `understanding`, when given, is folded in ahead of the raw slice (see
+ *  formatUnderstandingBlock) — a delegate gets the comprehended UNDERSTANDING
+ *  plus a bounded slice of the source, not N verbatim copies of the whole
+ *  document and nothing else. */
+export function delegateContext(
+  agentContext: string | undefined,
+  delegateCount: number,
+  understanding?: Understanding | null,
+): string | undefined {
   if (!agentContext) return undefined;
   const idx = agentContext.indexOf(ATTACHMENT_MARKER);
   if (idx === -1) return agentContext; // nothing attached to bound — grounding sections alone are small
   const head = agentContext.slice(0, idx);
-  const perDelegateDocBudget = Math.max(2_000, Math.floor(contextCharBudget() / Math.max(1, delegateCount)));
+  const perDelegateDocBudget = Math.max(2_000, Math.min(
+    DELEGATE_MATERIAL_CHARS,
+    Math.floor(contextCharBudget() / Math.max(1, delegateCount)),
+  ));
   const doc = agentContext.slice(idx, idx + perDelegateDocBudget);
-  return head + doc;
+  const understandingBlock = understanding ? `${formatUnderstandingBlock(understanding)}\n\n` : '';
+  return head + understandingBlock + doc;
 }
 
 /** Detect a fan-out turn: 2+ @mentioned enabled personas, OR (when fewer than
- *  two were named) 2+ personas the ASSISTANT auto-selects for the request —
- *  in both cases requires an enabled coordinator configured for the account.
- *  Returns null (never throws) for every other case, so the caller falls back
- *  to today's single-persona / framing-only behavior in resolvePersonaForTurn
- *  unchanged.
+ *  two were named) 2+ personas the ASSISTANT auto-selects for a request that
+ *  a real comprehension pass says genuinely decomposes into multiple
+ *  capabilities — in both cases requires an enabled coordinator configured
+ *  for the account. Returns null (never throws) for every other case, so the
+ *  caller falls back to today's single-persona / framing-only behavior in
+ *  resolvePersonaForTurn unchanged.
  *
- *  `kind` on the result tells the caller WHICH path fired, because the two
- *  are handled differently upstream (Defect 3): an explicit "@Ada @Nia" is
- *  the user naming the team themselves — honour it immediately, same as
- *  before. An AUTO-selected fan-out is the assistant's own inference, and
- *  that inference must be informed by what's actually attached, not just the
- *  cover sentence — hence `contextDigest` (a bounded excerpt of the attached
- *  material, see attachmentDigest above) being folded into the text
- *  selectPersonasForRequest scores against, and `emit`, when given,
- *  announcing that the material was read. That announcement is the visible
- *  trace line that was missing entirely in the production evidence: the user
- *  could see "Milo is working on the messaging" but nothing ever said the
- *  document had been opened first. */
+ *  `kind` on the result tells the caller WHICH path fired: an explicit
+ *  "@Ada @Nia" is the user naming the team themselves — honour it
+ *  UNCONDITIONALLY, never gated on comprehension, because the user already
+ *  decided the work needs a team. An AUTO-selected fan-out is the
+ *  assistant's own inference, and that inference must be informed by a real
+ *  understanding of what's attached, not a head-sliced guess — see
+ *  lib/agent/comprehension.ts's module comment for the reproduced defect this
+ *  replaces (a numbers persona and a spend persona picked from a pitch call's
+ *  opening small talk).
+ *
+ *  Order, matching the task spec: understand the material (comprehend) →
+ *  decide whether the work decomposes (`needs.length >= 2`, computed BEFORE
+ *  ever calling selectPersonasForRequest — convening two personas to produce
+ *  two framings of one capability is worse than one agent doing the job
+ *  once) → only then route. `emit`, when given, turns the comprehension call
+ *  into a real, resolving trace step instead of the old "Reading the attached
+ *  material…" thought that resolved on nothing but a string slice. */
 async function resolveCoordinatorFanout(
   accountId: string,
   personaMentions?: string[],
   input_message?: string,
-  contextDigest?: string,
+  agentContext?: string,
   emit?: (e: AgentEvent) => void,
-): Promise<{ coordinator: PersonaRow; delegates: PersonaRow[]; kind: 'explicit' | 'auto' } | null> {
+): Promise<{ coordinator: PersonaRow; delegates: PersonaRow[]; kind: 'explicit' | 'auto'; understanding?: Understanding | null } | null> {
   try {
     // Explicit @mentions still win — if someone names the team, honour it.
     // Otherwise the ASSISTANT picks, because the user has no reason to know
     // which personas exist. Requiring "@Ada @Nia" meant the whole fan-out was
-    // unreachable for anyone who had not read the persona list.
+    // unreachable for anyone who had not read the persona list. This branch
+    // never touches comprehension at all — the user already named the team.
     let matched = personaMentions?.length
       ? await resolveMentionedPersonas(accountId, personaMentions)
       : [];
@@ -1094,16 +1154,50 @@ async function resolveCoordinatorFanout(
       return { coordinator, delegates: matched, kind: 'explicit' };
     }
     // Below this point: nothing (or fewer than two) explicit mentions — an
-    // AUTO-selected fan-out, which is the branch Defect 2/3 are about.
-    if (contextDigest) emit?.({ type: 'thought', text: 'Reading the attached material…' });
-    const routingText = contextDigest ? `${input_message || ''}\n\n${contextDigest}` : (input_message || '');
+    // AUTO-selected fan-out, which is the branch the reproduced defect is
+    // about. Comprehension only runs when there is actually attached
+    // material to misread — a bare text message was never the failure mode,
+    // and running an extra model call on every plain chat turn would be
+    // spending latency the defect never asked for.
+    const material = attachmentMaterial(agentContext);
+    let understanding: Understanding | null = null;
+    if (material) {
+      emit?.({ type: 'thought', text: 'Reading the attached material…' });
+      understanding = await comprehend({ message: input_message || '', material, accountId });
+      // Resolves the step above with something concrete when comprehension
+      // actually produced one — the trace-honesty fix. When it didn't (a
+      // failed or unparseable call), the fallback text below is still
+      // truthful: a read WAS attempted, even though it did not come back
+      // structured.
+      emit?.({ type: 'observation', ok: Boolean(understanding), text: describeMaterial(understanding) || 'Read the attached material.' });
+    }
+
+    let routingText: string;
+    if (understanding) {
+      // Fan out only when the work genuinely decomposes: a single-capability
+      // `needs` is one job for one agent, not a team question, so it is
+      // rejected here — BEFORE selectPersonasForRequest ever runs — rather
+      // than convening two personas to produce two framings of one job.
+      if (understanding.needs.length < 2) return null;
+      routingText = routingTextFor(understanding);
+    } else if (material) {
+      // Comprehension failed or degraded (no model configured, a parse
+      // failure, a thrown error) — fall back to the bounded head digest
+      // rather than either dropping the attachment from routing entirely or
+      // failing the turn. Comprehension must never be a new way to fail.
+      const digest = attachmentDigest(agentContext, ROUTING_DIGEST_CHARS);
+      routingText = digest ? `${input_message || ''}\n\n${digest}` : (input_message || '');
+    } else {
+      routingText = input_message || '';
+    }
+
     const auto = await selectPersonasForRequest(accountId, routingText, MAX_FANOUT_DELEGATES);
     // One match is a specialist question, not a team question — let the normal
     // single-agent path handle it rather than convening a fan-out of one.
     if (auto.length < 2) return null;
     const coordinator = await getCoordinator(accountId);
     if (!coordinator) return null;
-    return { coordinator, delegates: auto, kind: 'auto' };
+    return { coordinator, delegates: auto, kind: 'auto', understanding };
   } catch {
     return null;
   }
@@ -1139,6 +1233,12 @@ async function runFanoutDelegates(
   // "Consulting X…" line was emitted upfront and the UI then went silent for the
   // whole fan-out, which is the longest operation in the system.
   emit?: (e: AgentEvent) => void,
+  // The comprehended understanding of this turn's material, when a
+  // comprehension pass produced one — folded into each delegate's context
+  // alongside its bounded raw-material slice (see delegateContext) rather
+  // than delegates getting N verbatim copies of the document and nothing
+  // else. Undefined on the explicit-@mention path, which never comprehends.
+  understanding?: Understanding | null,
 ): Promise<{ outcomes: DelegateOutcome[]; needsApproval?: AgentResult }> {
   const delegates = personas.slice(0, MAX_FANOUT_DELEGATES); // constraint (2)
 
@@ -1193,7 +1293,7 @@ async function runFanoutDelegates(
   // out of agentContext instead of broadcasting the full attachment blob to
   // every one of them. Computed once, outside the map, because the division
   // is over the WHOLE fan-out (delegates.length), not per-delegate.
-  const boundedContext = delegateContext(input.agentContext, delegates.length);
+  const boundedContext = delegateContext(input.agentContext, delegates.length, understanding);
 
   const settled = await Promise.all(delegates.map(async (persona) => {
     try {
@@ -1349,14 +1449,14 @@ async function synthesizeCoordinatorAnswer(
  *  runAgent already promises callers. */
 async function runCoordinatorFanout(
   accountId: string,
-  fanout: { coordinator: PersonaRow; delegates: PersonaRow[] },
+  fanout: { coordinator: PersonaRow; delegates: PersonaRow[]; understanding?: Understanding | null },
   input: RunAgentInput,
 ): Promise<AgentResult> {
   const messages: ChatMessage[] = capTranscript(input.transcript || []);
   const steps: AgentStep[] = [];
   if (input.message) messages.push({ role: 'user', content: input.message });
 
-  const { outcomes, needsApproval } = await runFanoutDelegates(accountId, fanout.delegates, input);
+  const { outcomes, needsApproval } = await runFanoutDelegates(accountId, fanout.delegates, input, undefined, fanout.understanding);
   for (const o of outcomes) {
     steps.push({
       thought: `${o.persona.name} ${o.status === 'error' ? 'ran into an error' : 'responded'}.`,
@@ -1381,7 +1481,7 @@ async function runCoordinatorFanout(
  *  token — a deliberate simplification, not a divergence in loop control). */
 async function runCoordinatorFanoutStream(
   accountId: string,
-  fanout: { coordinator: PersonaRow; delegates: PersonaRow[] },
+  fanout: { coordinator: PersonaRow; delegates: PersonaRow[]; understanding?: Understanding | null },
   input: RunAgentInput,
   emit: (e: AgentEvent) => void,
 ): Promise<void> {
@@ -1400,7 +1500,7 @@ async function runCoordinatorFanoutStream(
       : `Bringing in ${delegates.slice(0, -1).map((p) => p.name).join(', ')} and ${delegates[delegates.length - 1].name}.`,
   });
 
-  const { outcomes, needsApproval } = await runFanoutDelegates(accountId, fanout.delegates, input, emit);
+  const { outcomes, needsApproval } = await runFanoutDelegates(accountId, fanout.delegates, input, emit, fanout.understanding);
   if (needsApproval) {
     emit({ type: 'needs_approval', proposal: needsApproval.proposal!, message: needsApproval.message, transcript: needsApproval.transcript });
     return;
@@ -1432,12 +1532,12 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
   // step in the normal single-persona loop below, never a fresh fan-out —
   // that is what keeps "approve one action" from ever re-triggering N more.
   if (!input.approve && !input.personaId) {
-    // Defect 2 — see resolveCoordinatorFanout's comment: an AUTO-selected
-    // fan-out reasons about what's actually attached, not just the sentence
-    // that came with it. No `emit` here — runAgent (unlike runAgentStream)
-    // has no live channel to announce "reading the attached material" on.
-    const digest = attachmentDigest(input.agentContext, ROUTING_DIGEST_CHARS);
-    const fanout = await resolveCoordinatorFanout(accountId, input.personaMentions, input.message, digest);
+    // See resolveCoordinatorFanout's comment: an AUTO-selected fan-out is
+    // decided from a real comprehension of what's actually attached, not a
+    // head-sliced guess or the bare sentence that came with it. No `emit`
+    // here — runAgent (unlike runAgentStream) has no live channel to announce
+    // "reading the attached material" on.
+    const fanout = await resolveCoordinatorFanout(accountId, input.personaMentions, input.message, input.agentContext);
     if (fanout) return runCoordinatorFanout(accountId, fanout, input);
   }
   const { systemBlock: personaBlock, modelId: personaModelId } = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
@@ -1947,20 +2047,21 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
   // back truthy the other three results are simply discarded for the fanout
   // path below, which is cheap relative to the latency this saves on the
   // common case.
-  // Defect 2/3 — see resolveCoordinatorFanout's comment. `digest` is what lets
-  // an AUTO-selected fan-out actually reason about the attached material
-  // before deciding to delegate, instead of pattern-matching the bare
-  // sentence; `emit` is what puts that reading on the visible trace, which is
-  // exactly what the user could not see in the evidence that opened this fix
-  // (three delegate steps, never a line saying the document was opened). An
-  // EXPLICIT multi-mention ("@Milo @Ezra") never reads this digest at all —
-  // the user named the team, so resolveCoordinatorFanout returns kind:
-  // 'explicit' before ever touching selectPersonasForRequest, unchanged from
-  // before this fix.
-  const digest = attachmentDigest(input.agentContext, ROUTING_DIGEST_CHARS);
+  // See resolveCoordinatorFanout's comment. Passing `input.agentContext`
+  // (rather than a pre-sliced digest) is what lets an AUTO-selected fan-out
+  // run a real comprehension pass over the attached material before deciding
+  // to delegate, instead of pattern-matching a head-sliced guess; `emit` is
+  // what puts that reading on the visible trace, resolving with something
+  // concrete once comprehension actually finishes — exactly what the user
+  // could not see in the evidence that opened this fix (three delegate
+  // steps, never a line saying the document was opened, and the one
+  // "Reading…" line that DID appear resolved on nothing but a string slice).
+  // An EXPLICIT multi-mention ("@Milo @Ezra") never reaches comprehension at
+  // all — the user named the team, so resolveCoordinatorFanout returns kind:
+  // 'explicit' before ever touching it.
   const [fanout, personaResult, allEnabledSkills, externalCaps] = await Promise.all([
     (!input.approve && !input.personaId)
-      ? resolveCoordinatorFanout(accountId, input.personaMentions, input.message, digest, emit)
+      ? resolveCoordinatorFanout(accountId, input.personaMentions, input.message, input.agentContext, emit)
       : Promise.resolve(null),
     resolvePersonaForTurn(accountId, input.personaId, input.personaMentions),
     loadEnabledSkillsForAgent(accountId),
