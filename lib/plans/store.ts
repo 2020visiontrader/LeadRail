@@ -359,3 +359,37 @@ export function renderPlan(plan: Plan): string {
   ];
   return lines.join('\n');
 }
+
+/**
+ * Phase 3 — release whatever plan step was waiting on this approval.
+ *
+ * Called after a human approves. Finding the step by `approval_id` is what
+ * makes the resume land on the RIGHT step: without it the plan would either
+ * restart or need the runner to guess, and a plan that restarts after an
+ * approval re-does work the user already paid for.
+ *
+ * Best-effort and idempotent. An approval that no step is waiting on — an
+ * ordinary interactive one — matches nothing and returns false, which is the
+ * normal case, not an error.
+ */
+export async function resumeStepForApproval(accountId: string, approvalId: string): Promise<boolean> {
+  try {
+    const { data } = await supabase
+      .from('agent_plan_steps')
+      .select('id, plan_id')
+      .eq('approval_id', approvalId)
+      .eq('status', 'blocked')
+      .limit(1);
+    const row = Array.isArray(data) ? data[0] : null;
+    if (!row) return false;
+    const released = await unblockStep(accountId, (row as any).id);
+    if (released) {
+      log.info('plan: step released by approval', {
+        accountId, planId: (row as any).plan_id, approvalId,
+      });
+    }
+    return released;
+  } catch {
+    return false;
+  }
+}

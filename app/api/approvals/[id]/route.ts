@@ -4,6 +4,7 @@ import { requireSession, errorResponse, badRequest } from '@/lib/http';
 import { getApproval, decideApproval, ApprovalDecisionError } from '@/lib/approvals/store';
 import { createGrant, isGrantable, MAX_GRANT_USES } from '@/lib/approvals/grants';
 import { capabilityFor } from '@/lib/agent/tools';
+import { resumeStepForApproval } from '@/lib/plans/store';
 
 export const dynamic = 'force-dynamic';
 
@@ -52,6 +53,13 @@ async function POST__impl(request: NextRequest, { params }: { params: { id: stri
       { decidedBy: session.email, comment },
       currentArgs,
     );
+
+    // A plan step parked on this approval becomes runnable again. Best-effort
+    // and keyed on approval_id, so the plan resumes at the step that was
+    // waiting rather than restarting and redoing paid-for work.
+    if (decision === 'approved') {
+      void resumeStepForApproval(session.accountId, params.id).catch(() => {});
+    }
 
     // Created only AFTER the per-call approval succeeded, and only for gates
     // where being asked per item is friction rather than a safeguard.
