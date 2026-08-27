@@ -2,6 +2,15 @@
 // every provider signature. The risk it takes on is attribution: this process
 // serves every tenant and turns interleave freely, so the tests that matter are
 // the ones about whose tokens land on whose row.
+//
+// SCOPE — read this before adding a case here. Everything below tests the
+// mapping in ISOLATION, on hand-built objects. That is worth keeping, but it is
+// not sufficient on its own and once hid a real bug for the whole life of the
+// feature: these all passed while no streaming path called the reporter at all,
+// so 363 of 364 production rows had NULL tokens. Whether a provider's real call
+// path actually invokes it is asserted in ai-usage-streaming.test.ts, which
+// drives each client against a genuine SSE byte stream. A new provider needs a
+// case THERE, not here.
 
 import { describe, it, expect } from 'vitest';
 import { withUsageCapture, reportUsage, reportOpenAIUsage } from '@/lib/ai/usage';

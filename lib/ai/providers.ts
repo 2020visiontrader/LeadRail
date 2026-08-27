@@ -23,6 +23,7 @@ import * as opencode from './opencode';
 import { zoAskConfigured, zoAskText, zoAskChat } from './zoask';
 import { nimConfigured, nimText, nimChat, nimStreamChat } from './nim';
 import * as gemini from './gemini';
+import { reportOpenAIUsage } from './usage';
 
 export type ProviderKind = 'anthropic' | 'zoask' | 'opencode' | 'nim' | 'gemini' | 'custom';
 export type ModelTier = 'fast' | 'balanced' | 'heavy';
@@ -557,6 +558,12 @@ async function callOpenAiCompatible(provider: AiProviderRow, model: AiModelRow, 
     throw err;
   }
   const json = await res.json();
+  // This file had ZERO usage reporting, which is why the registry path never
+  // recorded tokens: an account model whose provider kind is 'custom' (the
+  // HuggingFace router and OpenRouter entries both are) is served here, NOT by
+  // lib/ai/huggingface.ts — that client reports usage, this branch did not.
+  // "Llama 3.3 70B" logged 15 successful calls and 0 token counts because of it.
+  reportOpenAIUsage(json);
   const content = json?.choices?.[0]?.message?.content;
   return typeof content === 'string' ? content.trim() : '';
 }
@@ -595,6 +602,10 @@ async function callAnthropic(provider: AiProviderRow, model: AiModelRow, opts: C
     throw err;
   }
   const json = await res.json();
+  // Anthropic spells them input_tokens/output_tokens, which reportOpenAIUsage
+  // already reads as its second spelling — so the same helper covers both
+  // dialects and there is no second parser to keep in sync.
+  reportOpenAIUsage(json);
   const parts = Array.isArray(json?.content) ? json.content : [];
   return parts.map((p: any) => (typeof p?.text === 'string' ? p.text : '')).join('').trim();
 }
@@ -680,6 +691,12 @@ async function streamOpenAiCompatible(
       temperature: opts.temperature ?? 0.7,
       max_tokens: opts.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
       stream: true,
+      // Ask the gateway to append a final chunk carrying the token counts.
+      // Without it an OpenAI-dialect stream reports no usage at all, which is
+      // why 363 of 364 ai_usage rows had NULL tokens. OpenAI-compatible only —
+      // deliberately NOT sent on the Anthropic branch, where it is not a valid
+      // parameter and usage arrives unprompted on message_start/message_delta.
+      stream_options: { include_usage: true },
     }),
   });
   if (!res.ok) {
