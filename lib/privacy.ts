@@ -90,8 +90,58 @@ export async function softDeleteVenture(brandId: string, accountId: string, acto
   return data;
 }
 
-// Tables exported for "download my data". Each is filtered by account_id
-// (accounts itself is filtered by id). Sensitive columns are scrubbed below.
+// How a table's rows are scoped to one account. Most tables carry a plain
+// `account_id` column and are filtered `WHERE account_id = :accountId`. A few
+// don't:
+//
+//   - 'column'   WHERE <column> = :accountId          (the default: account_id;
+//                accounts itself uses 'id' instead)
+//   - 'or'       WHERE <col1> = :accountId OR <col2> = :accountId ...
+//                for tables with more than one account-pointing column
+//                (referrals: referrer_account_id / referred_account_id)
+//   - 'indirect' WHERE <localColumn> IN (
+//                  SELECT <parentColumn> FROM <parentTable>
+//                  WHERE <parentScopeColumn> = :accountId
+//                )
+//                for tables scoped only through a parent row
+//                (sequence_enrollments -> sequences.account_id)
+//
+// Getting a scope wrong is a tenant-isolation bug, not a cosmetic one: an
+// under-scoped table leaks another account's rows into this account's export.
+// tests/account-export.test.ts checks every declared scope's column(s)
+// actually exist in migrations/*.sql, and separately proves isolation by
+// seeding two accounts and asserting each export sees only its own rows.
+export type ExportScope =
+  | { kind: 'column'; column: string }
+  | { kind: 'or'; columns: string[] }
+  | { kind: 'indirect'; localColumn: string; parentTable: string; parentColumn: string; parentScopeColumn: string };
+
+const ACCOUNT_ID_SCOPE: ExportScope = { kind: 'column', column: 'account_id' };
+
+// Tables whose scope isn't the plain `account_id` default above.
+const EXPORT_SCOPE_OVERRIDES: Record<string, ExportScope> = {
+  accounts: { kind: 'column', column: 'id' },
+  // referrals has TWO account-pointing columns (the referrer and the
+  // referred account) and no account_id of its own — a row belongs to this
+  // account's export if either one matches.
+  referrals: { kind: 'or', columns: ['referrer_account_id', 'referred_account_id'] },
+  // sequence_enrollments has no account_id at all; it is scoped only through
+  // its parent sequence. `.eq('account_id', accountId)` against this table
+  // returns a Postgres "column does not exist" error, which the old code
+  // silently wrote into the export bundle as `{ error: ... }` in place of
+  // the table's actual data.
+  sequence_enrollments: {
+    kind: 'indirect',
+    localColumn: 'sequence_id',
+    parentTable: 'sequences',
+    parentColumn: 'id',
+    parentScopeColumn: 'account_id',
+  },
+};
+
+// Tables exported for "download my data", in declaration order. Sensitive
+// columns are scrubbed below; scope (see ExportScope above) determines which
+// rows of each table belong to the requesting account.
 //
 // This list is a hand-maintained allow-list, and hand-maintained allow-lists
 // rot silently: every account-scoped table added since this file was written
@@ -103,7 +153,7 @@ export async function softDeleteVenture(brandId: string, accountId: string, acto
 // list straight from the migrations on disk and fails the moment the two
 // diverge. Adding a table without touching one of these two now fails a test
 // instead of shipping an invisible compliance gap.
-export const EXPORT_TABLES = [
+export const EXPORT_TABLE_NAMES = [
   'accounts', 'account_members', 'brands', 'contacts', 'companies', 'deals',
   'message_templates', 'sequences', 'sequence_enrollments', 'inbox_messages',
   'conversations', 'conversation_messages', 'apollo_searches', 'content_calendar',
@@ -127,6 +177,12 @@ export const EXPORT_TABLES = [
   'video_analyses', 'character_refs', 'platform_specs', 'account_skills',
   'ai_routing', 'social_automations',
 ];
+
+// Table -> scope, derived from the name list above plus the overrides. This
+// is what exportAccountData actually iterates.
+export const EXPORT_TABLES: Record<string, ExportScope> = Object.fromEntries(
+  EXPORT_TABLE_NAMES.map((t) => [t, EXPORT_SCOPE_OVERRIDES[t] ?? ACCOUNT_ID_SCOPE]),
+);
 
 // Account-scoped tables deliberately left out of the export, and why. A bare
 // exclusion with no reason is exactly what let the omissions above go
@@ -165,7 +221,20 @@ export const EXPORT_EXCLUDED: Record<string, string> = {
 // are redacted automatically the moment they appear in a migration; only
 // deliberately-safe columns need an entry here, and every one must be
 // justified by name matching a real column, not guessed in advance.
-const SECRET_COLUMN_PATTERN = /secret|token|api_key|password|credential|key_hash|private|refresh/i;
+//
+// `_encrypted` / `_hash` catch the ciphertext- and digest-suffixed columns the
+// name/word patterns above miss on their own — e.g. approvals.args_encrypted
+// (AES-256-GCM ciphertext of full proposed tool-call arguments, which can
+// contain anything a user pasted into a tool call) and approvals.args_hash,
+// neither of which contains "secret", "token", "password", etc. Checked
+// against every _encrypted/_hash column in migrations/*.sql: all of them
+// (integration_connections.secret_encrypted, account_members.password_hash,
+// referral_clicks.ip_hash/ua_hash, ai_providers.api_key_encrypted,
+// approvals.args_encrypted/args_hash, mcp_clients.*_encrypted,
+// mcp_api_keys.key_hash) are genuinely secret or pseudonymous — no benign
+// _encrypted/_hash column exists today, so this widening has no false
+// positives to allow-list.
+const SECRET_COLUMN_PATTERN = /secret|token|api_key|password|credential|key_hash|private|refresh|_encrypted|_hash/i;
 
 export const SCRUB_ALLOW: ReadonlySet<string> = new Set([
   'token_estimate',      // agent_conversations — a token count, not a secret
@@ -189,14 +258,38 @@ export function scrub(rows: any[]): any[] {
   });
 }
 
+const EXPORT_ROW_LIMIT = 50000;
+
+/** Run one table's export query per its declared ExportScope. */
+async function fetchScopedTable(table: string, scope: ExportScope, accountId: string) {
+  if (scope.kind === 'column') {
+    return supabase.from(table).select('*').eq(scope.column, accountId).limit(EXPORT_ROW_LIMIT);
+  }
+  if (scope.kind === 'or') {
+    const filter = scope.columns.map((c) => `${c}.eq.${accountId}`).join(',');
+    return supabase.from(table).select('*').or(filter).limit(EXPORT_ROW_LIMIT);
+  }
+  // indirect: resolve the parent rows' ids first, then filter this table by
+  // membership. An account with no parent rows gets [] back, not every row
+  // in the table (the bug an unfiltered .in() with an empty array can cause
+  // in some clients) and not an error.
+  const { data: parents, error: parentError } = await supabase
+    .from(scope.parentTable)
+    .select(scope.parentColumn)
+    .eq(scope.parentScopeColumn, accountId);
+  if (parentError) return { data: null, error: parentError };
+  const parentIds = (parents || []).map((p: any) => p[scope.parentColumn]);
+  if (parentIds.length === 0) return { data: [], error: null };
+  return supabase.from(table).select('*').in(scope.localColumn, parentIds).limit(EXPORT_ROW_LIMIT);
+}
+
 /** Gather the account's data across all tenant tables into one JSON bundle. */
 export async function exportAccountData(accountId: string): Promise<Record<string, any>> {
   const bundle: Record<string, any> = {
     _meta: { account_id: accountId, exported_at: new Date().toISOString(), format: 'leadrail-export-v1' },
   };
-  for (const table of EXPORT_TABLES) {
-    const col = table === 'accounts' ? 'id' : 'account_id';
-    const { data, error } = await supabase.from(table).select('*').eq(col, accountId).limit(50000);
+  for (const [table, scope] of Object.entries(EXPORT_TABLES)) {
+    const { data, error } = await fetchScopedTable(table, scope, accountId);
     bundle[table] = error ? { error: error.message } : scrub(data || []);
   }
   return bundle;
