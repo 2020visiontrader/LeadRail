@@ -10,6 +10,7 @@ import { purgeDueAccounts } from '@/lib/privacy';
 import { maturateRewards } from '@/lib/referrals';
 import { runDueScheduledTasks } from '@/lib/scheduled/store';
 import { runMemoryExtraction } from '@/lib/memory/extract';
+import { runPlanTick } from '@/lib/plans/runner';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,13 +26,15 @@ async function POST__impl(request: NextRequest) {
     // Memory extraction rides the existing tick rather than a new cron. A
     // second scheduler is a second thing that can silently stop without
     // anything noticing, and this codebase already has enough of those.
-    const [legacy, sequences, enrichment, webhooks, scheduledTasks, memory] = await Promise.all([
+    const [legacy, sequences, enrichment, webhooks, scheduledTasks, memory, plans] = await Promise.all([
       processDueJobs(limit).catch((e) => ({ error: String(e?.message || e) })),
       processDueEnrollments(limit).catch((e) => ({ error: String(e?.message || e) })),
       processEnrichmentJobs(Math.min(limit, 10)).catch((e) => ({ error: String(e?.message || e) })),
       processDueWebhookDeliveries(Math.min(limit, 20)).catch((e) => ({ error: String(e?.message || e) })),
       runDueScheduledTasks().catch((e) => ({ error: String(e?.message || e) })),
       runMemoryExtraction().catch((e) => ({ error: String(e?.message || e) })),
+      // Plans advance one step per tick — see lib/plans/runner.ts for why one.
+      runPlanTick().catch((e) => ({ error: String(e?.message || e) })),
     ]);
     // Retention cron: hard-purge rows soft-deleted past the window, then
     // hard-purge accounts whose deletion grace window has elapsed (storage +
@@ -44,7 +47,7 @@ async function POST__impl(request: NextRequest) {
       () => {}, () => {},
     );
     return NextResponse.json({
-      ok: true, legacy, sequences, enrichment, webhooks, scheduledTasks, memory,
+      ok: true, legacy, sequences, enrichment, webhooks, scheduledTasks, memory, plans,
       purged: purged ?? 0, purgedAccounts: purgedAccounts.length, maturedRewards,
     });
   } catch (error) {

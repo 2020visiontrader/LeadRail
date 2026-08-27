@@ -79,6 +79,15 @@ export interface Analysis {
   verdict?: Verdict;
 }
 
+/** Server-derived, never model-supplied. See Capability.run. */
+export interface CapabilityContext {
+  conversationId?: string | null;
+  brandId?: string | null;
+  requestedBy?: string | null;
+  /** Plan mode: write the plan, do not start executing it. */
+  planOnly?: boolean;
+}
+
 export interface Capability {
   /** Stable id, camelCase. NEVER renamed once shipped — MCP clients bind to it. */
   name: string;
@@ -93,7 +102,15 @@ export interface Capability {
   inputSchema: Record<string, any>;
   /** Runtime validation for both callers. */
   zod: z.ZodTypeAny;
-  run: (accountId: string, args: any) => Promise<any>;
+  /** Turn-scoped context, when the caller has it. OPTIONAL and third so every
+   *  existing two-parameter implementation still satisfies this type — a
+   *  capability that does not need it simply omits it.
+   *
+   *  It exists because a few capabilities need server-owned facts the MODEL
+   *  must never supply: which conversation this is (plans, grants and memory
+   *  are all keyed on it) and whether the turn is in plan-only mode. Asking the
+   *  model to pass a conversation id would make it forgeable. */
+  run: (accountId: string, args: any, ctx?: CapabilityContext) => Promise<any>;
   /** Optional (Packet 1.4): true when THESE arguments commit real spend even
    *  though the capability's gate class is not 'spend'. The spend budget gate
    *  in runTool() fires on `gate === 'spend' || spendsMoney?.(args)`.

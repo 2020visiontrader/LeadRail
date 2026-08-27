@@ -15,6 +15,7 @@
 // the caller resumes the loop with that one approved call. Account scope always
 // comes from the server session — never from the (round-tripped) transcript.
 
+import { BUDGET } from '@/lib/ai/context-budget';
 import { generateChat, textConfigured, type ChatMessage } from '@/lib/ai/router';
 import {
   TOOLS, runTool, toolCatalogForPrompt, toolCatalogStaged, AGENT_STAGED_CATALOG, capabilityFor,
@@ -61,7 +62,7 @@ const AGENT_COMPOSE = process.env.AGENT_COMPOSE !== '0';
 // built on the whole thing. Raised 4x, and bounded by the compose block cap
 // (OBSERVATION_BLOCK_CHARS) which is what ultimately reaches the final answer.
 export const OBSERVATION_CHAR_LIMIT =
-  Number(process.env.AGENT_OBSERVATION_CHARS) || 24_000;
+  Number(process.env.AGENT_OBSERVATION_CHARS) || BUDGET.observationChars;
 
 // Long-chat handoff thresholds (token estimate over the running transcript).
 // Soft → nudge the user to start a fresh chat (context carried over). Hard →
@@ -77,8 +78,8 @@ export const OBSERVATION_CHAR_LIMIT =
 //
 // The headroom left under 200k is deliberate: the system prompt, the tool
 // catalog and the grounding block all sit outside this estimate.
-export const SOFT_TOKEN_LIMIT = Number(process.env.AGENT_SOFT_TOKENS || 120_000);
-export const HARD_TOKEN_LIMIT = Number(process.env.AGENT_HARD_TOKENS || 160_000);
+export const SOFT_TOKEN_LIMIT = Number(process.env.AGENT_SOFT_TOKENS) || BUDGET.softTokens;
+export const HARD_TOKEN_LIMIT = Number(process.env.AGENT_HARD_TOKENS) || BUDGET.hardTokens;
 
 export function compactionLevel(tokenEstimate: number): 'soft' | 'hard' | null {
   if (tokenEstimate >= HARD_TOKEN_LIMIT) return 'hard';
@@ -199,6 +200,15 @@ export interface RunAgentInput {
    *  A delegate may not delegate further and may not raise approvals — see the
    *  bounds documented there. Absent for every ordinary caller. */
   isDelegate?: boolean;
+  /** Skill slugs pinned by a plan (migration 066). When present these REPLACE
+   *  per-turn routing: a plan worked one step per tick would otherwise get
+   *  different guidance on each step, because selectSkillsForTurn routes
+   *  against the message and every step is a different message. */
+  pinnedSkills?: string[];
+  /** Plan mode: the turn writes a plan and stops, instead of executing it.
+   *  Set by the caller (a UI toggle), never by the model — the model must not
+   *  be able to decide it is allowed to skip the operator's go-ahead. */
+  planOnly?: boolean;
   /** Optional override of MAX_STEPS for THIS call only (Packet 6.2). Used
    *  exclusively to give each delegate in a coordinator fan-out a smaller
    *  step budget than a normal top-level turn — never set by ordinary
@@ -310,7 +320,7 @@ function promptCacheKey(accountId: string | undefined, personaBlock?: string, ex
   return [accountId || 'anon', personaBlock ? 'p' : '-', String(Object.keys(externalTools || {}).length)].join(':');
 }
 
-function systemPrompt(brandName?: string, agentContext?: string, carryover?: CarryoverMemo | null, personaBlock?: string, skillsGuidance?: string, externalTools?: Record<string, AgentTool>, accountId?: string): string {
+function systemPrompt(brandName?: string, agentContext?: string, carryover?: CarryoverMemo | null, personaBlock?: string, skillsGuidance?: string, externalTools?: Record<string, AgentTool>, accountId?: string, planOnly?: boolean): string {
   const staticSections: string[] = [
     // ---- STATIC (stable across every turn for an account) -------------------
     'You are LeadRail AI — the operator copilot built into the LeadRail platform. Think of yourself the way a great chief-of-staff works: you understand the whole platform, you know this account and its ventures, you reason things through in plain language, and you actually DO the work by using LeadRail\'s tools. You are conversational and intellectually engaged — you can discuss strategy, weigh options, and explain your thinking, not just fire off tool calls.',
@@ -384,6 +394,15 @@ function systemPrompt(brandName?: string, agentContext?: string, carryover?: Car
   // across a turn's sixteen steps, which is the whole point.
   const dynamicSections: string[] = [
     '',
+    // Volatile on purpose: this changes per turn, and a cached static prefix
+    // would carry one turn's mode into the next.
+    planOnly
+      ? [
+          'PLAN MODE IS ON FOR THIS TURN. Do NOT do the work.',
+          'Call createPlan with an objective and ordered steps, then answer with action:"final" describing the plan in plain language and asking whether to go ahead or change it.',
+          'Read-only tools are fine if you genuinely need them to write a sensible plan. Do not call anything that writes, sends, spends or changes state — not even something the user seems to have already asked for.',
+        ].join('\n')
+      : '',
     agentContext || (brandName ? `The user is working in the "${brandName}" venture; prefer it when a venture is needed and not otherwise specified.` : ''),
     carryover ? '\n' + carryoverBlock(carryover) : '',
   ];
@@ -1277,6 +1296,15 @@ async function runCoordinatorFanoutStream(
 
 async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
   const { accountId, brandContext } = input;
+  // Server-derived context handed to every tool call. The MODEL never supplies
+  // these: a conversation id it could set would be forgeable, and plans, grants
+  // and memory are all keyed on it.
+  const toolCtx = {
+    conversationId: input.conversationId ?? null,
+    brandId: brandContext?.id ?? null,
+    requestedBy: input.requestedBy ?? null,
+    planOnly: Boolean(input.planOnly),
+  };
   // Packet 6.2: only ever enter fan-out on a fresh turn — never mid-resume
   // (input.approve set) and never when the caller already pinned a single
   // explicit personaId. A resumed approval always finishes as one ordinary
@@ -1289,14 +1317,19 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
   const { systemBlock: personaBlock, modelId: personaModelId } = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
   const allEnabledSkills = await loadEnabledSkillsForAgent(accountId);
   // Hermes picks the 1-4 that apply to THIS request instead of injecting all.
-  const enabledSkills = await selectSkillsForTurn(allEnabledSkills, input.message, brandContext?.name);
+  // Pinned skills (a plan) REPLACE routing; otherwise route against this turn.
+  // Filtered against what the account actually has enabled, so a stale pin
+  // cannot resurrect a skill that was since turned off.
+  const enabledSkills = input.pinnedSkills?.length
+    ? allEnabledSkills.filter((sk) => input.pinnedSkills!.includes(sk.slug))
+    : await selectSkillsForTurn(allEnabledSkills, input.message, brandContext?.name);
   // Packet 4: this account's connected, enabled external-MCP-client tools for
   // THIS turn only — a pure cached DB read (see lib/capabilities/external-mcp.ts),
   // never a network call, so it cannot add hot-path latency or hang the turn.
   const externalCaps = await loadExternalCapabilities(accountId);
   const extraTools = toolsFromCapabilities(externalCaps);
   const extraCapsByName: Record<string, Capability> = Object.fromEntries(externalCaps.map((c) => [c.name, c]));
-  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId);
+  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId, input.planOnly);
   const messages: ChatMessage[] = capTranscript(input.transcript || []);
   const steps: AgentStep[] = [];
 
@@ -1353,14 +1386,14 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
     // fail validation and lose an approval the user had just granted.
     const approvedBatch = parseBatch(args);
     if (approvedBatch.kind === 'batch') {
-      const results = await runBatch(approvedBatch.calls, (a) => runTool(tool, accountId, a, extraTools, extraCapsByName, brandContext?.id));
+      const results = await runBatch(approvedBatch.calls, (a) => runTool(tool, accountId, a, extraTools, extraCapsByName, brandContext?.id, toolCtx));
       const obs = batchObservation(tool, results, extraCapsByName);
       const perCall = obsLimitFor(tool, extraCapsByName);
       const obsLimit = perCall === undefined ? undefined : perCall * Math.min(approvedBatch.calls.length, 4);
       steps.push({ tool, args, observation: truncate(obs, obsLimit) });
       messages.push(observation(obs, obsLimit));
     } else {
-      const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
+      const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id, toolCtx);
       const obs = observationFor(tool, args, res, extraCapsByName);
       const obsLimit = obsLimitFor(tool, extraCapsByName);
       steps.push({ tool, args, observation: truncate(obs, obsLimit) });
@@ -1535,7 +1568,7 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
 
       // Counts as ONE call against the duplicate guard, for the same reason.
       toolCalls[tool] = (toolCalls[tool] || 0) + 1;
-      const results = await runBatch(calls, (a) => runTool(tool, accountId, a, extraTools, extraCapsByName, brandContext?.id));
+      const results = await runBatch(calls, (a) => runTool(tool, accountId, a, extraTools, extraCapsByName, brandContext?.id, toolCtx));
       const obs = batchObservation(tool, results, extraCapsByName);
       lastToolName = tool;
       // A batch observation carries N results, so the per-call limit would clip
@@ -1573,7 +1606,7 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
       if (isGrantable(grantGate)) {
         const claimed = await consumeGrant(accountId, input.conversationId, tool);
         if (claimed) {
-          const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
+          const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id, toolCtx);
           // The ledger must still show this. An action covered by a grant is
           // the one nobody looked at as it happened, so it needs MORE of an
           // audit trail than a hand-approved one, not less.
@@ -1637,7 +1670,7 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
     seen.add(sig);
     toolCalls[tool] = (toolCalls[tool] || 0) + 1;
 
-    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
+    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id, toolCtx);
     const obs = observationFor(tool, args, res, extraCapsByName);
     lastToolName = tool;
     const obsLimit = obsLimitFor(tool, extraCapsByName);
@@ -1760,6 +1793,15 @@ function emitAnalysis(emit: (e: AgentEvent) => void, analysis: Analysis | null):
 // "harmonize" the streaming/compose paths.
 async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) => void): Promise<void> {
   const { accountId, brandContext } = input;
+  // Server-derived context handed to every tool call. The MODEL never supplies
+  // these: a conversation id it could set would be forgeable, and plans, grants
+  // and memory are all keyed on it.
+  const toolCtx = {
+    conversationId: input.conversationId ?? null,
+    brandId: brandContext?.id ?? null,
+    requestedBy: input.requestedBy ?? null,
+    planOnly: Boolean(input.planOnly),
+  };
   // Packet 6.2 — same fan-out gate as runAgent above; see the comment there.
   // These four reads don't depend on each other, so they run concurrently
   // instead of as one sequential chain — on an ordinary (non-fanout) turn this
@@ -1782,10 +1824,15 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
   // Hermes picks the 1-4 that apply to THIS request instead of injecting all.
   // This is the one hop that must stay sequential — it genuinely depends on
   // allEnabledSkills (which skills exist to route over).
-  const enabledSkills = await selectSkillsForTurn(allEnabledSkills, input.message, brandContext?.name);
+  // Pinned skills (a plan) REPLACE routing; otherwise route against this turn.
+  // Filtered against what the account actually has enabled, so a stale pin
+  // cannot resurrect a skill that was since turned off.
+  const enabledSkills = input.pinnedSkills?.length
+    ? allEnabledSkills.filter((sk) => input.pinnedSkills!.includes(sk.slug))
+    : await selectSkillsForTurn(allEnabledSkills, input.message, brandContext?.name);
   const extraTools = toolsFromCapabilities(externalCaps);
   const extraCapsByName: Record<string, Capability> = Object.fromEntries(externalCaps.map((c) => [c.name, c]));
-  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId);
+  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId, input.planOnly);
   const messages: ChatMessage[] = capTranscript(input.transcript || []);
 
   if (input.message) messages.push({ role: 'user', content: input.message });
@@ -1830,7 +1877,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
     const approvedBatch = parseBatch(args);
     if (approvedBatch.kind === 'batch') {
       emit({ type: 'tool', tool, title: `${approveDef.title} — ${approvedBatch.calls.length} at once`, args });
-      const results = await runBatch(approvedBatch.calls, (a) => runTool(tool, accountId, a, extraTools, extraCapsByName, brandContext?.id));
+      const results = await runBatch(approvedBatch.calls, (a) => runTool(tool, accountId, a, extraTools, extraCapsByName, brandContext?.id, toolCtx));
       const obs = batchObservation(tool, results, extraCapsByName);
       const perCall = obsLimitFor(tool, extraCapsByName);
       const obsLimit = perCall === undefined ? undefined : perCall * Math.min(approvedBatch.calls.length, 4);
@@ -1838,7 +1885,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
       messages.push(observation(obs, obsLimit));
     } else {
       emit({ type: 'tool', tool, title: approveDef.title, args });
-      const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
+      const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id, toolCtx);
       const obs = observationFor(tool, args, res, extraCapsByName);
       const obsLimit = obsLimitFor(tool, extraCapsByName);
       emit({ type: 'observation', text: truncate(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
@@ -2022,7 +2069,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
 
       toolCalls[tool] = (toolCalls[tool] || 0) + 1;
       emit({ type: 'tool', tool, title: `${def.title} — ${calls.length} at once`, args: { calls: calls.map((c) => c.args) } });
-      const results = await runBatch(calls, (a) => runTool(tool, accountId, a, extraTools, extraCapsByName, brandContext?.id));
+      const results = await runBatch(calls, (a) => runTool(tool, accountId, a, extraTools, extraCapsByName, brandContext?.id, toolCtx));
       const obs = batchObservation(tool, results, extraCapsByName);
       const perCall = obsLimitFor(tool, extraCapsByName);
       const obsLimit = perCall === undefined ? undefined : perCall * Math.min(calls.length, 4);
@@ -2057,7 +2104,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
       if (isGrantable(grantGate)) {
         const claimed = await consumeGrant(accountId, input.conversationId, tool);
         if (claimed) {
-          const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
+          const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id, toolCtx);
           // The ledger must still show this. An action covered by a grant is
           // the one nobody looked at as it happened, so it needs MORE of an
           // audit trail than a hand-approved one, not less.
@@ -2123,7 +2170,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
     toolCalls[tool] = (toolCalls[tool] || 0) + 1;
 
     emit({ type: 'tool', tool, title: def.title, args });
-    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id);
+    const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id, toolCtx);
     const obs = observationFor(tool, args, res, extraCapsByName);
     const obsLimit = obsLimitFor(tool, extraCapsByName);
     emit({ type: 'observation', text: truncate(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });

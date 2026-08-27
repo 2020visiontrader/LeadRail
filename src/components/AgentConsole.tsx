@@ -24,7 +24,11 @@ export type Step =
       observation?: string;
     }
   | { kind: 'tool'; label: string; done: boolean; ok?: boolean; metrics?: Record<string, number>; observation?: string }
-  | { kind: 'error'; text: string };
+  | { kind: 'error'; text: string }
+  /** A neutral confirmation — e.g. "won't ask again this chat". Distinct from
+   *  'error' on purpose: telling someone a permission was granted is not a
+   *  failure, and styling it as one would read as though it had not worked. */
+  | { kind: 'note'; text: string };
 
 // Structured analysis of a turn's tool results — see Capability.findings in
 // lib/capabilities/types.ts and the evidence/claim/finding/verdict SSE events
@@ -180,6 +184,11 @@ const TOOL_VERB: Record<string, string> = {
   listObservedPatterns: 'Reviewing what I have noticed',
   listStandingApprovals: 'Checking what you have already approved',
   revokeStandingApproval: 'Turning that permission back off',
+  createPlan: 'Working out the steps',
+  completePlanStep: 'Marking that step done',
+  blockPlanStep: 'Parking that step for you',
+  getPlan: 'Checking where we are',
+  cancelPlan: 'Stopping the plan',
   forgetFact: 'Forgetting that',
   listFacts: 'Checking what I remember',
   describeTools: 'Working out what I can do here',
@@ -311,6 +320,11 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     return () => window.removeEventListener('beforeunload', warn);
   }, [activeRuns.size]);
   const busy = activeRuns.size > 0;
+  // PLAN MODE. Off by default: most turns are small, and making every request
+  // wait for a go-ahead would be friction rather than safety. It turns itself
+  // off after one turn — a mode you have to remember to leave is a mode people
+  // leave on by accident.
+  const [planMode, setPlanMode] = useState(false);
   const endRun = (id: string) => {
     abortersRef.current.delete(id);
     inFlightTextRef.current.delete(id);
@@ -540,6 +554,9 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
   const inFlightTextRef = useRef(new Map<string, string>());
 
   async function run(payload: { message?: string; approve?: any }) {
+    // One turn only. Cleared here rather than on completion so a failed run
+    // does not silently leave the next message in plan mode.
+    if (planMode && payload.message) setPlanMode(false);
     // Id for THIS run's assistant turn. Every patch below is scoped to it, so a
     // second prompt started mid-flight cannot overwrite this one's output.
     const turnId = `turn-${Date.now()}-${turnSeq.current++}`;
@@ -581,6 +598,9 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
           ...(conversationIdRef.current ? { conversationId: conversationIdRef.current } : {}),
           ...(from ? { from } : {}),
           ...(selectedPersonaId ? { personaId: selectedPersonaId } : {}),
+          // Only sent when a message is being sent — resuming an approval must
+          // never be re-interpreted as a planning turn.
+          ...(planMode && payload.message ? { planOnly: true } : {}),
         }),
       });
       if (from) pendingFromRef.current = undefined;
@@ -813,6 +833,41 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     run({ approve: { approvalId: proposal.approvalId, tool: proposal.tool, args: proposal.args } });
   };
 
+  /** Approve this call AND stop asking for this action for the rest of the chat.
+   *
+   *  WHY IT EXISTS. enrichLead is per-lead and gated on spend, so "pull fifty"
+   *  produced fifty approval cards for a decision the operator made once, at
+   *  batch scale — 29 of them in this account, three of which lapsed unanswered.
+   *
+   *  The grant is created through the approvals decision route, which owns the
+   *  rules: only spend and external_send may be made standing, the count is
+   *  clamped, and the grant is scoped to THIS conversation so the next session
+   *  asks again. If the route declines (a destructive action, say), it says so
+   *  and the call still runs as an ordinary one-time approval — the operator
+   *  never loses the decision they just made because the extra part was
+   *  refused. */
+  const approveForSession = async () => {
+    if (!proposal?.approvalId) return;
+    // No local busy flag to set: `busy` is derived from activeRuns, and the
+    // run() below enters it. This request is a single fast POST.
+    let note: string | null = null;
+    try {
+      const res: any = await apiSend(`/api/approvals/${proposal.approvalId}`, 'POST', {
+        decision: 'approved',
+        scope: 'session',
+        args: proposal.args,
+      });
+      note = res?.standingNote ?? null;
+      if (res?.standing) {
+        note = `Won't ask again this chat — ${res.standing.uses} more time(s).`;
+      }
+    } catch {
+      note = 'Could not set that up, so this action will keep asking.';
+    }
+    if (note) patchLatestAssistant((t) => t.steps.push({ kind: 'note', text: note as string }));
+    run({ approve: { approvalId: proposal.approvalId, tool: proposal.tool, args: proposal.args } });
+  };
+
   // Long-chat handoff: distil the current chat into a carryover memo server-side,
   // then start an empty chat that will send `from=<old id>` on its first (and
   // only its first) message. The old conversation is untouched and still listed.
@@ -926,6 +981,9 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
             <p className="mt-1 text-sm text-[var(--text-secondary)]">{proposal.summary}</p>
             <div className="mt-3 flex gap-2">
               <Button onClick={approve} loading={busy}>Approve &amp; run</Button>
+              <Button variant="secondary" onClick={approveForSession} loading={busy}>
+                Approve &amp; stop asking this chat
+              </Button>
               <Button variant="secondary" onClick={() => setProposal(null)}>Cancel</Button>
             </div>
           </div>
@@ -987,13 +1045,25 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
               setInput(base ? `${base.trim()} ${text}` : text);
             }}
           />
+          <Button
+            variant={planMode ? 'primary' : 'secondary'}
+            onClick={() => setPlanMode((v) => !v)}
+            aria-pressed={planMode}
+            title={planMode
+              ? 'Plan mode is on — the next message will be planned, not carried out'
+              : 'Plan first: get the steps before anything runs'}
+          >
+            {planMode ? 'Planning' : 'Plan first'}
+          </Button>
           {busy && (
             <Button variant="secondary" onClick={stopAll} title="Stop the running request">
               Stop
             </Button>
           )}
           <Button loading={false} disabled={!canSend} onClick={send}>
-            {activeRuns.size > 1 ? `Send (${activeRuns.size} running)` : activeRuns.size === 1 ? 'Send (1 running)' : 'Send'}
+            {planMode
+              ? 'Plan it'
+              : activeRuns.size > 1 ? `Send (${activeRuns.size} running)` : activeRuns.size === 1 ? 'Send (1 running)' : 'Send'}
           </Button>
         </div>
       </div>
@@ -1012,6 +1082,13 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
 // The glyph is now decorative, with the state said in words for assistive tech
 // and put in the title for everyone else.
 function StepRow({ step }: { step: Step }) {
+  if (step.kind === 'note') {
+    return (
+      <div className="flex items-center gap-2 text-sm text-[var(--text-secondary)]">
+        <span aria-hidden>·</span><span className="sr-only">Note: </span>{step.text}
+      </div>
+    );
+  }
   if (step.kind === 'error') {
     return (
       <div className="flex items-center gap-2 text-sm text-[var(--status-negative)]">

@@ -13,6 +13,7 @@
 // The body is DERIVED. Nothing should ever write it by hand, and losing the
 // table entirely costs only a re-projection from memory_edges.
 
+import { BUDGET } from '@/lib/ai/context-budget';
 import { supabase } from '@/lib/db';
 import { log } from '@/lib/logger';
 import { activeEdges } from './edges';
@@ -22,7 +23,7 @@ import type { MemoryEdge, SubjectRef } from './types';
  *  every turn about it, so it competes with the tool catalog and the transcript
  *  for the same window. Tier 1 renders first, so truncation drops observations
  *  before it drops commitments. */
-export const MAX_BODY_CHARS = Number(process.env.MEMORY_BODY_CHARS) || 4_000;
+export const MAX_BODY_CHARS = Number(process.env.MEMORY_BODY_CHARS) || BUDGET.memoryBodyChars;
 
 function renderValidity(e: MemoryEdge): string {
   const from = e.validFrom ? e.validFrom.slice(0, 10) : null;

@@ -9,6 +9,7 @@
 import { supabase } from '@/lib/db';
 import { loadAgentContext } from '@/lib/agent/context';
 import { createNotification } from '@/lib/notifications/store';
+import { loadTranscript, saveConversation } from '@/lib/agent/memory';
 
 // runAgent is imported lazily (inside runDueScheduledTasks, not here at
 // module top level) — same reasoning as logUsage's lazy `@/lib/credits`
@@ -37,6 +38,18 @@ export interface ScheduledTaskRow {
   /** 'ok' | 'needs_approval' | 'error' | null (never run). */
   last_status: string | null;
   last_result: string | null;
+  /** Migration 063. The conversation this task's runs belong to.
+   *
+   *  WHY A SCHEDULED RUN NEEDS ONE. Without it every firing was a cold start:
+   *  runAgent was called with `message: task.prompt` and no transcript, so
+   *  nothing carried between runs but `last_status` and a truncated
+   *  `last_result`. It also silently excluded unattended runs from two systems
+   *  that key on conversation_id — durable memory (061) never saw them, and
+   *  standing approval grants (062) could not cover them, which is exactly
+   *  where an unattended run most needs one: it halts at the first spend gate
+   *  with nobody watching. */
+  conversation_id: string | null;
+  active_plan_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -208,12 +221,38 @@ export async function runDueScheduledTasks(): Promise<{
   for (const task of (due || []) as ScheduledTaskRow[]) {
     try {
       const { agentContext, brandName, brandId } = await groundingFor(task);
+      // Continue this task's own conversation rather than starting cold. The
+      // transcript is loaded from OUR store, scoped to the task's account —
+      // same discipline as the interactive route, which never accepts
+      // transcript content from a caller.
+      const transcript = await loadTranscript(task.conversation_id ?? undefined, task.account_id);
       const agentResult = await runAgent({
         accountId: task.account_id,
         message: task.prompt,
         agentContext,
+        transcript,
+        conversationId: task.conversation_id ?? undefined,
+        requestedBy: `scheduled:${task.id}`,
         brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined,
       });
+
+      // Persist the run so the NEXT firing has somewhere to continue from, and
+      // so memory extraction has a conversation to read. saveConversation
+      // returns the id it used, which is how a task acquires one on its first
+      // run without a migration backfill.
+      const savedConversationId = await saveConversation({
+        id: task.conversation_id ?? undefined,
+        accountId: task.account_id,
+        brandId: brandId ?? null,
+        title: task.name,
+        transcript: agentResult.transcript,
+      }).catch(() => null);
+      if (savedConversationId && savedConversationId !== task.conversation_id) {
+        await supabase.from('scheduled_tasks')
+          .update({ conversation_id: savedConversationId })
+          .eq('id', task.id).eq('account_id', task.account_id)
+          .then(() => {}, () => {});
+      }
 
       if (agentResult?.status === 'needs_approval') {
         // The run proposed a sensitive action and stopped. It did NOT execute.

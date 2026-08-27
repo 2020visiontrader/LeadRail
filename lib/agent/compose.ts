@@ -13,6 +13,7 @@
  * draft verbatim, so a compose outage degrades to today's output, never to an error.
  */
 
+import { BUDGET } from '@/lib/ai/context-budget';
 import { generateChat, streamChat, type ChatMessage } from '@/lib/ai/router';
 import { stripAiMarkers, HUMANIZE_RULES } from '@/lib/ai/humanizer';
 
@@ -179,7 +180,7 @@ function buildUserTurn(input: ComposeInput): string {
 // a dozen tools it silently dropped the earliest findings before the answer was
 // written — which reads as the assistant ignoring half of what it just looked up.
 export const OBSERVATION_BLOCK_CHARS =
-  Number(process.env.AGENT_OBSERVATION_BLOCK_CHARS) || 160_000;
+  Number(process.env.AGENT_OBSERVATION_BLOCK_CHARS) || BUDGET.composeBlockChars;
 
 function extractObservationBlock(transcript: ChatMessage[]): string {
   const lines: string[] = [];

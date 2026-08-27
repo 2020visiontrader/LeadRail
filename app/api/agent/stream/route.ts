@@ -97,6 +97,12 @@ export async function POST(request: NextRequest) {
   const personaId: string | undefined = typeof body?.personaId === 'string' && body.personaId ? body.personaId : undefined;
   const personaMentions = parseMentions(message);
 
+  // PLAN MODE. The turn writes a plan and stops instead of executing it, so
+  // the operator sees the shape of the work before any of it runs. A request
+  // flag, never a model decision: the model must not be able to decide it is
+  // allowed to skip the go-ahead.
+  const planOnly = body?.planOnly === true;
+
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
     async start(controller) {
@@ -182,7 +188,7 @@ export async function POST(request: NextRequest) {
         }
 
         await runAgentStream(
-          { accountId: session.accountId, message, approve, transcript, agentContext, carryover, brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined, personaId, personaMentions, requestedBy: session.email, conversationId },
+          { accountId: session.accountId, message, approve, transcript, agentContext, carryover, brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined, personaId, personaMentions, requestedBy: session.email, conversationId, planOnly },
           (e: AgentEvent) => {
             // Only `final`/`needs_approval` carry a transcript. Everything else,
             // including `final_delta` (a progressive preview of the answer being
