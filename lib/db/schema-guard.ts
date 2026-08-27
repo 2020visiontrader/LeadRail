@@ -60,7 +60,7 @@ const EXPECTATIONS: Expectation[] = [
   { table: 'scheduled_tasks', columns: ['brand_id'], migration: '043', breaks: 'scheduled runs lose their venture grounding' },
   { table: 'mcp_clients', columns: ['allow_auto'], migration: '044', breaks: 'adding an MCP server fails with an internal error' },
   { table: 'brand_strategies', columns: ['strategy'], migration: '047', breaks: 'brand strategies cannot be saved' },
-  { table: 'brand_goals', columns: ['target'], migration: '048', breaks: 'venture goals cannot be tracked' },
+  { table: 'brand_goals', columns: ['objective', 'success_criterion'], migration: '048', breaks: 'venture goals cannot be tracked' },
   { table: 'content_items', columns: ['status', 'hook', 'body', 'cta', 'platforms'], migration: '050', breaks: 'the content board cannot store a piece' },
   { table: 'content_pillars', columns: ['pain', 'promise'], migration: '050', breaks: 'content has no pillar rotation' },
   { table: 'platform_specs', columns: ['char_limit', 'hashtag_strategy'], migration: '050', breaks: 'generated content is not held to platform limits' },
