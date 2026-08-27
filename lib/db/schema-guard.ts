@@ -48,6 +48,15 @@ interface Expectation {
 // standing up a database — checkSchemaDrift itself still needs one.
 export const EXPECTATIONS: Expectation[] = [
   { table: 'agent_conversations', columns: ['transcript', 'carryover'], migration: '022', breaks: 'the assistant cannot persist or reload a chat' },
+  // 'good' has existed since 023 and was already load-bearing (task-aware
+  // routing in lib/ai/providers.ts::resolveChainForTask) before it gained a
+  // 'vision' tag value in 074. Registered against 023 — the migration that
+  // actually defines the column — not 074, which only UPDATEs data into it
+  // and adds no schema. Tying a check to a migration that didn't introduce
+  // what it's checking is the exact mistake this file's history already
+  // fixed once for migration 048; see commit "Fix: schema-guard flagged
+  // migration 048 for a column it never defined".
+  { table: 'ai_models', columns: ['good'], migration: '023', breaks: 'task-aware and vision-aware model routing (lib/ai/providers.ts, lib/ai/router.ts) silently stops reordering for capability and falls back to plain health/latency order' },
   { table: 'skills', columns: ['instructions'], migration: '025', breaks: 'no skill guidance reaches the assistant' },
   { table: 'mcp_clients', columns: ['url', 'transport', 'auth_header_encrypted'], migration: '026', breaks: 'external MCP servers cannot be registered' },
   { table: 'scheduled_tasks', columns: ['last_status'], migration: '027', breaks: 'scheduled runs cannot record an outcome' },
