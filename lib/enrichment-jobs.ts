@@ -1,8 +1,12 @@
 // Async enrichment jobs (Phase C, item 17).
 // Enrichment moves off the request path onto a job row drained by the same
 // hermes tick that runs sequences. Benefits: a slow/failed Apollo call can't
-// block an HTTP request, retries are bounded, and the unique live-job index
+// block an HTTP request, retries are bounded, and — for contacts — the
+// unique live-job index (uniq_enrichment_job_live_contact, on contact_id)
 // stops the same contact being enriched twice concurrently (no double-spend).
+// Companies get the equivalent guarantee via uniq_enrichment_job_live_company
+// (migration 070, on company_id) — before that migration, no such index
+// existed for company_id and duplicate company jobs were possible.
 
 import { supabase } from '@/lib/db';
 import { matchPerson, enrichOrganization, apolloConfigured } from '@/lib/integrations/apollo';
@@ -12,8 +16,10 @@ export interface EnqueueResult { id: string | null; queued: boolean; reason?: st
 
 /**
  * Queue a person-enrichment job for a contact. Idempotent: the partial unique
- * index (status in pending|running) makes a duplicate insert a no-op, so this
- * safely returns the existing in-flight job instead of erroring.
+ * index uniq_enrichment_job_live_contact (contact_id, status in
+ * pending|running) makes a duplicate insert while one is already live fail
+ * with 23505, so this safely returns the existing in-flight job instead of
+ * erroring or double-spending an Apollo call.
  */
 export async function enqueuePersonEnrichment(accountId: string, contactId: string): Promise<EnqueueResult> {
   const { data, error } = await supabase
@@ -29,7 +35,15 @@ export async function enqueuePersonEnrichment(accountId: string, contactId: stri
   return { id: data.id, queued: true };
 }
 
-/** Queue a company-enrichment job (firmographics via Apollo org enrich). */
+/**
+ * Queue a company-enrichment job (firmographics via Apollo org enrich).
+ * Idempotent as of migration 070: the partial unique index
+ * uniq_enrichment_job_live_company (company_id, status in pending|running)
+ * makes a duplicate insert while one is already live fail with 23505, so
+ * this safely returns the existing in-flight job instead of erroring or
+ * double-spending an Apollo call. Before 070 no such index existed for
+ * company_id and this guarantee did not hold.
+ */
 export async function enqueueCompanyEnrichment(accountId: string, companyId: string): Promise<EnqueueResult> {
   const { data, error } = await supabase
     .from('enrichment_jobs')
