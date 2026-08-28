@@ -84,19 +84,43 @@ entry relied on ("the window between someone enrolling and the cron being
 wired") is shut. The floor is what stands between a first enrollment and a
 stale send, which is why it mattered that it was already done.
 
-## 4. `stream_options` unverified against live providers
+## 4. `stream_options` — partially answered from production, 2026-08-28
 
-Token accounting (Fix 3) ships with `stream_options: { include_usage: true }`
-on the streaming path, never exercised against a real endpoint — no provider
-keys in the dev environment, and the egress proxy 403s all five hosts.
+The entry said this "cannot be closed from a sandbox" and needed four curls run
+somewhere with real keys and live egress. It did not need curls: the app has
+been serving real traffic, so `ai_usage` already holds the answer. Queried it.
 
-Cannot be closed from a sandbox. Needs the four curls run from anywhere with
-real keys and live egress, against each provider that streams.
+Of 754 `chat` rows, 328 succeeded, and only **116 carry token counts**. By
+provider, over successful calls:
 
-**Done when:** a real streamed response is confirmed to carry a usage block,
-per provider — or the providers that do not are documented here.
+| provider | ok | with tokens | % |
+|---|---:|---:|---:|
+| (provider_id NULL) | 281 | 113 | 40.2 |
+| NVIDIA NIM | 20 | 3 | 15.0 |
+| HuggingFace | 15 | 0 | **0** |
+| Zo Ask | 12 | 0 | **0** |
+| OpenRouter | 0 | 0 | — |
+| OpenCode Go | 0 | 0 | — |
 
----
+So `stream_options: { include_usage: true }` is **not** yielding usage for most
+traffic. HuggingFace and Zo Ask return none at all across 27 successful calls;
+NIM returns it 15% of the time. OpenRouter has no successful call to judge by.
+That is enough to say token accounting cannot currently be trusted as a cost
+basis — without needing the curls.
+
+**A larger defect surfaced while checking.** `provider_id` is NULL on **281 of
+328** successful rows — 86%. `ai_usage.provider_id` is the join key for
+per-provider cost attribution, so for most traffic there is nothing to attribute
+to. The rows are written; the column that makes them readable is not. This is
+the house pattern again, and it is worth more than the `stream_options`
+question that exposed it: fixing usage reporting is pointless while the
+attribution key is absent.
+
+**Done when:** for §4, a provider-by-provider table showing which return usage
+on the streaming path, and the ladder either records tokens or records that the
+provider does not supply them — a NULL that means "not supplied" must be
+distinguishable from one that means "we did not look". For the attribution bug,
+`provider_id` non-NULL on new successful `ai_usage` rows, verified by querying.
 
 ## Found during the 2026-08-27 tick audit — not yet scoped
 
