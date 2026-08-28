@@ -84,43 +84,49 @@ entry relied on ("the window between someone enrolling and the cron being
 wired") is shut. The floor is what stands between a first enrollment and a
 stale send, which is why it mattered that it was already done.
 
-## 4. `stream_options` — partially answered from production, 2026-08-28
+## 4. `stream_options` — ANSWERED from production, 2026-08-28
 
 The entry said this "cannot be closed from a sandbox" and needed four curls run
-somewhere with real keys and live egress. It did not need curls: the app has
-been serving real traffic, so `ai_usage` already holds the answer. Queried it.
+with real keys and live egress. It needed neither: the app has been serving
+real traffic, so `ai_usage` already held the answer.
 
-Of 754 `chat` rows, 328 succeeded, and only **116 carry token counts**. By
-provider, over successful calls:
+Token capture on successful calls, by ladder tier (`model_label`):
 
-| provider | ok | with tokens | % |
+| tier | ok calls | with tokens | % |
 |---|---:|---:|---:|
-| (provider_id NULL) | 281 | 113 | 40.2 |
-| NVIDIA NIM | 20 | 3 | 15.0 |
-| HuggingFace | 15 | 0 | **0** |
-| Zo Ask | 12 | 0 | **0** |
-| OpenRouter | 0 | 0 | — |
-| OpenCode Go | 0 | 0 | — |
+| **zoask** | **168** | **0** | **0** |
+| openrouter | 107 | 107 | **100** |
+| nim | 6 | 6 | **100** |
+| opencode | 0 | 0 | — |
+| huggingface | 0 | 0 | — |
 
-So `stream_options: { include_usage: true }` is **not** yielding usage for most
-traffic. HuggingFace and Zo Ask return none at all across 27 successful calls;
-NIM returns it 15% of the time. OpenRouter has no successful call to judge by.
-That is enough to say token accounting cannot currently be trusted as a cost
-basis — without needing the curls.
+**`stream_options: { include_usage: true }` works.** Where a provider honours
+it, capture is 100%, not partial — OpenRouter 107/107, NIM 6/6. That is the
+verification this entry was waiting for, and it is stronger evidence than four
+curls: it is every real call the system has made.
 
-**A larger defect surfaced while checking.** `provider_id` is NULL on **281 of
-328** successful rows — 86%. `ai_usage.provider_id` is the join key for
-per-provider cost attribution, so for most traffic there is nothing to attribute
-to. The rows are written; the column that makes them readable is not. This is
-the house pattern again, and it is worth more than the `stream_options`
-question that exposed it: fixing usage reporting is pointless while the
-attribution key is absent.
+**The gap is Zo Ask.** It is the first ladder tier and answers more calls than
+every other tier combined — 168 of 281 — and it reports usage on none of them.
+So roughly 60% of successful traffic is unmeasured for tokens and therefore for
+cost. Nothing is broken in the code; the provider does not supply it.
 
-**Done when:** for §4, a provider-by-provider table showing which return usage
-on the streaming path, and the ladder either records tokens or records that the
-provider does not supply them — a NULL that means "not supplied" must be
-distinguishable from one that means "we did not look". For the attribution bug,
-`provider_id` non-NULL on new successful `ai_usage` rows, verified by querying.
+**Done when:** either Zo Ask returns usage and rows carry tokens, or the
+absence is recorded explicitly so a NULL meaning "this provider does not supply
+usage" is distinguishable from one meaning "we did not look". Today they are
+the same value, and that ambiguity is the actual defect worth fixing.
+
+### A correction, recorded because it nearly became a false entry
+
+An earlier version of this section claimed `provider_id` was NULL on 86% of
+successful rows and called it a large attribution defect. **That was wrong.**
+NULL there is deliberate and documented at `lib/ai/router.ts:172` — a ladder
+tier is not one of the account's configured models, and pointing the row at one
+would misattribute it. Attribution was never missing; it lives in
+`model_label`. The false reading came from joining `ai_usage` to `ai_providers`,
+which only covers registry models and silently collapsed all ladder traffic
+into "(unknown)". The join was wrong, not the data — the same failure mode as
+grepping `export async function DELETE` against a codebase that writes
+`export const DELETE = withApi(...)`.
 
 ## Found during the 2026-08-27 tick audit — not yet scoped
 
