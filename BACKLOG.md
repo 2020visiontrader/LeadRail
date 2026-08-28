@@ -103,11 +103,27 @@ per provider — or the providers that do not are documented here.
   `_encrypted`/`_hash`, and drift tests read `migrations/*.sql` so a new
   unclassified table, a missing scope column, or a new secret column turns the
   suite red. Tenant isolation is tested per scope kind.
-- **`agent_conversations` has no deletion path at all.** No `DELETE` handler on
-  either conversations route, no `deleted_at` column, no UI affordance. The
-  soft-delete + `purge_soft_deleted` pattern covers `contacts`, `companies`,
-  `deals`, `brands`, `accounts` — conversations were never brought into it.
-  Only account deletion removes them, via FK cascade.
+- ~~**`agent_conversations` has no deletion path at all.**~~ **STALE — CORRECTED
+  2026-08-27.** This entry was wrong on all three counts and cost real time
+  before being re-checked. The deletion path exists and is sound:
+  `migrations/069_conversation_deletion.sql` adds `deleted_at` plus a partial
+  index; `app/api/agent/conversations/[id]/route.ts` exports a DELETE handler
+  (as `export const DELETE = withApi(...)`, which is why a grep for
+  `export async function DELETE` finds nothing — the whole codebase uses the
+  wrapper form); `ChatHistory.tsx` has the delete affordance and confirm
+  dialog; `tests/conversation-deletion.test.ts` covers it. Account scope is
+  applied inside `deleteConversation`'s query and the response is deliberately
+  a non-oracle.
+  WHAT IS ACTUALLY OPEN, and it is a different defect: soft-delete works, but
+  the hard purge never happens. `purge_soft_deleted` has exactly one caller,
+  `/api/hermes/tick`, which has no scheduler (§2) and has never executed
+  successfully in production. So the confirm dialog's promise — "permanently
+  removed after 30 days" — is not currently kept: rows sit with `deleted_at`
+  set indefinitely. The migration and its tests are honest about this; the
+  user-facing copy is the one surface where the gap leaks out as a promise.
+  Closing §2 makes the promise true; until then the copy overstates. Proves
+  closed: a scheduled tick run, then `SELECT count(*) FROM agent_conversations
+  WHERE deleted_at < now() - interval '30 days'` returning 0 in production.
 - **`enqueueCompanyEnrichment` documents an idempotency guarantee it does not
   have.** It relies on a 23505 unique violation, but
   `uniq_enrichment_job_live_contact` indexes `contact_id` only — there is no
