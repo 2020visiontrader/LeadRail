@@ -276,7 +276,16 @@ async function runCandidates(
     candidates,
     (c) => c.resolved?.model,
     size,
-    (c, reason) => log.info('ai router: candidate not eligible', { fn, candidate: c.id, reason }),
+    // log.info() is console-only and never persisted (lib/logger.ts) — a
+    // candidate excluded before it is ever tried left no durable trace, which
+    // made it impossible to tell "eligibility filtered out the paid models"
+    // from "the paid models were never tried" after the fact. log.request()
+    // is the existing channel that already persists info-level rows (see
+    // commit 8363657, which fixed the identical problem for the concurrency
+    // counters) — reused here rather than inventing a new persistence path.
+    // Still 'info', not 'warn': being ineligible is normal operation for a
+    // candidate whose capacity doesn't fit this call, not a warning.
+    (c, reason) => log.request({ message: 'ai router: candidate not eligible', detail: { fn, candidate: c.id, reason, model: c.resolved?.model.model_id } }, 'info'),
   );
 
   let lastErr: any = null;
@@ -290,7 +299,17 @@ async function runCandidates(
       // An empty answer is a failure of this candidate, not a result. The old
       // registry path fell through on it silently; now it is recorded as the
       // failure it is, so a model that always returns nothing shows up.
-      if (!text) throw new Error(`${candidate.label} returned an empty response`);
+      if (!text) {
+        // Name the model, not just the tier: "openrouter returned an empty
+        // response" is useless when the tier is a fallback chain of ~17
+        // models and nothing else says which one answered blank. Registry
+        // candidates (one Candidate per ai_models row) carry `resolved`, so
+        // this is populated for those; a hardcoded ladder tier (openrouter,
+        // zoask, opencode) has no `resolved` and degrades to the unqualified
+        // message rather than printing the literal string "undefined".
+        const model = candidate.resolved?.model.model_id;
+        throw new Error(`${candidate.label} returned an empty response${model ? ` (model=${model})` : ''}`);
+      }
       recordSuccess(candidate.id, latencyMs);
       // Still ok:true — the transport DID succeed, and that is the only thing
       // this layer can honestly assert. Whether the text was USABLE is a
@@ -313,7 +332,15 @@ async function runCandidates(
           conversationId: trace?.conversationId,
         });
       }
-      log.warn('ai router: candidate failed', { fn, candidate: candidate.id, error: String(err?.message || err) });
+      // `model` is additive and separate from the prose `error` string: a model
+      // id embedded only in that string cannot be grouped by in SQL (detail
+      // ->> 'model' can; detail->>'error' full-text can't). Undefined for
+      // ladder-tier candidates, which have no `resolved` — see the empty-
+      // response check above.
+      log.warn('ai router: candidate failed', {
+        fn, candidate: candidate.id, error: String(err?.message || err),
+        model: candidate.resolved?.model.model_id,
+      });
       lastErr = err;
     }
   }
