@@ -39,6 +39,38 @@ export const maxDuration = 300;
 //     not in this code.
 //   B logs "received" straight away, openStreams: 2 -> both are running here
 //     and the second is merely slow. That is the routing latency, not a lock.
+//
+// The SAME two log lines exist on the non-streaming JSON path
+// (app/api/agent/route.ts, "agent json: received"/"agent json: closed") —
+// production sends most turns through /api/agent, not /api/agent/stream (13
+// json vs 4 stream in the last 17 turns as of 2026-08-28), so instrumenting
+// only this file would answer a question about the minority path. Read BOTH
+// message families before concluding anything: filter app_logs on
+// `message LIKE 'agent stream:%' OR message LIKE 'agent json:%'`, order by
+// time, and apply the received/closed rule above per path.
+//
+// PERSISTENCE: these two lines are emitted through log.request(fields,
+// 'info') rather than log.info(), because log.info() is console-only (see
+// lib/logger.ts) and two days of this exact instrumentation running that way
+// produced zero queryable rows — the reason this comment block exists at all.
+// log.request() is the channel that already persists info-level rows without
+// widening what gets written to app_logs; it is normally used for the one
+// line at the end of withApi (method/route/status), but its shape (fields +
+// level, no special coupling to HTTP-response completion) applies just as
+// well to a lifecycle event. This does NOT change log.info() itself or any
+// other call site — only these two lines were moved to a channel that was
+// already there for exactly this purpose (durable, low-volume lifecycle
+// rows), specifically to avoid the alternative of making log.info() persist
+// by default, which would flood app_logs with every ephemeral console line
+// in the codebase.
+//
+// PER-PROCESS CAVEAT: `openStreams` (and `openRequests` in the JSON route)
+// count only what THIS process instance has open. On a multi-instance host,
+// two truly concurrent chats that land on different instances each log
+// openStreams: 1 — that is NOT evidence they ran serially, it just means
+// they didn't share a counter. Only a same-process pair of "received: 2"
+// lines is decisive; a same-process "1" next to another instance's "1" is
+// uninformative and must not be read as a lock.
 let openStreams = 0;
 let streamSeq = 0;
 
@@ -53,13 +85,15 @@ export async function POST(request: NextRequest) {
   if (error) return error;
   const streamId = `s${++streamSeq}`;
   openStreams += 1;
-  log.info('agent stream: received', { streamId, openStreams });
+  // log.request(), not log.info() — see the CONCURRENCY INSTRUMENTATION
+  // comment above for why: log.info() never reaches app_logs.
+  log.request({ message: 'agent stream: received', detail: { streamId, openStreams } }, 'info');
   let closed = false;
   const closeStream = (reason: string) => {
     if (closed) return;
     closed = true;
     openStreams -= 1;
-    log.info('agent stream: closed', { streamId, reason, openStreams });
+    log.request({ message: 'agent stream: closed', detail: { streamId, reason, openStreams } }, 'info');
   };
   if (!agentConfigured()) {
     closeStream('not configured');
