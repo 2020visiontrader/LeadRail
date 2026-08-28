@@ -187,51 +187,29 @@ grepping `export async function DELETE` against a codebase that writes
   equivalent on `company_id`. Duplicate live company jobs are possible; the
   code's "duplicate insert is a no-op" comment is true for contacts and false
   for companies.
-- **Attachment provenance does not survive a reload — verified 2026-08-28.**
-  `assistant_attachments` binds an upload to `account_id` and a nullable
-  `conversation_id`. There is no `message_id` and no run reference. That alone
-  would be a modelling gap; the reason it is a real defect is one level deeper.
-  There is no `agent_messages` table at all. A conversation's messages live in
-  `agent_conversations.transcript` (jsonb), and every element of that array has
-  exactly two keys — confirmed by querying every transcript in production:
-  `role` and `content`. No id, no timestamp, no attachment refs.
-  So there is nothing for an attachment to point AT, and nothing in a message
-  that points BACK. While a turn is live the composer holds the binding in
-  React state and the chips render correctly. Reopen the conversation and that
-  binding is gone: the transcript can say a question was asked, never that a
-  file came with it. "Did you actually read my PDF?" is unanswerable after a
-  reload, and a rehydrated turn cannot show what it was given.
-  Note for whoever scopes this: proposals to "add `message_id` to attachments"
-  presume a message table that does not exist. The choice is to give transcript
-  entries stable identity, or to record the binding somewhere that survives —
-  not to add a foreign key to nothing.
-
-  **DECIDED 2026-08-28:** stable transcript-entry ids plus a normalized
-  `attachment_bindings` table (and `attachment_evidence` for page/sheet/row
-  citations). Binding is persisted OUTSIDE the transcript body so a file can
-  bind to several messages or task runs without duplication, and so releasing
-  an attachment cannot corrupt the transcript.
-
-  **THE CONSTRAINT THAT SHAPES THE MIGRATION — check this before designing.**
-  `agent_conversations.transcript` is not merely message-shaped, it IS the
-  provider wire format. `saveConversation` writes `transcript: args.transcript`
-  wholesale, typed `ChatMessage[]`, and `ChatMessage` is declared in the
-  provider clients (`lib/ai/opencode.ts`, re-exported by `lib/ai/router.ts`;
-  identical in `lib/ai/gemini.ts`) as exactly `{ role, content }`. That is why
-  every transcript entry in production has precisely those two keys.
-  So adding `id` to `ChatMessage` would ship that id inside the payload sent to
-  every provider — polluting model context and risking rejection by stricter
-  ones. The change therefore needs a STORAGE message type distinct from the
-  WIRE type, with a mapping applied at the point of sending, not a new field on
-  the existing one.
-  Two further hazards for the same migration: the transcript is replaced whole
-  on every save, so a backfill races live writes; and migration 059's write
-  guard compares `message_count` against the stored array, so anything that
-  changes entry shape or count must be checked against that guard rather than
-  around it.
-  **Done when:** a conversation with an attachment is reopened from the
-  database in a test and the rehydrated turn still names the file it was given.
-  Revert-check by stripping the binding and confirming that test goes red.
+- ~~**Attachment provenance does not survive a reload.**~~ **RESOLVED
+  2026-08-28** (migration 076, `93a588d`). Transcript entries now carry stable
+  ids, and `attachment_bindings` records which attachment belongs to which
+  message/conversation/task — outside the transcript body, so one file can bind
+  to several messages without duplicating content and a release is a row update
+  rather than a transcript rewrite.
+  The wire/storage split is the part to preserve: `ChatMessage` is still
+  exactly `{ role, content }`, and `lib/agent/transcript-store.ts`
+  (`toWireMessages`) strips the id before every provider call. A test pins that
+  no stored message reaches a provider unwrapped. Do not "simplify" the id onto
+  `ChatMessage` — it would ship into every model payload.
+  Verified against production, not `success: true`: 2 tables created, **397 of
+  397** transcript entries carry an id, 0 duplicates, 5 CHECK constraints, and
+  the partial unique index `uniq_attachment_binding_live` present. Before
+  applying, the backfill was dry-run inside a forced-rollback transaction —
+  397 in, 397 out, order and roles unchanged, nothing persisted.
+  **Idempotency was verified separately and matters more than it looks:** the
+  backfill was re-run against already-migrated data and changed 0 ids. Had it
+  re-minted, a redeploy re-running migrations would have orphaned every
+  `attachment_bindings.message_id`.
+  `attachment_evidence` exists as SCHEMA ONLY — nothing writes it, and its own
+  table comment says so. Do not build a reader against it until a writer
+  exists, and do not read its presence as evidence capture being live.
 
 - **9 stale `enrichment_jobs` cancelled** on 2026-08-27 (queued 2026-08-09/10,
   never drained). Company enrichment only, no outbound send. Cancelled rather
