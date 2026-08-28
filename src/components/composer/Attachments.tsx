@@ -54,6 +54,38 @@ interface LibraryDoc {
 // not the size of the upload.
 const ACCEPT = '.pdf,.docx,.pptx,.xlsx,.xls,.csv,.txt,.md,.json,.png,.jpg,.jpeg,.gif,.webp,.mp4,.mov,.webm,.m4v';
 
+/** A conversation can carry at most this many documents at once. Not a
+ *  server constraint — a composer one, so it is enforced and shown here
+ *  rather than discovered as a rejected request after the fact. */
+export const MAX_ATTACHMENTS = 10;
+
+/** Folds a batch of upload results onto the attachment list in call order.
+ *
+ *  Exists because the naive loop this replaced — `onChange([...attachments,
+ *  result])` once per file, inside a `for` loop — closed over `attachments`
+ *  as it was BEFORE the loop started. Selecting three files at once silently
+ *  kept only the last one: each iteration's onChange overwrote the one
+ *  before it instead of building on it. The hook now accumulates locally and
+ *  folds through this function instead of re-reading that stale closure. */
+export function appendAttachments(
+  current: UploadedAttachment[],
+  incoming: UploadedAttachment[]
+): UploadedAttachment[] {
+  return [...current, ...incoming];
+}
+
+/** How many of an incoming file selection fit under MAX_ATTACHMENTS, given
+ *  how many slots are already spoken for (attached + currently uploading). */
+export function clampForUpload(
+  inFlightCount: number,
+  incomingCount: number,
+  max: number = MAX_ATTACHMENTS
+): { acceptCount: number; rejectCount: number } {
+  const room = Math.max(0, max - inFlightCount);
+  const acceptCount = Math.min(room, incomingCount);
+  return { acceptCount, rejectCount: incomingCount - acceptCount };
+}
+
 function humanSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
@@ -89,9 +121,24 @@ export function useAttachmentUpload({ conversationId, attachments, onChange }: {
   const upload = useCallback(async (files: File[]) => {
     if (!files.length) return;
     setError(null);
-    setUploading((u) => [...u, ...files.map((f) => f.name)]);
 
-    for (const file of files) {
+    const { acceptCount, rejectCount } = clampForUpload(attachments.length + uploading.length, files.length);
+    const accepted = files.slice(0, acceptCount);
+    if (rejectCount > 0) {
+      setError(
+        accepted.length
+          ? `Only ${accepted.length} of ${files.length} files were attached — the ${MAX_ATTACHMENTS}-document limit was reached.`
+          : `Already at the ${MAX_ATTACHMENTS}-document limit — remove one before attaching another.`
+      );
+    }
+    if (!accepted.length) return;
+
+    setUploading((u) => [...u, ...accepted.map((f) => f.name)]);
+
+    // Accumulated locally, then folded through appendAttachments — see its
+    // comment for why reading `attachments` fresh each iteration is wrong.
+    let acc = attachments;
+    for (const file of accepted) {
       const form = new FormData();
       form.append('file', file);
       if (conversationId) form.append('conversationId', conversationId);
@@ -99,14 +146,15 @@ export function useAttachmentUpload({ conversationId, attachments, onChange }: {
         const res = await fetch('/api/assistant/attachments', { method: 'POST', body: form });
         const json = await res.json().catch(() => null);
         if (!res.ok || !json?.attachment) throw new Error(json?.error || `Could not upload ${file.name}.`);
-        onChange([...attachments, json.attachment]);
+        acc = appendAttachments(acc, [json.attachment]);
+        onChange(acc);
       } catch (e: any) {
         setError(e?.message || `Could not upload ${file.name}.`);
       } finally {
         setUploading((u) => u.filter((n) => n !== file.name));
       }
     }
-  }, [attachments, conversationId, onChange]);
+  }, [attachments, uploading, conversationId, onChange]);
 
   return { upload, uploading, error };
 }
@@ -156,6 +204,7 @@ export default function Attachments({ conversationId, attachments, onChange, dis
 
   function attachFromLibrary(doc: LibraryDoc) {
     if (attachments.some((a) => a.id === doc.id)) { setPickerOpen(false); return; }
+    if (attachments.length >= MAX_ATTACHMENTS) { setPickerOpen(false); return; }
     onChange([...attachments, {
       id: doc.id,
       filename: doc.filename,
@@ -170,6 +219,8 @@ export default function Attachments({ conversationId, attachments, onChange, dis
     }]);
     setPickerOpen(false);
   }
+
+  const atLimit = attachments.length >= MAX_ATTACHMENTS;
 
   return (
     <div>
@@ -232,14 +283,14 @@ export default function Attachments({ conversationId, attachments, onChange, dis
         className="hidden"
         onChange={(e) => { void upload(Array.from(e.target.files || [])); e.target.value = ''; }}
       />
-      <div className="flex items-center gap-1.5">
+      <div className="flex items-center gap-1">
         <button
           type="button"
-          disabled={disabled}
+          disabled={disabled || atLimit}
           onClick={() => inputRef.current?.click()}
           aria-label="Attach a document"
-          title="Attach a document for context"
-          className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-default)] text-[var(--text-secondary)] transition hover:bg-[var(--bg-raised)] hover:text-[var(--text-primary)] disabled:opacity-40"
+          title={atLimit ? `${MAX_ATTACHMENTS}-document limit reached — remove one to attach another` : `Attach a document for context (up to ${MAX_ATTACHMENTS})`}
+          className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--text-secondary)] transition hover:bg-[var(--bg-raised)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] disabled:pointer-events-none disabled:opacity-40"
         >
           <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
             <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
@@ -253,11 +304,11 @@ export default function Attachments({ conversationId, attachments, onChange, dis
         <div className="relative">
           <button
             type="button"
-            disabled={disabled}
+            disabled={disabled || atLimit}
             onClick={openPicker}
             aria-label="Attach a saved document from your library"
-            title="Attach from your document library"
-            className="flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-default)] text-[var(--text-secondary)] transition hover:bg-[var(--bg-raised)] hover:text-[var(--text-primary)] disabled:opacity-40"
+            title={atLimit ? `${MAX_ATTACHMENTS}-document limit reached — remove one to attach another` : 'Attach from your document library'}
+            className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--text-secondary)] transition hover:bg-[var(--bg-raised)] hover:text-[var(--text-primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] disabled:pointer-events-none disabled:opacity-40"
           >
             <span aria-hidden className="text-[13px] leading-none">★</span>
           </button>
@@ -290,6 +341,17 @@ export default function Attachments({ conversationId, attachments, onChange, dis
             </div>
           )}
         </div>
+
+        {/* Only shown once it's relevant — an empty composer doesn't need to
+            be told about a limit it isn't near. */}
+        {attachments.length > 0 && (
+          <span
+            className={`ml-0.5 shrink-0 text-[11px] tabular-nums ${atLimit ? 'text-[var(--text-warning)]' : 'text-[var(--text-muted)]'}`}
+            title={atLimit ? `${MAX_ATTACHMENTS}-document limit reached` : `${MAX_ATTACHMENTS - attachments.length} more can be attached`}
+          >
+            {attachments.length}/{MAX_ATTACHMENTS}
+          </span>
+        )}
       </div>
     </div>
   );

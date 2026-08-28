@@ -1283,15 +1283,18 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
           (selectPersonasForRequest), and who is working shows up in the STEP
           TRACE instead: "Ada is checking the numbers…". Attribution without
           administration. */}
-      <div className="border-t border-[var(--border-default)] pt-3">
-        <div className="flex items-end gap-2 px-3 pb-3">
-          <Attachments
-            conversationId={conversationIdRef.current}
-            attachments={attachments}
-            onChange={setAttachments}
-            disabled={busy || dictating}
-            uploader={uploader}
-          />
+      <div className="border-t border-[var(--border-default)] p-3">
+        {/* One bordered surface for the whole composer — text, attachments,
+            and controls — rather than each piece drawing its own border.
+            That used to leave the textarea nearly invisible: --border-default
+            is only ~10% white in dark mode, so a lone bordered box on the
+            --bg-canvas fill it also used read as almost no box at all. Now
+            the card carries the visible edge and the textarea sits inside it
+            plain, the same relationship this had with --bg-surface all along
+            but finally legible. focus-within stands in for the input's own
+            focus ring since any control inside — textarea, attach, send — is
+            "the composer being used". */}
+        <div className="rounded-md border border-[var(--border-strong)] bg-[var(--bg-canvas)] transition focus-within:border-[var(--brand)] focus-within:shadow-[var(--focus-ring)]">
           <textarea
             rows={2}
             // Named so dictation can put the cursor here after dropping a
@@ -1301,55 +1304,68 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
             placeholder="Ask LeadRail to do something…"
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }}
-            className="flex-1 resize-none rounded-lg border border-[var(--border-default)] bg-[var(--bg-canvas)] px-3 py-2 text-sm text-[var(--text-primary)] focus:border-[var(--brand)] focus:outline-none"
+            className="w-full resize-none bg-transparent px-3 pb-1.5 pt-2.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none"
           />
-          <VoiceInput
-            disabled={busy}
-            // Layout only. Snapshotting state here was the duplication bug:
-            // this fires on every render, so the "prefix" kept absorbing the
-            // text dictation had just written.
-            onActiveChange={setDictating}
-            // Fires once, when recording actually starts. THIS is where the
-            // typed prefix is frozen.
-            onStart={() => { dictationBase.current = input; }}
-            // Product and venture names are exactly the words a recogniser
-            // gets wrong, and exactly the ones that must be right.
-            vocabulary="LeadRail, venture, campaign, pipeline, outreach, cadence"
-            // REPLACES the spoken span each pass rather than appending: a later
-            // pass hears more context and legitimately revises earlier words, so
-            // appending would stack five versions of the same sentence.
-            onInterim={(text) => {
-              const base = dictationBase.current;
-              setInput(text ? (base ? `${base.trim()} ${text}` : text) : base);
-            }}
-            // The final transcript lands in the box and is NOT sent. A
-            // brain-dump is exactly what you want to read back before it goes
-            // anywhere, and recognisers still mangle proper nouns.
-            onFinal={(text) => {
-              const base = dictationBase.current;
-              setInput(base ? `${base.trim()} ${text}` : text);
-            }}
-          />
-          <Button
-            variant={planMode ? 'primary' : 'secondary'}
-            onClick={() => setPlanMode((v) => !v)}
-            aria-pressed={planMode}
-            title={planMode
-              ? 'Plan mode is on — the next message will be planned, not carried out'
-              : 'Plan first: get the steps before anything runs'}
-          >
-            {planMode ? 'Planning' : 'Plan first'}
-          </Button>
-          {busy && (
-            <Button variant="secondary" onClick={stopAll} title="Stop the running request">
-              Stop
-            </Button>
-          )}
-          <Button loading={false} disabled={!canSend} onClick={send}>
-            {planMode
-              ? 'Plan it'
-              : activeRuns.size > 1 ? `Send (${activeRuns.size} running)` : activeRuns.size === 1 ? 'Send (1 running)' : 'Send'}
-          </Button>
+          <div className="flex items-end justify-between gap-2 px-2 pb-2">
+            <Attachments
+              conversationId={conversationIdRef.current}
+              attachments={attachments}
+              onChange={setAttachments}
+              disabled={busy || dictating}
+              uploader={uploader}
+            />
+            <div className="flex shrink-0 items-center gap-1.5">
+              <VoiceInput
+                disabled={busy}
+                // Layout only. Snapshotting state here was the duplication
+                // bug: this fires on every render, so the "prefix" kept
+                // absorbing the text dictation had just written.
+                onActiveChange={setDictating}
+                // Fires once, when recording actually starts. THIS is where
+                // the typed prefix is frozen.
+                onStart={() => { dictationBase.current = input; }}
+                // Product and venture names are exactly the words a
+                // recogniser gets wrong, and exactly the ones that must be
+                // right.
+                vocabulary="LeadRail, venture, campaign, pipeline, outreach, cadence"
+                // REPLACES the spoken span each pass rather than appending: a
+                // later pass hears more context and legitimately revises
+                // earlier words, so appending would stack five versions of
+                // the same sentence.
+                onInterim={(text) => {
+                  const base = dictationBase.current;
+                  setInput(text ? (base ? `${base.trim()} ${text}` : text) : base);
+                }}
+                // The final transcript lands in the box and is NOT sent. A
+                // brain-dump is exactly what you want to read back before it
+                // goes anywhere, and recognisers still mangle proper nouns.
+                onFinal={(text) => {
+                  const base = dictationBase.current;
+                  setInput(base ? `${base.trim()} ${text}` : text);
+                }}
+              />
+              <Button
+                variant={planMode ? 'primary' : 'secondary'}
+                onClick={() => setPlanMode((v) => !v)}
+                aria-pressed={planMode}
+                title={planMode
+                  ? 'Plan mode is on — the next message will be planned, not carried out'
+                  : 'Plan first: get the steps before anything runs'}
+              >
+                {planMode ? 'Planning' : 'Plan first'}
+              </Button>
+              {busy && (
+                <Button variant="secondary" onClick={stopAll} title="Stop the running request">
+                  Stop
+                </Button>
+              )}
+              <Button loading={false} disabled={!canSend} onClick={send}>
+                {planMode
+                  ? 'Plan it'
+                  : activeRuns.size > 1 ? `Send (${activeRuns.size} running)` : activeRuns.size === 1 ? 'Send (1 running)' : 'Send'}
+              </Button>
+            </div>
+          </div>
         </div>
       </div>
     </div>

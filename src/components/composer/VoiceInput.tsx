@@ -394,7 +394,7 @@ export default function VoiceInput({ onInterim, onFinal, vocabulary, disabled, o
         // developer language and the people using this console will never set
         // it — that detail belongs where the person who CAN act on it looks.
         title={unconfigured ? 'Dictation is not available on this workspace yet' : 'Dictate a message'}
-        className={`flex h-9 w-9 items-center justify-center rounded-lg border border-[var(--border-default)] transition disabled:opacity-40 ${
+        className={`flex h-8 w-8 items-center justify-center rounded-md transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] disabled:opacity-40 ${
           unconfigured
             ? 'cursor-help text-[var(--text-muted)] opacity-60 hover:opacity-100'
             : 'text-[var(--text-secondary)] hover:bg-[var(--bg-raised)] hover:text-[var(--text-primary)]'
