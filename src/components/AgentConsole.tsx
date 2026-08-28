@@ -25,13 +25,73 @@ export type Step =
       key?: string;
       ok?: boolean;
       observation?: string;
+      /** Wall-clock timestamps (Date.now()), stamped by the console — never by
+       *  the server — the instant this step is pushed with done:false, and the
+       *  instant something marks it done. Purely presentational: the elapsed
+       *  time these drive is a UI affordance, not part of the wire protocol. */
+      startedAt?: number;
+      endedAt?: number;
     }
-  | { kind: 'tool'; label: string; done: boolean; ok?: boolean; metrics?: Record<string, number>; observation?: string }
+  | {
+      kind: 'tool'; label: string; done: boolean; ok?: boolean; metrics?: Record<string, number>; observation?: string;
+      /** Tool steps are never synthetic today, but the field is declared here
+       *  too so countRealSteps can read `.synthetic` off the narrowed
+       *  thought|tool union without a cast. */
+      synthetic?: boolean;
+      startedAt?: number;
+      endedAt?: number;
+    }
   | { kind: 'error'; text: string }
   /** A neutral confirmation — e.g. "won't ask again this chat". Distinct from
    *  'error' on purpose: telling someone a permission was granted is not a
    *  failure, and styling it as one would read as though it had not worked. */
   | { kind: 'note'; text: string };
+
+// ---------------------------------------------------------------------------
+// Timing — pure, no React. Exported so tests/agent-console-timing.test.ts can
+// drive them directly, the same pattern composer-attachment-clearing.test.ts
+// uses for attachmentsForTurn/clearSentAttachments: no DOM test environment
+// exists in this project (vitest runs 'node'), so the real functions are
+// imported and called rather than reimplemented in the test.
+// ---------------------------------------------------------------------------
+
+/** Format a millisecond duration the way the step trace shows it.
+ *  < 1s   -> one decimal place ("0.4s") — whole seconds would round tiny,
+ *            real steps to "0s" and make fast steps look like they didn't run.
+ *  < 60s  -> whole seconds ("6s", "59s").
+ *  >= 60s -> minutes and seconds ("1m 0s", "1m 28s").
+ *  Negative or non-finite input (a clock skew, a bad timestamp) clamps to 0
+ *  rather than printing a nonsense duration. */
+export function formatDuration(ms: number): string {
+  const clamped = Number.isFinite(ms) && ms > 0 ? ms : 0;
+  if (clamped < 1000) return `${(clamped / 1000).toFixed(1)}s`;
+  if (clamped < 60000) return `${Math.round(clamped / 1000)}s`;
+  const minutes = Math.floor(clamped / 60000);
+  const seconds = Math.round((clamped - minutes * 60000) / 1000);
+  return `${minutes}m ${seconds}s`;
+}
+
+/** How many steps the aggregate header counts.
+ *
+ *  DECISION: synthetic placeholders ('Queued — starting once the first task
+ *  has a thread…' and the live step_start "working" line) do NOT count. They
+ *  are not steps the agent took — they are the console's own "something is
+ *  about to happen" filler, and every one of them either gets replaced in
+ *  place by a real step (thought) or popped and immediately followed by one
+ *  (tool) — see handleEvent's pendingPlaceholder handling. Excluding them
+ *  means the count only ever goes up as real steps are appended, one at a
+ *  time; it never jumps by more than one when a placeholder resolves, because
+ *  the placeholder was never in the count to begin with. Counting it would
+ *  have made the FIRST real event of a run look like a duplicate: "Queued"
+ *  turning into "Checking your brands" would otherwise read as the count
+ *  jumping from 1 to 2 for what is, to the person watching, one thing
+ *  starting. 'error' and 'note' rows aren't steps taken either, so they're
+ *  excluded the same way. */
+export function countRealSteps(steps: Step[]): number {
+  return (steps || []).filter(
+    (s) => (s.kind === 'thought' || s.kind === 'tool') && !s.synthetic,
+  ).length;
+}
 
 // Structured analysis of a turn's tool results — see Capability.findings in
 // lib/capabilities/types.ts and the evidence/claim/finding/verdict SSE events
@@ -376,6 +436,12 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     abortersRef.current.delete(id);
     inFlightTextRef.current.delete(id);
     setActiveRuns((prev) => { const n = new Set(prev); n.delete(id); return n; });
+    // Freezes the aggregate header's elapsed time the instant this run stops
+    // being "active" — the same instant activeRuns drops it — rather than
+    // leaving it to whatever the last step happened to stamp. `patchTurn` is
+    // a no-op if the id no longer matches an assistant turn (defensive; every
+    // caller of endRun always has one).
+    patchTurn(id, (t: any) => { if (t.endedAt === undefined) t.endedAt = Date.now(); });
   };
 
   /** Stop every in-flight run and hand the last message back for editing.
@@ -396,6 +462,7 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
         t.status = 'error';
         closeOpenSteps(t, true);
         t.steps.push({ kind: 'error', text: 'Stopped. The server will finish this turn and save it — the answer will be here when you come back to this chat.' });
+        if (t.endedAt === undefined) t.endedAt = Date.now();
       });
     }
     abortersRef.current.clear();
@@ -659,9 +726,16 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     });
 
   /** Thin wrapper over the shared implementation, which lives in
-   *  lib/agent/stream-outcome so it can be tested against real SSE bytes. */
+   *  lib/agent/stream-outcome so it can be tested against real SSE bytes.
+   *  That module only knows the generic {kind, done, ok, text} shape it was
+   *  written against — it has no idea startedAt/endedAt exist — so the
+   *  timestamp is stamped here, on the console's side, for every step it just
+   *  closed. Steps already done (endedAt already set) are left alone. */
   function closeOpenSteps(t: any, failed = false) {
+    const wasOpen = new Set((t.steps || []).filter((s: any) => !s.done));
     closeSteps(t.steps || [], failed);
+    const now = Date.now();
+    for (const s of t.steps || []) if (wasOpen.has(s) && s.endedAt === undefined) s.endedAt = now;
   }
 
   const turnSeq = useRef(0);
@@ -706,7 +780,11 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
         ...(turnAttachments.length ? { attachments: turnAttachments } : {}),
       }]);
     }
-    setTurns((p) => [...p, { id: turnId, role: 'assistant', text: '', steps: [] }]);
+    // startedAt anchors the aggregate header's elapsed time for this run. It is
+    // the turn's own timestamp, not the first step's — a run can spend real
+    // time queued (see the "Queued —" placeholder below) before any step
+    // exists, and that wait is part of what "18s" should mean.
+    setTurns((p) => [...p, { id: turnId, role: 'assistant', text: '', steps: [], startedAt: Date.now() }]);
 
     // Consumed here, cleared once the request is actually on the wire (below) —
     // so `from` reaches the server at most once. A connection failure leaves it
@@ -717,7 +795,7 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     // queued turn while it waits. Blocking in send() would have made the prompt
     // vanish until the first run finished.
     if (mustWait) {
-      patchAssistant((t) => t.steps.push({ kind: 'thought', text: 'Queued — starting once the first task has a thread…', done: false, synthetic: true }));
+      patchAssistant((t) => t.steps.push({ kind: 'thought', text: 'Queued — starting once the first task has a thread…', done: false, synthetic: true, startedAt: Date.now() }));
       await awaitConversationId();
     }
 
@@ -796,11 +874,14 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     // errored server-side. `transportFailed` is excluded because it has just
     // been reported above; an abort, because that is the user pressing Stop.
     patchAssistant((t) => {
+      const wasOpen = new Set((t.steps || []).filter((s: any) => !s.done));
       finalizeStream({
         steps: t.steps || [],
         sawTerminal: sawTerminal || transportFailed,
         aborted: aborter.signal.aborted,
       });
+      const now = Date.now();
+      for (const s of t.steps || []) if (wasOpen.has(s) && (s as any).endedAt === undefined) (s as any).endedAt = now;
     });
     endRun(turnId);
   }
@@ -877,13 +958,13 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
       const prevPending = [...steps].reverse().find(
         (s: Step) => 'done' in s && !s.done && !('parallel' in s && s.parallel),
       ) as Step | undefined;
-      if (prevPending && 'done' in prevPending) prevPending.done = true;
+      if (prevPending && 'done' in prevPending) { prevPending.done = true; (prevPending as any).endedAt = Date.now(); }
 
       if (e.type === 'step_start') {
-        steps.push({ kind: 'thought', text: e.text, done: false, synthetic: true, ...(e.parallel ? { parallel: true, key: e.key } : {}) });
+        steps.push({ kind: 'thought', text: e.text, done: false, synthetic: true, startedAt: Date.now(), ...(e.parallel ? { parallel: true, key: e.key } : {}) });
       }
-      else if (e.type === 'thought') steps.push({ kind: 'thought', text: e.text, done: false });
-      else if (e.type === 'tool') steps.push({ kind: 'tool', label: verbFor(e.tool, e.title), done: false });
+      else if (e.type === 'thought') steps.push({ kind: 'thought', text: e.text, done: false, startedAt: Date.now() });
+      else if (e.type === 'tool') steps.push({ kind: 'tool', label: verbFor(e.tool, e.title), done: false, startedAt: Date.now() });
       else if (e.type === 'observation') {
         // A keyed observation closes the step that carried the same key. Fan-out
         // delegates run concurrently, so "the most recent open step" cannot say
@@ -892,6 +973,7 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
           const own = t.steps.find((s: Step) => 'key' in s && s.key === e.key);
           if (own && own.kind === 'thought') {
             own.done = true;
+            own.endedAt = Date.now();
             own.ok = e.ok;
             const text = typeof e.text === 'string' ? e.text.trim() : '';
             if (text) own.observation = text.length > 240 ? `${text.slice(0, 237)}…` : text;
@@ -901,6 +983,7 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
         const last = [...t.steps].reverse().find((s: Step) => s.kind === 'tool');
         if (last && last.kind === 'tool') {
           last.done = true;
+          last.endedAt = Date.now();
           last.ok = e.ok;
           if (e.metrics && Object.keys(e.metrics).length) last.metrics = e.metrics;
           const text = typeof e.text === 'string' ? e.text.trim() : '';
@@ -1135,6 +1218,7 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
             <div key={t.id || i} className="space-y-2">
               {t.steps.length > 0 && (
                 <div className="space-y-1.5 rounded-xl bg-[var(--bg-raised)] px-4 py-3">
+                  <StepsHeader turn={t} active={activeRuns.has(t.id)} />
                   {t.steps.map((step: Step, index: number) => <StepRow key={index} step={step} />)}
                 </div>
               )}
@@ -1282,6 +1366,64 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
 //   - hovering told you nothing
 // The glyph is now decorative, with the state said in words for assistive tech
 // and put in the title for everyone else.
+// ---------------------------------------------------------------------------
+// Live elapsed time — a leaf component so the 1s tick re-renders ONLY this
+// span, never the transcript around it.
+//
+// WHY THE TICK LIVES HERE AND NOT ON `turns` STATE. The obvious place to drive
+// "6s… 7s… 8s…" is a single interval in AgentConsole that force-updates once a
+// second. That would re-render every turn, every step, every markdown block in
+// the whole conversation once a second for as long as anything is running — a
+// real perf regression on a long chat, and exactly what the brief calls out.
+// Instead each ElapsedLabel owns a `useState` tick counter and its own
+// `setInterval`, scoped to its own effect. A re-render triggered by that state
+// change is local to this component (and, per React's reconciliation, its own
+// subtree only — here, none) — the rest of the tree is untouched. Timestamps
+// (`startedAt`/`endedAt`) still come from the step/turn objects as props, so
+// the displayed number is always a real Date.now() delta, never a counter
+// that drifts from wall-clock time.
+//
+// CLEANUP. The interval is created and cleared inside one `useEffect` keyed on
+// `active`: it starts when a row goes live, and its cleanup function — which
+// React guarantees runs on every dependency change AND on unmount — clears it
+// the instant the row finishes OR the row leaves the tree. Nothing outlives
+// the component.
+function ElapsedLabel({ startedAt, endedAt, active, className }: { startedAt?: number; endedAt?: number; active: boolean; className?: string }) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    const id = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [active]);
+  if (startedAt === undefined) return null;
+  const ms = (active ? Date.now() : (endedAt ?? startedAt)) - startedAt;
+  return <span className={className}>{formatDuration(ms)}</span>;
+}
+
+// Aggregate header shown above a turn's step list: "Exploring 3 steps · 18s"
+// while the run is live, "Explored 5 steps · 1m 28s" once it's not. `active`
+// is `activeRuns.has(t.id)` — scoped to THIS turn's id, so two runs in flight
+// at once never share a count or a clock; each turn only ever reads its own
+// `t.steps` and its own `t.startedAt`/`t.endedAt`.
+function StepsHeader({ turn, active }: { turn: any; active: boolean }) {
+  const count = countRealSteps(turn.steps || []);
+  // Nothing real has happened yet (only a synthetic placeholder is showing) —
+  // "Exploring 0 steps" would be noise, not information.
+  if (count === 0) return null;
+  const verb = active ? 'Exploring' : 'Explored';
+  return (
+    <div className="flex items-center justify-between gap-2 pb-0.5 text-xs font-medium text-[var(--text-muted)]">
+      <span>{verb} {count} step{count === 1 ? '' : 's'}</span>
+      <ElapsedLabel
+        startedAt={turn.startedAt}
+        endedAt={turn.endedAt}
+        active={active}
+        className="shrink-0 tabular-nums"
+      />
+    </div>
+  );
+}
+
 function StepRow({ step }: { step: Step }) {
   if (step.kind === 'note') {
     return (
@@ -1314,7 +1456,7 @@ function StepRow({ step }: { step: Step }) {
           <span className="relative inline-flex h-2 w-2 rounded-full bg-[var(--brand)]" />
         </span>
       )}
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <span className={done ? '' : 'text-[var(--text-primary)]'}>{text}{!done && !/[.…]$/.test(text) && '…'}</span>
         {step.kind === 'tool' && step.observation && (
           <div className="mt-1 max-w-full truncate pl-2 text-xs text-[var(--text-muted)]" title={step.observation}>
@@ -1322,6 +1464,12 @@ function StepRow({ step }: { step: Step }) {
           </div>
         )}
       </div>
+      <ElapsedLabel
+        startedAt={step.startedAt}
+        endedAt={step.endedAt}
+        active={!done}
+        className="mt-0.5 shrink-0 pl-2 text-right text-xs tabular-nums text-[var(--text-muted)]"
+      />
     </div>
   );
 }
