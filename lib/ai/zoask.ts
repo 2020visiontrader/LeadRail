@@ -4,6 +4,7 @@
 // OpenCode Go, then NVIDIA NIM. Admin/account-scoped generation only.
 
 import { parseRetryAfterMs } from './health';
+import { reportProviderNotReported } from './usage';
 
 const KEY =
   process.env.ZO_Api_Key ||
@@ -89,6 +90,14 @@ async function ask(input: string, modelOverride?: string): Promise<string> {
     throw err;
   }
   const json = await res.json();
+  // Zo Ask's response body is `{output}` — it never carries a usage block, in
+  // success or failure. This is not a gap in our extraction; it is the whole
+  // shape of what this provider returns, which is why it is the FIRST ladder
+  // tier and yet the tier that captured zero tokens across 168 production
+  // calls (migration 075). Reporting it explicitly, rather than leaving the
+  // capture scope untouched, is what keeps that fact distinguishable from "we
+  // forgot to look".
+  reportProviderNotReported();
   // `output` may be a plain string or a structured object.
   const output = json?.output;
   const text =

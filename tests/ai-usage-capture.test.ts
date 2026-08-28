@@ -13,7 +13,7 @@
 // case THERE, not here.
 
 import { describe, it, expect } from 'vitest';
-import { withUsageCapture, reportUsage, reportOpenAIUsage } from '@/lib/ai/usage';
+import { withUsageCapture, reportUsage, reportOpenAIUsage, reportProviderNotReported, reportCaptureFailed } from '@/lib/ai/usage';
 
 describe('usage capture', () => {
   it('returns what the wrapped call returned, plus the reported usage', async () => {
@@ -81,5 +81,76 @@ describe('usage capture', () => {
       reportOpenAIUsage({});
     });
     expect(usage).toBeNull();
+  });
+
+  // ── usage_status / usage_source (migration 075) ──────────────────────────
+  // These name WHY tokens are missing, which is the actual defect: Zo Ask
+  // answers 168 of 281 production calls and captured tokens on none of them,
+  // and a NULL column could not say whether that was expected provider
+  // behaviour, a bug, or code that never looked.
+
+  describe('usage classification', () => {
+    it('a provider reporting usage classifies as reported/provider', async () => {
+      const { usage, status, source } = await withUsageCapture(async () => {
+        reportUsage({ tokensIn: 120, tokensOut: 34 });
+      });
+      expect(usage).toEqual({ tokensIn: 120, tokensOut: 34 });
+      expect(status).toBe('reported');
+      expect(source).toBe('provider');
+    });
+
+    it('a provider whose response has no usage field classifies as provider_not_reported/none', async () => {
+      // Zo Ask's exact shape: a real, parsed body with no usage key at all.
+      const { usage, status, source } = await withUsageCapture(async () => {
+        reportProviderNotReported();
+      });
+      expect(usage).toBeNull();
+      expect(status).toBe('provider_not_reported');
+      expect(source).toBe('none');
+    });
+
+    it('reportOpenAIUsage classifies a body with no usage field as provider_not_reported, not not_attempted', async () => {
+      const { status, source } = await withUsageCapture(async () => {
+        reportOpenAIUsage({ id: 'chatcmpl-1', choices: [] }); // no `usage` key at all
+      });
+      expect(status).toBe('provider_not_reported');
+      expect(source).toBe('none');
+    });
+
+    it('a throw during extraction classifies as capture_failed/none', async () => {
+      // A body whose `usage` accessor itself throws — the extraction blows up
+      // rather than finding an absent or malformed field.
+      const poisoned = { get usage(): any { throw new Error('boom'); } };
+      const { status, source } = await withUsageCapture(async () => {
+        reportOpenAIUsage(poisoned);
+      });
+      expect(status).toBe('capture_failed');
+      expect(source).toBe('none');
+    });
+
+    it('reportCaptureFailed can also be called directly and classifies as capture_failed/none', async () => {
+      const { usage, status, source } = await withUsageCapture(async () => {
+        reportCaptureFailed();
+      });
+      expect(usage).toBeNull();
+      expect(status).toBe('capture_failed');
+      expect(source).toBe('none');
+    });
+
+    it('a path that never calls a report* function stays not_attempted/none', async () => {
+      const { usage, status, source } = await withUsageCapture(async () => 'answer');
+      expect(usage).toBeNull();
+      expect(status).toBe('not_attempted');
+      expect(source).toBe('none');
+    });
+
+    it('last writer wins on status/source too, matching the numeric last-writer-wins contract', async () => {
+      const { status, source } = await withUsageCapture(async () => {
+        reportProviderNotReported();
+        reportUsage({ tokensIn: 500, tokensOut: 80 });
+      });
+      expect(status).toBe('reported');
+      expect(source).toBe('provider');
+    });
   });
 });

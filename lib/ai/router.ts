@@ -31,7 +31,7 @@
 // Image generation is a separate ladder — see ./image-router.
 
 import type { ChatMessage } from './opencode';
-import { withUsageCapture, type TokenUsage } from './usage';
+import { withUsageCapture, type TokenUsage, type UsageStatus, type UsageSource } from './usage';
 import { orderByHealth, recordSuccess, recordFailure, healthSnapshot, classifyFailure } from './health';
 import { filterEligible, estimateTokens, type CallSize } from './eligibility';
 import * as opencode from './opencode';
@@ -162,6 +162,11 @@ function providerHint(candidate: Candidate): string | undefined {
 async function logUsage(entry: {
   accountId: string; candidate: Candidate; kind: 'text' | 'chat'; ok: boolean; error?: string; latencyMs: number;
   usage?: TokenUsage | null;
+  // Absent on the failure path (a candidate that threw before its capture
+  // scope produced a classification) — recordAiUsage treats absence as
+  // not_attempted/none, which is the honest read: no capture happened.
+  usageStatus?: UsageStatus;
+  usageSource?: UsageSource;
   conversationId?: string;
 }): Promise<string | null> {
   try {
@@ -181,6 +186,8 @@ async function logUsage(entry: {
       // NULL, not 0, when the tier reported nothing — see lib/ai/usage.ts.
       tokensIn: entry.usage?.tokensIn ?? null,
       tokensOut: entry.usage?.tokensOut ?? null,
+      usageStatus: entry.usageStatus ?? 'not_attempted',
+      usageSource: entry.usageSource ?? 'none',
     });
   } catch { return null; /* logging must never break the caller */ }
 }
@@ -273,7 +280,7 @@ async function runCandidates(
     // One capture scope per attempt, so a failed model's usage block cannot be
     // attributed to the model that answered after it.
     try {
-      const { result: text, usage } = await withUsageCapture(candidate.run);
+      const { result: text, usage, status: usageStatus, source: usageSource } = await withUsageCapture(candidate.run);
       const latencyMs = Date.now() - start;
       // An empty answer is a failure of this candidate, not a result. The old
       // registry path fell through on it silently; now it is recorded as the
@@ -286,7 +293,7 @@ async function runCandidates(
       // migration 060 the two were the same column, so a model answering in
       // prose was indistinguishable from a real success.
       if (accountId) {
-        void logUsage({ accountId, candidate, kind, ok: true, latencyMs, usage, conversationId: trace?.conversationId })
+        void logUsage({ accountId, candidate, kind, ok: true, latencyMs, usage, usageStatus, usageSource, conversationId: trace?.conversationId })
           .then((id) => { if (id) trace?.onUsageRow?.(id); });
       }
       log.info('ai router: candidate answered', { fn, candidate: candidate.id, latencyMs });

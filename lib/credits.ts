@@ -57,6 +57,14 @@ export async function recordAiUsage(entry: {
   /** agent_conversations.id, when the caller has one (migration 060). Absent
    *  for every pre-060 caller, so those rows keep the NULL they always had. */
   conversationId?: string | null;
+  /** Why tokensIn/tokensOut are (or are not) populated (migration 075). Every
+   *  caller now passes this explicitly via lib/ai/router.ts::logUsage; the
+   *  defaults here exist only for a caller that predates 075 and would
+   *  otherwise fail the NOT NULL column — 'not_attempted'/'none' is the
+   *  honest read for "this call did not go through usage classification",
+   *  never a guess at what actually happened. */
+  usageStatus?: 'reported' | 'provider_not_reported' | 'capture_failed' | 'not_attempted' | 'not_applicable';
+  usageSource?: 'provider' | 'estimated' | 'none';
 }): Promise<string | null> {
   try {
     const { data } = await supabase.from('ai_usage').insert([{
@@ -71,6 +79,8 @@ export async function recordAiUsage(entry: {
       ok: entry.ok,
       error: entry.error ?? null,
       conversation_id: entry.conversationId ?? null,
+      usage_status: entry.usageStatus ?? 'not_attempted',
+      usage_source: entry.usageSource ?? 'none',
     }])
       // The id is returned so the CALLER can later record whether the response
       // it got was actually usable — see markParseOutcome. Nothing else changes

@@ -105,6 +105,7 @@ export const EXPECTATIONS: Expectation[] = [
   { table: 'memory_edges', columns: ['promoted_by', 'promoted_at'], migration: '068', breaks: 'a Tier-2 pattern can never be promoted to Tier-1 — the update fails outright rather than promoting without provenance' },
   { table: 'agent_conversations', columns: ['deleted_at'], migration: '069', breaks: 'a user cannot delete a single chat — the delete path fails' },
   { table: 'agent_conversations', columns: ['running_since'], migration: '072', breaks: 'a returning user is not shown that their turn is still in progress — the "still working on it" signal is silently lost, not that chat itself breaks' },
+  { table: 'ai_usage', columns: ['usage_status', 'usage_source'], migration: '075', breaks: 'recordAiUsage cannot classify why tokens are missing — a NULL token count becomes indistinguishable from a telemetry bug again, the exact ambiguity migration 075 exists to remove' },
 ];
 
 export interface DriftFinding {
