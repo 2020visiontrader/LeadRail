@@ -31,27 +31,35 @@ or query latency, not an error.
 **Done when:** a tick run has actually executed the delete, or retention is
 enforced somewhere that does not depend on the tick.
 
-## 2. `/api/hermes/tick` has no scheduler — blocks seven subsystems
+## 2. ~~`/api/hermes/tick` has no scheduler~~ — RESOLVED 2026-08-28
 
-The route drains `hermes_jobs`, `sequence_enrollments`, `enrichment_jobs`,
-`webhook_deliveries`, `scheduled_tasks`, memory extraction and plan steps, then
-runs retention, account purges and reward maturation.
+**Verified by querying production, which is what this entry demanded.**
+`app_logs` holds **261 rows for `/api/hermes/tick` at status 200**, latest
+`2026-08-28 06:55:04Z`. The single 401 this entry was written around is still
+there, dated `2026-08-01 16:07:35Z`, and is now the only one.
 
-It has been requested **once in the lifetime of this database** — 2026-08-01 —
-and that request returned **401**. It has never executed. There is no
-`wrangler.toml`, no `vercel.json`, no `.github/workflows`, no pg_cron, no
-Cloudflare Worker. `FIXES.md:51` lists "Schedule a cron to POST
-/api/hermes/tick" under *NOT verified*; the route comment says "Schedule via a
-Supabase scheduled function". Both describe an intention. Neither is a
-configuration.
+What runs it: `cron.job` id 1, `hermes-tick-every-5-min`, `*/5 * * * *`,
+active, calling `public.hermes_tick_dispatch()`. `pg_cron` 1.6.4 and `pg_net`
+0.19.5 are installed. The agreed approach was taken as written — no new
+platform, no new credential surface.
 
-Agreed approach: **Supabase `pg_cron` + `pg_net`**. No new platform, no new
-credential surface. Requires someone with production access to place
-`APP_API_SECRET` where the POST can read it — a credential action, not a code
-change.
+`cron.job_run_details`: 263 succeeded, 3 failed. The 3 failures are worth
+keeping: before the Vault secret existed, the dispatch **refused to POST**
+rather than sending an unauthenticated request, and said so — "Vault secret
+`hermes_tick_api_secret` is not set. requireAuth() in lib/http.ts rejects any
+call without a matching Authorization: Bearer header." A failure that explains
+its own cause and declines to do the wrong thing.
 
-**Done when:** `app_logs` shows a `/api/hermes/tick` row with status 200.
-Verify by querying, not by assuming the schedule took.
+**A trap for whoever reads this next.** `cron.job_run_details.status =
+'succeeded'` does NOT mean the tick returned 200. `pg_net` is asynchronous:
+the job succeeds the moment the request is *queued*, and the HTTP status lands
+later in `net._http_response`. Judging this by job status alone would have
+called a 401-every-5-minutes loop healthy. Check `app_logs.status`.
+
+Open, minor: 47 `/api/hermes/tick` rows carry `status = NULL`, latest
+`2026-08-27 17:40:42Z`. The 200s continue past them, so this is not an
+outage — but a logged request with no status is a row nothing can assert on.
+Worth finding what path writes it.
 
 ## 3. `processDueEnrollments` has no staleness floor
 
@@ -114,16 +122,18 @@ per provider — or the providers that do not are documented here.
   dialog; `tests/conversation-deletion.test.ts` covers it. Account scope is
   applied inside `deleteConversation`'s query and the response is deliberately
   a non-oracle.
-  WHAT IS ACTUALLY OPEN, and it is a different defect: soft-delete works, but
-  the hard purge never happens. `purge_soft_deleted` has exactly one caller,
-  `/api/hermes/tick`, which has no scheduler (§2) and has never executed
-  successfully in production. So the confirm dialog's promise — "permanently
-  removed after 30 days" — is not currently kept: rows sit with `deleted_at`
-  set indefinitely. The migration and its tests are honest about this; the
-  user-facing copy is the one surface where the gap leaks out as a promise.
-  Closing §2 makes the promise true; until then the copy overstates. Proves
-  closed: a scheduled tick run, then `SELECT count(*) FROM agent_conversations
-  WHERE deleted_at < now() - interval '30 days'` returning 0 in production.
+  CORRECTED AGAIN, same day: the paragraph that stood here said the hard purge
+  "never happens" because §2 had no scheduler. That was written off the stale
+  §2 and is false. The tick has run 261 times at status 200; it calls
+  `purge_soft_deleted`; the confirm dialog's "permanently removed after 30
+  days" is therefore a promise the system now keeps.
+  Still genuinely unproven, and not the same claim: `agent_conversations` has
+  **0 rows with `deleted_at` set**, so the purge has never had anything to
+  purge. The check I wrote as proof — `WHERE deleted_at < now() - interval '30
+  days'` returning 0 — passes vacuously and proves nothing. A real test
+  soft-deletes a row, backdates `deleted_at` past the window, runs
+  `purge_soft_deleted`, and asserts the row is gone; revert-check it by
+  pointing the purge at the wrong column and confirming it goes red.
 - **`enqueueCompanyEnrichment` documents an idempotency guarantee it does not
   have.** It relies on a 23505 unique violation, but
   `uniq_enrichment_job_live_contact` indexes `contact_id` only — there is no
