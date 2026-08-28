@@ -15,7 +15,7 @@
 // ai_providers is empty, so that path never runs and these literals ARE the hard
 // limit today. Set high enough to mean "as much as the model will give", and
 // override with AI_MAX_OUTPUT_TOKENS.
-import { reportOpenAIUsage, reportUsage } from './usage';
+import { reportOpenAIUsage, reportUsage, reportProviderNotReported } from './usage';
 import { parseRetryAfterMs } from './health';
 
 const DEFAULT_MAX_OUT = Number(process.env.AI_MAX_OUTPUT_TOKENS) || 16000;
@@ -206,8 +206,12 @@ export async function readSseDeltas(
   }
   if (buf) handleLine(buf);
   // NULL, not 0, when the tier reported nothing — "does not tell us" and "used
-  // no tokens" are different facts (see lib/ai/usage.ts).
+  // no tokens" are different facts (see lib/ai/usage.ts). The stream ran to
+  // completion either way, so a frameless outcome is provider_not_reported —
+  // we read every frame there was — not not_attempted, which would say this
+  // code never looked.
   if (tokensIn != null || tokensOut != null) reportUsage({ tokensIn, tokensOut });
+  else reportProviderNotReported();
 }
 
 /** Streaming twin of `complete()`. Same request shape, same error shapes, same
