@@ -6,7 +6,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/db';
 import { runAgent, agentConfigured, generateCarryover } from '@/lib/agent/loop';
 import { loadAgentContext } from '@/lib/agent/context';
-import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts } from '@/lib/agent/memory';
+import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts, markConversationRunning, clearConversationRunning } from '@/lib/agent/memory';
 import { mintMessageId } from '@/lib/agent/transcript-store';
 import { parseMentions } from '@/lib/agent/personas';
 import { log } from '@/lib/logger';
@@ -102,6 +102,43 @@ async function runPost(request: NextRequest, session: Session) {
     return badRequest('Could not load this conversation just now, so nothing was run — your history is safe and untouched. Try again in a moment.');
   }
   const transcript = transcriptResult.messages;
+
+  // Mark this conversation as having a turn in progress (migration 072) — the
+  // JSON twin of the block in app/api/agent/stream/route.ts. Only meaningful
+  // once an id exists: an approve-resume or an existing chat already has one;
+  // a brand-new chat (no conversationId in the request body) has nothing yet
+  // for a client to poll GET /api/agent/conversations/[id] against, so there
+  // is nothing to mark. markConversationRunning is best-effort and swallows
+  // its own errors (lib/agent/memory.ts) — a logging/flag failure must never
+  // fail the turn, so this is never wrapped in its own try/catch here.
+  //
+  // Without this, a reload mid-turn on THIS path (most of production traffic
+  // — see the CRITICAL PROCESS RULE note above) shows the saved transcript
+  // with no answer, no spinner, and no polling, because GET .../conversations
+  // /[id] reports running: false the whole time the turn is actually running.
+  if (conversationId) {
+    await markConversationRunning(conversationId, session.accountId);
+  }
+
+  try {
+    return await runTurn(session, { conversationId, transcript, message, approve, body });
+  } finally {
+    // Cleared UNCONDITIONALLY — success, a badRequest-style early return
+    // inside runTurn, or a throw all reach here. A leaked flag is what makes
+    // a conversation look permanently busy (RUNNING_STALE_MS, 6 min, is the
+    // last-resort backstop for a killed process — not a substitute for
+    // clearing this on every normal exit).
+    if (conversationId) {
+      await clearConversationRunning(conversationId, session.accountId);
+    }
+  }
+}
+
+async function runTurn(
+  session: Session,
+  ctx: { conversationId: string | undefined; transcript: any; message: string | undefined; approve: any; body: any },
+) {
+  const { conversationId, transcript, message, approve, body } = ctx;
 
   // Resolve a venture id/name for grounding (best-effort; ownership is still
   // enforced per-tool). Only for brands the session owns.

@@ -95,8 +95,14 @@ describe('forced-final failure is logged, not swallowed (non-streaming)', () => 
       throw new Error('OpenRouter returned an empty response');
     });
     const res = await runNonStreaming();
-    expect(res.status).toBe('error');
-    expect(res.message).toContain('had trouble summarizing');
+    // Both probe calls in this test succeed (runTool stub returns ok:true),
+    // so the forced-final failure now salvages their results instead of
+    // returning the bare apology — see tests/agent-salvage.test.ts for the
+    // dedicated coverage of that behaviour. This file stays focused on what
+    // it's for: the log line that makes the two forced-final failure causes
+    // distinguishable.
+    expect(res.status).toBe('salvage');
+    expect(res.message).not.toContain('had trouble summarizing');
 
     const hit = warn.mock.calls.find((c) => String(c[0]).includes('forced-final call failed'));
     expect(hit).toBeTruthy();
@@ -116,7 +122,8 @@ describe('forced-final failure is logged, not swallowed (non-streaming)', () => 
       return 'not json at all, sorry';
     });
     const res = await runNonStreaming();
-    expect(res.status).toBe('error');
+    // Same salvage reasoning as the throw case above.
+    expect(res.status).toBe('salvage');
 
     const hit = warn.mock.calls.find((c) => String(c[0]).includes('forced-final produced no final action'));
     expect(hit).toBeTruthy();
@@ -148,7 +155,11 @@ describe('forced-final failure is logged, not swallowed (streaming — must matc
       throw new Error('opencode: 401 unauthorized');
     });
     const events = await runStreaming();
-    expect(events.some((e) => e.type === 'error')).toBe(true);
+    // Salvage twin of the non-streaming case above: both probe calls
+    // succeeded, so this now emits `final` with salvage:true, not `error`.
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+    const finalEvent = events.find((e) => e.type === 'final');
+    expect(finalEvent?.salvage).toBe(true);
 
     const hit = warn.mock.calls.find((c) => String(c[0]).includes('forced-final call failed'));
     expect(hit).toBeTruthy();
@@ -163,7 +174,9 @@ describe('forced-final failure is logged, not swallowed (streaming — must matc
       return '{"action":"tool"}'; // valid JSON, wrong shape — no final action
     });
     const events = await runStreaming();
-    expect(events.some((e) => e.type === 'error')).toBe(true);
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+    const finalEvent = events.find((e) => e.type === 'final');
+    expect(finalEvent?.salvage).toBe(true);
 
     const hit = warn.mock.calls.find((c) => String(c[0]).includes('forced-final produced no final action'));
     expect(hit).toBeTruthy();

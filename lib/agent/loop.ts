@@ -149,7 +149,11 @@ export interface AgentStep {
   observation?: string;
 }
 
-export type AgentStatus = 'done' | 'needs_approval' | 'error';
+// 'salvage': the forced-final call itself failed, but earlier tool calls in
+// this turn already succeeded and their results are what shipped as the
+// answer — honest middle ground between 'done' (a real answer) and 'error'
+// (nothing usable at all). See buildSalvageMessage() above.
+export type AgentStatus = 'done' | 'needs_approval' | 'error' | 'salvage';
 
 export interface AgentResult {
   status: AgentStatus;
@@ -774,6 +778,50 @@ function analysisFor(tool: string, args: any, res: { ok: boolean; result?: any }
   } catch {
     return null;
   }
+}
+
+// SALVAGE — what to tell the user when the forced-final call itself fails
+// (throws, or comes back with no usable {"action":"final",...}) but earlier
+// tool calls in THIS turn already succeeded. Production evidence: a turn
+// with toolCalls ["listTags","listLeads"], stepCount 2, that ran the full
+// TURN_DEADLINE_MS on a single slow step, reached forced-final, and lost
+// everything to the generic apology even though both tools had already
+// returned real data.
+//
+// Deliberately NOT a re-summarization by another model call — the whole
+// premise here is that the model path just failed, so this mechanically
+// lists what actually happened, in the caps' own successObservation text.
+// Never invents anything: only steps whose observation is a real, present,
+// non-ERROR string are surfaced (a step with no observation, or one that
+// starts with the "ERROR:" prefix observationFor() uses for a failed tool
+// call, is silently excluded — nothing is fabricated in its place).
+//
+// Returns null when there is nothing usable to salvage (zero qualifying
+// steps), so the caller falls back to the plain apology — a salvage message
+// with nothing in it is worse than the apology (CLAUDE.md/task spec).
+//
+// Both loops MUST call this (CLAUDE.md: the two loops stay identical).
+function buildSalvageMessage(steps: AgentStep[], extraTools?: Record<string, AgentTool>): string | null {
+  const succeeded = steps.filter(
+    (s): s is AgentStep & { tool: string; observation: string } =>
+      Boolean(s.tool) && typeof s.observation === 'string' && !s.observation.startsWith('ERROR:'),
+  );
+  if (succeeded.length === 0) return null;
+
+  const lines = succeeded.map((s) => {
+    const def = TOOLS[s.tool] ?? extraTools?.[s.tool];
+    const label = def?.title || s.tool;
+    return `- ${label}: ${truncate(s.observation, 400)}`;
+  });
+
+  return [
+    "I wasn't able to put together a final answer for this one — the summarizing step failed — " +
+      "but here is what was actually found before that happened:",
+    '',
+    ...lines,
+    '',
+    'Ask again, a bit more specifically, and I can turn this into a proper answer.',
+  ].join('\n');
 }
 
 // PORTED (Packet 2.1 step 5): the per-tool deriveMetrics switch that used to
@@ -1989,6 +2037,13 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
     // that information lives (e.g. "OpenRouter returned an empty response").
     log.warn('agent loop: forced-final call failed', { accountId, error: String(err?.message || err) });
   }
+  // Do not throw away work that succeeded (CLAUDE.md — this is the fix for
+  // that named defect): the forced-final call failed, but if earlier tool
+  // calls in this turn already came back with real data, hand that to the
+  // user honestly rather than the bare apology. Only the bare apology when
+  // there is truly nothing to show (buildSalvageMessage returns null).
+  const salvage = buildSalvageMessage(steps, extraTools);
+  if (salvage) return { status: 'salvage', message: salvage, transcript: messages, steps };
   return { status: 'error', message: 'I gathered the details but had trouble summarizing. Please ask again a bit more specifically.', transcript: messages, steps };
 }
 
@@ -2038,7 +2093,16 @@ export type AgentEvent =
   // client accumulated from these (a mid-stream compose failure falls back to
   // the route pass's draft, which will not match the deltas already sent).
   | { type: 'final_delta'; text: string }
-  | { type: 'final'; message: string; transcript: StoredMessage[]; tokenEstimate?: number }
+  | {
+      type: 'final'; message: string; transcript: StoredMessage[]; tokenEstimate?: number;
+      /** Set when this "final" was actually assembled from surviving tool
+       *  observations after the forced-final summarizing call itself failed
+       *  — see buildSalvageMessage(). The wire shape and client handling stay
+       *  IDENTICAL to an ordinary final (the message says so honestly on its
+       *  own); this flag exists only so the server-side turn log — see
+       *  logTurn — can record 'salvage' instead of a dishonest 'done'. */
+      salvage?: boolean;
+    }
   | { type: 'needs_approval'; proposal: AgentProposal; message: string; transcript: StoredMessage[] }
   | { type: 'compaction_suggested'; level: 'soft' | 'hard'; tokenEstimate: number }
   | { type: 'error'; message: string; transcript?: StoredMessage[] };
@@ -2146,6 +2210,13 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
   const extraCapsByName: Record<string, Capability> = Object.fromEntries(externalCaps.map((c) => [c.name, c]));
   const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId, input.planOnly);
   const messages: StoredMessage[] = capTranscript(input.transcript || []);
+  // Mirrors runAgentImpl's `steps` — the streaming loop has no equivalent
+  // return value to carry this in, since it reports via `emit` instead of a
+  // return, so it is tracked locally here purely so buildSalvageMessage() has
+  // the same evidence to work from as the non-streaming loop (CLAUDE.md: the
+  // two loops must stay identical). Populated at every site runAgentImpl
+  // populates its own `steps`; never read for anything but salvage.
+  const steps: AgentStep[] = [];
 
   if (input.message) messages.push({ role: 'user', content: input.message, ...(input.userMessageId ? { id: input.userMessageId } : {}) });
 
@@ -2194,6 +2265,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
       const perCall = obsLimitFor(tool, extraCapsByName);
       const obsLimit = perCall === undefined ? undefined : perCall * Math.min(approvedBatch.calls.length, 4);
       emit({ type: 'observation', text: truncate(obs, obsLimit), ok: results.every((r) => r.ok), tool });
+      steps.push({ tool, args, observation: truncate(obs, obsLimit) });
       messages.push(observation(obs, obsLimit));
     } else {
       emit({ type: 'tool', tool, title: approveDef.title, args });
@@ -2202,6 +2274,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
       const obsLimit = obsLimitFor(tool, extraCapsByName);
       emit({ type: 'observation', text: truncate(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
       emitAnalysis(emit, analysisFor(tool, args, res, extraCapsByName));
+      steps.push({ tool, args, observation: truncate(obs, obsLimit) });
       messages.push(observation(obs, obsLimit));
     }
   }
@@ -2350,6 +2423,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
     if (!def) {
       unknownTools++;
       emit({ type: 'observation', text: `Unknown tool "${tool}".`, ok: false });
+      steps.push({ thought: narrationFor(parsed), tool });
       messages.push(unknownToolObservation(tool, knownToolNames, unknownTools));
       continue;
     }
@@ -2359,6 +2433,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
     const batch = parseBatch(parsed);
     if (batch.kind === 'invalid') {
       emit({ type: 'observation', text: `That batch was not valid: ${batch.reason}`, ok: false });
+      steps.push({ thought: narrationFor(parsed), tool, observation: batch.reason });
       messages.push(observation(`That batch was not valid: ${batch.reason}`));
       continue;
     }
@@ -2368,6 +2443,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
         if (input.isDelegate) {
           const obs = `You cannot run "${tool}" — it needs the operator's approval and you are answering as a specialist. Say what you recommend and why, and let the operator's own assistant propose it.`;
           emit({ type: 'observation', text: obs, ok: false });
+          steps.push({ tool, observation: obs });
           messages.push(observation(obs));
           continue;
         }
@@ -2388,6 +2464,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
           emit({ type: 'error', message: "I couldn't record that action for your approval, so I haven't run it. Please try again." });
           return;
         }
+        steps.push({ thought: narrationFor(parsed), tool, args: batchArgs });
         messages.push(pendingApprovalObservation(tool));
         emit({ type: 'needs_approval', proposal, message: proposal.summary, transcript: messages });
         return;
@@ -2405,6 +2482,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
         // render with a plain tick, which is what "mostly fine" looks like.
         ok: results.every((r) => r.ok),
       });
+      steps.push({ thought: narrationFor(parsed), tool, args: { calls: calls.map((c) => c.args) }, observation: truncate(obs, obsLimit) });
       messages.push(observation(obs, obsLimit));
       continue;
     }
@@ -2414,6 +2492,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
       if (input.isDelegate) {
         const obs = `You cannot run "${tool}" — it needs the operator's approval and you are answering as a specialist. Say what you recommend and why, and let the operator's own assistant propose it.`;
         emit({ type: 'observation', text: obs, ok: false });
+        steps.push({ tool, args, observation: obs });
         messages.push(observation(obs));
         continue;
       }
@@ -2453,6 +2532,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
           // work rather than going silent just because nobody was asked.
           emit({ type: 'observation', text: truncate(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
           emitAnalysis(emit, analysisFor(tool, args, res, extraCapsByName));
+          steps.push({ thought: narrationFor(parsed), tool, args, observation: obs });
           messages.push(observation(obs, obsLimit));
           continue;
         }
@@ -2477,6 +2557,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
         emit({ type: 'error', message: "I couldn't record that action for your approval, so I haven't run it. Please try again." });
         return;
       }
+      steps.push({ thought: narrationFor(parsed), tool, args });
       // Close the gap in the transcript before it is persisted — see
       // pendingApprovalObservation.
       messages.push(pendingApprovalObservation(tool));
@@ -2523,6 +2604,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
           if (covered) {
             const obs = `That document is already in your context above. Use what is already shown rather than calling readDocument again. If you need a passage outside the shown excerpt, call readDocument with a different offset or query.`;
             emit({ type: 'observation', text: obs, ok: true, tool });
+            steps.push({ thought: narrationFor(parsed), tool, args, observation: obs });
             messages.push(observation(obs));
             continue;
           }
@@ -2536,6 +2618,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
     const obsLimit = obsLimitFor(tool, extraCapsByName);
     emit({ type: 'observation', text: truncate(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
     emitAnalysis(emit, analysisFor(tool, args, res, extraCapsByName));
+    steps.push({ thought: narrationFor(parsed), tool, args, observation: truncate(obs, obsLimit) });
     messages.push(observation(obs, obsLimit));
   }
 
@@ -2565,6 +2648,20 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
     log.warn('agent loop: forced-final produced no final action', { accountId, raw: String(raw ?? '').slice(0, 500) });
   } catch (err: any) {
     log.warn('agent loop: forced-final call failed', { accountId, error: String(err?.message || err) });
+  }
+  // Do not throw away work that succeeded — the twin of the fix in
+  // runAgentImpl (CLAUDE.md: both loops stay identical). Emitted as an
+  // ordinary `final` (so the client, which only understands
+  // final/needs_approval/error, renders it exactly like any other answer —
+  // the message itself says plainly that this is partial); `salvage: true`
+  // is read only by the logTurn tap below, so the server-side record stays
+  // honest that this was not a clean `done`.
+  const salvage = buildSalvageMessage(steps, extraTools);
+  if (salvage) {
+    messages.push({ role: 'assistant', content: salvage });
+    await streamTokens(salvage, emit);
+    emit({ type: 'final', message: salvage, transcript: messages, salvage: true });
+    return;
   }
   emit({ type: 'error', message: 'I gathered the details but had trouble summarizing. Please ask again a bit more specifically.', transcript: messages });
 }
@@ -2693,7 +2790,7 @@ function logTurn(
         approved: input.approve?.tool ?? null,
       },
     },
-    fields.outcome === 'error' ? 'warn' : 'info',
+    fields.outcome === 'error' || fields.outcome === 'salvage' ? 'warn' : 'info',
   );
 }
 
@@ -2739,7 +2836,7 @@ export async function runAgentStream(input: RunAgentInput, emit: (e: AgentEvent)
   const tap = (e: AgentEvent) => {
     if (firstEventMs === null) firstEventMs = Date.now() - startedAt;
     if (e.type === 'tool') steps.push({ tool: e.tool, args: e.args });
-    else if (e.type === 'final') { outcome = 'done'; answer = e.message; }
+    else if (e.type === 'final') { outcome = e.salvage ? 'salvage' : 'done'; answer = e.message; }
     else if (e.type === 'needs_approval') { outcome = 'needs_approval'; answer = e.message; }
     else if (e.type === 'error') { outcome = 'error'; answer = e.message; }
     emit(e);
