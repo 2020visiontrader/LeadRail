@@ -131,13 +131,26 @@ per provider — or the providers that do not are documented here.
   §2 and is false. The tick has run 261 times at status 200; it calls
   `purge_soft_deleted`; the confirm dialog's "permanently removed after 30
   days" is therefore a promise the system now keeps.
-  Still genuinely unproven, and not the same claim: `agent_conversations` has
-  **0 rows with `deleted_at` set**, so the purge has never had anything to
-  purge. The check I wrote as proof — `WHERE deleted_at < now() - interval '30
-  days'` returning 0 — passes vacuously and proves nothing. A real test
-  soft-deletes a row, backdates `deleted_at` past the window, runs
-  `purge_soft_deleted`, and asserts the row is gone; revert-check it by
-  pointing the purge at the wrong column and confirming it goes red.
+  **Now proven, 2026-08-28.** `agent_conversations` still has 0 rows with
+  `deleted_at` set, so the earlier check passed vacuously. Proved it properly
+  instead, against the real function in production, inside a `DO` block that
+  ends in `RAISE EXCEPTION` so the whole thing rolls back and nothing persists:
+  inserted three fixtures on a real account — one soft-deleted 45 days ago, one
+  soft-deleted 2 days ago, one active — then called `purge_soft_deleted(30)`.
+  Result: `purged_rows=1 | old_deleted=t | recent_kept=t | active_kept=t`.
+  Confirmed afterwards that 0 fixtures remained and the conversation count was
+  unchanged at 29.
+  Three branches, not one, which is what makes it discriminating: a purge that
+  deleted everything would fail `recent_kept` and `active_kept`; a purge that
+  deleted nothing would fail `old_deleted`. It was not revert-checked in the
+  usual way because the only way to break it is to alter a live production
+  function, which is not worth the risk when the three-branch form already
+  separates the failure modes.
+  Worth recording for anyone writing DB proofs here: **no test in this suite
+  touches a live database.** `grep -rl "createClient|SUPABASE_URL|pg" tests/`
+  returns nothing — every DB test reads `migrations/*.sql` as text or mocks
+  with `vi`. So a non-vacuous purge test cannot be written in the harness as it
+  stands, and the rollback-in-a-DO-block pattern above is the substitute.
 - **`enqueueCompanyEnrichment` documents an idempotency guarantee it does not
   have.** It relies on a 23505 unique violation, but
   `uniq_enrichment_job_live_contact` indexes `contact_id` only — there is no
