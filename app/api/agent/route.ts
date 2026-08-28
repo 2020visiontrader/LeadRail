@@ -1,6 +1,7 @@
 import { bindAttachments } from '@/lib/documents/attachments';
 import { bindAttachmentToMessage } from '@/lib/documents/attachment-bindings';
 import { withApi, requireSession, badRequest } from '@/lib/http';
+import type { Session } from '@/lib/session';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/db';
 import { runAgent, agentConfigured, generateCarryover } from '@/lib/agent/loop';
@@ -11,6 +12,20 @@ import { parseMentions } from '@/lib/agent/personas';
 import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
+
+// CONCURRENCY INSTRUMENTATION — JSON twin of the block in
+// app/api/agent/stream/route.ts. Read that comment for the full decision
+// rule and the per-process caveat; both apply verbatim here. This is the
+// path that actually carries most turns (13 'agent:json' vs 4 'agent:stream'
+// in the last 17 production turns as of 2026-08-28), so a measurement that
+// only covered the stream route would miss where the block, if any, mostly
+// happens. Distinct message strings ("agent json:" vs "agent stream:") so a
+// single app_logs query can tell the two paths apart. Persisted through
+// log.request(fields, 'info') for the same reason as the stream route:
+// log.info() is console-only and would leave this instrumentation as
+// unqueryable as the one it was written to replace.
+let openRequests = 0;
+let requestSeq = 0;
 
 // POST /api/agent — LeadRail AI conversational executor.
 // Body: { message?, brandId?, conversationId?, approve?: { approvalId, tool, args } }
@@ -25,6 +40,32 @@ async function POST__impl(request: NextRequest) {
   const { session, error } = await requireSession(request);
   if (error) return error;
 
+  const requestId = `j${++requestSeq}`;
+  openRequests += 1;
+  // log.request(), not log.info() — see the CONCURRENCY INSTRUMENTATION
+  // comment above the counters for why.
+  log.request({ message: 'agent json: received', detail: { requestId, openRequests } }, 'info');
+  let requestClosed = false;
+  const closeRequest = () => {
+    if (requestClosed) return;
+    requestClosed = true;
+    openRequests -= 1;
+    log.request({ message: 'agent json: closed', detail: { requestId, openRequests } }, 'info');
+  };
+
+  // Everything below is wrapped so the decrement above happens on EVERY exit
+  // — the early `badRequest` returns, the normal success return, and a throw
+  // — with the same double-decrement guard (`requestClosed`) as the stream
+  // route's `closeStream`. A leaked count here would make every later
+  // reading of openRequests wrong, which is worse than no counter at all.
+  try {
+    return await runPost(request, session);
+  } finally {
+    closeRequest();
+  }
+}
+
+async function runPost(request: NextRequest, session: Session) {
   if (!agentConfigured()) {
     return NextResponse.json(
       { error: 'LeadRail AI is temporarily unavailable', code: 'not_configured' },
