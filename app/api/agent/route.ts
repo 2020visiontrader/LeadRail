@@ -1,11 +1,14 @@
 import { bindAttachments } from '@/lib/documents/attachments';
+import { bindAttachmentToMessage } from '@/lib/documents/attachment-bindings';
 import { withApi, requireSession, badRequest } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/db';
 import { runAgent, agentConfigured, generateCarryover } from '@/lib/agent/loop';
 import { loadAgentContext } from '@/lib/agent/context';
 import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts } from '@/lib/agent/memory';
+import { mintMessageId } from '@/lib/agent/transcript-store';
 import { parseMentions } from '@/lib/agent/personas';
+import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
 
@@ -102,6 +105,15 @@ async function POST__impl(request: NextRequest) {
   // allowed to skip the go-ahead.
   const planOnly = body?.planOnly === true;
 
+  // Minted BEFORE the turn runs, not discovered afterwards by scanning the
+  // returned transcript for a matching role/content pair — that would be
+  // ambiguous the moment someone sends the same message twice. loop.ts's
+  // RunAgentInput.userMessageId (if set) is what the push site attaches this
+  // id to; saveConversation's ensureMessageIds (migration 076) preserves it
+  // verbatim rather than minting a different one. Only for a real new
+  // message — an approve-resume has no new user turn to bind anything to.
+  const userMessageId = typeof message === 'string' && message.trim() ? mintMessageId() : undefined;
+
   const result = await runAgent({
     accountId: session.accountId,
     message,
@@ -115,12 +127,32 @@ async function POST__impl(request: NextRequest) {
     requestedBy: session.email,
     conversationId,
     planOnly,
+    userMessageId,
   });
   const savedId = await saveConversation({
     id: conversationId, accountId: session.accountId, brandId: brandId ?? null,
     title: typeof message === 'string' ? message.slice(0, 80) : undefined,
     transcript: result.transcript,
   });
+
+  // Durable, message-level provenance (migration 076) — separate from, and
+  // additional to, bindAttachments above (which stamps
+  // assistant_attachments.conversation_id and is what loadAgentContext reads
+  // to put the file in THIS turn's prompt). This is what survives a reload:
+  // a row in attachment_bindings naming exactly which exchange the file was
+  // attached to, independent of the transcript content. Best-effort — a
+  // binding failure must not fail a turn that otherwise succeeded; the file
+  // was still visible to the model via attachmentsByIds/loadAgentContext
+  // regardless of whether this durable record is written.
+  if (savedId && userMessageId && attachmentIds.length) {
+    await Promise.all(attachmentIds.map((attachmentId) =>
+      bindAttachmentToMessage(session.accountId, attachmentId, savedId, userMessageId, {
+        scope: 'message', role: 'user_upload', boundBy: 'user',
+      }).catch((e) => {
+        log.error('agent: bindAttachmentToMessage failed', e, { conversationId: savedId, attachmentId, userMessageId });
+      }),
+    ));
+  }
 
   // Passive memory extraction (Packet 1.1). Gated to a COMPACTION event, not
   // every turn: once per long chat is the right cadence, per-message would

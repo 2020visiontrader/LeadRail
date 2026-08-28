@@ -18,6 +18,7 @@
 import { BUDGET } from '@/lib/ai/context-budget';
 import { contextCharBudget } from '@/lib/documents/attachments';
 import { generateChat, textConfigured, type ChatMessage } from '@/lib/ai/router';
+import { type StoredMessage, toWireMessages } from './transcript-store';
 import {
   comprehend, routingTextFor, describeMaterial, formatUnderstandingBlock, type Understanding,
 } from './comprehension';
@@ -155,7 +156,7 @@ export interface AgentResult {
   message: string;
   proposal?: AgentProposal;
   /** Full model transcript; pass back verbatim to resume after approval. */
-  transcript: ChatMessage[];
+  transcript: StoredMessage[];
   /** Human-readable trace for the UI. */
   steps: AgentStep[];
   /** Rough token size of the transcript, for long-chat handoff. */
@@ -178,7 +179,16 @@ export interface RunAgentInput {
   /** Carryover memo from a prior chat, injected to seed a reseeded conversation. */
   carryover?: CarryoverMemo | null;
   /** Prior transcript to resume from (returned by a needs_approval result). */
-  transcript?: ChatMessage[];
+  transcript?: StoredMessage[];
+  /** Stable id (migration 076) for the new user-turn entry this call is about
+   *  to push onto the transcript. Optional and additive: when omitted, the
+   *  entry is pushed with no id and one is minted the next time the
+   *  transcript is saved (saveConversation's ensureMessageIds), same as
+   *  before this field existed. A caller passes this when it needs to know
+   *  the id BEFORE the turn finishes — e.g. app/api/agent/route.ts mints one
+   *  up front so it can bind an uploaded attachment to this exact exchange
+   *  via attachment_bindings, rather than to the conversation as a whole. */
+  userMessageId?: string;
   /** An approved sensitive call to execute before continuing the loop.
    *  approvalId is REQUIRED (Packet 0.1): execution is gated on a persisted
    *  approvals row being in state 'approved' with a matching args hash, and
@@ -940,7 +950,7 @@ function approvalRefusal(e: any): string {
  * a long-lived conversation can still grow past what a model call can carry,
  * and this drops the oldest turns until the estimate is back under bound.
  */
-function capTranscript(transcript: ChatMessage[]): ChatMessage[] {
+function capTranscript(transcript: StoredMessage[]): StoredMessage[] {
   const bound = HARD_TOKEN_LIMIT * 2;
   const messages = [...transcript];
   while (messages.length > 1 && estimateTokens(messages) > bound) messages.shift();
@@ -1452,9 +1462,9 @@ async function runCoordinatorFanout(
   fanout: { coordinator: PersonaRow; delegates: PersonaRow[]; understanding?: Understanding | null },
   input: RunAgentInput,
 ): Promise<AgentResult> {
-  const messages: ChatMessage[] = capTranscript(input.transcript || []);
+  const messages: StoredMessage[] = capTranscript(input.transcript || []);
   const steps: AgentStep[] = [];
-  if (input.message) messages.push({ role: 'user', content: input.message });
+  if (input.message) messages.push({ role: 'user', content: input.message, ...(input.userMessageId ? { id: input.userMessageId } : {}) });
 
   const { outcomes, needsApproval } = await runFanoutDelegates(accountId, fanout.delegates, input, undefined, fanout.understanding);
   for (const o of outcomes) {
@@ -1485,8 +1495,8 @@ async function runCoordinatorFanoutStream(
   input: RunAgentInput,
   emit: (e: AgentEvent) => void,
 ): Promise<void> {
-  const messages: ChatMessage[] = capTranscript(input.transcript || []);
-  if (input.message) messages.push({ role: 'user', content: input.message });
+  const messages: StoredMessage[] = capTranscript(input.transcript || []);
+  if (input.message) messages.push({ role: 'user', content: input.message, ...(input.userMessageId ? { id: input.userMessageId } : {}) });
 
   // Name the team ONCE, then let each delegate narrate itself as it runs. The
   // previous version emitted every "Consulting X…" line upfront and then went
@@ -1556,10 +1566,10 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
   const extraTools = toolsFromCapabilities(externalCaps);
   const extraCapsByName: Record<string, Capability> = Object.fromEntries(externalCaps.map((c) => [c.name, c]));
   const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId, input.planOnly);
-  const messages: ChatMessage[] = capTranscript(input.transcript || []);
+  const messages: StoredMessage[] = capTranscript(input.transcript || []);
   const steps: AgentStep[] = [];
 
-  if (input.message) messages.push({ role: 'user', content: input.message });
+  if (input.message) messages.push({ role: 'user', content: input.message, ...(input.userMessageId ? { id: input.userMessageId } : {}) });
 
   // Resume path: execute the one approved sensitive call, then keep looping so
   // the agent can report the outcome. Re-validated by the tool's own schema;
@@ -1658,7 +1668,11 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
     let usageRowId: string | null = null;
     try {
       raw = await generateChat({
-        system, messages, temperature: 0.2,
+        // toWireMessages strips the storage-only `id` field (migration 076)
+        // before this transcript is serialised into the provider request —
+        // see lib/agent/transcript-store.ts. This is the ONLY place these
+        // messages are handed to the router.
+        system, messages: toWireMessages(messages), temperature: 0.2,
         conversationId: input.conversationId,
         onUsageRow: (id) => { usageRowId = id; },
         // No fixed maxOutputTokens — see AGENT_ROUTE_CEILING.
@@ -1954,7 +1968,9 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
   try {
     messages.push({ role: 'user', content: 'Stop calling tools. Using the information above, answer the user now. Respond with ONLY {"action":"final","message":"..."}.' });
     const raw = await generateChat({
-      system, messages, temperature: 0.2, maxOutputTokens: 2048, zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
+      // toWireMessages strips the storage-only `id` field (migration 076) —
+      // see the comment on the other generateChat call sites in this file.
+      system, messages: toWireMessages(messages), temperature: 0.2, maxOutputTokens: 2048, zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
       ...(personaModelId ? { accountId, modelId: personaModelId } : {}),
     });
     const p = extractJson(raw);
@@ -2008,10 +2024,10 @@ export type AgentEvent =
   // client accumulated from these (a mid-stream compose failure falls back to
   // the route pass's draft, which will not match the deltas already sent).
   | { type: 'final_delta'; text: string }
-  | { type: 'final'; message: string; transcript: ChatMessage[]; tokenEstimate?: number }
-  | { type: 'needs_approval'; proposal: AgentProposal; message: string; transcript: ChatMessage[] }
+  | { type: 'final'; message: string; transcript: StoredMessage[]; tokenEstimate?: number }
+  | { type: 'needs_approval'; proposal: AgentProposal; message: string; transcript: StoredMessage[] }
   | { type: 'compaction_suggested'; level: 'soft' | 'hard'; tokenEstimate: number }
-  | { type: 'error'; message: string; transcript?: ChatMessage[] };
+  | { type: 'error'; message: string; transcript?: StoredMessage[] };
 
 // Stream an already-complete final answer as incremental `token` events so the
 // UI can type it out, Claude-desktop style, instead of it popping in as one
@@ -2115,9 +2131,9 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
   const extraTools = toolsFromCapabilities(externalCaps);
   const extraCapsByName: Record<string, Capability> = Object.fromEntries(externalCaps.map((c) => [c.name, c]));
   const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId, input.planOnly);
-  const messages: ChatMessage[] = capTranscript(input.transcript || []);
+  const messages: StoredMessage[] = capTranscript(input.transcript || []);
 
-  if (input.message) messages.push({ role: 'user', content: input.message });
+  if (input.message) messages.push({ role: 'user', content: input.message, ...(input.userMessageId ? { id: input.userMessageId } : {}) });
 
   if (input.approve) {
     const { approvalId, tool, args } = input.approve;
@@ -2211,7 +2227,11 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
     let usageRowId: string | null = null;
     try {
       raw = await generateChat({
-        system, messages, temperature: 0.2,
+        // toWireMessages strips the storage-only `id` field (migration 076)
+        // before this transcript is serialised into the provider request —
+        // see lib/agent/transcript-store.ts. This is the ONLY place these
+        // messages are handed to the router.
+        system, messages: toWireMessages(messages), temperature: 0.2,
         conversationId: input.conversationId,
         onUsageRow: (id) => { usageRowId = id; },
         // No fixed maxOutputTokens — see AGENT_ROUTE_CEILING.
@@ -2510,7 +2530,9 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
     messages.push({ role: 'user', content: 'Stop calling tools. Using the information above, answer the user now. Respond with ONLY {"action":"final","message":"..."}.' });
     emit({ type: 'step_start', text: 'Putting the answer together…' });
     const raw = await generateChat({
-      system, messages, temperature: 0.2, maxOutputTokens: 2048, zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
+      // toWireMessages strips the storage-only `id` field (migration 076) —
+      // see the comment on the other generateChat call sites in this file.
+      system, messages: toWireMessages(messages), temperature: 0.2, maxOutputTokens: 2048, zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
       ...(personaModelId ? { accountId, modelId: personaModelId } : {}),
     });
     const p = extractJson(raw);

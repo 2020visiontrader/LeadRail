@@ -106,6 +106,8 @@ export const EXPECTATIONS: Expectation[] = [
   { table: 'agent_conversations', columns: ['deleted_at'], migration: '069', breaks: 'a user cannot delete a single chat — the delete path fails' },
   { table: 'agent_conversations', columns: ['running_since'], migration: '072', breaks: 'a returning user is not shown that their turn is still in progress — the "still working on it" signal is silently lost, not that chat itself breaks' },
   { table: 'ai_usage', columns: ['usage_status', 'usage_source'], migration: '075', breaks: 'recordAiUsage cannot classify why tokens are missing — a NULL token count becomes indistinguishable from a telemetry bug again, the exact ambiguity migration 075 exists to remove' },
+  { table: 'attachment_bindings', columns: ['attachment_id', 'conversation_id', 'message_id', 'scope', 'status'], migration: '076', breaks: 'an uploaded attachment cannot be bound to a message or conversation, so provenance ("did you actually read my PDF?") does not survive a reload' },
+  { table: 'attachment_evidence', columns: ['attachment_binding_id'], migration: '076', breaks: 'nothing writes this table yet (schema only) — its absence breaks nothing live, but a caller reaching for it would fail outright rather than finding an empty, working table' },
 ];
 
 export interface DriftFinding {
