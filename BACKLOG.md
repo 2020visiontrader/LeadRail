@@ -144,6 +144,28 @@ per provider — or the providers that do not are documented here.
   equivalent on `company_id`. Duplicate live company jobs are possible; the
   code's "duplicate insert is a no-op" comment is true for contacts and false
   for companies.
+- **Attachment provenance does not survive a reload — verified 2026-08-28.**
+  `assistant_attachments` binds an upload to `account_id` and a nullable
+  `conversation_id`. There is no `message_id` and no run reference. That alone
+  would be a modelling gap; the reason it is a real defect is one level deeper.
+  There is no `agent_messages` table at all. A conversation's messages live in
+  `agent_conversations.transcript` (jsonb), and every element of that array has
+  exactly two keys — confirmed by querying every transcript in production:
+  `role` and `content`. No id, no timestamp, no attachment refs.
+  So there is nothing for an attachment to point AT, and nothing in a message
+  that points BACK. While a turn is live the composer holds the binding in
+  React state and the chips render correctly. Reopen the conversation and that
+  binding is gone: the transcript can say a question was asked, never that a
+  file came with it. "Did you actually read my PDF?" is unanswerable after a
+  reload, and a rehydrated turn cannot show what it was given.
+  Note for whoever scopes this: proposals to "add `message_id` to attachments"
+  presume a message table that does not exist. The choice is to give transcript
+  entries stable identity, or to record the binding somewhere that survives —
+  not to add a foreign key to nothing.
+  **Done when:** a conversation with an attachment is reopened from the
+  database in a test and the rehydrated turn still names the file it was given.
+  Revert-check by stripping the binding and confirming that test goes red.
+
 - **9 stale `enrichment_jobs` cancelled** on 2026-08-27 (queued 2026-08-09/10,
   never drained). Company enrichment only, no outbound send. Cancelled rather
   than drained so the first real tick would not spend Apollo credits on
