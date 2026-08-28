@@ -49,10 +49,38 @@ export function toolsFromCapabilities(caps: Capability[]): Record<string, AgentT
   );
 }
 
+// Short type names for the catalog line. The JSON Schema always declares a
+// `type` (measured: 438/438 input properties across the registry have one) —
+// catalogLine used to read only the property KEYS and throw that type away,
+// so the model saw `enrichLead(contactId?, email?)` with no way to tell a
+// `string` from an `array`. It guessed, runTool()'s zod validation rejected
+// the guess, and the model learned the shape by failure — the classic case
+// being a singular-vs-plural id arg (`contactId: string` vs `contactIds:
+// array`). Abbreviated so the catalog doesn't grow much: measured
+// 44,539 -> 46,305 chars (~11,135 -> ~11,576 tokens at chars/4), +441 tokens
+// (~4%), over the whole registry (182 capabilities, 438 properties) when
+// every arg gets a `:type` suffix (the colon itself is part of that cost).
+const SHORT_TYPE: Record<string, string> = {
+  string: 'str',
+  number: 'num',
+  boolean: 'bool',
+  array: 'arr',
+  object: 'obj',
+};
+
+function shortType(schema: any): string {
+  const t = schema?.type;
+  if (typeof t !== 'string') return 'any';
+  return SHORT_TYPE[t] ?? t;
+}
+
 function catalogLine(name: string, t: AgentTool): string {
-  const args = Object.keys(t.inputSchema.properties || {});
+  const props = t.inputSchema.properties || {};
+  const args = Object.keys(props);
   const req = new Set<string>(t.inputSchema.required || []);
-  const sig = args.map((a) => (req.has(a) ? a : `${a}?`)).join(', ') || '—';
+  const sig = args
+    .map((a) => `${a}${req.has(a) ? '' : '?'}:${shortType(props[a])}`)
+    .join(', ') || '—';
   return `${name}(${sig})${t.sensitive ? ' [needs approval]' : ''} — ${t.description}`;
 }
 
