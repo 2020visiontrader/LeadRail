@@ -205,6 +205,30 @@ grepping `export async function DELETE` against a codebase that writes
   presume a message table that does not exist. The choice is to give transcript
   entries stable identity, or to record the binding somewhere that survives —
   not to add a foreign key to nothing.
+
+  **DECIDED 2026-08-28:** stable transcript-entry ids plus a normalized
+  `attachment_bindings` table (and `attachment_evidence` for page/sheet/row
+  citations). Binding is persisted OUTSIDE the transcript body so a file can
+  bind to several messages or task runs without duplication, and so releasing
+  an attachment cannot corrupt the transcript.
+
+  **THE CONSTRAINT THAT SHAPES THE MIGRATION — check this before designing.**
+  `agent_conversations.transcript` is not merely message-shaped, it IS the
+  provider wire format. `saveConversation` writes `transcript: args.transcript`
+  wholesale, typed `ChatMessage[]`, and `ChatMessage` is declared in the
+  provider clients (`lib/ai/opencode.ts`, re-exported by `lib/ai/router.ts`;
+  identical in `lib/ai/gemini.ts`) as exactly `{ role, content }`. That is why
+  every transcript entry in production has precisely those two keys.
+  So adding `id` to `ChatMessage` would ship that id inside the payload sent to
+  every provider — polluting model context and risking rejection by stricter
+  ones. The change therefore needs a STORAGE message type distinct from the
+  WIRE type, with a mapping applied at the point of sending, not a new field on
+  the existing one.
+  Two further hazards for the same migration: the transcript is replaced whole
+  on every save, so a backfill races live writes; and migration 059's write
+  guard compares `message_count` against the stored array, so anything that
+  changes entry shape or count must be checked against that guard rather than
+  around it.
   **Done when:** a conversation with an attachment is reopened from the
   database in a test and the rehydrated turn still names the file it was given.
   Revert-check by stripping the binding and confirming that test goes red.
