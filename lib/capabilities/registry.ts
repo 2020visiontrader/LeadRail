@@ -251,17 +251,56 @@ export const CAPABILITY_BY_NAME: Record<string, Capability> =
 // property, not formatting: without it the model plans around a gate it cannot
 // see and proposes sensitive actions believing they run immediately.
 
-/** `name(a, b?)` plus the approval marker — the left half of a catalog line. */
-function signatureOf(c: Capability): string {
-  const args = Object.keys(c.inputSchema.properties || {});
-  const req = new Set<string>(c.inputSchema.required || []);
-  const sig = args.map((a) => (req.has(a) ? a : `${a}?`)).join(', ') || '—';
-  return `${c.name}(${sig})${isSensitive(c) ? ' [needs approval]' : ''}`;
+// Short type names for the catalog line. lib/agent/tools.ts's catalogLine and
+// this module's fullLineOf are two independent renderers of the SAME line —
+// exactly the failure mode CLAUDE.md calls out for runAgentImpl and
+// runAgentStreamImpl (lib/agent/loop.ts): two things that must stay
+// byte-identical, standing in two places. They drifted once already —
+// catalogLine learned to render argument types (91b13be) while this file's
+// copy stayed on the old untyped `name(a, b?)` shape, so the full catalog and
+// a stage-2 domain expansion disagreed about the signature of every single
+// capability. Rendering is now owned HERE, in one function
+// (renderCatalogLine), and lib/agent/tools.ts's catalogLine calls it instead
+// of re-implementing it — one renderer, called from both places, so there is
+// nothing left to drift.
+const SHORT_TYPE: Record<string, string> = {
+  string: 'str',
+  number: 'num',
+  boolean: 'bool',
+  array: 'arr',
+  object: 'obj',
+};
+
+function shortType(schema: any): string {
+  const t = schema?.type;
+  if (typeof t !== 'string') return 'any';
+  return SHORT_TYPE[t] ?? t;
 }
 
-/** Full catalog line, identical in shape to toolCatalogForPrompt()'s. */
+/** The one catalog-line renderer. Takes the plain fields rather than a
+ *  Capability or an AgentTool so both lib/capabilities/registry.ts (Capability)
+ *  and lib/agent/tools.ts (AgentTool, plus per-turn external-MCP tools that
+ *  never become a registered Capability) can call the same function without
+ *  either module depending on the other's type. */
+export function renderCatalogLine(
+  name: string,
+  inputSchema: Record<string, any>,
+  sensitive: boolean,
+  description: string,
+): string {
+  const props = inputSchema.properties || {};
+  const args = Object.keys(props);
+  const req = new Set<string>(inputSchema.required || []);
+  const sig = args
+    .map((a) => `${a}${req.has(a) ? '' : '?'}:${shortType(props[a])}`)
+    .join(', ') || '—';
+  return `${name}(${sig})${sensitive ? ' [needs approval]' : ''} — ${description}`;
+}
+
+/** Full catalog line, byte-identical to toolCatalogForPrompt()'s — both call
+ *  renderCatalogLine(). See the comment above SHORT_TYPE for why. */
 function fullLineOf(c: Capability): string {
-  return `${signatureOf(c)} — ${c.description}`;
+  return renderCatalogLine(c.name, c.inputSchema, isSensitive(c), c.description);
 }
 
 /** Domains actually present in the registry, in catalog order (first appearance).
