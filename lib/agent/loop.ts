@@ -1974,7 +1974,21 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
       ...(personaModelId ? { accountId, modelId: personaModelId } : {}),
     });
     const p = extractJson(raw);
-    if (p?.action === 'final' && p.message) return { status: 'done', message: String(p.message), transcript: messages, steps };  } catch { /* fall through */ }
+    if (p?.action === 'final' && p.message) return { status: 'done', message: String(p.message), transcript: messages, steps };
+    // The call succeeded but did not yield a usable final action — malformed
+    // or off-schema JSON, distinguishable from a thrown ladder-exhausted
+    // error below only if we log it. Without this, both causes produced the
+    // same generic user-facing message with nothing server-side to tell them
+    // apart (see the incident this fixed: forced-final failures with no way
+    // to know why).
+    log.warn('agent loop: forced-final produced no final action', { accountId, raw: String(raw ?? '').slice(0, 500) });
+  } catch (err: any) {
+    // Ladder exhausted, timeout, etc. — the candidate/tier is not reliably
+    // reachable from here (runCandidates throws the LAST candidate's error,
+    // not which one), so we log the error message itself, which is where
+    // that information lives (e.g. "OpenRouter returned an empty response").
+    log.warn('agent loop: forced-final call failed', { accountId, error: String(err?.message || err) });
+  }
   return { status: 'error', message: 'I gathered the details but had trouble summarizing. Please ask again a bit more specifically.', transcript: messages, steps };
 }
 
@@ -2543,7 +2557,15 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
       emit({ type: 'final', message: finalMessage, transcript: messages });
       return;
     }
-  } catch { /* fall through */ }
+    // Call succeeded but produced no usable final action — malformed/off-schema
+    // JSON. See the twin comment in runAgentImpl (non-streaming): this and the
+    // catch below used to be indistinguishable, which is why this went
+    // undiagnosed. runAgentImpl and runAgentStreamImpl must stay identical
+    // (CLAUDE.md) — a fix applied to only one is not applied.
+    log.warn('agent loop: forced-final produced no final action', { accountId, raw: String(raw ?? '').slice(0, 500) });
+  } catch (err: any) {
+    log.warn('agent loop: forced-final call failed', { accountId, error: String(err?.message || err) });
+  }
   emit({ type: 'error', message: 'I gathered the details but had trouble summarizing. Please ask again a bit more specifically.', transcript: messages });
 }
 

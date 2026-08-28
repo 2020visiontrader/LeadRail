@@ -5,12 +5,19 @@
 //      caller passes `accountId` AND that account has rows in ai_routing
 //      (migration 023). Per-account providers + active/fallback chain,
 //      configured from Settings -> Models. Every call is logged to ai_usage.
-//   1. Hardcoded ladder (unchanged from before this file existed):
+//   1. Hardcoded ladder:
 //      1. Ask Zo  (user's Claude subscription — Haiku when set as the Zo account
 //         default model; billed to the user's own Anthropic subscription)
-//      2. OpenCode Go (deepseek-v4-pro — fast + accurate; used when Ask Zo fails)
-//      3. NVIDIA NIM (free tier, weaker instruction-following)
-//      4. OpenRouter (last resort — free models, deepseek-v4-flash as final fallback)
+//      2. OpenRouter (12 free + 7 paid models — the workhorse tier)
+//      3. OpenCode Go (deepseek-v4-pro) — LAST RESORT. Its 401 is not a bad
+//         credential, the account simply has no credit; tried last so a
+//         guaranteed-fail attempt never sits ahead of a tier that can answer.
+//
+// NVIDIA NIM and HuggingFace were removed from the ladder entirely (production
+// incident, 2026-08-28: NIM timing out, HuggingFace returning 402 "depleted
+// your monthly included credits" — both were disabled account-side too, see
+// ai_providers.enabled). Their client modules (./nim, ./huggingface) are left
+// in place but are no longer imported or called here. Do not re-add them.
 //
 // Both layers build into ONE candidate list and go through ONE attempt loop
 // (see SELECTION below) — they used to be two separate walks, which is how
@@ -19,12 +26,12 @@
 // candidates and the ladder runs exactly as it did. Ask Zo is first in the hardcoded ladder
 // because it runs on the user's Claude subscription: with the Zo default
 // model set to Haiku it is fast AND accurate on structured extraction. If the
-// subscription tier errors/times out we fall through to OpenCode Go, then to
-// NIM, then to OpenRouter. To pin a specific model for this app regardless of
+// subscription tier errors/times out we fall through to OpenRouter, then to
+// OpenCode Go. To pin a specific model for this app regardless of
 // the Zo account default, set ZOASK_MODEL to a `byok:` id. Each tier is
 // skipped when unconfigured; on any error/timeout we catch and fall through.
 // If every tier fails (or none are configured), the last error is re-thrown.
-// Four independent tiers exist specifically so a single provider's outage or
+// Independent tiers exist specifically so a single provider's outage or
 // stale credential can never take the assistant down completely — verified
 // live on 2026-08-18 when Ask Zo (timeout), OpenCode (billing), and NIM
 // (stale key) all failed at once with no working fallback left.
@@ -36,8 +43,6 @@ import { orderByHealth, recordSuccess, recordFailure, healthSnapshot, classifyFa
 import { filterEligible, estimateTokens, type CallSize } from './eligibility';
 import * as opencode from './opencode';
 import { zoAskConfigured, zoAskText, zoAskChat } from './zoask';
-import { nimConfigured, nimText, nimChat, nimStreamChat } from './nim';
-import { huggingfaceConfigured, hfText, hfChat, hfStreamChat } from './huggingface';
 import { openrouterConfigured, openrouterText, openrouterChat, openrouterStreamChat } from './openrouter';
 import { log } from '@/lib/logger';
 import { registryConfigured, resolveChain, resolveChainForTask, callModel, callModelStream, type ResolvedModel } from './providers';
@@ -52,8 +57,8 @@ import { registryConfigured, resolveChain, resolveChainForTask, callModel, callM
 //   nim         ok        413ms
 //   openrouter  ok        770ms
 //
-// Ask Zo answers correctly but ~55x slower than NIM, and it sat first, so every
-// call paid 22s before a fast tier was ever reached. The agent loop makes up to
+// Ask Zo answers correctly but ~55x slower than a fast tier, and it sat first,
+// so every call paid 22s before a fast tier was ever reached. The agent loop makes up to
 // MAX_STEPS (10) model calls per run — that is the difference between a run
 // finishing in ~4s and one taking almost four minutes.
 //
@@ -65,7 +70,7 @@ import { registryConfigured, resolveChain, resolveChainForTask, callModel, callM
 // Unknown names are ignored and any tier missing from the list is appended in
 // its default position, so a typo degrades to today's behaviour instead of
 // silently disabling a tier.
-export const DEFAULT_TIER_ORDER = ['zoask', 'opencode', 'nim', 'huggingface', 'openrouter'] as const;
+export const DEFAULT_TIER_ORDER = ['zoask', 'openrouter', 'opencode'] as const;
 type TierName = (typeof DEFAULT_TIER_ORDER)[number];
 
 export function tierOrder(): TierName[] {
@@ -318,7 +323,7 @@ async function runCandidates(
 export type { ChatMessage };
 
 export function textConfigured(): boolean {
-  return zoAskConfigured() || opencode.opencodeConfigured() || nimConfigured() || huggingfaceConfigured() || openrouterConfigured();
+  return zoAskConfigured() || opencode.opencodeConfigured() || openrouterConfigured();
 }
 
 export async function generateText(opts: {
@@ -344,8 +349,6 @@ export async function generateText(opts: {
   const ladder = ladderCandidates({
     zoask: { configured: zoAskConfigured(), run: () => zoAskText({ system: opts.system, prompt: opts.prompt, maxOutputTokens: opts.maxOutputTokens }) },
     opencode: { configured: opencode.opencodeConfigured(), run: () => opencode.generateText(opts) },
-    nim: { configured: nimConfigured(), run: () => nimText(opts) },
-    huggingface: { configured: huggingfaceConfigured(), run: () => hfText(opts) },
     openrouter: { configured: openrouterConfigured(), run: () => openrouterText(opts) },
   });
   return runCandidates('generateText', [...registry, ...ladder], opts.accountId, 'text', {
@@ -390,8 +393,6 @@ export async function generateChat(opts: {
   const ladder = ladderCandidates({
     zoask: { configured: zoAskConfigured(), run: () => zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel }) },
     opencode: { configured: opencode.opencodeConfigured(), run: () => opencode.generateChat(opts) },
-    nim: { configured: nimConfigured(), run: () => nimChat(opts) },
-    huggingface: { configured: huggingfaceConfigured(), run: () => hfChat(opts) },
     openrouter: { configured: openrouterConfigured(), run: () => openrouterChat(opts) },
   }, opts.preferTier);
   return runCandidates('generateChat', [...registry, ...ladder], opts.accountId, 'chat', {
@@ -436,8 +437,6 @@ export async function streamChat(
   const ladder = ladderCandidates({
     zoask: { configured: zoAskConfigured(), run: () => zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel }) },
     opencode: { configured: opencode.opencodeConfigured(), run: () => opencode.streamChat(opts, onDelta) },
-    nim: { configured: nimConfigured(), run: () => nimStreamChat(opts, onDelta) },
-    huggingface: { configured: huggingfaceConfigured(), run: () => hfStreamChat(opts, onDelta) },
     openrouter: { configured: openrouterConfigured(), run: () => openrouterStreamChat(opts, onDelta) },
   }, opts.preferTier);
   return runCandidates('streamChat', [...registry, ...ladder], opts.accountId, 'chat', {
