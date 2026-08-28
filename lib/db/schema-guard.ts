@@ -105,6 +105,8 @@ export const EXPECTATIONS: Expectation[] = [
   { table: 'memory_edges', columns: ['promoted_by', 'promoted_at'], migration: '068', breaks: 'a Tier-2 pattern can never be promoted to Tier-1 — the update fails outright rather than promoting without provenance' },
   { table: 'agent_conversations', columns: ['deleted_at'], migration: '069', breaks: 'a user cannot delete a single chat — the delete path fails' },
   { table: 'agent_conversations', columns: ['running_since'], migration: '072', breaks: 'a returning user is not shown that their turn is still in progress — the "still working on it" signal is silently lost, not that chat itself breaks' },
+  { table: 'attachment_bindings', columns: ['attachment_id', 'conversation_id', 'message_id', 'scope', 'status'], migration: '076', breaks: 'an uploaded attachment cannot be bound to a message or conversation, so provenance ("did you actually read my PDF?") does not survive a reload' },
+  { table: 'attachment_evidence', columns: ['attachment_binding_id'], migration: '076', breaks: 'nothing writes this table yet (schema only) — its absence breaks nothing live, but a caller reaching for it would fail outright rather than finding an empty, working table' },
 ];
 
 export interface DriftFinding {

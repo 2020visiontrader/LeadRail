@@ -1,15 +1,16 @@
 import { bindAttachments } from '@/lib/documents/attachments';
+import { bindAttachmentToMessage } from '@/lib/documents/attachment-bindings';
 import { requireSession, badRequest } from '@/lib/http';
 import { NextRequest } from 'next/server';
 import { supabase } from '@/lib/db';
 import { runAgentStream, agentConfigured, generateCarryover, type AgentEvent } from '@/lib/agent/loop';
 import { loadAgentContext } from '@/lib/agent/context';
 import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts, markConversationRunning, clearConversationRunning } from '@/lib/agent/memory';
+import { mintMessageId, type StoredMessage } from '@/lib/agent/transcript-store';
 import { parseMentions } from '@/lib/agent/personas';
 import { createStreamGuard } from '@/lib/agent/stream-guard';
 import { providersLookDown, turnFailureMessage } from '@/lib/agent/failure-copy';
 import { reportStreamFailure } from '@/lib/agent/failure-report';
-import type { ChatMessage } from '@/lib/ai/router';
 import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
@@ -141,7 +142,7 @@ export async function POST(request: NextRequest) {
       // so the run is released, but no step ever resolves — which is exactly the
       // "(1 running) disappears while the trace still says Running" state.
       let terminalSent = false;
-      let finalTranscript: ChatMessage[] | undefined;
+      let finalTranscript: StoredMessage[] | undefined;
       // Set from the trailing compaction_suggested event (emitted after `final`),
       // so the finally block below knows whether this turn hit a compaction
       // threshold. Null on every ordinary turn.
@@ -149,7 +150,12 @@ export async function POST(request: NextRequest) {
       // The transcript this turn STARTED from, plus the user's message. Held so
       // the finally block can persist something even when the turn never
       // reaches a terminal event — see the save below.
-      let openingTranscript: ChatMessage[] | undefined;
+      let openingTranscript: StoredMessage[] | undefined;
+      // Minted BEFORE the turn runs (same reasoning as app/api/agent/route.ts):
+      // scanning the finished transcript for a matching role/content pair is
+      // ambiguous the moment the same message is sent twice. Only for a real
+      // new message — an approve-resume has no new user turn to bind to.
+      const userMessageId = typeof message === 'string' && message.trim() ? mintMessageId() : undefined;
       try {
         // Server-owned conversation state, scoped to this session's account. An
         // id from another account (or an unknown one) yields [] — not an error,
@@ -211,7 +217,10 @@ export async function POST(request: NextRequest) {
         }
 
         if (typeof message === 'string' && message.trim()) {
-          openingTranscript = [...transcript, { role: 'user', content: message } as ChatMessage];
+          openingTranscript = [
+            ...transcript,
+            { role: 'user', content: message, ...(userMessageId ? { id: userMessageId } : {}) } as StoredMessage,
+          ];
           const openedId = await saveConversation({
             id: conversationId, accountId: session.accountId, brandId: brandId ?? null,
             title: message.slice(0, 80),
@@ -234,6 +243,18 @@ export async function POST(request: NextRequest) {
                 log.error('agent stream: bindAttachments (new-chat retry) failed', e, { streamId, conversationId: openedId, attachmentIds });
               });
             }
+            // Durable, message-level provenance (migration 076) — additional
+            // to bindAttachments above; see app/api/agent/route.ts for the
+            // full rationale. Best-effort: never fails the turn.
+            if (attachmentIds.length && userMessageId) {
+              await Promise.all(attachmentIds.map((attachmentId) =>
+                bindAttachmentToMessage(session.accountId, attachmentId, openedId, userMessageId, {
+                  scope: 'message', role: 'user_upload', boundBy: 'user',
+                }).catch((e) => {
+                  log.error('agent stream: bindAttachmentToMessage failed', e, { streamId, conversationId: openedId, attachmentId, userMessageId });
+                }),
+              ));
+            }
           }
         }
 
@@ -247,7 +268,7 @@ export async function POST(request: NextRequest) {
         }
 
         await runAgentStream(
-          { accountId: session.accountId, message, approve, transcript, agentContext, carryover, brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined, personaId, personaMentions, requestedBy: session.email, conversationId, planOnly },
+          { accountId: session.accountId, message, approve, transcript, agentContext, carryover, brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined, personaId, personaMentions, requestedBy: session.email, conversationId, planOnly, userMessageId },
           (e: AgentEvent) => {
             // Only `final`/`needs_approval` carry a transcript. Everything else,
             // including `final_delta` (a progressive preview of the answer being

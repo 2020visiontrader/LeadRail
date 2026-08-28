@@ -176,6 +176,8 @@ export const EXPORT_TABLE_NAMES = [
   'brand_goals', 'brand_intakes', 'brand_strategies', 'ad_campaigns',
   'video_analyses', 'character_refs', 'platform_specs', 'account_skills',
   'ai_routing', 'social_automations',
+  // migration 076 — durable, message-level attachment provenance.
+  'attachment_bindings',
 ];
 
 // Table -> scope, derived from the name list above plus the overrides. This

@@ -16,6 +16,7 @@ import type { ChatMessage } from '@/lib/ai/router';
 import { SECRET_KEY_PATTERN } from '@/lib/approvals/store';
 import { embedPassage, embedQuery, toPgVector } from './embeddings';
 import { scoreFacts, packTier, tierForRequest, renderTier } from './memory-tiers';
+import { type StoredMessage, ensureMessageIds } from './transcript-store';
 
 /** Cheap token estimate (~4 chars/token) over a transcript. */
 export function estimateTokens(messages: ChatMessage[]): number {
@@ -38,7 +39,7 @@ export interface ConversationRow {
   account_id: string;
   brand_id: string | null;
   title: string | null;
-  transcript: ChatMessage[] | null;
+  transcript: StoredMessage[] | null;
   carryover: CarryoverMemo | null;
   token_estimate: number;
 }
@@ -79,20 +80,37 @@ export async function saveConversation(args: {
   accountId: string;
   brandId?: string | null;
   title?: string | null;
-  transcript: ChatMessage[];
+  transcript: StoredMessage[];
   carryover?: CarryoverMemo | null;
 }): Promise<string | null> {
-  const tokenEstimate = estimateTokens(args.transcript);
+  // MIGRATION 076 — STABLE IDS, MINTED HERE, NEVER RENUMBERED. `transcript` is
+  // REPLACED WHOLE on every write, so a one-time bulk backfill alone can be
+  // clobbered by a save that is already in flight when it runs (that save read
+  // an un-backfilled row and would otherwise write it straight back with no
+  // ids). Doing it here, on every write, closes that race: whichever save
+  // lands last still assigns ids to anything that doesn't have one, and
+  // preserves — verbatim — every id already present, whether the backfill
+  // assigned it, a PRIOR save assigned it, or a caller minted it itself before
+  // calling this (see app/api/agent/route.ts, which mints the new user
+  // message's id up front so it can bind an attachment to it in the same
+  // turn). ensureMessageIds never mutates its input and never recomputes an
+  // existing id from position — see lib/agent/transcript-store.ts.
+  const transcript = ensureMessageIds(args.transcript);
+  const tokenEstimate = estimateTokens(transcript);
   const row: Record<string, any> = {
     account_id: args.accountId,
     brand_id: args.brandId ?? null,
-    transcript: args.transcript,
+    transcript,
     token_estimate: tokenEstimate,
     // Maintained so the write guard in migration 059 has something to compare
     // against. See loadTranscriptResult for the failure this protects from: a
     // read that errors returns [], and a save built on [] would replace a long
-    // conversation with a single message.
-    message_count: args.transcript.length,
+    // conversation with a single message. Counting `transcript` (the id-bearing
+    // array), not `args.transcript` — they always have the same LENGTH
+    // (ensureMessageIds only adds a field, never adds/removes entries), so migration
+    // 059's guard is unaffected by this change: it compares array lengths via
+    // token/message counts, and those counts are identical either way.
+    message_count: transcript.length,
     updated_at: new Date().toISOString(),
   };
   if (args.title !== undefined) row.title = args.title;
@@ -239,12 +257,12 @@ export async function loadConversation(id: string, accountId: string): Promise<C
  *
  *  This is the ONLY source of prior conversation content for an agent turn:
  *  the server owns conversation state, the client never sends transcript. */
-export async function loadTranscript(conversationId: string | undefined, accountId: string): Promise<ChatMessage[]> {
+export async function loadTranscript(conversationId: string | undefined, accountId: string): Promise<StoredMessage[]> {
   return (await loadTranscriptResult(conversationId, accountId)).messages;
 }
 
 export interface TranscriptResult {
-  messages: ChatMessage[];
+  messages: StoredMessage[];
   /** False when the read itself failed. `messages` is then [] and MUST NOT be
    *  treated as the conversation's contents — see the note below. */
   ok: boolean;
@@ -280,9 +298,14 @@ export async function loadTranscriptResult(
   if (!Array.isArray(transcript)) return { messages: [], ok: true };
   return {
     ok: true,
+    // `id` is preserved on every entry that carries one — the filter only
+    // drops malformed entries, it never touches surviving fields. A message
+    // stored before migration 076's backfill ran (or from a row the backfill
+    // hasn't reached yet) simply has no `id` here; ensureMessageIds mints one
+    // the next time this transcript is saved.
     messages: transcript.filter(
       (m: any) => m && (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string',
-    ) as ChatMessage[],
+    ) as StoredMessage[],
   };
 }
 
