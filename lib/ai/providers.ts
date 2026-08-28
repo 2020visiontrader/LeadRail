@@ -332,6 +332,47 @@ export async function resolveChain(accountId: string, _opts: { modelId?: string 
   return chain;
 }
 
+// ---------------------------------------------------------------------------
+// PAID vs FREE — which task shape deserves which
+// ---------------------------------------------------------------------------
+// `cost_per_mtok_out > 0` is the paid signal (migration 076-era cleanup made
+// this reliable: every OpenRouter `:free` model now has cost 0, not NULL — see
+// BACKLOG). The `:free` substring is deliberately NOT used here; it is an
+// OpenRouter naming convention, not a cost fact, and a non-OpenRouter provider
+// has no such substring to match on at all.
+//
+// `ai_models.good` (migration 023) already tags each model with the task
+// shapes it suits. We reuse that same vocabulary to decide cheap vs
+// substantive rather than inventing a second one:
+//   - CHEAP:       'classify', 'extract'   — structured, low-judgment shapes.
+//     A free model's weaker instruction-following rarely shows on these, so
+//     spending on them buys nothing; free models are preferred.
+//   - SUBSTANTIVE: 'reason', 'long', 'draft', 'code' — judgment-heavy shapes
+//     where a paid model's quality is worth its cost; paid models are
+//     preferred.
+// A task tag outside both sets (or no task at all) gets no cost-based
+// reordering — only the `good`-tag/tier ranking below applies, exactly as
+// before this rule existed.
+const CHEAP_TASKS = new Set(['classify', 'extract']);
+const SUBSTANTIVE_TASKS = new Set(['reason', 'long', 'draft', 'code']);
+
+export function isPaidModel(model: AiModelRow): boolean {
+  return typeof model.cost_per_mtok_out === 'number' && model.cost_per_mtok_out > 0;
+}
+
+/** Stable paid/free split for one task-tag group: preserves the incoming
+ *  (already tier/good ranked) order within each half. Exported so this rule
+ *  can be tested directly against plain ResolvedModel arrays, without a DB. */
+export function orderByCost(models: ResolvedModel[], task: string): ResolvedModel[] {
+  if (SUBSTANTIVE_TASKS.has(task)) {
+    return [...models.filter((r) => isPaidModel(r.model)), ...models.filter((r) => !isPaidModel(r.model))];
+  }
+  if (CHEAP_TASKS.has(task)) {
+    return [...models.filter((r) => !isPaidModel(r.model)), ...models.filter((r) => isPaidModel(r.model))];
+  }
+  return models;
+}
+
 /**
  * Reorders an account's existing model chain for a specific task without
  * removing any models.
@@ -343,7 +384,9 @@ export async function resolveChain(accountId: string, _opts: { modelId?: string 
  * Reordering only: models whose `good` list contains `task` move to the
  * front (optionally with a preferred tier first), and everything else keeps
  * the order returned by `resolveChain`. An account with no task tags
- * therefore behaves exactly as before. This function never throws.
+ * therefore behaves exactly as before. Within each of those groups, paid vs
+ * free models are then reordered per `orderByCost` above. This function
+ * never throws.
  */
 export async function resolveChainForTask(
   accountId: string,
@@ -380,7 +423,11 @@ export async function resolveChainForTask(
   const deduped: ResolvedModel[] = [];
   const seen = new Set<string>();
 
-  for (const resolved of [...tierMatches, ...goodMatches, ...rest]) {
+  for (const resolved of [
+    ...orderByCost(tierMatches, task),
+    ...orderByCost(goodMatches, task),
+    ...orderByCost(rest, task),
+  ]) {
     if (seen.has(resolved.model.id)) continue;
     seen.add(resolved.model.id);
     deduped.push(resolved);
