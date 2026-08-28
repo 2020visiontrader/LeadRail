@@ -13,23 +13,25 @@ Last reviewed: 2026-08-27
 
 ---
 
-## 1. `app_logs` retention cliff — ~2026-10-30
+## 1. `app_logs` retention cliff — ~2026-10-30 (premise corrected 2026-08-28)
 
 **Deadline, not a task.** `app_logs` is trimmed to 90 days by the last step of
-`POST /api/hermes/tick`. That endpoint has never run successfully (see §2), so
-nothing has ever been trimmed.
+`POST /api/hermes/tick`.
 
-Oldest row is 2026-08-01. The table crosses its own 90-day retention line
-around **2026-10-30**. Until then `logs_past_retention` reads 0 and the problem
-is invisible — an unlit fuse, not a current fault.
+This entry said "that endpoint has never run successfully (see §2), so nothing
+has ever been trimmed." **The first half is now false** — the tick has run 261
+times at status 200 (§2), so the trim step executes every five minutes. The
+second half is still true, for a different and harmless reason: oldest row is
+`2026-08-01 16:06:23Z` and today is 2026-08-28, so at 27 days nothing is yet
+past the 90-day line. The delete runs and correctly deletes nothing.
 
-At ~36k rows and one row per API request, growth tracks traffic. Whichever
-comes first — the tick gets scheduled, or the cliff arrives — this resolves.
-If neither, the table grows without bound and the first symptom will be cost
-or query latency, not an error.
+Current size: **38,711 rows**. The cliff is still ~**2026-10-30**.
 
-**Done when:** a tick run has actually executed the delete, or retention is
-enforced somewhere that does not depend on the tick.
+**Done when:** a tick run executes the delete against rows that are actually
+past retention. Note this cannot be observed before the cliff — and that the
+same vacuous-proof trap applies here as to `purge_soft_deleted` below: a
+delete that runs against zero eligible rows proves the schedule works, not the
+delete. Backdate a row in a test and assert it is removed.
 
 ## 2. ~~`/api/hermes/tick` has no scheduler~~ — RESOLVED 2026-08-28
 
@@ -56,29 +58,31 @@ the job succeeds the moment the request is *queued*, and the HTTP status lands
 later in `net._http_response`. Judging this by job status alone would have
 called a 401-every-5-minutes loop healthy. Check `app_logs.status`.
 
-Open, minor: 47 `/api/hermes/tick` rows carry `status = NULL`, latest
-`2026-08-27 17:40:42Z`. The 200s continue past them, so this is not an
-outage — but a logged request with no status is a row nothing can assert on.
-Worth finding what path writes it.
+Resolved, and my note about it was wrong. The 47 `status = NULL` rows are not
+requests at all: they are warn-level log lines emitted *during* a tick —
+`ai router: candidate failed` (30) and `ai health: candidate quarantined`
+(17). They carry route context but never complete a request, so NULL is the
+correct value. Nothing to fix. Recorded because "a logged request nothing can
+assert on" was a wrong reading of a correct row.
 
-## 3. `processDueEnrollments` has no staleness floor
+## 3. ~~`processDueEnrollments` has no staleness floor~~ — RESOLVED
 
-`lib/sequences.ts` selects `.lte('next_run_at', now)` with no lower bound and
-no relevance check. Any due-but-unprocessed enrollment is sent regardless of
-age. If a drip step came due on day 3 and the drain first runs on day 26, it
-sends on day 26.
+Implemented in `lib/sequences.ts:423-431`, and the entry was already stale when
+re-read on 2026-08-28. `staleHoursFloor()` reads `SEQUENCE_STALE_HOURS` and
+falls back to `DEFAULT_STALE_HOURS`, so the floor is configurable as required;
+`splitStale()` partitions claimed rows; `pauseStaleEnrollments()` pauses the
+overdue ones rather than sending them. Applied after the claim so it covers
+**both** the `claim_due_enrollments` RPC path and the fallback select — the
+gap that would have made it a partial fix.
 
-**Safe today only because `sequence_enrollments` is empty.** That is data luck,
-not a safety property, and it expires the moment anyone enrolls a contact into
-one of the 6 existing sequences. The window between "someone enrolls" and "the
-cron is wired" is a stale-send window into real inboxes.
+Proof: `tests/sequence-staleness.test.ts`, 7 tests, green on 2026-08-28.
 
-Scoped separately from §2 on purpose: wiring the scheduler and bounding
-staleness are different changes, and bundling them means neither gets tested
-properly. Do this one **before** sequences get used, not after.
-
-**Done when:** a test proves an enrollment overdue by more than the floor is
-skipped or rescheduled rather than sent, and the floor is configurable.
+Still true and worth keeping: `sequence_enrollments` is empty (0 rows) with 6
+sequences defined. The urgency this entry claimed has not gone away, it has
+inverted — §2 is now closed, so the cron IS wired. The protective gap this
+entry relied on ("the window between someone enrolling and the cron being
+wired") is shut. The floor is what stands between a first enrollment and a
+stale send, which is why it mattered that it was already done.
 
 ## 4. `stream_options` unverified against live providers
 
