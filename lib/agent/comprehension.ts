@@ -143,7 +143,21 @@ export async function comprehend(input: {
           ? `Request: ${input.message || '(none)'}\n\nAttached material:\n${excerpt}`
           : `Request: ${input.message || '(none)'}`,
       }],
-      temperature: 0.1,
+      // 0, not a small non-zero value — this pass is a classification/
+      // extraction step whose output is consumed as structured data
+      // (parseUnderstanding), never as prose a reader sees, so there is no
+      // upside to sampling here. Non-zero temperature was measured causing
+      // real nondeterminism: an identical request shape produced a
+      // different "needs" list on different runs, which is what made
+      // production roster drift (Ada/Milo/Ezra one run, Ada/Milo/Vale the
+      // next — see the header comment) impossible to reproduce. This pass
+      // never names a persona itself (see the `needs` doc above), so it is
+      // only ONE source of that drift, not the whole of it — whatever maps
+      // these capabilities to actual persona names downstream is a separate
+      // question; see lib/agent/loop.ts's fan-out detection for whether
+      // THAT mapping is deterministic. Do not raise this back up "for
+      // variety" — that is the exact tuning this comment exists to prevent.
+      temperature: 0,
       maxOutputCeiling: 2000,
       preferTier: 'fast',
       model: COMPREHENSION_MODEL,
