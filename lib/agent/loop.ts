@@ -121,6 +121,27 @@ const AGENT_OPENCODE_MODEL = 'deepseek-v4-flash';
 const AGENT_ROUTE_TIER =
   (process.env.AGENT_ROUTE_TIER as 'fast' | 'balanced' | 'heavy' | undefined) || 'heavy';
 
+// Coordinator synthesis (synthesizeCoordinatorAnswer, below) produces the ONE
+// unified answer the user actually reads out of a fan-out — the single most
+// user-visible model call in the whole turn. It is pinned to 'heavy'
+// unconditionally, INDEPENDENT of AGENT_ROUTE_TIER, so an operator turning
+// the routing/tool-calling passes down to 'fast' (a real latency knob for the
+// per-step reasoning above) never silently downgrades the pass that writes
+// the words the user sees.
+//
+// 'heavy' is a PREFERENCE, not a pin: orderForTier() in lib/ai/router.ts only
+// moves Ask Zo (the tier that runs on the account's own Claude subscription,
+// authenticated via the ambient ZO_CLIENT_IDENTITY_TOKEN, with no per-call
+// spend gate) to the FRONT of the ladder when preferTier is 'heavy' — every
+// other configured tier still follows behind it in the same candidate list.
+// If Zo Ask is unconfigured, quarantined, or down, runCandidates (router.ts)
+// falls straight through to the next candidate exactly as it does for every
+// other tier; synthesis still gets an answer. A hard pin here would recreate
+// the exact single-point-of-failure the forced-final OpenCode pin caused
+// (see 8d41f2b) — do not change this to a `model:`/`modelId:` override that
+// only Zo Ask can satisfy.
+const AGENT_SYNTHESIS_TIER: 'fast' | 'balanced' | 'heavy' = 'heavy';
+
 // Ceiling, not a budget: resolveMaxOutputTokens takes min(model capability,
 // this), and the Zo Ask tier ignores it entirely (it has no output parameter —
 // the model's own limit applies). Replaces a hardcoded maxOutputTokens of 2048,
@@ -1498,7 +1519,11 @@ async function synthesizeCoordinatorAnswer(
       // Was a hard 800 tokens — enough to truncate a synthesis of three
       // delegates mid-sentence. Follows the selected model's own ceiling now.
       maxOutputCeiling: AGENT_ROUTE_CEILING,
-      preferTier: AGENT_ROUTE_TIER,
+      // AGENT_SYNTHESIS_TIER, not AGENT_ROUTE_TIER — see that constant's
+      // comment above. Synthesis always prefers the account's strongest
+      // tier, independent of whatever the per-step routing passes are
+      // configured to.
+      preferTier: AGENT_SYNTHESIS_TIER,
       zoAskModel: AGENT_ZOASK_MODEL,
       // PRODUCTION DEFECT (2026-08-28, same shape as the forced-final routing
       // fix in 8d41f2b): `accountId` used to be passed ONLY inside the

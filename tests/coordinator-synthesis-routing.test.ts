@@ -125,6 +125,36 @@ describe('synthesizeCoordinatorAnswer routing (runAgent, non-streaming)', () => 
     expect(synthesisCall.task).toBe('draft');
     expect(synthesisCall.model).toBeUndefined();
   });
+
+  // FIX 2 of the architectural correction (2026-08-28): synthesis is now
+  // pinned to 'heavy' — the tier that puts Zo Ask (the account's own Claude
+  // subscription) first in lib/ai/router.ts's orderForTier() — INDEPENDENT of
+  // AGENT_ROUTE_TIER, so an operator turning routing/tool-calling down to
+  // 'fast' for latency never silently drags the user-facing synthesis pass
+  // down with it. This is a preferTier PREFERENCE passed to generateChat, not
+  // a model pin: no `model`/`modelId` override accompanies it, so router.ts's
+  // normal fallback ladder still runs underneath if Zo Ask cannot answer (see
+  // the router-level fallback test in tests/coordinator-synthesis-tier.test.ts).
+  it('prefers the heavy (Zo Ask first) tier on the synthesis call, independent of AGENT_ROUTE_TIER', async () => {
+    const originalRouteTier = process.env.AGENT_ROUTE_TIER;
+    process.env.AGENT_ROUTE_TIER = 'fast'; // operator turned routing down for latency
+    try {
+      vi.resetModules();
+      const { runAgent } = await import('@/lib/agent/loop');
+      await runAgent({
+        accountId: 'acct-1',
+        message: 'draft the campaign',
+        personaMentions: ['Milo', 'Ezra'],
+      });
+      const synthesisCall = findSynthesisCall();
+      // Synthesis must still prefer 'heavy' even though AGENT_ROUTE_TIER is
+      // 'fast' for this process — proves the two are decoupled.
+      expect(synthesisCall.preferTier).toBe('heavy');
+    } finally {
+      if (originalRouteTier === undefined) delete process.env.AGENT_ROUTE_TIER;
+      else process.env.AGENT_ROUTE_TIER = originalRouteTier;
+    }
+  });
 });
 
 describe('synthesizeCoordinatorAnswer routing (runAgentStream, streaming)', () => {

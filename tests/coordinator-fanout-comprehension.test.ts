@@ -234,22 +234,26 @@ describe('attachmentDigest / delegateContext (pure helpers)', () => {
   // THE DEFECT THIS TASK FIXES: DELEGATE_MATERIAL_CHARS used to be a flat,
   // hardcoded 16,000 in lib/agent/loop.ts — the only budget in the codebase
   // NOT derived from BUDGET (lib/ai/context-budget.ts). The coordinator can
-  // read up to BUDGET.attachmentChars (2,000,000 at the default 1M-token
-  // window) of an attached document; every delegate saw 16,000 of the same
-  // document — 0.8% of it — no matter how large the configured window was.
-  // This proves the constant now tracks BUDGET.delegateMaterialChars: with
-  // NEITHER env override set (the real production default), a document
-  // larger than the derived delegate budget but smaller than the attachment
-  // budget gets sliced to exactly BUDGET.delegateMaterialChars, not 16,000.
+  // read up to BUDGET.attachmentChars of an attached document; every delegate
+  // saw 16,000 of the same document regardless of window size. This proves
+  // the constant now tracks BUDGET.delegateMaterialChars, and — the
+  // architectural correction on top of that fix — that the derived value is
+  // EQUAL to BUDGET.attachmentChars, not some smaller fraction of it: a
+  // delegate does the same reading job as the coordinator, in its own
+  // independent window, so its budget for that document is the coordinator's
+  // attachment budget. (A prior commit made this a 0.25 "quarter share" of
+  // attachments — still a fraction of a budget that was never pooled across
+  // independent calls. If that regresses, `docSize` below stops being big
+  // enough to prove the cap actually bound, so this test would silently pass
+  // for the wrong reason — see the "old 0.25 share" test right after this one
+  // for the version that catches it directly.)
   it('delegateContext now bounds at the DERIVED delegate budget, not the old flat 16,000', async () => {
     restoreBudgetEnv();
     restoreDelegateBudgetEnv();
-    // BUDGET.delegateMaterialChars is 1,000,000 at the default window;
-    // BUDGET.attachmentChars is 2,000,000 — so a document sized in between
-    // isolates the delegate cap as the binding constraint rather than the
-    // attachment budget or the document's own length.
+    expect(BUDGET.delegateMaterialChars).toBe(BUDGET.attachmentChars);
+    // A document bigger than the (now equal) delegate/attachment budget, so
+    // the delegate cap is what's proven to bind here.
     const docSize = BUDGET.delegateMaterialChars + 200_000;
-    expect(docSize).toBeLessThan(BUDGET.attachmentChars);
     const head = [
       'ABOUT LEADRAIL (the platform you operate):\nsome static grounding here',
       [
@@ -266,6 +270,43 @@ describe('attachmentDigest / delegateContext (pure helpers)', () => {
     expect(bounded.length - markerIdx).toBe(BUDGET.delegateMaterialChars);
     // Materially larger than the old flat 16,000 — the actual defect.
     expect(BUDGET.delegateMaterialChars).toBeGreaterThan(16_000);
+  });
+
+  // REGRESSION GUARD for the specific "0.25 share of the WINDOW" mistake
+  // (commit 8573980, SHARE.delegateMaterial = 0.25): pins the actual
+  // character counts a real fan-out would see, not just the relative "equal
+  // to attachmentChars" property above. NOTE the old bug's share was of the
+  // whole context WINDOW, not of `attachments` (which is itself 0.5 of the
+  // window) — so the old buggy cap equals `attachmentChars * 0.5`
+  // (window*0.25*4 chars == (window*0.5*4)*0.5), NOT `attachmentChars * 0.25`.
+  // If delegateMaterialChars were EVER rewritten back to that 0.25-of-window
+  // share, this is the assertion that goes red, because a document sized
+  // between the old buggy cap and the true (equal-to-attachments) budget
+  // would get truncated where it should not be.
+  it('a document between the old 0.25-share-of-window size and the real budget is NOT truncated', async () => {
+    restoreBudgetEnv();
+    restoreDelegateBudgetEnv();
+    const oldBuggyCap = Math.floor(BUDGET.attachmentChars * 0.5); // == old SHARE.delegateMaterial(0.25) * window
+    const docSize = oldBuggyCap + 200_000; // bigger than the old bug's cap, smaller than the real one
+    expect(docSize).toBeLessThan(BUDGET.delegateMaterialChars); // sanity: the real cap does not bind
+    const head = [
+      'ABOUT LEADRAIL (the platform you operate):\nsome static grounding here',
+      [
+        'ATTACHED DOCUMENTS — the user attached these to this conversation.',
+        '',
+        `--- BEGIN DOCUMENT: brief.txt (txt, ${docSize} bytes, attached to this conversation) ---`,
+        '',
+      ].join('\n'),
+    ].join('\n\n');
+    const tail = '\n--- END DOCUMENT: brief.txt ---\n';
+    const ctx = head + 'x'.repeat(docSize) + tail;
+    const { delegateContext } = await import('@/lib/agent/loop');
+    const bounded = delegateContext(ctx, 1)!;
+    const markerIdx = ctx.indexOf('ATTACHED DOCUMENTS');
+    // Read in FULL — not truncated at the old quarter-share size, and not
+    // truncated at all: the whole document plus its closing tag comes back.
+    expect(bounded.length - markerIdx).toBeGreaterThan(oldBuggyCap);
+    expect(bounded).toBe(ctx);
   });
 
   it('leaves the static grounding sections (everything before the marker) untouched', async () => {

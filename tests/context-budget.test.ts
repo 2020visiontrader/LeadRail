@@ -42,15 +42,38 @@ describe('budgets scale with the window', () => {
     // budget in the platform not derived from the window. At the default 1M
     // window this must resolve to far more than 16,000.
     expect(BUDGET.delegateMaterialChars).toBeGreaterThan(16_000);
-    expect(BUDGET.delegateMaterialChars).toBe(1_000_000);
+    expect(BUDGET.delegateMaterialChars).toBe(2_000_000);
   });
 
-  it('scales delegateMaterialChars down for a smaller model window, proportionally', () => {
+  // A delegate is an INDEPENDENT model invocation with its OWN context
+  // window — it never shares one with the coordinator or with the other
+  // delegates in its fan-out. It does the SAME reading job on the SAME
+  // attached document the coordinator does, so its budget is the
+  // coordinator's attachmentChars budget, EQUAL, never a fraction of it.
+  // A commit once made this a 0.25 share ("a quarter of attachments") — that
+  // still rations a budget that was never shared. If that mistake comes
+  // back, this is the test that must go red: at the default window
+  // attachmentChars is 2,000,000, and a quarter-share would put
+  // delegateMaterialChars at 500,000 — nowhere near equal.
+  it('gives delegateMaterialChars the SAME value as attachmentChars, not a fraction of it — default window', () => {
+    expect(BUDGET.delegateMaterialChars).toBe(BUDGET.attachmentChars);
+  });
+
+  it('gives delegateMaterialChars the SAME value as attachmentChars through budgetsFor(), at two different window sizes', () => {
+    for (const windowTokens of [200_000, 500_000]) {
+      const b = budgetsFor(windowTokens);
+      expect(b.delegateMaterialChars, `window=${windowTokens}`).toBe(b.attachmentChars);
+    }
+  });
+
+  it('scales delegateMaterialChars with the window exactly like attachmentChars, not proportionally smaller', () => {
     const small = budgetsFor(200_000);
     const large = budgetsFor(1_000_000);
     expect(small.delegateMaterialChars).toBeLessThan(large.delegateMaterialChars);
-    // Exact: 200,000 tokens * 4 chars/token * 0.25 share = 200,000 chars.
-    expect(small.delegateMaterialChars).toBe(200_000);
+    // Exact: 200,000 tokens * 4 chars/token * 0.5 (attachments) share =
+    // 400,000 chars — the SAME number attachmentChars gets, not the old
+    // 200,000 a 0.25 share would have produced.
+    expect(small.delegateMaterialChars).toBe(400_000);
   });
 
   it('never budgets the whole window to one consumer', () => {

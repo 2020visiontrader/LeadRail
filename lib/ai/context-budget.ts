@@ -69,21 +69,10 @@ const SHARE = {
   /** A projected subject's rendered memory block. It competes with everything
    *  else on every turn about that subject, so it stays small on purpose. */
   memoryBody: 0.02,
-  /** What ONE fan-out delegate may read out of an attached document.
-   *
-   *  A delegate is doing the SAME reading job as the coordinator on the SAME
-   *  attached document — that argues for a share comparable to `attachments`
-   *  (0.5). But a delegate call is NOT the coordinator's call: it is its own
-   *  independent model call whose whole prompt — system block, tool catalog,
-   *  the comprehended UNDERSTANDING block, the running transcript, AND the
-   *  document slice — has to fit inside that same delegate's own context
-   *  window, with room left to answer. Handing a delegate the full 0.5 would
-   *  leave nothing for the rest of that prompt. Half of the coordinator's
-   *  share — 0.25 — gives a delegate room to read a document on the same
-   *  order of magnitude as the coordinator does, while reserving at least
-   *  half of its own window for everything else it has to carry. */
-  delegateMaterial: 0.25,
 } as const;
+
+// delegateMaterialChars is deliberately NOT its own SHARE fraction — see
+// BUDGET.delegateMaterialChars below for why.
 
 function chars(share: number, floor: number): number {
   return Math.max(floor, Math.floor(CONTEXT_WINDOW_CHARS * share));
@@ -92,21 +81,41 @@ function tokens(share: number, floor: number): number {
   return Math.max(floor, Math.floor(CONTEXT_WINDOW_TOKENS * share));
 }
 
+// Computed once, ahead of BUDGET, so delegateMaterialChars below can be set
+// to this exact value rather than duplicating the SHARE.attachments arithmetic.
+const ATTACHMENT_CHARS = chars(SHARE.attachments, 12_000);
+
 /** Floors are the OLD hardcoded values. A misconfigured window can shrink a
  *  budget back to what it used to be; it can never make it worse than that. */
 export const BUDGET = {
-  attachmentChars: chars(SHARE.attachments, 12_000),
+  attachmentChars: ATTACHMENT_CHARS,
   observationChars: chars(SHARE.observation, 24_000),
   composeBlockChars: chars(SHARE.composeBlock, 160_000),
   softTokens: tokens(SHARE.soft, 120_000),
   hardTokens: tokens(SHARE.hard, 160_000),
   extractionChars: chars(SHARE.extraction, 12_000),
   memoryBodyChars: chars(SHARE.memoryBody, 4_000),
-  /** Floor is the OLD flat DELEGATE_MATERIAL_CHARS constant in
-   *  lib/agent/loop.ts (16,000) — see SHARE.delegateMaterial above for why
-   *  the share is 0.25. At the default 1M-token window this resolves to
-   *  1,000,000 characters. */
-  delegateMaterialChars: chars(SHARE.delegateMaterial, 16_000),
+  /** A delegate is an INDEPENDENT model invocation with its OWN context
+   *  window — it does not share a window with the coordinator or with the
+   *  other delegates in the same fan-out. It does the SAME reading job on
+   *  the SAME attached document the coordinator does, in that separate
+   *  window, so its material budget EQUALS the coordinator's attachment
+   *  budget — never a fraction of it. A budget expressed as a share of one
+   *  pooled window is the wrong concept for calls that never share a window
+   *  in the first place: rationing implies a shared pool, and independent
+   *  calls have none. A 3-delegate fan-out gives each delegate the SAME
+   *  budget a single delegate would get; the team's size never shrinks any
+   *  one member's slice.
+   *
+   *  Set to the literal `ATTACHMENT_CHARS` value (never duplicated
+   *  arithmetic) so the two cannot drift apart, floored at the OLD flat
+   *  DELEGATE_MATERIAL_CHARS constant in lib/agent/loop.ts (16,000) — same
+   *  floor-never-drops-below-old-behaviour rule every budget here follows.
+   *  The floor is slightly higher than attachmentChars' own floor (12,000)
+   *  on purpose: at a tiny configured window the two numbers are allowed to
+   *  part ways, but a delegate's slice must never regress below what it got
+   *  before this fix existed. */
+  delegateMaterialChars: Math.max(ATTACHMENT_CHARS, 16_000),
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -191,14 +200,20 @@ export async function resolveContextWindowTokens(accountId?: string): Promise<nu
 /** The full budget set for a given window. `BUDGET` is this at the default. */
 export function budgetsFor(windowTokens: number): typeof BUDGET {
   const c = windowTokens * CHARS_PER_TOKEN;
+  const attachmentChars = Math.max(12_000, Math.floor(c * SHARE.attachments));
   return {
-    attachmentChars: Math.max(12_000, Math.floor(c * SHARE.attachments)),
+    attachmentChars,
     observationChars: Math.max(24_000, Math.floor(c * SHARE.observation)),
     composeBlockChars: Math.max(160_000, Math.floor(c * SHARE.composeBlock)),
     softTokens: Math.max(120_000, Math.floor(windowTokens * SHARE.soft)),
     hardTokens: Math.max(160_000, Math.floor(windowTokens * SHARE.hard)),
     extractionChars: Math.max(12_000, Math.floor(c * SHARE.extraction)),
     memoryBodyChars: Math.max(4_000, Math.floor(c * SHARE.memoryBody)),
-    delegateMaterialChars: Math.max(16_000, Math.floor(c * SHARE.delegateMaterial)),
+    // Same value as attachmentChars, never a fraction of it — see BUDGET's
+    // delegateMaterialChars comment above for the reasoning. Floored at
+    // 16,000 (the old flat DELEGATE_MATERIAL_CHARS), not attachmentChars'
+    // own 12,000 floor, so a delegate's slice never regresses below what it
+    // got before this fix.
+    delegateMaterialChars: Math.max(attachmentChars, 16_000),
   };
 }
