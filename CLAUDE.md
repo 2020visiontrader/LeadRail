@@ -18,6 +18,39 @@ When running as Opus or Fable on this repo:
 Write the plan so it can be executed without the planning context: name the
 files, the exact behaviour wanted, and what proves it correct.
 
+## The assistant mirrors this harness (standing rule)
+
+The owner has asked for this repeatedly. It is written here so nobody has to
+ask again.
+
+**Build LeadRail's assistant the way the harness you are running in is built.**
+When a design question comes up — context, delegation, synthesis, long-running
+work — the answer is "how does this harness do it", not "what is the smallest
+change to the current code".
+
+Concretely, and each of these was a real shipped defect:
+
+- **Delegates get their own full context window.** A sub-agent is an
+  independent model call. Its budget is never a fraction of a pooled one and
+  never shrinks as the team grows. Two separate bugs came from rationing:
+  a `/ delegateCount` division, then a `0.25` share. Three delegates get what
+  one delegate gets. `delegateMaterialChars` equals `attachmentChars` for this
+  reason — do not "optimise" it back into a share.
+
+- **One unified answer, never stapled persona blocks.** Delegate results are
+  synthesised into a single reply in one voice. `### Ada` / `### Milo`
+  concatenation is the FALLBACK for a failed synthesis, not the format. If the
+  user is seeing those headers, synthesis is broken — fix it, do not accept it.
+
+- **Long work is not bound to one HTTP request.** This harness runs agents for
+  20+ minutes because the work does not live inside a request/response. Any
+  design whose ceiling is `maxDuration` will fail the same way again: the work
+  completes and the user is told it did not. Approve once, then keep working.
+
+- **Results reaching a human are readable prose.** Raw JSON in a user-facing
+  message is a defect regardless of which tool produced it. Render by payload
+  shape, never by a tool-name allowlist.
+
 ## How work is verified here
 
 These are not style preferences. Each one was learned from a defect that
