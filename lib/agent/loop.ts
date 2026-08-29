@@ -1121,8 +1121,7 @@ export function attachmentMaterial(agentContext: string | undefined): string | u
  *  call readDocument for more — actually need out of the raw text". */
 const DELEGATE_MATERIAL_CHARS = Number(process.env.DELEGATE_MATERIAL_CHARS) || 16_000;
 
-/** What ONE delegate gets to read out of agentContext, given a fan-out of
- *  `delegateCount` delegates.
+/** What ONE delegate gets to read out of agentContext.
  *
  *  DEFECT 4: this used to be `agentContext: input.agentContext` handed to
  *  every delegate verbatim — a 34,456-character document duplicated N times
@@ -1133,15 +1132,29 @@ const DELEGATE_MATERIAL_CHARS = Number(process.env.DELEGATE_MATERIAL_CHARS) || 1
  *
  *  FIX: keep the small static grounding sections intact (cheap, and every
  *  delegate needs the same venture/account grounding an ordinary turn gets),
- *  divide the ATTACHED-DOCUMENT allowance across the delegates so the
- *  attachment text reaching ALL of them COMBINED never exceeds
- *  contextCharBudget(), AND cap each delegate's own slice at
- *  DELEGATE_MATERIAL_CHARS so the bound actually BINDS at realistic
- *  attachment sizes instead of only at the (now enormous) window-derived
- *  ceiling. A delegate that genuinely needs more than its slice can still
- *  call readDocument for the rest — the same tool an ordinary turn would
- *  reach for on truncation (see the "…truncated here" note
- *  attachmentContextBlock leaves in the text).
+ *  and cap the ATTACHED-DOCUMENT slice at DELEGATE_MATERIAL_CHARS (further
+ *  bounded by contextCharBudget(), for the rare case that budget is
+ *  configured smaller than DELEGATE_MATERIAL_CHARS itself) so the bound
+ *  actually BINDS at realistic attachment sizes instead of only at the (now
+ *  enormous) window-derived ceiling. A delegate that genuinely needs more
+ *  than its slice can still call readDocument for the rest — the same tool
+ *  an ordinary turn would reach for on truncation (see the "…truncated
+ *  here" note attachmentContextBlock leaves in the text).
+ *
+ *  DEFECT (2026-08-28, production): this budget used to be divided by
+ *  `delegateCount` — `Math.floor(contextCharBudget() / delegateCount)` —
+ *  on the theory that N delegates were sharing one pool. They are not: each
+ *  delegate is an INDEPENDENT `runAgent` call with its OWN model context
+ *  window (see the call site below — each delegate gets its own
+ *  generateChat call, not a shared one). Dividing the budget meant a
+ *  3-delegate fan-out gave each delegate a THIRD of the material a
+ *  1-delegate turn would see, always the same opening slice, so delegates
+ *  reasoned from partial material and disagreed with each other on the same
+ *  question (production: one conversation's delegates reported 60 / 25 / 24
+ *  / 22 / 20 leads for the same count). `delegateCount` is intentionally
+ *  UNUSED for sizing now — the slice size must not shrink as the team grows,
+ *  only the two real per-call bounds below still apply. Do not reintroduce
+ *  a division here.
  *
  *  `understanding`, when given, is folded in ahead of the raw slice (see
  *  formatUnderstandingBlock) — a delegate gets the comprehended UNDERSTANDING
@@ -1149,7 +1162,7 @@ const DELEGATE_MATERIAL_CHARS = Number(process.env.DELEGATE_MATERIAL_CHARS) || 1
  *  document and nothing else. */
 export function delegateContext(
   agentContext: string | undefined,
-  delegateCount: number,
+  _delegateCount: number,
   understanding?: Understanding | null,
 ): string | undefined {
   if (!agentContext) return undefined;
@@ -1158,7 +1171,7 @@ export function delegateContext(
   const head = agentContext.slice(0, idx);
   const perDelegateDocBudget = Math.max(2_000, Math.min(
     DELEGATE_MATERIAL_CHARS,
-    Math.floor(contextCharBudget() / Math.max(1, delegateCount)),
+    contextCharBudget(),
   ));
   const doc = agentContext.slice(idx, idx + perDelegateDocBudget);
   const understandingBlock = understanding ? `${formatUnderstandingBlock(understanding)}\n\n` : '';
@@ -1348,9 +1361,11 @@ async function runFanoutDelegates(
   };
 
   // Defect 4 — see delegateContext() above: bound what each delegate reads
-  // out of agentContext instead of broadcasting the full attachment blob to
-  // every one of them. Computed once, outside the map, because the division
-  // is over the WHOLE fan-out (delegates.length), not per-delegate.
+  // out of agentContext instead of broadcasting the full raw document
+  // unbounded to every one of them. Computed once, outside the map, purely
+  // because every delegate gets the SAME slice (independent calls, same
+  // bounded material) — delegates.length no longer affects the size of that
+  // slice (see the 2026-08-28 defect note on delegateContext above).
   const boundedContext = delegateContext(input.agentContext, delegates.length, understanding);
 
   const settled = await Promise.all(delegates.map(async (persona) => {
@@ -1472,11 +1487,46 @@ async function synthesizeCoordinatorAnswer(
       maxOutputCeiling: AGENT_ROUTE_CEILING,
       preferTier: AGENT_ROUTE_TIER,
       zoAskModel: AGENT_ZOASK_MODEL,
-      model: AGENT_OPENCODE_MODEL,
-      ...(coordinator.model_id ? { accountId, modelId: coordinator.model_id } : {}),
+      // PRODUCTION DEFECT (2026-08-28, same shape as the forced-final routing
+      // fix in 8d41f2b): `accountId` used to be passed ONLY inside the
+      // `coordinator.model_id` branch below, so an ordinary fan-out (no
+      // coordinator model override) never consulted the account's paid
+      // provider registry for its synthesis call — the pass that reconciles
+      // the delegates into ONE answer fell straight to the hardcoded
+      // last-resort OpenCode tier (below) with no `task` tag to prefer a
+      // paid model. `accountId` MUST be unconditional here so the call that
+      // composes the user-facing answer is routed exactly like every other
+      // substantive call in the turn. Do not move it back inside the
+      // coordinator.model_id branch.
+      accountId,
+      // 'draft' — the router's own "compose pass" task tag (lib/ai/router.ts),
+      // the same tag 8d41f2b chose for the analogous forced-final compose
+      // call. This call assembles the single user-facing answer from the
+      // delegates' gathered findings — the most substantive shape in
+      // SUBSTANTIVE_TASKS (lib/ai/providers.ts) — so orderByCost prefers a
+      // paid model for it, same as 'reason' does for tool-routing calls.
+      task: 'draft',
+      // No hard `model: AGENT_OPENCODE_MODEL` pin: that only mattered if the
+      // call fell all the way to the OpenCode tier, and with `accountId` and
+      // `task` now wired through, the registry (or a healthier ladder tier)
+      // is tried first. Leaving OpenCode to use its own default model when
+      // it IS reached avoids hard-pinning this call to one specific model on
+      // the tier tried last.
+      ...(coordinator.model_id ? { modelId: coordinator.model_id } : {}),
     });
     const trimmed = raw.trim();
-    if (!trimmed) return block;
+    if (!trimmed) {
+      // Silent-fallback fix: this used to fall back to the `### Name`
+      // concatenation with nothing logged, so a synthesis that came back
+      // empty was invisible — the owner saw two persona blocks and assumed
+      // that was the design. Log it, then still return `block` (the
+      // fallback itself is required behaviour — never drop a delegate's
+      // result on a failed synthesis).
+      log.warn('coordinator synthesis returned empty, falling back to concatenation', {
+        accountId, coordinator: coordinator.name,
+      });
+      return block;
+    }
 
     // OUTPUT VALIDATION. A synthesis pass has a specific failure mode: given
     // three specialists' findings it produces something that reads well and
@@ -1497,7 +1547,10 @@ async function synthesizeCoordinatorAnswer(
       return block;
     }
     return trimmed;
-  } catch {
+  } catch (err: any) {
+    log.warn('coordinator synthesis call failed, falling back to concatenation', {
+      accountId, coordinator: coordinator.name, error: String(err?.message || err),
+    });
     return block; // never silently drop the delegates' actual outputs
   }
 }

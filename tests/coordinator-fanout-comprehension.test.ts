@@ -158,26 +158,62 @@ describe('attachmentDigest / delegateContext (pure helpers)', () => {
     expect(attachmentDigest(undefined, 1200)).toBe('');
   });
 
-  it('divides the SAME per-turn attachment budget across delegates instead of giving each one the full document', async () => {
+  // PRODUCTION DEFECT (2026-08-28): delegateContext used to divide the
+  // per-turn budget by delegateCount, on the theory N delegates shared one
+  // pool. They do not — each delegate is an INDEPENDENT model call with its
+  // own context window, so dividing meant a 3-delegate fan-out gave each
+  // delegate a THIRD of the material a 1-delegate turn would see (always the
+  // same opening slice), which is why delegates in production disagreed with
+  // each other on the same question (60 / 25 / 24 / 22 / 20 leads reported
+  // for one conversation). This test used to assert the OLD, buggy shrinking
+  // behaviour directly (`forThree.length` < `forOne.length`); it now asserts
+  // the fix — each delegate gets the SAME full per-call budget regardless of
+  // how many delegates are in the fan-out.
+  it('gives every delegate the SAME per-call document budget, independent of fan-out size', async () => {
     withSmallBudget('9000'); // see comment above withSmallBudget
     try {
       const { delegateContext } = await import('@/lib/agent/loop');
-      const { contextCharBudget } = await import('@/lib/documents/attachments');
       const ctx = bigAttachmentContext();
       const forOne = delegateContext(ctx, 1)!;
       const forThree = delegateContext(ctx, 3)!;
-      // Each individual delegate's slice shrinks as the fan-out grows...
-      expect(forThree.length).toBeLessThan(forOne.length);
-      // ...and a single delegate does NOT receive the whole 34k document
-      // verbatim once the budget is smaller than the document.
+      // The slice size must NOT shrink as the team grows — three delegates
+      // each get exactly what one delegate would get, because they are three
+      // independent calls, not three shares of one call.
+      expect(forThree.length).toBe(forOne.length);
+      // The bound still binds at realistic sizes (contextCharBudget() here is
+      // deliberately small — 9000 — via withSmallBudget), so a delegate does
+      // NOT receive the whole 34k document verbatim.
       expect(forOne.length).toBeLessThan(ctx.length);
-      // ...and three delegates' worth of document text together does not
-      // exceed what ONE ordinary turn is already allowed to read (plus the
-      // untouched static-grounding head each copy also carries) — the
-      // property that stops a fan-out from broadcasting N full copies.
-      const budget = contextCharBudget();
+    } finally {
+      restoreBudgetEnv();
+    }
+  });
+
+  it('does not shrink a single delegate slice below DELEGATE_MATERIAL_CHARS just because the fan-out is larger', async () => {
+    // A mid-size budget (40,000) is deliberately chosen here, NOT the real
+    // multi-megabyte default: at the real default, contextCharBudget() is so
+    // large that DELEGATE_MATERIAL_CHARS (16,000) is always the binding cap
+    // regardless of delegateCount, even under the OLD buggy division — for
+    // every realistic fan-out size (MAX_FANOUT_DELEGATES=3),
+    // floor(hugeBudget/3) still vastly exceeds 16,000, so a revert-check
+    // against the real default would falsely stay green whether the division
+    // bug is present or fixed. 40,000/4 = 10,000, which sits BELOW
+    // DELEGATE_MATERIAL_CHARS, so this budget actually distinguishes: fixed
+    // code gives every delegate the full min(16000, 40000)=16000 regardless
+    // of count; the old buggy division would shrink a 4-delegate slice to
+    // 10,000.
+    withSmallBudget('40000');
+    try {
+      const { delegateContext } = await import('@/lib/agent/loop');
+      const ctx = bigAttachmentContext();
+      const forOne = delegateContext(ctx, 1)!;
+      const forFour = delegateContext(ctx, 4)!;
+      expect(forFour.length).toBe(forOne.length);
+      // Sanity: the document slice itself is exactly DELEGATE_MATERIAL_CHARS
+      // (16,000), not the 40,000 budget — confirms the cap that's binding
+      // here is the per-delegate ceiling, not contextCharBudget().
       const head = 'ABOUT LEADRAIL (the platform you operate):\nsome static grounding here\n\n'.length;
-      expect(forThree.length * 3).toBeLessThanOrEqual(budget + 3 * head + 500);
+      expect(forOne.length - head).toBe(16_000);
     } finally {
       restoreBudgetEnv();
     }
