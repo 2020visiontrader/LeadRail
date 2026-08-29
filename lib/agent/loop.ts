@@ -2018,8 +2018,45 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
     const raw = await generateChat({
       // toWireMessages strips the storage-only `id` field (migration 076) —
       // see the comment on the other generateChat call sites in this file.
-      system, messages: toWireMessages(messages), temperature: 0.2, maxOutputTokens: 2048, zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
-      ...(personaModelId ? { accountId, modelId: personaModelId } : {}),
+      system, messages: toWireMessages(messages), temperature: 0.2,
+      // Deliberate hard cap, unlike the step loop's maxOutputCeiling: this
+      // call composes ONE final message, not a tool-routing decision, so a
+      // fixed 2048-token bound is appropriate and is kept as-is.
+      maxOutputTokens: 2048,
+      zoAskModel: AGENT_ZOASK_MODEL || undefined,
+      // PRODUCTION INCIDENT 2026-08-28: this call used to pass `accountId`
+      // ONLY inside the personaModelId branch below, so on every ordinary
+      // (no-persona) turn the account's provider registry was never
+      // consulted — the call fell straight to the hardcoded ladder and, with
+      // no `task` tag either, had no paid-first ordering (see orderByCost in
+      // lib/ai/providers.ts) to prefer a working paid tier over the
+      // last-resort OpenCode tier, which was returning 401. Meanwhile every
+      // step-loop call earlier in the SAME turn (line ~1718) passed
+      // `accountId` unconditionally plus `task: 'reason'` and succeeded on
+      // the registry every time — so tools ran fine and the user still saw
+      // "this turn could not be completed" because only the LAST call was
+      // routed differently. `accountId` MUST be unconditional here, matching
+      // the step loop, so a turn whose tools already succeeded is not lost
+      // on its final call. Do not move it back inside the persona branch.
+      accountId,
+      // 'draft' is the task tag the router's own doc comment (lib/ai/router.ts,
+      // generateChat) names for "the compose pass" — this call assembles the
+      // user-facing answer from gathered evidence, the most substantive
+      // shape in SUBSTANTIVE_TASKS (lib/ai/providers.ts), so orderByCost
+      // prefers a paid model for it exactly as the step loop's 'reason' tag
+      // does for tool-routing. Not 'reason' (this call is no longer deciding
+      // what to do next) and not a CHEAP_TASKS tag ('classify'/'extract') —
+      // this is the answer the user reads.
+      task: 'draft',
+      preferTier: AGENT_ROUTE_TIER,
+      // No hard `model: AGENT_OPENCODE_MODEL` pin: that only mattered if the
+      // call fell all the way to the OpenCode tier, and with `accountId` and
+      // `task` now wired through, the registry (or a healthier ladder tier)
+      // is tried first, exactly as it already is for every step-loop call.
+      // Leaving OpenCode to use its own default model when it IS reached
+      // avoids hard-pinning this call to one specific model on the tier that
+      // is tried last.
+      ...(personaModelId ? { modelId: personaModelId } : {}),
     });
     const p = extractJson(raw);
     if (p?.action === 'final' && p.message) return { status: 'done', message: String(p.message), transcript: messages, steps };
@@ -2629,8 +2666,37 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
     const raw = await generateChat({
       // toWireMessages strips the storage-only `id` field (migration 076) —
       // see the comment on the other generateChat call sites in this file.
-      system, messages: toWireMessages(messages), temperature: 0.2, maxOutputTokens: 2048, zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
-      ...(personaModelId ? { accountId, modelId: personaModelId } : {}),
+      system, messages: toWireMessages(messages), temperature: 0.2,
+      // Deliberate hard cap, unlike the step loop's maxOutputCeiling: this
+      // call composes ONE final message, not a tool-routing decision, so a
+      // fixed 2048-token bound is appropriate and is kept as-is.
+      maxOutputTokens: 2048,
+      zoAskModel: AGENT_ZOASK_MODEL || undefined,
+      // PRODUCTION INCIDENT 2026-08-28 — see the twin comment on the
+      // non-streaming forced-final call in runAgentImpl above (CLAUDE.md:
+      // runAgentImpl and runAgentStreamImpl must stay identical, so this
+      // fix and its reasoning are duplicated there verbatim, not summarized
+      // here). Short version: `accountId` used to be conditional on
+      // personaModelId, so most turns never consulted the account's paid
+      // provider registry on their FINAL call, even though every step-loop
+      // call in the same turn did and succeeded — the turn's tools worked
+      // and only the last call died on OpenCode's dead 401 tier.
+      // `accountId` MUST be unconditional here. Do not move it back inside
+      // the persona branch.
+      accountId,
+      // 'draft' = the router's own "compose pass" task tag (lib/ai/router.ts)
+      // — this call assembles the user-facing answer from gathered evidence,
+      // a SUBSTANTIVE_TASKS shape (lib/ai/providers.ts), so orderByCost
+      // prefers a paid model for it, same as 'reason' does for the step
+      // loop's tool-routing calls.
+      task: 'draft',
+      preferTier: AGENT_ROUTE_TIER,
+      // No hard `model: AGENT_OPENCODE_MODEL` pin: with `accountId` and
+      // `task` wired through, the registry (or a healthier ladder tier) is
+      // tried first, exactly as for every step-loop call. If this call DOES
+      // fall all the way to OpenCode, let it use its own default model
+      // rather than pinning one specific model on the tier tried last.
+      ...(personaModelId ? { modelId: personaModelId } : {}),
     });
     const p = extractJson(raw);
     if (p?.action === 'final' && p.message) {
