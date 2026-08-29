@@ -21,6 +21,17 @@
 -- pattern this repo already counts eleven instances of. The catalogue only
 -- makes the right models AVAILABLE; what selects them is lib/ai/providers.ts.
 
+-- CONTEXT WINDOWS (added after first apply). OpenCode's endpoint returns no
+-- context_window, so a first pass set a conservative 128000 across the board.
+-- That was 8-10x too low and would have truncated heavily. The right source is
+-- OpenRouter's live catalogue for the SAME models: a subscription key changes
+-- the billing, not the model. Verified 2026-08-29 and applied per model, which
+-- mattered - kimi-k2.7-code is genuinely 262144 while its siblings are ~1M.
+--   deepseek-v4-flash 1310720 | deepseek-v4-pro 1048576
+--   deepseek-v4-flash-vision-exp 1048576 | glm-5.3 1310720
+--   glm-5.3-flash 1310720 | qwen3.8-max 1000000 | qwen3.8-flash 1000000
+--   kimi-k3 1048576 | kimi-k2.7-code 262144 | minimax-m3 1048576
+
 -- 1) OpenCode Go: bring in the capable models. Verified live: the endpoint
 --    serves 33, of which these are the ones worth routing real work to.
 --    cost_per_mtok_* stays NULL deliberately — OpenCode Go is a subscription
