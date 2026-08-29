@@ -115,6 +115,37 @@ describe('streaming paths actually report token usage', () => {
       // "Did not tell us" must stay distinguishable from "used no tokens".
       expect(usage).toBeNull();
     });
+
+    // Provider-reported call duration (migration 078) — see
+    // tests/provider-timing.test.ts for the isolated capture tests and the
+    // "measured, not assumed" note on why this resolves to
+    // provider_not_reported for every tier's real stream today.
+    it(`${tier.name}: timing classifies as provider_not_reported/none when the stream carries no timing field`, async () => {
+      Object.assign(process.env, tier.env);
+      streamResponds([delta('no timing here'), usageChunk(1, 2)]);
+
+      const { withUsageCapture } = await import('@/lib/ai/usage');
+      const mod: any = await import(/* @vite-ignore */ MODULE[tier.name]);
+      const { timingMs, timingStatus, timingSource } = await withUsageCapture(() => tier.run(mod));
+
+      expect(timingMs).toBeNull();
+      expect(timingStatus).toBe('provider_not_reported');
+      expect(timingSource).toBe('none');
+    });
+
+    it(`${tier.name}: captures generation_time from the final SSE chunk when the stream DOES carry it`, async () => {
+      Object.assign(process.env, tier.env);
+      const withTiming = JSON.stringify({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 2, generation_time: 733 } });
+      streamResponds([delta('hi'), withTiming]);
+
+      const { withUsageCapture } = await import('@/lib/ai/usage');
+      const mod: any = await import(/* @vite-ignore */ MODULE[tier.name]);
+      const { timingMs, timingStatus, timingSource } = await withUsageCapture(() => tier.run(mod));
+
+      expect(timingMs).toBe(733);
+      expect(timingStatus).toBe('reported');
+      expect(timingSource).toBe('provider');
+    });
   }
 });
 

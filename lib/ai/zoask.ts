@@ -4,7 +4,7 @@
 // OpenCode Go, then NVIDIA NIM. Admin/account-scoped generation only.
 
 import { parseRetryAfterMs } from './health';
-import { reportProviderNotReported } from './usage';
+import { reportProviderNotReported, reportTimingNotReported } from './usage';
 import { boundedTimeoutMs, deadlineExceededError, isPastDeadline } from './deadline';
 
 const KEY =
@@ -109,6 +109,9 @@ async function ask(input: string, modelOverride?: string, deadlineAt?: number): 
   // capture scope untouched, is what keeps that fact distinguishable from "we
   // forgot to look".
   reportProviderNotReported();
+  // Same shape, same reasoning, for timing: `{output}` never carries any
+  // duration field either, in success or failure.
+  reportTimingNotReported();
   // `output` may be a plain string or a structured object.
   const output = json?.output;
   const text =

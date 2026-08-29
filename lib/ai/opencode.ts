@@ -15,7 +15,7 @@
 // ai_providers is empty, so that path never runs and these literals ARE the hard
 // limit today. Set high enough to mean "as much as the model will give", and
 // override with AI_MAX_OUTPUT_TOKENS.
-import { reportOpenAIUsage, reportUsage, reportProviderNotReported } from './usage';
+import { reportOpenAIUsage, reportUsage, reportProviderNotReported, reportOpenAITiming, reportTimingNotReported, reportProviderTiming } from './usage';
 import { parseRetryAfterMs } from './health';
 import { boundedTimeoutMs, deadlineExceededError, isPastDeadline } from './deadline';
 
@@ -115,6 +115,7 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
   }
   const json = await res.json();
   reportOpenAIUsage(json);
+  reportOpenAITiming(json);
   // DeepSeek returns the answer in message.content; reasoning_content is separate
   // scratch and is deliberately ignored.
   const content = json?.choices?.[0]?.message?.content;
@@ -184,6 +185,11 @@ export async function readSseDeltas(
   // never retried (status-code failures arrive before the first delta).
   let tokensIn: number | null = null;
   let tokensOut: number | null = null;
+  // Same field names as reportOpenAITiming — see lib/ai/usage.ts. Neither
+  // provider sends these on a stream frame today (measured 2026-08-29), but
+  // checked per-frame anyway alongside noteUsage so a future addition needs
+  // no change here.
+  let timingMs: number | null = null;
   const noteUsage = (evt: any) => {
     const u = evt?.usage ?? evt?.message?.usage;
     if (!u) return;
@@ -191,6 +197,8 @@ export async function readSseDeltas(
     const o = u.completion_tokens ?? u.output_tokens;
     if (typeof i === 'number' && Number.isFinite(i)) tokensIn = i;
     if (typeof o === 'number' && Number.isFinite(o)) tokensOut = o;
+    const t = u.generation_time ?? u.latency;
+    if (typeof t === 'number' && Number.isFinite(t)) timingMs = t;
   };
 
   const handleLine = (raw: string) => {
@@ -225,6 +233,8 @@ export async function readSseDeltas(
   // code never looked.
   if (tokensIn != null || tokensOut != null) reportUsage({ tokensIn, tokensOut });
   else reportProviderNotReported();
+  if (timingMs != null) reportProviderTiming(timingMs);
+  else reportTimingNotReported();
 }
 
 /** Streaming twin of `complete()`. Same request shape, same error shapes, same

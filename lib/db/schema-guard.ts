@@ -108,6 +108,7 @@ export const EXPECTATIONS: Expectation[] = [
   { table: 'ai_usage', columns: ['usage_status', 'usage_source'], migration: '075', breaks: 'recordAiUsage cannot classify why tokens are missing — a NULL token count becomes indistinguishable from a telemetry bug again, the exact ambiguity migration 075 exists to remove' },
   { table: 'attachment_bindings', columns: ['attachment_id', 'conversation_id', 'message_id', 'scope', 'status'], migration: '076', breaks: 'an uploaded attachment cannot be bound to a message or conversation, so provenance ("did you actually read my PDF?") does not survive a reload' },
   { table: 'attachment_evidence', columns: ['attachment_binding_id'], migration: '076', breaks: 'nothing writes this table yet (schema only) — its absence breaks nothing live, but a caller reaching for it would fail outright rather than finding an empty, working table' },
+  { table: 'ai_usage', columns: ['provider_latency_ms', 'timing_status', 'timing_source'], migration: '078', breaks: 'recordAiUsage cannot classify provider-reported timing — a NULL provider_latency_ms becomes indistinguishable from "we did not look", the exact ambiguity that blocked diagnosing whether a timed-out call was queueing or generating' },
 ];
 
 export interface DriftFinding {

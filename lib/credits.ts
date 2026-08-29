@@ -65,6 +65,13 @@ export async function recordAiUsage(entry: {
    *  never a guess at what actually happened. */
   usageStatus?: 'reported' | 'provider_not_reported' | 'capture_failed' | 'not_attempted' | 'not_applicable';
   usageSource?: 'provider' | 'estimated' | 'none';
+  /** Provider-reported call duration in ms (migration 078) — distinct from
+   *  `latencyMs` above, which is our own wrapper's elapsed clock and is always
+   *  present. Null when the provider reported nothing; `timingStatus` says
+   *  why, same convention as `usageStatus` for tokens. */
+  providerLatencyMs?: number | null;
+  timingStatus?: 'reported' | 'provider_not_reported' | 'capture_failed' | 'not_attempted' | 'not_applicable';
+  timingSource?: 'provider' | 'estimated' | 'none';
 }): Promise<string | null> {
   try {
     const { data } = await supabase.from('ai_usage').insert([{
@@ -81,6 +88,9 @@ export async function recordAiUsage(entry: {
       conversation_id: entry.conversationId ?? null,
       usage_status: entry.usageStatus ?? 'not_attempted',
       usage_source: entry.usageSource ?? 'none',
+      provider_latency_ms: entry.providerLatencyMs ?? null,
+      timing_status: entry.timingStatus ?? 'not_attempted',
+      timing_source: entry.timingSource ?? 'none',
     }])
       // The id is returned so the CALLER can later record whether the response
       // it got was actually usable — see markParseOutcome. Nothing else changes

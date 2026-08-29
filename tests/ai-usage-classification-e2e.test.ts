@@ -48,5 +48,58 @@ describe('router plumbs usage classification into recordAiUsage', () => {
     expect(arg.tokensOut).toBeNull();
     expect(arg.usageStatus).toBe('provider_not_reported');
     expect(arg.usageSource).toBe('none');
+    // Same absence rule, same reason, for provider-reported timing (migration
+    // 078): Zo Ask's `{output}` body never carries a duration field either.
+    expect(arg.providerLatencyMs).toBeNull();
+    expect(arg.timingStatus).toBe('provider_not_reported');
+    expect(arg.timingSource).toBe('none');
+  });
+
+  it('an OpenCode answer that DOES carry generation_time logs timingStatus: reported, timingSource: provider, and the real number', async () => {
+    delete process.env.ZO_API_KEY;
+    process.env.OPENCODE_API_KEY = 'test-key';
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: 'hello there' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 3, generation_time: 611 },
+      }),
+    });
+
+    const { generateText } = await import('@/lib/ai/router');
+    const text = await generateText({ prompt: 'hi', accountId: 'acct-1' });
+    expect(text).toBe('hello there');
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(recordAiUsage).toHaveBeenCalledTimes(1);
+    const arg: any = recordAiUsage.mock.calls[0]![0];
+    expect(arg.ok).toBe(true);
+    // providerLatencyMs is the actual column name recordAiUsage/credits.ts
+    // writes ai_usage.provider_latency_ms from — proving the value reaches
+    // the insert call, not just the router's internal usage-capture return.
+    expect(arg.providerLatencyMs).toBe(611);
+    expect(arg.timingStatus).toBe('reported');
+    expect(arg.timingSource).toBe('provider');
+  });
+
+  it('a failed candidate logs no timing classification at all (absent, not a guessed value)', async () => {
+    fetchMock.mockResolvedValue({ ok: false, status: 500, text: async () => 'boom' });
+
+    const { generateText } = await import('@/lib/ai/router');
+    await expect(generateText({ prompt: 'hi', accountId: 'acct-1' })).rejects.toThrow();
+
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(recordAiUsage).toHaveBeenCalledTimes(1);
+    const arg: any = recordAiUsage.mock.calls[0]![0];
+    expect(arg.ok).toBe(false);
+    // logUsage's failure branch never passes timingMs/timingStatus/timingSource
+    // at all — logUsage's own `?? not_attempted`/`?? none` defaults (mirroring
+    // usageStatus/usageSource on this same branch) are what land in the object
+    // recordAiUsage actually receives, not a guessed classification.
+    expect(arg.providerLatencyMs).toBeNull();
+    expect(arg.timingStatus).toBe('not_attempted');
+    expect(arg.timingSource).toBe('none');
   });
 });

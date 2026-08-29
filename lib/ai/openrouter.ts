@@ -7,7 +7,7 @@
 // readSseDeltas is shared from opencode.ts, a dependency-free leaf module —
 // both are OpenAI-compatible Chat Completions transports.
 import { readSseDeltas } from './opencode';
-import { reportOpenAIUsage } from './usage';
+import { reportOpenAIUsage, reportOpenAITiming } from './usage';
 import { log } from '@/lib/logger';
 import { parseRetryAfterMs } from './health';
 import { boundedTimeoutMs, deadlineExceededError, isPastDeadline } from './deadline';
@@ -210,6 +210,7 @@ async function completeWith(MODEL: string, messages: OpenAIMessage[], temperatur
   }
   const json = await res.json();
   reportOpenAIUsage(json);
+  reportOpenAITiming(json);
   const content = json?.choices?.[0]?.message?.content;
   return typeof content === 'string' ? content.trim() : '';
 }
