@@ -31,82 +31,71 @@ const BASE = 'https://openrouter.ai/api/v1';
 // Ordered fallback chain, not a single pinned model. OPENROUTER_MODEL still
 // wins when set, so the operator keeps full control.
 //
-// WHY A CHAIN: OpenRouter's free-tier models (":free" suffix) sit behind a
-// shared public pool per upstream provider, and that pool can be
-// rate-limited independently of the API key — observed live: z-ai/glm-5.2:free
-// returned 429 ("temporarily rate-limited upstream") while
-// nvidia/nemotron-3-ultra-550b-a55b:free on the SAME key answered 200 in the
-// same second. Unlike NIM (single vendor, one shared RPM budget), each
-// OpenRouter model here routes through a different upstream provider, so a
-// 429/error on one is NOT evidence the next will also fail — worth trying.
+// PAID FIRST. This chain used to be free-first (13 of 15 entries carried a
+// ":free" suffix) on the theory that free tries are worthless-if-they-fail.
+// Measured in production that theory was backwards: those free models did
+// not fail fast — they came back empty or 502 rather than erroring, so
+// shouldTryNextModel() below never got a clean signal to move on, and the
+// chain burned its 30s-per-attempt budget on models that mostly do not work.
+// The `openrouter` tier's measured average was 248s wall-clock with 25 of 28
+// calls failing. Paid-first is the fix: try the models that are actually
+// enabled and known to answer, before anything free.
 //
-// Verified live against OpenRouter's current catalog (2026-08-27): pulled
-// GET /models (17 total ":free" models right now) and smoke-tested every
-// candidate that had gone stale with a real chat completion. Four entries
-// from the previous pass had been quietly retired from the free tier since
-// (each returns 404 "unavailable for free... use this slug instead" or "no
-// endpoints found") and were removed rather than left to eat a failed
-// round-trip on every call: nvidia/nemotron-3-nano-30b-a3b:free (this was
-// the chain LEADER — every single call was paying for its 404 before falling
-// through), openai/gpt-oss-20b:free, nvidia/nemotron-nano-12b-v2-vl:free,
-// nvidia/nemotron-nano-9b-v2:free. A fifth bug found in the same pass:
-// deepseek/deepseek-v4-flash-latest was returning 400 "not a valid model
-// ID" — not 404/429/402, so shouldTryNextModel() never even advanced past
-// it, meaning a request that reached this tier died outright instead of
-// falling through. OpenRouter's actual alias for this id carries a leading
-// `~` (confirmed via a live completions call, resolves to
-// deepseek-v4-flash-0731) — an unusual character for a slug, which is why an
-// earlier version of this file's own test suite asserted a leading `~`
-// could never be valid. It can; that assertion was wrong.
-// Deliberately spans multiple upstream providers so a single vendor incident
-// (like the NIM stale-key outage this chain exists to prevent) can't take
-// out the whole tier:
-//   nvidia/nemotron-3.5-lightning:free      200 OK          (Nvidia, fast)
-//   nvidia/nemotron-3-ultra-550b-a55b:free  200 OK, 1M ctx  (Nvidia)
-//   z-ai/glm-5.2:free                       200 OK          (Zhipu)
-//   google/gemma-4-26b-a4b-it:free          200 OK          (Google)
-//   dots-studio/dots-3-note-preview:free    200 OK          (dots.llm)
-//   google/gemma-4-31b-it:free              429 rate-limited upstream — excluded
-// Order: strongest general-purpose free model first, then providers rotate,
-// then deepseek-v4-flash as a paid-but-fractional-cent last resort so the
-// tier still answers if every free model is down at once.
+// THE CATALOGUE IS THE SOURCE OF TRUTH for which models are enabled, not
+// this file. Migration 077 (migrations/077_provider_catalogue_restructure.sql)
+// disabled every OpenRouter ":free" row and left exactly four OpenRouter
+// rows enabled — this array is a compiled-in mirror of that same set, kept
+// in sync by tests/openrouter-chain.test.ts (an approved-roster allowlist
+// plus a "no :free slug" assertion), not by a runtime DB read: this is a
+// leaf client module and stays synchronous and dependency-free by design.
+// If the catalogue changes which OpenRouter models are enabled, that test
+// is what will fail and point back here.
+//
+// ORDER: fastest-first, not cheapest-first. Both are defensible, but this is
+// the FOURTH tier of the ladder (lib/ai/router.ts) — reached only after Ask
+// Zo, OpenCode Go, and NIM have all already failed or timed out for this
+// turn, so by the time a call lands here the user has already been waiting.
+// Minimizing latency to a first success matters more than shaving a few
+// cents per call:
+//   1. anthropic/claude-haiku-4.5  — $5.00/Mtok out, 200K ctx. Explicitly
+//      the "fast drafting" model in the roster; tried first so the common
+//      case (three earlier tiers unlucky, not systemically broken) resolves
+//      quickly.
+//   2. openai/gpt-5.6-luna         — $1.20/Mtok out, 1.05M ctx. Cheap and
+//      huge-context; second because if Haiku's context window (200K) is the
+//      reason it failed on a large prompt, Luna's 1M+ window is the natural
+//      next thing to try, at a fifth of Sonnet's price.
+//   3. openai/gpt-oss-120b         — $0.17/Mtok out, ~131K ctx. Cheapest
+//      model in the roster by a wide margin; tried third rather than first
+//      because "cheapest" is not "most reliable", and this tier should not
+//      lead on price when reliability is the whole reason it exists.
+//   4. anthropic/claude-sonnet-5   — $10.00/Mtok out, 1M ctx. Most expensive
+//      and the heaviest reasoner, tried last: if three faster/cheaper models
+//      have all failed, something is likely wrong beyond one model's
+//      capability, and the strongest remaining model gets the best shot at
+//      answering before the tier gives up.
+// Worst case: 4 models x 30s TIMEOUT_MS each = 120s for this tier, bounded
+// further by the deadline check below (see isPastDeadline) which stops the
+// chain early rather than letting it run to that worst case regardless.
+//
+// FREE MODELS: removed entirely, not kept as a last resort. Two reasons this
+// beats keeping one or two behind the paid models: (1) every ":free" row is
+// disabled in the catalogue as of migration 077 — there is no live signal
+// that any of them currently work, so keeping one is a guess, not a
+// documented fallback; (2) free models were the MEASURED cause of the
+// failures above (empty responses / 502s consumed almost the entire tier
+// budget). Appending one after four paid attempts would only add up to
+// another 30s of that exact failure mode with nothing gained, since Sonnet-5
+// (the strongest model in the roster) has already been tried by that point.
+// If a genuinely reliable free tier reappears, re-enable it in the catalogue
+// first — this file mirrors the catalogue, it does not lead it.
 export const MODEL_CHAIN = (process.env.OPENROUTER_MODEL
   ? [process.env.OPENROUTER_MODEL]
   : [
-      // nemotron-3.5-lightning leads: fast (sub-second on the probe that
-      // demoted nano), and — unlike nano-30b-a3b, which used to lead this
-      // chain — still actually free.
-      'nvidia/nemotron-3.5-lightning:free',
-      'dots-studio/dots-3-note-preview:free',
-      'google/gemma-4-26b-a4b-it:free',
-      // BOTH DeepSeek entries are paid, and the OpenRouter account carries
-      // credit, so they are reachable rather than a guaranteed 402. `-latest`
-      // leads: it follows whatever DeepSeek promotes, and on a model family
-      // this actively maintained the current build is the one worth having.
-      // The pinned id stays directly behind it as the stable fallback — if the
-      // alias is ever repointed at something that regresses, the chain still
-      // has a known-good snapshot to fall through to.
-      '~deepseek/deepseek-v4-flash-latest',
-      'deepseek/deepseek-v4-flash',
-      'nvidia/nemotron-3-ultra-550b-a55b:free',
-      // ── Verified present in the provider catalog, not yet latency-tested.
-      'liquid/lfm-2.5-2.6b:free',
-      'poolside/laguna-s-2.1:free',
-      'poolside/laguna-xs-2.1:free',
-      'cohere/north-mini-code:free',
-      'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
-      'google/gemma-4-31b-it:free',
-      'nvidia/nemotron-3-super-120b-a12b:free',
-      // ── Added on request 2026-08-26, not yet latency-tested.
-      'minimax/minimax-m3:free',
-      // Was pinned to the BOTTOM on 2026-08-19 after probing 429 (rate-limited,
-      // not retired). That demotion was a hand-maintained stand-in for health
-      // tracking, which now exists per model (lib/ai/health.ts) and quarantines
-      // a 429 for a cooldown on its own. Leaving it hardcoded last meant a
-      // temporary rate limit kept a working model buried indefinitely, and
-      // nothing would ever move it back. Restored to the untested group; if it
-      // is still saturated, health demotes it within one call.
-      'z-ai/glm-5.2:free',
+      'anthropic/claude-haiku-4.5',
+      'openai/gpt-5.6-luna',
+      'openai/gpt-oss-120b',
+      'anthropic/claude-sonnet-5',
     ]);
 
 // NOT IN THE CHAIN, deliberately: perplexity/pplx-embed-v1-4b.
@@ -151,11 +140,11 @@ interface OpenAIMessage {
 async function complete(messages: OpenAIMessage[], temperature: number, maxTokens: number, deadlineAt?: number): Promise<string> {
   let lastErr: any = null;
   for (let i = 0; i < MODEL_CHAIN.length; i++) {
-    // THE fix this file exists for: without this check, each of up to 17
-    // chain entries gets its own fresh TIMEOUT_MS attempt with no regard for
-    // how much of the turn's overall budget already went to the ones before
-    // it. Checked before EVERY attempt, including the first, so a deadline
-    // that arrives already past never starts a call that cannot finish.
+    // THE fix this file exists for: without this check, each of MODEL_CHAIN's
+    // entries gets its own fresh TIMEOUT_MS attempt with no regard for how
+    // much of the turn's overall budget already went to the ones before it.
+    // Checked before EVERY attempt, including the first, so a deadline that
+    // arrives already past never starts a call that cannot finish.
     if (isPastDeadline(deadlineAt)) {
       log.warn('openrouter: turn deadline exceeded, stopping model chain', {
         triedCount: i, remaining: MODEL_CHAIN.length - i,

@@ -205,14 +205,17 @@ describe('openrouter abort timer', () => {
       return { ok: false, status: 429, text: async () => 'rate limited', headers: { get: () => null } };
     });
     const { openrouterText, MODEL_CHAIN } = await import('@/lib/ai/openrouter');
-    expect(MODEL_CHAIN.length).toBeGreaterThan(5); // sanity: this is really the long chain
+    // Sanity: this is really the multi-model chain (paid roster, post
+    // migration-077), not a single OPENROUTER_MODEL override collapsing it
+    // to length 1.
+    expect(MODEL_CHAIN.length).toBeGreaterThan(1);
 
     await expect(
       openrouterText({ prompt: 'hi', deadlineAt: start + 12_000 }),
     ).rejects.toMatchObject({ code: 'deadline_exceeded' });
 
     // 12s budget / 5s per attempt = at most 3 attempts before the deadline
-    // check stops a 4th — nowhere near the full ~17-model chain.
+    // check stops a 4th — short of the full 4-model paid chain.
     expect(fetchMock.mock.calls.length).toBeGreaterThan(0);
     expect(fetchMock.mock.calls.length).toBeLessThan(MODEL_CHAIN.length);
     expect(fetchMock.mock.calls.length).toBeLessThanOrEqual(3);
