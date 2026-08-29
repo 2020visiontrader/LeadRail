@@ -42,6 +42,7 @@ import { markParseOutcome } from '@/lib/credits';
 import { log } from '@/lib/logger';
 import { buildCachedPrompt } from './prompt-cache';
 import { extractJson } from './json-envelope';
+import { renderObservation } from './observation-render';
 import { beginDelegationScope, endDelegationScope, setDelegationContext } from '@/lib/capabilities/delegation';
 import { hermesRoute } from '@/lib/ai/hermes';
 import { parseBatch, runBatch, batchSummary, MAX_BATCH, type BatchItemResult } from './batch';
@@ -822,17 +823,44 @@ function analysisFor(tool: string, args: any, res: { ok: boolean; result?: any }
 // with nothing in it is worse than the apology (CLAUDE.md/task spec).
 //
 // Both loops MUST call this (CLAUDE.md: the two loops stay identical).
-function buildSalvageMessage(steps: AgentStep[], extraTools?: Record<string, AgentTool>): string | null {
+//
+// RENDERING (the fix this function shipped under): a raw `truncate(obs, 400)`
+// dumped 25 finished, personalised outreach drafts — and a lead list, and a
+// sender persona object — as flat-clipped JSON, unreadable. The actual
+// rendering now lives in ./observation-render (renderObservation()), a
+// general shape-driven renderer with no tool-name allowlist, exported so
+// other call sites can reuse it — see that module's header comment for the
+// full shape catalogue (single object / record array / batch / plain text /
+// embedded JSON) and why each is handled the way it is. This function just
+// wires it to the per-step budget and the honest salvage framing.
+export function buildSalvageMessage(steps: AgentStep[], extraTools?: Record<string, AgentTool>): string | null {
   const succeeded = steps.filter(
     (s): s is AgentStep & { tool: string; observation: string } =>
       Boolean(s.tool) && typeof s.observation === 'string' && !s.observation.startsWith('ERROR:'),
   );
   if (succeeded.length === 0) return null;
 
+  // Budget: BUDGET.observationChars (lib/ai/context-budget.ts), reached here
+  // via OBSERVATION_CHAR_LIMIT — that constant IS BUDGET.observationChars
+  // unless AGENT_OBSERVATION_CHARS overrides it, and it is what every other
+  // single tool-result render in this file is already held to (see its
+  // definition above and the OBSERVATION_CHAR_LIMIT jsdoc). Reusing it means
+  // one dial, not a second invented number. Default 400,000 chars per
+  // succeeded STEP (a batch of 25 drafted emails is at most a few tens of
+  // thousands of characters, so in practice this budget is a safety rail
+  // against one pathological result, not the day-to-day limiter).
+  const stepBudget = OBSERVATION_CHAR_LIMIT;
+
   const lines = succeeded.map((s) => {
     const def = TOOLS[s.tool] ?? extraTools?.[s.tool];
     const label = def?.title || s.tool;
-    return `- ${label}: ${truncate(s.observation, 400)}`;
+    const rendered = renderObservation(s.observation, stepBudget);
+    return rendered.includes('\n')
+      ? `- ${label}:\n${rendered
+          .split('\n')
+          .map((l) => (l ? `  ${l}` : l))
+          .join('\n')}`
+      : `- ${label}: ${rendered}`;
   });
 
   return [
