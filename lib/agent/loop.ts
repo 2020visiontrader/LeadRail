@@ -256,6 +256,13 @@ export interface RunAgentInput {
    *  callers, so every existing caller keeps the unchanged MAX_STEPS cap.
    *  Clamped to [1, MAX_STEPS]; never allows a LARGER budget than default. */
   maxSteps?: number;
+  /** Absolute epoch-ms deadline inherited from a PARENT turn. Set only by
+   *  runFanoutDelegates when spawning a delegate sub-run — never by an
+   *  ordinary top-level caller, so every existing caller keeps computing its
+   *  own full TURN_DEADLINE_MS unchanged. A delegate's effective deadline is
+   *  min(its own default turnDeadline, this value): a delegate must never be
+   *  able to legally outlive the parent that spawned it (see lib/ai/deadline.ts). */
+  deadlineAt?: number;
 }
 
 export function agentConfigured(): boolean {
@@ -567,6 +574,25 @@ function salvageFinalMessage(raw: string): string | null {
  * ~2 minutes on a large prompt, and a turn may take several such steps.
  */
 const TURN_DEADLINE_MS = Number(process.env.AGENT_TURN_DEADLINE_MS) || 5 * 60 * 1000;
+
+/** This turn's absolute deadline: its own full TURN_DEADLINE_MS budget from
+ *  right now, clamped to the PARENT's deadline when this run is a delegate
+ *  (input.deadlineAt, set only by runFanoutDelegates). Never larger than
+ *  either bound — a delegate must never legally outlive the parent that
+ *  spawned it, which was a real, separate bug from the unbounded-retry one:
+ *  runFanoutDelegates used to call runAgent() with no deadline at all, so
+ *  each delegate computed its own fresh 5-minute budget regardless of how
+ *  much of the coordinator's own turn had already elapsed.
+ *
+ *  Computed once, at the very top of runAgentImpl/runAgentStreamImpl —
+ *  BEFORE the fan-out branch — so the coordinator's own deadline check (via
+ *  runCoordinatorFanout/runCoordinatorFanoutStream) and every delegate's
+ *  inherited deadline are measured from the same start-of-turn instant,
+ *  not from whenever the step loop happens to begin after several awaits. */
+export function computeTurnDeadline(input: RunAgentInput): number {
+  const ownDeadline = Date.now() + TURN_DEADLINE_MS;
+  return input.deadlineAt != null ? Math.min(ownDeadline, input.deadlineAt) : ownDeadline;
+}
 
 const MAX_JSON_RETRIES = 2;
 
@@ -1372,6 +1398,15 @@ async function runFanoutDelegates(
   // than delegates getting N verbatim copies of the document and nothing
   // else. Undefined on the explicit-@mention path, which never comprehends.
   understanding?: Understanding | null,
+  // The COORDINATOR's own turnDeadline (computeTurnDeadline), inherited by
+  // every delegate below via RunAgentInput.deadlineAt. Optional/additive —
+  // callers that omit it (there are none left in this file, but a future one
+  // is free to) get delegates with their own unbounded default deadline,
+  // same as before this parameter existed. A real, separate bug this closes:
+  // before this parameter existed, each delegate computed a fresh full
+  // TURN_DEADLINE_MS regardless of how much of the coordinator's own budget
+  // was already spent, so a delegate could legally outlive its parent.
+  deadlineAt?: number,
 ): Promise<{ outcomes: DelegateOutcome[]; needsApproval?: AgentResult }> {
   const delegates = personas.slice(0, MAX_FANOUT_DELEGATES); // constraint (2)
 
@@ -1440,6 +1475,12 @@ async function runFanoutDelegates(
         maxSteps: perDelegate,
         requestedBy: input.requestedBy,
         conversationId: input.conversationId,
+        // Inherits the COORDINATOR's own deadline (see this function's
+        // deadlineAt param) rather than letting the delegate compute a fresh
+        // full TURN_DEADLINE_MS of its own — computeTurnDeadline clamps to
+        // whichever is sooner, so a delegate can never legally outlive the
+        // parent turn that spawned it.
+        deadlineAt,
         // Deliberately no `transcript`/`carryover`/`approve` here: a delegate
         // is a fresh, self-contained sub-turn, not a resume of the
         // coordinator's own conversation.
@@ -1524,6 +1565,12 @@ async function synthesizeCoordinatorAnswer(
   coordinator: PersonaRow,
   outcomes: DelegateOutcome[],
   userMessage?: string,
+  // The coordinator turn's own deadline (computeTurnDeadline) — optional/
+  // additive, a caller that omits it gets the unbounded behaviour this call
+  // already had. Threaded through so the compose pass that reconciles the
+  // delegates into ONE answer cannot itself run past what remains of the
+  // turn, the same as the step loop and forced-final calls.
+  deadlineAt?: number,
 ): Promise<string> {
   if (!outcomes.length) {
     return "None of the mentioned team members were able to respond, so I don't have anything grounded to report.";
@@ -1578,6 +1625,7 @@ async function synthesizeCoordinatorAnswer(
       // is tried first. Leaving OpenCode to use its own default model when
       // it IS reached avoids hard-pinning this call to one specific model on
       // the tier tried last.
+      deadlineAt,
       ...(coordinator.model_id ? { modelId: coordinator.model_id } : {}),
     });
     const trimmed = raw.trim();
@@ -1628,12 +1676,17 @@ async function runCoordinatorFanout(
   accountId: string,
   fanout: { coordinator: PersonaRow; delegates: PersonaRow[]; understanding?: Understanding | null },
   input: RunAgentInput,
+  // The coordinator turn's own deadline (computeTurnDeadline, from
+  // runAgentImpl) — passed down to every delegate and to the synthesis call.
+  // Optional/additive: omitted, delegates and synthesis fall back to their
+  // own unbounded defaults, unchanged from before this parameter existed.
+  deadlineAt?: number,
 ): Promise<AgentResult> {
   const messages: StoredMessage[] = capTranscript(input.transcript || []);
   const steps: AgentStep[] = [];
   if (input.message) messages.push({ role: 'user', content: input.message, ...(input.userMessageId ? { id: input.userMessageId } : {}) });
 
-  const { outcomes, needsApproval } = await runFanoutDelegates(accountId, fanout.delegates, input, undefined, fanout.understanding);
+  const { outcomes, needsApproval } = await runFanoutDelegates(accountId, fanout.delegates, input, undefined, fanout.understanding, deadlineAt);
   for (const o of outcomes) {
     steps.push({
       thought: `${o.persona.name} ${o.status === 'error' ? 'ran into an error' : 'responded'}.`,
@@ -1642,7 +1695,7 @@ async function runCoordinatorFanout(
   }
   if (needsApproval) return needsApproval; // constraint (1) — a delegate's own pending approval IS the turn's result
 
-  const answer = await synthesizeCoordinatorAnswer(accountId, fanout.coordinator, outcomes, input.message);
+  const answer = await synthesizeCoordinatorAnswer(accountId, fanout.coordinator, outcomes, input.message, deadlineAt);
   messages.push({ role: 'assistant', content: answer });
   const tokenEstimate = estimateTokens(messages);
   return { status: 'done', message: answer, transcript: messages, steps, tokenEstimate, compaction: compactionLevel(tokenEstimate) };
@@ -1661,6 +1714,8 @@ async function runCoordinatorFanoutStream(
   fanout: { coordinator: PersonaRow; delegates: PersonaRow[]; understanding?: Understanding | null },
   input: RunAgentInput,
   emit: (e: AgentEvent) => void,
+  // See runCoordinatorFanout's identical parameter.
+  deadlineAt?: number,
 ): Promise<void> {
   const messages: StoredMessage[] = capTranscript(input.transcript || []);
   if (input.message) messages.push({ role: 'user', content: input.message, ...(input.userMessageId ? { id: input.userMessageId } : {}) });
@@ -1677,14 +1732,14 @@ async function runCoordinatorFanoutStream(
       : `Bringing in ${delegates.slice(0, -1).map((p) => p.name).join(', ')} and ${delegates[delegates.length - 1].name}.`,
   });
 
-  const { outcomes, needsApproval } = await runFanoutDelegates(accountId, fanout.delegates, input, emit, fanout.understanding);
+  const { outcomes, needsApproval } = await runFanoutDelegates(accountId, fanout.delegates, input, emit, fanout.understanding, deadlineAt);
   if (needsApproval) {
     emit({ type: 'needs_approval', proposal: needsApproval.proposal!, message: needsApproval.message, transcript: needsApproval.transcript });
     return;
   }
 
   emit({ type: 'step_start', text: `${fanout.coordinator.name} is pulling it together…` });
-  const answer = await synthesizeCoordinatorAnswer(accountId, fanout.coordinator, outcomes, input.message);
+  const answer = await synthesizeCoordinatorAnswer(accountId, fanout.coordinator, outcomes, input.message, deadlineAt);
   messages.push({ role: 'assistant', content: answer });
   const tokenEstimate = estimateTokens(messages);
   emit({ type: 'final', message: answer, transcript: messages, tokenEstimate });
@@ -1694,6 +1749,11 @@ async function runCoordinatorFanoutStream(
 
 async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
   const { accountId, brandContext } = input;
+  // Computed BEFORE anything else in the turn — see computeTurnDeadline's
+  // comment — so the fan-out path below and every model call further down
+  // (step loop, forced-final, synthesis, and each delegate's inherited
+  // deadline) all measure against the same start-of-turn instant.
+  const turnDeadline = computeTurnDeadline(input);
   // Server-derived context handed to every tool call. The MODEL never supplies
   // these: a conversation id it could set would be forgeable, and plans, grants
   // and memory are all keyed on it.
@@ -1715,7 +1775,7 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
     // here — runAgent (unlike runAgentStream) has no live channel to announce
     // "reading the attached material" on.
     const fanout = await resolveCoordinatorFanout(accountId, input.personaMentions, input.message, input.agentContext);
-    if (fanout) return runCoordinatorFanout(accountId, fanout, input);
+    if (fanout) return runCoordinatorFanout(accountId, fanout, input, turnDeadline);
   }
   const { systemBlock: personaBlock, modelId: personaModelId } = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
   const allEnabledSkills = await loadEnabledSkillsForAgent(accountId);
@@ -1816,7 +1876,10 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
   // Which tool produced the most recent observation, so a model-call failure can
   // report what it was reacting to (failures after a tool differ from cold ones).
   let lastToolName: string | undefined;
-  const turnDeadline = Date.now() + TURN_DEADLINE_MS;
+  // turnDeadline is computed once, at the very top of runAgentImpl (before
+  // the fan-out branch) — see computeTurnDeadline. Reused here rather than
+  // recomputed so a slow resolvePersonaForTurn/loadEnabledSkillsForAgent
+  // above does not silently re-arm the clock.
   for (let i = 0; i < stepCap; i++) {
     // Before the step, not after: the point is to bound the wait, not to
     // notice afterwards that it was exceeded. Breaking lands in the forced
@@ -1848,6 +1911,7 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
         task: 'reason',
         preferTier: AGENT_ROUTE_TIER,
         zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
+        deadlineAt: turnDeadline,
         // Only threaded through when a persona with a model override is active,
         // so the no-persona path calls generateChat with EXACTLY the same
         // options object shape as before this change.
@@ -2175,6 +2239,7 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
       // Leaving OpenCode to use its own default model when it IS reached
       // avoids hard-pinning this call to one specific model on the tier that
       // is tried last.
+      deadlineAt: turnDeadline,
       ...(personaModelId ? { modelId: personaModelId } : {}),
     });
     const p = extractJson(raw);
@@ -2328,6 +2393,10 @@ function emitAnalysis(emit: (e: AgentEvent) => void, analysis: Analysis | null):
 // "harmonize" the streaming/compose paths.
 async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) => void): Promise<void> {
   const { accountId, brandContext } = input;
+  // Computed BEFORE anything else in the turn — see computeTurnDeadline's
+  // comment and the identical placement in runAgentImpl above (CLAUDE.md:
+  // the two loops must stay identical).
+  const turnDeadline = computeTurnDeadline(input);
   // Server-derived context handed to every tool call. The MODEL never supplies
   // these: a conversation id it could set would be forgeable, and plans, grants
   // and memory are all keyed on it.
@@ -2366,7 +2435,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
     loadEnabledSkillsForAgent(accountId),
     loadExternalCapabilities(accountId),
   ]);
-  if (fanout) { await runCoordinatorFanoutStream(accountId, fanout, input, emit); return; }
+  if (fanout) { await runCoordinatorFanoutStream(accountId, fanout, input, emit, turnDeadline); return; }
   const { systemBlock: personaBlock, modelId: personaModelId } = personaResult;
   // Hermes picks the 1-4 that apply to THIS request instead of injecting all.
   // This is the one hop that must stay sequential — it genuinely depends on
@@ -2462,7 +2531,10 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
   // Which tool produced the most recent observation, so a model-call failure can
   // report what it was reacting to (failures after a tool differ from cold ones).
   let lastToolName: string | undefined;
-  const turnDeadline = Date.now() + TURN_DEADLINE_MS;
+  // turnDeadline is computed once, at the very top of runAgentStreamImpl
+  // (before the fan-out branch) — see computeTurnDeadline. Reused here, not
+  // recomputed, mirroring runAgentImpl exactly (CLAUDE.md: the two loops
+  // must stay identical).
   for (let i = 0; i < stepCap; i++) {
     // Before the step, not after: the point is to bound the wait, not to
     // notice afterwards that it was exceeded. Breaking lands in the forced
@@ -2498,6 +2570,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
         task: 'reason',
         preferTier: AGENT_ROUTE_TIER,
         zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
+        deadlineAt: turnDeadline,
         ...(personaModelId ? { accountId, modelId: personaModelId } : {}),
       });
     } catch (e: unknown) {
@@ -2830,6 +2903,7 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
       // tried first, exactly as for every step-loop call. If this call DOES
       // fall all the way to OpenCode, let it use its own default model
       // rather than pinning one specific model on the tier tried last.
+      deadlineAt: turnDeadline,
       ...(personaModelId ? { modelId: personaModelId } : {}),
     });
     const p = extractJson(raw);

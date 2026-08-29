@@ -17,6 +17,7 @@
 // override with AI_MAX_OUTPUT_TOKENS.
 import { reportOpenAIUsage, reportUsage, reportProviderNotReported } from './usage';
 import { parseRetryAfterMs } from './health';
+import { boundedTimeoutMs, deadlineExceededError, isPastDeadline } from './deadline';
 
 const DEFAULT_MAX_OUT = Number(process.env.AI_MAX_OUTPUT_TOKENS) || 16000;
 
@@ -59,8 +60,12 @@ interface OpenAIMessage {
   content: string;
 }
 
-async function complete(messages: OpenAIMessage[], temperature: number, maxTokens: number, model?: string): Promise<string> {
+async function complete(messages: OpenAIMessage[], temperature: number, maxTokens: number, model?: string, deadlineAt?: number): Promise<string> {
   requireKey();
+  // Checked before starting the fetch, not just used to shrink the abort
+  // timer below — a deadline already past means this attempt cannot finish,
+  // so it must not be started.
+  if (isPastDeadline(deadlineAt)) throw deadlineExceededError('opencode');
   const useModel = model || TEXT_MODEL;
   const body: Record<string, any> = {
     model: useModel,
@@ -76,7 +81,10 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
   if (/deepseek/i.test(useModel)) body.thinking = { type: 'disabled' };
 
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  // min(TIMEOUT_MS, time remaining) — never larger than today's constant,
+  // only ever tighter, and unaffected when deadlineAt is undefined.
+  const effectiveTimeoutMs = boundedTimeoutMs(TIMEOUT_MS, deadlineAt);
+  const timer = setTimeout(() => ctrl.abort(), effectiveTimeoutMs);
   let res: Response;
   try {
     res = await fetch(`${BASE}/chat/completions`, {
@@ -87,7 +95,7 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
     });
   } catch (e: any) {
     const err: any = new Error(
-      e?.name === 'AbortError' ? `OpenCode timed out after ${TIMEOUT_MS}ms` : `OpenCode request failed`,
+      e?.name === 'AbortError' ? `OpenCode timed out after ${effectiveTimeoutMs}ms` : `OpenCode request failed`,
     );
     err.code = 'upstream';
     err.detail = String(e?.message || e).slice(0, 300);
@@ -116,8 +124,13 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
   // endpoint and return EMPTY content. If that happens on a non-DeepSeek model,
   // retry once on the reliable DeepSeek backbone (thinking disabled) so a caller
   // never receives a blank. DeepSeek emptiness is a real failure — don't loop.
-  if (!text && !/deepseek/i.test(useModel)) {
-    return complete(messages, temperature, maxTokens, RELIABLE_FALLBACK);
+  // Guarded by the same deadline check as the top of this function: this
+  // retry is itself a second attempt with its own fresh timeout, exactly the
+  // shape of unbounded-sum bug this file's callers exist to prevent — skip it
+  // once the deadline has passed rather than starting a call that cannot
+  // finish, and return the (empty) text as-is.
+  if (!text && !/deepseek/i.test(useModel) && !isPastDeadline(deadlineAt)) {
+    return complete(messages, temperature, maxTokens, RELIABLE_FALLBACK, deadlineAt);
   }
   return text;
 }
@@ -228,8 +241,10 @@ async function completeStream(
   maxTokens: number,
   model: string | undefined,
   onDelta: (chunk: string) => void,
+  deadlineAt?: number,
 ): Promise<string> {
   requireKey();
+  if (isPastDeadline(deadlineAt)) throw deadlineExceededError('opencode');
   const useModel = model || TEXT_MODEL;
   const body: Record<string, any> = {
     model: useModel,
@@ -249,7 +264,8 @@ async function completeStream(
   if (/deepseek/i.test(useModel)) body.thinking = { type: 'disabled' };
 
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  const effectiveTimeoutMs = boundedTimeoutMs(TIMEOUT_MS, deadlineAt);
+  const timer = setTimeout(() => ctrl.abort(), effectiveTimeoutMs);
   let res: Response;
   try {
     res = await fetch(`${BASE}/chat/completions`, {
@@ -260,7 +276,7 @@ async function completeStream(
     });
   } catch (e: any) {
     const err: any = new Error(
-      e?.name === 'AbortError' ? `OpenCode timed out after ${TIMEOUT_MS}ms` : `OpenCode request failed`,
+      e?.name === 'AbortError' ? `OpenCode timed out after ${effectiveTimeoutMs}ms` : `OpenCode request failed`,
     );
     err.code = 'upstream';
     err.detail = String(e?.message || e).slice(0, 300);
@@ -310,6 +326,9 @@ export async function streamChat(
     temperature?: number;
     maxOutputTokens?: number;
     model?: string;
+    /** Absolute epoch-ms deadline for the whole turn this call belongs to.
+     *  Optional/additive — omitted, behaviour is unchanged. See lib/ai/deadline.ts. */
+    deadlineAt?: number;
   },
   onDelta: (chunk: string) => void,
 ): Promise<string> {
@@ -318,7 +337,7 @@ export async function streamChat(
   for (const m of opts.messages) {
     if (m.content?.trim()) messages.push({ role: m.role, content: m.content });
   }
-  return completeStream(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.model, onDelta);
+  return completeStream(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.model, onDelta, opts.deadlineAt);
 }
 
 /** Generate text. Returns the model's plain-text completion. Pass `model` to
@@ -329,11 +348,14 @@ export async function generateText(opts: {
   temperature?: number;
   maxOutputTokens?: number;
   model?: string;
+  /** Absolute epoch-ms deadline for the whole turn this call belongs to.
+   *  Optional/additive — omitted, behaviour is unchanged. See lib/ai/deadline.ts. */
+  deadlineAt?: number;
 }): Promise<string> {
   const messages: OpenAIMessage[] = [];
   if (opts.system) messages.push({ role: 'system', content: opts.system });
   messages.push({ role: 'user', content: opts.prompt });
-  return complete(messages, opts.temperature ?? 0.7, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.model);
+  return complete(messages, opts.temperature ?? 0.7, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.model, opts.deadlineAt);
 }
 
 /**
@@ -346,13 +368,16 @@ export async function generateChat(opts: {
   temperature?: number;
   maxOutputTokens?: number;
   model?: string;
+  /** Absolute epoch-ms deadline for the whole turn this call belongs to.
+   *  Optional/additive — omitted, behaviour is unchanged. See lib/ai/deadline.ts. */
+  deadlineAt?: number;
 }): Promise<string> {
   const messages: OpenAIMessage[] = [];
   if (opts.system) messages.push({ role: 'system', content: opts.system });
   for (const m of opts.messages) {
     if (m.content?.trim()) messages.push({ role: m.role, content: m.content });
   }
-  return complete(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.model);
+  return complete(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.model, opts.deadlineAt);
 }
 
 export const opencodeModel = TEXT_MODEL;

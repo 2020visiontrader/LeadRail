@@ -46,6 +46,7 @@ import { zoAskConfigured, zoAskText, zoAskChat } from './zoask';
 import { openrouterConfigured, openrouterText, openrouterChat, openrouterStreamChat } from './openrouter';
 import { log } from '@/lib/logger';
 import { registryConfigured, resolveChain, resolveChainForTask, callModel, callModelStream, type ResolvedModel } from './providers';
+import { isPastDeadline, deadlineExceededError } from './deadline';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LADDER ORDER
@@ -258,6 +259,11 @@ function ladderCandidates(
 interface UsageTrace {
   conversationId?: string;
   onUsageRow?: (id: string) => void;
+  /** Absolute epoch-ms deadline for the whole turn this call belongs to.
+   *  Optional/additive — see lib/ai/deadline.ts. When set, runCandidates
+   *  stops trying further candidates once it has passed, rather than
+   *  starting an attempt that cannot finish in time. */
+  deadlineAt?: number;
 }
 
 async function runCandidates(
@@ -290,6 +296,20 @@ async function runCandidates(
 
   let lastErr: any = null;
   for (const candidate of orderByHealth(eligible, (c) => c.id)) {
+    // Checked BEFORE every candidate, not just the ones that come from a
+    // provider's own internal chain: a deadline that has already passed
+    // means the next candidate cannot finish, so it must not be started at
+    // all. This is the one place that sees the WHOLE candidate list (registry
+    // rows + ladder tiers), so it is where "stop trying further candidates"
+    // has to live regardless of which layer contributed them. Distinct error
+    // (not lastErr) so a deadline exhaustion is never read as an ordinary
+    // provider failure in app_logs — see lib/ai/deadline.ts.
+    if (isPastDeadline(trace?.deadlineAt)) {
+      log.warn('ai router: turn deadline exceeded, stopping candidate attempts', {
+        fn, remainingCandidates: eligible.length,
+      });
+      throw deadlineExceededError(fn, lastErr);
+    }
     const start = Date.now();
     // One capture scope per attempt, so a failed model's usage block cannot be
     // attributed to the model that answered after it.
@@ -369,12 +389,16 @@ export async function generateText(opts: {
   /** Receives the ai_usage row id of the attempt that answered, so the caller
    *  can record whether the response was usable. See UsageTrace. */
   onUsageRow?: (id: string) => void;
+  /** Absolute epoch-ms deadline for the whole turn this call belongs to.
+   *  Optional/additive: a caller that omits it gets byte-identical
+   *  (unbounded) behaviour. See lib/ai/deadline.ts. */
+  deadlineAt?: number;
 }): Promise<string> {
   const registry = await registryCandidates(opts.accountId, opts.modelId, undefined, undefined, (resolved) =>
     callModel(resolved, { system: opts.system, prompt: opts.prompt, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens }),
   );
   const ladder = ladderCandidates({
-    zoask: { configured: zoAskConfigured(), run: () => zoAskText({ system: opts.system, prompt: opts.prompt, maxOutputTokens: opts.maxOutputTokens }) },
+    zoask: { configured: zoAskConfigured(), run: () => zoAskText({ system: opts.system, prompt: opts.prompt, maxOutputTokens: opts.maxOutputTokens, deadlineAt: opts.deadlineAt }) },
     opencode: { configured: opencode.opencodeConfigured(), run: () => opencode.generateText(opts) },
     openrouter: { configured: openrouterConfigured(), run: () => openrouterText(opts) },
   });
@@ -382,7 +406,7 @@ export async function generateText(opts: {
     promptTokens: estimateTokens((opts.system || '') + opts.prompt),
     wantOutputTokens: opts.maxOutputTokens,
   },
-    { conversationId: opts.conversationId, onUsageRow: opts.onUsageRow },
+    { conversationId: opts.conversationId, onUsageRow: opts.onUsageRow, deadlineAt: opts.deadlineAt },
   );
 }
 
@@ -413,12 +437,16 @@ export async function generateChat(opts: {
   /** Omit maxOutputTokens and set this to say "use the selected model's own
    *  output capability, but no more than this" (migration 038). */
   maxOutputCeiling?: number;
+  /** Absolute epoch-ms deadline for the whole turn this call belongs to.
+   *  Optional/additive: a caller that omits it gets byte-identical
+   *  (unbounded) behaviour. See lib/ai/deadline.ts. */
+  deadlineAt?: number;
 }): Promise<string> {
   const registry = await registryCandidates(opts.accountId, opts.modelId, opts.task, opts.preferTier, (resolved) =>
     callModel(resolved, { system: opts.system, messages: opts.messages, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, maxOutputCeiling: opts.maxOutputCeiling }),
   );
   const ladder = ladderCandidates({
-    zoask: { configured: zoAskConfigured(), run: () => zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel }) },
+    zoask: { configured: zoAskConfigured(), run: () => zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel, deadlineAt: opts.deadlineAt }) },
     opencode: { configured: opencode.opencodeConfigured(), run: () => opencode.generateChat(opts) },
     openrouter: { configured: openrouterConfigured(), run: () => openrouterChat(opts) },
   }, opts.preferTier);
@@ -429,7 +457,7 @@ export async function generateChat(opts: {
     // satisfying the request rather than failing it.
     wantOutputTokens: opts.maxOutputTokens,
   },
-    { conversationId: opts.conversationId, onUsageRow: opts.onUsageRow },
+    { conversationId: opts.conversationId, onUsageRow: opts.onUsageRow, deadlineAt: opts.deadlineAt },
   );
 }
 
@@ -462,7 +490,7 @@ export async function streamChat(
     callModelStream(resolved, { system: opts.system, messages: opts.messages, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, maxOutputCeiling: opts.maxOutputCeiling }, onDelta),
   );
   const ladder = ladderCandidates({
-    zoask: { configured: zoAskConfigured(), run: () => zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel }) },
+    zoask: { configured: zoAskConfigured(), run: () => zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel, deadlineAt: opts.deadlineAt }) },
     opencode: { configured: opencode.opencodeConfigured(), run: () => opencode.streamChat(opts, onDelta) },
     openrouter: { configured: openrouterConfigured(), run: () => openrouterStreamChat(opts, onDelta) },
   }, opts.preferTier);
@@ -473,6 +501,6 @@ export async function streamChat(
     // satisfying the request rather than failing it.
     wantOutputTokens: opts.maxOutputTokens,
   },
-    { conversationId: opts.conversationId, onUsageRow: opts.onUsageRow },
+    { conversationId: opts.conversationId, onUsageRow: opts.onUsageRow, deadlineAt: opts.deadlineAt },
   );
 }

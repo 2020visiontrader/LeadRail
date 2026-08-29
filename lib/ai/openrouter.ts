@@ -10,6 +10,7 @@ import { readSseDeltas } from './opencode';
 import { reportOpenAIUsage } from './usage';
 import { log } from '@/lib/logger';
 import { parseRetryAfterMs } from './health';
+import { boundedTimeoutMs, deadlineExceededError, isPastDeadline } from './deadline';
 
 // Default output budget when a caller does not specify one.
 //
@@ -147,12 +148,23 @@ interface OpenAIMessage {
  *  different model cannot fix. Logs every skipped model so a rate-limited or
  *  retired id shows up in /logs as a warning instead of silently degrading
  *  the last tier. */
-async function complete(messages: OpenAIMessage[], temperature: number, maxTokens: number): Promise<string> {
+async function complete(messages: OpenAIMessage[], temperature: number, maxTokens: number, deadlineAt?: number): Promise<string> {
   let lastErr: any = null;
   for (let i = 0; i < MODEL_CHAIN.length; i++) {
+    // THE fix this file exists for: without this check, each of up to 17
+    // chain entries gets its own fresh TIMEOUT_MS attempt with no regard for
+    // how much of the turn's overall budget already went to the ones before
+    // it. Checked before EVERY attempt, including the first, so a deadline
+    // that arrives already past never starts a call that cannot finish.
+    if (isPastDeadline(deadlineAt)) {
+      log.warn('openrouter: turn deadline exceeded, stopping model chain', {
+        triedCount: i, remaining: MODEL_CHAIN.length - i,
+      });
+      throw deadlineExceededError('openrouter', lastErr);
+    }
     const model = MODEL_CHAIN[i];
     try {
-      return await completeWith(model, messages, temperature, maxTokens);
+      return await completeWith(model, messages, temperature, maxTokens, deadlineAt);
     } catch (err: any) {
       lastErr = err;
       const status = Number(err?.status) || 0;
@@ -165,9 +177,12 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
   throw lastErr;
 }
 
-async function completeWith(MODEL: string, messages: OpenAIMessage[], temperature: number, maxTokens: number): Promise<string> {
+async function completeWith(MODEL: string, messages: OpenAIMessage[], temperature: number, maxTokens: number, deadlineAt?: number): Promise<string> {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  // min(TIMEOUT_MS, time remaining) — never larger than today's constant,
+  // only ever tighter, and unaffected when deadlineAt is undefined.
+  const effectiveTimeoutMs = boundedTimeoutMs(TIMEOUT_MS, deadlineAt);
+  const timer = setTimeout(() => ctrl.abort(), effectiveTimeoutMs);
   let res: Response;
   try {
     res = await fetch(`${BASE}/chat/completions`, {
@@ -185,7 +200,7 @@ async function completeWith(MODEL: string, messages: OpenAIMessage[], temperatur
     });
   } catch (e: any) {
     const err: any = new Error(
-      e?.name === 'AbortError' ? `OpenRouter timed out after ${TIMEOUT_MS}ms` : `OpenRouter request failed`,
+      e?.name === 'AbortError' ? `OpenRouter timed out after ${effectiveTimeoutMs}ms` : `OpenRouter request failed`,
     );
     err.code = 'upstream';
     err.detail = String(e?.message || e).slice(0, 300);
@@ -223,15 +238,23 @@ async function completeStream(
   temperature: number,
   maxTokens: number,
   onDelta: (chunk: string) => void,
+  deadlineAt?: number,
 ): Promise<string> {
   // Same chain as complete(). Safe to fall back here because a 402/404/429
   // arrives on the response STATUS, before any delta has been emitted — so no
   // partial answer has reached the client when we switch models.
   let lastErr: any = null;
   for (let i = 0; i < MODEL_CHAIN.length; i++) {
+    // Same deadline check as complete()'s chain loop — see its comment.
+    if (isPastDeadline(deadlineAt)) {
+      log.warn('openrouter: turn deadline exceeded, stopping model chain (stream)', {
+        triedCount: i, remaining: MODEL_CHAIN.length - i,
+      });
+      throw deadlineExceededError('openrouter', lastErr);
+    }
     const model = MODEL_CHAIN[i];
     try {
-      return await completeStreamWith(model, messages, temperature, maxTokens, onDelta);
+      return await completeStreamWith(model, messages, temperature, maxTokens, onDelta, deadlineAt);
     } catch (err: any) {
       lastErr = err;
       const status = Number(err?.status) || 0;
@@ -250,9 +273,11 @@ async function completeStreamWith(
   temperature: number,
   maxTokens: number,
   onDelta: (chunk: string) => void,
+  deadlineAt?: number,
 ): Promise<string> {
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  const effectiveTimeoutMs = boundedTimeoutMs(TIMEOUT_MS, deadlineAt);
+  const timer = setTimeout(() => ctrl.abort(), effectiveTimeoutMs);
   let res: Response;
   try {
     res = await fetch(`${BASE}/chat/completions`, {
@@ -273,7 +298,7 @@ async function completeStreamWith(
     });
   } catch (e: any) {
     const err: any = new Error(
-      e?.name === 'AbortError' ? `OpenRouter timed out after ${TIMEOUT_MS}ms` : `OpenRouter request failed`,
+      e?.name === 'AbortError' ? `OpenRouter timed out after ${effectiveTimeoutMs}ms` : `OpenRouter request failed`,
     );
     err.code = 'upstream';
     err.detail = String(e?.message || e).slice(0, 300);
@@ -322,6 +347,9 @@ export async function openrouterStreamChat(
     messages: { role: 'user' | 'assistant'; content: string }[];
     temperature?: number;
     maxOutputTokens?: number;
+    /** Absolute epoch-ms deadline for the whole turn this call belongs to.
+     *  Optional/additive — omitted, behaviour is unchanged. See lib/ai/deadline.ts. */
+    deadlineAt?: number;
   },
   onDelta: (chunk: string) => void,
 ): Promise<string> {
@@ -330,7 +358,7 @@ export async function openrouterStreamChat(
   for (const m of opts.messages) {
     if (m.content?.trim()) messages.push({ role: m.role, content: m.content });
   }
-  return completeStream(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, onDelta);
+  return completeStream(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, onDelta, opts.deadlineAt);
 }
 
 /** Generate text. Returns the model's plain-text completion. */
@@ -339,11 +367,14 @@ export async function openrouterText(opts: {
   prompt: string;
   temperature?: number;
   maxOutputTokens?: number;
+  /** Absolute epoch-ms deadline for the whole turn this call belongs to.
+   *  Optional/additive — omitted, behaviour is unchanged. See lib/ai/deadline.ts. */
+  deadlineAt?: number;
 }): Promise<string> {
   const messages: OpenAIMessage[] = [];
   if (opts.system) messages.push({ role: 'system', content: opts.system });
   messages.push({ role: 'user', content: opts.prompt });
-  return complete(messages, opts.temperature ?? 0.7, opts.maxOutputTokens ?? DEFAULT_MAX_OUT);
+  return complete(messages, opts.temperature ?? 0.7, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.deadlineAt);
 }
 
 /** Multi-turn chat completion. Passes the whole conversation through. */
@@ -352,13 +383,16 @@ export async function openrouterChat(opts: {
   messages: { role: 'user' | 'assistant'; content: string }[];
   temperature?: number;
   maxOutputTokens?: number;
+  /** Absolute epoch-ms deadline for the whole turn this call belongs to.
+   *  Optional/additive — omitted, behaviour is unchanged. See lib/ai/deadline.ts. */
+  deadlineAt?: number;
 }): Promise<string> {
   const messages: OpenAIMessage[] = [];
   if (opts.system) messages.push({ role: 'system', content: opts.system });
   for (const m of opts.messages) {
     if (m.content?.trim()) messages.push({ role: m.role, content: m.content });
   }
-  return complete(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT);
+  return complete(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.deadlineAt);
 }
 
 // ---------------------------------------------------------------------------

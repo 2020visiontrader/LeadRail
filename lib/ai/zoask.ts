@@ -5,6 +5,7 @@
 
 import { parseRetryAfterMs } from './health';
 import { reportProviderNotReported } from './usage';
+import { boundedTimeoutMs, deadlineExceededError, isPastDeadline } from './deadline';
 
 const KEY =
   process.env.ZO_Api_Key ||
@@ -50,14 +51,24 @@ export function zoAskConfigured(): boolean {
 // wire value, so it also covers any future caller that forwards the sentinel.
 const DEFAULT_MODEL_SENTINELS = new Set(['__default__', 'default', 'auto', '']);
 
-async function ask(input: string, modelOverride?: string): Promise<string> {
+async function ask(input: string, modelOverride?: string, deadlineAt?: number): Promise<string> {
+  // Checked BEFORE starting the fetch, not just used to shrink the abort
+  // timer: a deadline that has already passed means this attempt cannot
+  // finish, so it must not be started at all (constraint 2's "do not start a
+  // candidate whose minimum cost obviously exceeds the remaining time"),
+  // rather than opened with a ~0ms timer that aborts almost immediately.
+  if (isPastDeadline(deadlineAt)) throw deadlineExceededError('zoask');
   const model = modelOverride || MODEL;
   const body: { input: string; model_name?: string } = { input };
   if (typeof model === 'string' && !DEFAULT_MODEL_SENTINELS.has(model.trim())) {
     body.model_name = model;
   }
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  // min(TIMEOUT_MS, time remaining) — never larger than today's constant,
+  // only ever tighter when a deadline is passed in. Unaffected (== TIMEOUT_MS)
+  // when deadlineAt is undefined.
+  const effectiveTimeoutMs = boundedTimeoutMs(TIMEOUT_MS, deadlineAt);
+  const timer = setTimeout(() => ctrl.abort(), effectiveTimeoutMs);
   let res: Response;
   try {
     res = await fetch('https://api.zo.computer/zo/ask', {
@@ -72,7 +83,7 @@ async function ask(input: string, modelOverride?: string): Promise<string> {
     });
   } catch (e: any) {
     const err: any = new Error(
-      e?.name === 'AbortError' ? `Zo Ask timed out after ${TIMEOUT_MS}ms` : `Zo Ask request failed`,
+      e?.name === 'AbortError' ? `Zo Ask timed out after ${effectiveTimeoutMs}ms` : `Zo Ask request failed`,
     );
     err.code = 'upstream';
     err.detail = String(e?.message || e).slice(0, 300);
@@ -120,9 +131,12 @@ export async function zoAskText(opts: {
   system?: string;
   prompt: string;
   maxOutputTokens?: number;
+  /** Absolute epoch-ms deadline for the whole turn this call belongs to.
+   *  Optional/additive — omitted, behaviour is unchanged. See lib/ai/deadline.ts. */
+  deadlineAt?: number;
 }): Promise<string> {
   const input = opts.system ? `${opts.system}\n\n${opts.prompt}` : opts.prompt;
-  return ask(input);
+  return ask(input, undefined, opts.deadlineAt);
 }
 
 /**
@@ -135,6 +149,9 @@ export async function zoAskChat(opts: {
   messages: { role: 'user' | 'assistant'; content: string }[];
   maxOutputTokens?: number;
   model?: string;
+  /** Absolute epoch-ms deadline for the whole turn this call belongs to.
+   *  Optional/additive — omitted, behaviour is unchanged. See lib/ai/deadline.ts. */
+  deadlineAt?: number;
 }): Promise<string> {
   const lines: string[] = [];
   if (opts.system) lines.push(opts.system);
@@ -143,5 +160,5 @@ export async function zoAskChat(opts: {
     lines.push(`${m.role === 'assistant' ? 'Assistant' : 'User'}: ${m.content}`);
   }
   lines.push('Assistant:');
-  return ask(lines.join('\n'), opts.model);
+  return ask(lines.join('\n'), opts.model, opts.deadlineAt);
 }
