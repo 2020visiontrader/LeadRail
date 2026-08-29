@@ -36,6 +36,23 @@ describe('budgets scale with the window', () => {
     expect(b.softTokens).toBeLessThan(b.hardTokens);
   });
 
+  it('derives delegateMaterialChars from the window, materially larger than the old flat 16,000', () => {
+    // lib/agent/loop.ts's DELEGATE_MATERIAL_CHARS used to be a bare
+    // `Number(process.env.DELEGATE_MATERIAL_CHARS) || 16_000` — the only
+    // budget in the platform not derived from the window. At the default 1M
+    // window this must resolve to far more than 16,000.
+    expect(BUDGET.delegateMaterialChars).toBeGreaterThan(16_000);
+    expect(BUDGET.delegateMaterialChars).toBe(1_000_000);
+  });
+
+  it('scales delegateMaterialChars down for a smaller model window, proportionally', () => {
+    const small = budgetsFor(200_000);
+    const large = budgetsFor(1_000_000);
+    expect(small.delegateMaterialChars).toBeLessThan(large.delegateMaterialChars);
+    // Exact: 200,000 tokens * 4 chars/token * 0.25 share = 200,000 chars.
+    expect(small.delegateMaterialChars).toBe(200_000);
+  });
+
   it('never budgets the whole window to one consumer', () => {
     // A turn also carries the system block, the tool catalog, the grounding
     // sections and the model's own answer. Handing 100% to one part produces a
@@ -53,11 +70,16 @@ describe('degrades, never below the old behaviour', () => {
     expect(b.observationChars).toBe(24_000);
     expect(b.softTokens).toBe(120_000);
     expect(b.hardTokens).toBe(160_000);
+    // delegateMaterialChars floors at the OLD flat DELEGATE_MATERIAL_CHARS
+    // (lib/agent/loop.ts) — a misconfigured window must never make a
+    // delegate's slice worse than the 16,000 it gets today.
+    expect(b.delegateMaterialChars).toBe(16_000);
   });
 
   it('the default budget is at least the old behaviour', () => {
     expect(BUDGET.attachmentChars).toBeGreaterThanOrEqual(12_000);
     expect(BUDGET.observationChars).toBeGreaterThanOrEqual(24_000);
+    expect(BUDGET.delegateMaterialChars).toBeGreaterThanOrEqual(16_000);
   });
 });
 

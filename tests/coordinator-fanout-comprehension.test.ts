@@ -23,6 +23,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'fs';
 import path from 'path';
+import { BUDGET } from '@/lib/ai/context-budget';
 
 const generateChat = vi.fn();
 const runTool = vi.fn();
@@ -139,6 +140,15 @@ function restoreBudgetEnv() {
   else process.env.ATTACHMENT_CONTEXT_CHARS = ORIGINAL_BUDGET_ENV;
 }
 
+// Same idea, for the delegate-material override itself (DELEGATE_MATERIAL_CHARS
+// — lib/agent/loop.ts) rather than the attachment budget it is bounded by.
+const ORIGINAL_DELEGATE_ENV = process.env.DELEGATE_MATERIAL_CHARS;
+function withDelegateBudget(chars: string) { process.env.DELEGATE_MATERIAL_CHARS = chars; }
+function restoreDelegateBudgetEnv() {
+  if (ORIGINAL_DELEGATE_ENV === undefined) delete process.env.DELEGATE_MATERIAL_CHARS;
+  else process.env.DELEGATE_MATERIAL_CHARS = ORIGINAL_DELEGATE_ENV;
+}
+
 describe('attachmentDigest / delegateContext (pure helpers)', () => {
   it('extracts a bounded excerpt starting at the attachment marker, not the whole thing', async () => {
     const { attachmentDigest } = await import('@/lib/agent/loop');
@@ -190,33 +200,72 @@ describe('attachmentDigest / delegateContext (pure helpers)', () => {
   });
 
   it('does not shrink a single delegate slice below DELEGATE_MATERIAL_CHARS just because the fan-out is larger', async () => {
-    // A mid-size budget (40,000) is deliberately chosen here, NOT the real
-    // multi-megabyte default: at the real default, contextCharBudget() is so
-    // large that DELEGATE_MATERIAL_CHARS (16,000) is always the binding cap
-    // regardless of delegateCount, even under the OLD buggy division — for
-    // every realistic fan-out size (MAX_FANOUT_DELEGATES=3),
-    // floor(hugeBudget/3) still vastly exceeds 16,000, so a revert-check
-    // against the real default would falsely stay green whether the division
-    // bug is present or fixed. 40,000/4 = 10,000, which sits BELOW
-    // DELEGATE_MATERIAL_CHARS, so this budget actually distinguishes: fixed
-    // code gives every delegate the full min(16000, 40000)=16000 regardless
-    // of count; the old buggy division would shrink a 4-delegate slice to
-    // 10,000.
+    // Pin DELEGATE_MATERIAL_CHARS explicitly via its env override (16,000 —
+    // the old flat value, still a valid escape hatch) and give it a bigger
+    // attachment budget (40,000) to divide against, so this test isolates
+    // "does the per-delegate cap stay flat across fan-out size" from
+    // whatever DELEGATE_MATERIAL_CHARS resolves to by default (covered
+    // separately below and in tests/context-budget.test.ts). 40,000/4 =
+    // 10,000, which sits BELOW the pinned 16,000, so this budget actually
+    // distinguishes: fixed code gives every delegate the full
+    // min(16000, 40000)=16000 regardless of count; the old buggy division
+    // (`Math.floor(contextCharBudget() / delegateCount)`) would have shrunk
+    // a 4-delegate slice to 10,000.
     withSmallBudget('40000');
+    withDelegateBudget('16000');
     try {
       const { delegateContext } = await import('@/lib/agent/loop');
       const ctx = bigAttachmentContext();
       const forOne = delegateContext(ctx, 1)!;
       const forFour = delegateContext(ctx, 4)!;
       expect(forFour.length).toBe(forOne.length);
-      // Sanity: the document slice itself is exactly DELEGATE_MATERIAL_CHARS
-      // (16,000), not the 40,000 budget — confirms the cap that's binding
-      // here is the per-delegate ceiling, not contextCharBudget().
+      // Sanity: the document slice itself is exactly the pinned
+      // DELEGATE_MATERIAL_CHARS (16,000), not the 40,000 budget — confirms
+      // the cap that's binding here is the per-delegate ceiling, not
+      // contextCharBudget().
       const head = 'ABOUT LEADRAIL (the platform you operate):\nsome static grounding here\n\n'.length;
       expect(forOne.length - head).toBe(16_000);
     } finally {
       restoreBudgetEnv();
+      restoreDelegateBudgetEnv();
     }
+  });
+
+  // THE DEFECT THIS TASK FIXES: DELEGATE_MATERIAL_CHARS used to be a flat,
+  // hardcoded 16,000 in lib/agent/loop.ts — the only budget in the codebase
+  // NOT derived from BUDGET (lib/ai/context-budget.ts). The coordinator can
+  // read up to BUDGET.attachmentChars (2,000,000 at the default 1M-token
+  // window) of an attached document; every delegate saw 16,000 of the same
+  // document — 0.8% of it — no matter how large the configured window was.
+  // This proves the constant now tracks BUDGET.delegateMaterialChars: with
+  // NEITHER env override set (the real production default), a document
+  // larger than the derived delegate budget but smaller than the attachment
+  // budget gets sliced to exactly BUDGET.delegateMaterialChars, not 16,000.
+  it('delegateContext now bounds at the DERIVED delegate budget, not the old flat 16,000', async () => {
+    restoreBudgetEnv();
+    restoreDelegateBudgetEnv();
+    // BUDGET.delegateMaterialChars is 1,000,000 at the default window;
+    // BUDGET.attachmentChars is 2,000,000 — so a document sized in between
+    // isolates the delegate cap as the binding constraint rather than the
+    // attachment budget or the document's own length.
+    const docSize = BUDGET.delegateMaterialChars + 200_000;
+    expect(docSize).toBeLessThan(BUDGET.attachmentChars);
+    const head = [
+      'ABOUT LEADRAIL (the platform you operate):\nsome static grounding here',
+      [
+        'ATTACHED DOCUMENTS — the user attached these to this conversation.',
+        '',
+        `--- BEGIN DOCUMENT: brief.txt (txt, ${docSize} bytes, attached to this conversation) ---`,
+        '',
+      ].join('\n'),
+    ].join('\n\n');
+    const ctx = head + 'x'.repeat(docSize) + '\n--- END DOCUMENT: brief.txt ---\n';
+    const { delegateContext } = await import('@/lib/agent/loop');
+    const bounded = delegateContext(ctx, 1)!;
+    const markerIdx = ctx.indexOf('ATTACHED DOCUMENTS');
+    expect(bounded.length - markerIdx).toBe(BUDGET.delegateMaterialChars);
+    // Materially larger than the old flat 16,000 — the actual defect.
+    expect(BUDGET.delegateMaterialChars).toBeGreaterThan(16_000);
   });
 
   it('leaves the static grounding sections (everything before the marker) untouched', async () => {
@@ -488,18 +537,22 @@ describe('comprehension pass — the regression, reproduced against the real tra
     expect(result.status).not.toBe('error');
   });
 
-  it('delegateContext bounds at realistic sizes — a 35k block with 2 delegates does NOT yield 35k each', async () => {
-    // Deliberately NOT overriding ATTACHMENT_CONTEXT_CHARS here: this is the
-    // realistic, un-tuned production default (a multi-megabyte allowance
-    // derived from a 1M-token window), which is exactly the case where the
-    // OLD delegateContext() silently handed each delegate the entire 35k
-    // document — the division by delegate count never bound at that size.
+  it('delegateContext now reads a realistic 35k document in full — the old flat 16,000 cap used to truncate it to under half', async () => {
+    // Deliberately NOT overriding ATTACHMENT_CONTEXT_CHARS or
+    // DELEGATE_MATERIAL_CHARS here: this is the realistic, un-tuned
+    // production default. Under the OLD flat DELEGATE_MATERIAL_CHARS
+    // (16,000), a 34,649-character transcript was truncated to well under
+    // half — the exact defect this task fixes. With the delegate budget now
+    // DERIVED from the context window (BUDGET.delegateMaterialChars,
+    // 1,000,000 at the default window), a document this size comfortably
+    // fits in one delegate's slice.
     const { delegateContext } = await import('@/lib/agent/loop');
     const ctx = bigAttachmentContextFrom(REAL_TRANSCRIPT);
     const forTwo = delegateContext(ctx, 2)!;
-    expect(forTwo.length).toBeLessThan(REAL_TRANSCRIPT.length);
-    // Specifically: nowhere near the full 34,649-character document.
-    expect(forTwo.length).toBeLessThan(20_000);
+    // The full transcript body — not just the old 16,000-character head —
+    // reaches the delegate. The old flat cap could never see this marker.
+    expect(REAL_TRANSCRIPT.length).toBeGreaterThan(16_000);
+    expect(forTwo).toContain(REAL_TRANSCRIPT.slice(-200));
   });
 
   it('each delegate receives the comprehended understanding, not just a raw slice', async () => {

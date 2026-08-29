@@ -1118,8 +1118,21 @@ export function attachmentMaterial(agentContext: string | undefined): string | u
  *  contextCharBudget() answers "how much could the model hold"; this answers
  *  "how much does ONE delegate — which also receives a comprehended
  *  UNDERSTANDING of the whole document via formatUnderstandingBlock, and can
- *  call readDocument for more — actually need out of the raw text". */
-const DELEGATE_MATERIAL_CHARS = Number(process.env.DELEGATE_MATERIAL_CHARS) || 16_000;
+ *  call readDocument for more — actually need out of the raw text".
+ *
+ *  DEFECT (2026-08-28, production, THIS constant): this was itself a flat
+ *  16,000 — not derived from the window at all, while every other budget in
+ *  lib/ai/context-budget.ts was. The coordinator can read up to
+ *  BUDGET.attachmentChars (2,000,000 at the default window) of an attached
+ *  document; every delegate it dispatches saw 16,000 of the same document —
+ *  0.8% of it — regardless of window size, so delegates reasoned from a
+ *  truncated opening and disagreed with each other (production: one
+ *  conversation's delegates reported 60 / 25 / 24 / 22 / 20 leads for the
+ *  same question). FIX: derive this from BUDGET.delegateMaterialChars
+ *  (lib/ai/context-budget.ts), the same way every other budget here is
+ *  derived, with the OLD 16,000 kept as the floor so a misconfigured window
+ *  can never make a delegate's slice worse than it is today. */
+const DELEGATE_MATERIAL_CHARS = Number(process.env.DELEGATE_MATERIAL_CHARS) || BUDGET.delegateMaterialChars;
 
 /** What ONE delegate gets to read out of agentContext.
  *

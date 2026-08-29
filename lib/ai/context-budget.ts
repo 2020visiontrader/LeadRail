@@ -69,6 +69,20 @@ const SHARE = {
   /** A projected subject's rendered memory block. It competes with everything
    *  else on every turn about that subject, so it stays small on purpose. */
   memoryBody: 0.02,
+  /** What ONE fan-out delegate may read out of an attached document.
+   *
+   *  A delegate is doing the SAME reading job as the coordinator on the SAME
+   *  attached document — that argues for a share comparable to `attachments`
+   *  (0.5). But a delegate call is NOT the coordinator's call: it is its own
+   *  independent model call whose whole prompt — system block, tool catalog,
+   *  the comprehended UNDERSTANDING block, the running transcript, AND the
+   *  document slice — has to fit inside that same delegate's own context
+   *  window, with room left to answer. Handing a delegate the full 0.5 would
+   *  leave nothing for the rest of that prompt. Half of the coordinator's
+   *  share — 0.25 — gives a delegate room to read a document on the same
+   *  order of magnitude as the coordinator does, while reserving at least
+   *  half of its own window for everything else it has to carry. */
+  delegateMaterial: 0.25,
 } as const;
 
 function chars(share: number, floor: number): number {
@@ -88,6 +102,11 @@ export const BUDGET = {
   hardTokens: tokens(SHARE.hard, 160_000),
   extractionChars: chars(SHARE.extraction, 12_000),
   memoryBodyChars: chars(SHARE.memoryBody, 4_000),
+  /** Floor is the OLD flat DELEGATE_MATERIAL_CHARS constant in
+   *  lib/agent/loop.ts (16,000) — see SHARE.delegateMaterial above for why
+   *  the share is 0.25. At the default 1M-token window this resolves to
+   *  1,000,000 characters. */
+  delegateMaterialChars: chars(SHARE.delegateMaterial, 16_000),
 } as const;
 
 // ---------------------------------------------------------------------------
@@ -180,5 +199,6 @@ export function budgetsFor(windowTokens: number): typeof BUDGET {
     hardTokens: Math.max(160_000, Math.floor(windowTokens * SHARE.hard)),
     extractionChars: Math.max(12_000, Math.floor(c * SHARE.extraction)),
     memoryBodyChars: Math.max(4_000, Math.floor(c * SHARE.memoryBody)),
+    delegateMaterialChars: Math.max(16_000, Math.floor(c * SHARE.delegateMaterial)),
   };
 }
