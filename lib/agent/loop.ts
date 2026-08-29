@@ -41,7 +41,7 @@ import { consumeGrant, isGrantable } from '@/lib/approvals/grants';
 import { markParseOutcome } from '@/lib/credits';
 import { log } from '@/lib/logger';
 import { buildCachedPrompt } from './prompt-cache';
-import { extractJson } from './json-envelope';
+import { extractJson, extractForcedFinalProse } from './json-envelope';
 import { renderObservation } from './observation-render';
 import { beginDelegationScope, endDelegationScope, setDelegationContext } from '@/lib/capabilities/delegation';
 import { hermesRoute } from '@/lib/ai/hermes';
@@ -2179,13 +2179,28 @@ async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
     });
     const p = extractJson(raw);
     if (p?.action === 'final' && p.message) return { status: 'done', message: String(p.message), transcript: messages, steps };
-    // The call succeeded but did not yield a usable final action — malformed
-    // or off-schema JSON, distinguishable from a thrown ladder-exhausted
-    // error below only if we log it. Without this, both causes produced the
-    // same generic user-facing message with nothing server-side to tell them
-    // apart (see the incident this fixed: forced-final failures with no way
-    // to know why).
-    log.warn('agent loop: forced-final produced no final action', { accountId, raw: String(raw ?? '').slice(0, 500) });
+    // The call succeeded but did not yield a usable {"action":"final",...}
+    // envelope. That is NOT automatically a failure: this is the LAST call
+    // of the turn, whose only job is a human-readable answer, so a plain
+    // prose reply that skipped the JSON wrapper is still a usable answer —
+    // see extractForcedFinalProse's doc comment for the production incident
+    // this fixes. Only a genuine machine envelope (e.g. {"action":"tool",...})
+    // or nothing usable at all falls through to salvage below.
+    const prose = extractForcedFinalProse(String(raw ?? ''));
+    if (prose) {
+      log.warn('agent loop: forced-final produced no final action', {
+        accountId, raw: String(raw ?? '').slice(0, 500), path: 'prose_accepted',
+      });
+      return { status: 'done', message: stripAiMarkers(prose), transcript: messages, steps };
+    }
+    // Distinguishable from the thrown ladder-exhausted error below only if we
+    // log it. Without this, both causes produced the same generic
+    // user-facing message with nothing server-side to tell them apart (see
+    // the incident this fixed: forced-final failures with no way to know
+    // why).
+    log.warn('agent loop: forced-final produced no final action', {
+      accountId, raw: String(raw ?? '').slice(0, 500), path: 'salvage',
+    });
   } catch (err: any) {
     // Ladder exhausted, timeout, etc. — the candidate/tier is not reliably
     // reachable from here (runCandidates throws the LAST candidate's error,
@@ -2825,12 +2840,29 @@ async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) =>
       emit({ type: 'final', message: finalMessage, transcript: messages });
       return;
     }
-    // Call succeeded but produced no usable final action — malformed/off-schema
-    // JSON. See the twin comment in runAgentImpl (non-streaming): this and the
+    // Call succeeded but produced no usable {"action":"final",...} envelope.
+    // Twin of the non-streaming fix in runAgentImpl above (CLAUDE.md: both
+    // loops stay identical) — a plain-prose reply that skipped the JSON
+    // wrapper is still a usable answer, it is only a genuine machine
+    // envelope (or nothing usable) that falls through to salvage.
+    const prose = extractForcedFinalProse(String(raw ?? ''));
+    if (prose) {
+      const finalMessage = stripAiMarkers(prose);
+      log.warn('agent loop: forced-final produced no final action', {
+        accountId, raw: String(raw ?? '').slice(0, 500), path: 'prose_accepted',
+      });
+      messages.push({ role: 'assistant', content: finalMessage });
+      await streamTokens(finalMessage, emit);
+      emit({ type: 'final', message: finalMessage, transcript: messages });
+      return;
+    }
+    // See the twin comment in runAgentImpl (non-streaming): this and the
     // catch below used to be indistinguishable, which is why this went
     // undiagnosed. runAgentImpl and runAgentStreamImpl must stay identical
     // (CLAUDE.md) — a fix applied to only one is not applied.
-    log.warn('agent loop: forced-final produced no final action', { accountId, raw: String(raw ?? '').slice(0, 500) });
+    log.warn('agent loop: forced-final produced no final action', {
+      accountId, raw: String(raw ?? '').slice(0, 500), path: 'salvage',
+    });
   } catch (err: any) {
     log.warn('agent loop: forced-final call failed', { accountId, error: String(err?.message || err) });
   }

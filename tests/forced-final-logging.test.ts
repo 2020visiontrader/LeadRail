@@ -114,12 +114,16 @@ describe('forced-final failure is logged, not swallowed (non-streaming)', () => 
     expect(warn.mock.calls.find((c) => String(c[0]).includes('produced no final action'))).toBeUndefined();
   });
 
-  it('logs a distinct message when the call succeeds but the JSON is unusable (malformed/off-schema)', async () => {
+  it('logs a distinct message when the call succeeds but the JSON is unusable (malformed/off-schema, not prose)', async () => {
+    // A machine envelope, not prose: valid JSON with an `action` key but the
+    // wrong shape. Must NOT be handed to the user as an answer — see
+    // tests/agent-forced-final-prose.test.ts for the prose-is-accepted case
+    // this file used to conflate with this one.
     let calls = 0;
     generateChat.mockImplementation(async () => {
       calls++;
       if (calls <= 2) return toolCall();
-      return 'not json at all, sorry';
+      return '{"action":"tool"}';
     });
     const res = await runNonStreaming();
     // Same salvage reasoning as the throw case above.
@@ -127,8 +131,8 @@ describe('forced-final failure is logged, not swallowed (non-streaming)', () => 
 
     const hit = warn.mock.calls.find((c) => String(c[0]).includes('forced-final produced no final action'));
     expect(hit).toBeTruthy();
-    expect(hit![1]).toMatchObject({ accountId: 'acct-1' });
-    expect(String(hit![1].raw)).toContain('not json at all');
+    expect(hit![1]).toMatchObject({ accountId: 'acct-1', path: 'salvage' });
+    expect(String(hit![1].raw)).toContain('"action":"tool"');
 
     expect(warn.mock.calls.find((c) => String(c[0]).includes('forced-final call failed'))).toBeUndefined();
   });
