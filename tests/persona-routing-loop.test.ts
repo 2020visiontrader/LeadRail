@@ -73,6 +73,16 @@ const SKILL_NAMING_CONTENT_2 = {
   instructions: 'Yet another thing.\n\n## Agents Used\n\n- **content-creator** — writes more content',
 };
 
+// A skill whose "Agents Used" window bolds a junk token (a script filename,
+// per the defect this file's eligibility-predicate cases guard against)
+// ahead of a real persona slug — the junk token would win both the count
+// and the first-appearance tie-break if it were allowed to compete.
+const SKILL_NAMING_JUNK_THEN_REAL = {
+  slug: 'skill-d', name: 'Skill D',
+  instructions:
+    'Do a third thing.\n\n## Agents Used\n\n- **schema-generator.py** — a script, not a persona\n- **seo-specialist** — does SEO stuff',
+};
+
 let enabledSkills: any[] = [];
 vi.mock('@/lib/skills/store', () => ({ loadEnabledSkillsForAgent: async () => enabledSkills }));
 
@@ -138,6 +148,23 @@ describe('runAgent — skill-derived persona voice (tie-break + single block)', 
   });
 });
 
+describe('runAgent — junk token in "Agents Used" window is not eligible to win', () => {
+  it('a routed skill naming both a junk token and a real persona still gets the real persona voice', async () => {
+    // Junk token appears first and alone (count 1); the real persona also
+    // has count 1 — the pre-fix code would let the junk token win the
+    // first-appearance tie-break, killing the voice (resolvePersona returns
+    // null for it and resolveSkillPersonaForTurn bails to {}).
+    enabledSkills = [SKILL_NAMING_JUNK_THEN_REAL];
+    generateChat.mockResolvedValueOnce(FINAL);
+
+    const { runAgent } = await import('@/lib/agent/loop');
+    await runAgent({ accountId: 'acct-1', message: 'help', conversationId: 'conv-1' });
+
+    const system: string = generateChat.mock.calls[0][0].system;
+    expect(system).toContain('SEO_SPECIALIST_TEMPLATE_INSTRUCTIONS');
+  });
+});
+
 describe('runAgentStream — skill-derived persona voice (must match runAgentImpl)', () => {
   it('picks the persona named by the most routed skills, and only that one block reaches the system prompt', async () => {
     enabledSkills = [SKILL_NAMING_SEO, SKILL_NAMING_CONTENT_1, SKILL_NAMING_CONTENT_2];
@@ -170,5 +197,16 @@ describe('runAgentStream — skill-derived persona voice (must match runAgentImp
     expect(system).toContain('PINNED_PERSONA_INSTRUCTIONS');
     expect(system).not.toContain('CONTENT_CREATOR_TEMPLATE_INSTRUCTIONS');
     expect(listPersonas).not.toHaveBeenCalled();
+  });
+
+  it('a routed skill naming both a junk token and a real persona still gets the real persona voice', async () => {
+    enabledSkills = [SKILL_NAMING_JUNK_THEN_REAL];
+    generateChat.mockResolvedValueOnce(FINAL);
+
+    const { runAgentStream } = await import('@/lib/agent/loop');
+    await runAgentStream({ accountId: 'acct-1', message: 'help', conversationId: 'conv-1' }, () => {});
+
+    const system: string = generateChat.mock.calls[0][0].system;
+    expect(system).toContain('SEO_SPECIALIST_TEMPLATE_INSTRUCTIONS');
   });
 });

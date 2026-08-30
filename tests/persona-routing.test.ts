@@ -11,7 +11,7 @@ import {
 } from '@/lib/agent/persona-routing';
 import { HARVESTED_SKILLS } from '@/lib/skills/harvested';
 import type { PersonaRow } from '@/lib/agent/personas';
-import type { HarvestedPersonaTemplate } from '@/lib/agent/harvested-personas';
+import { HARVESTED_PERSONA_TEMPLATES, type HarvestedPersonaTemplate } from '@/lib/agent/harvested-personas';
 
 // -----------------------------------------------------------------------
 // personaSlugsForSkill
@@ -157,5 +157,76 @@ describe('pickPersonaSlug', () => {
 
   it('returns null when no routed skill names a persona', () => {
     expect(pickPersonaSlug(['no agents section here', 'nor here'])).toBeNull();
+  });
+});
+
+// -----------------------------------------------------------------------
+// pickPersonaSlug — eligibility predicate (persona-routing hardening:
+// an unresolvable **bold** token, e.g. a script filename or checklist key
+// caught by the "Agents Used" window parser, must not be able to win the
+// count or the first-appearance tie-break; see BACKLOG 5b follow-up note).
+// -----------------------------------------------------------------------
+
+describe('pickPersonaSlug — eligibility predicate', () => {
+  it('ignores an ineligible slug that would otherwise win on count', () => {
+    const skills = [
+      '## Agents Used\n\n- **junk-token** — a',
+      '## Agents Used\n\n- **junk-token** — b',
+      '## Agents Used\n\n- **seo-specialist** — c',
+    ];
+    // Without a predicate, junk-token wins on count (2 vs 1).
+    expect(pickPersonaSlug(skills)).toBe('junk-token');
+    // With a predicate that excludes it, seo-specialist wins instead.
+    const isEligible = (slug: string) => slug !== 'junk-token';
+    expect(pickPersonaSlug(skills, isEligible)).toBe('seo-specialist');
+  });
+
+  it('ignores an ineligible slug that would otherwise win the first-appearance tie-break', () => {
+    // junk-token appears first, both slugs have count 1.
+    const skills = [
+      '## Agents Used\n\n- **junk-token** — a',
+      '## Agents Used\n\n- **seo-specialist** — b',
+    ];
+    // Without a predicate, junk-token wins the tie-break (appeared first).
+    expect(pickPersonaSlug(skills)).toBe('junk-token');
+    // With a predicate that excludes it, seo-specialist is the only eligible
+    // candidate and wins.
+    const isEligible = (slug: string) => slug !== 'junk-token';
+    expect(pickPersonaSlug(skills, isEligible)).toBe('seo-specialist');
+  });
+
+  it('behaves exactly as before when no predicate is supplied', () => {
+    const skills = [
+      '## Agents Used\n\n- **seo-specialist** — a',
+      '## Agents Used\n\n- **content-creator** — b',
+      '## Agents Used\n\n- **content-creator** — c',
+    ];
+    expect(pickPersonaSlug(skills)).toBe('content-creator');
+    expect(pickPersonaSlug(skills, undefined)).toBe('content-creator');
+  });
+});
+
+// -----------------------------------------------------------------------
+// Real-data: over every harvested skill, picking WITH the eligibility
+// predicate must always land on a slug that actually resolves.
+// -----------------------------------------------------------------------
+
+describe('pickPersonaSlug — real HARVESTED_SKILLS data with eligibility predicate', () => {
+  it('for every skill whose "Agents Used" names at least one resolvable slug, the eligible pick always resolves', () => {
+    const templateSlugs = new Set(HARVESTED_PERSONA_TEMPLATES.map((t) => t.slug));
+    const isEligible = (slug: string) => templateSlugs.has(slug);
+
+    let checked = 0;
+    for (const skill of HARVESTED_SKILLS) {
+      const slugs = personaSlugsForSkill(skill.instructions);
+      const hasResolvable = slugs.some((s) => templateSlugs.has(s));
+      if (!hasResolvable) continue;
+      checked++;
+      const picked = pickPersonaSlug([skill.instructions], isEligible);
+      expect(picked).not.toBeNull();
+      expect(templateSlugs.has(picked as string)).toBe(true);
+    }
+    // Sanity: the real-data corpus actually exercised this property.
+    expect(checked).toBeGreaterThan(0);
   });
 });

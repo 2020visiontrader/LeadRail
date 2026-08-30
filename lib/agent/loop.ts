@@ -980,10 +980,13 @@ async function resolveSkillPersonaForTurn(
   skills: { instructions: string }[],
 ): Promise<{ systemBlock?: string; modelId?: string }> {
   if (!skills.length) return {};
-  const slug = pickPersonaSlug(skills.map((s) => s.instructions));
-  if (!slug) return {};
   try {
     const rows = await listPersonas(accountId);
+    const slug = pickPersonaSlug(
+      skills.map((s) => s.instructions),
+      (candidate) => Boolean(resolvePersona(candidate, rows, HARVESTED_PERSONA_TEMPLATES)),
+    );
+    if (!slug) return {};
     const resolved = resolvePersona(slug, rows, HARVESTED_PERSONA_TEMPLATES);
     if (!resolved) return {};
     if (resolved.source === 'row') {

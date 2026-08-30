@@ -106,12 +106,27 @@ export function resolvePersona(
  * naming a slug counts once, however many times it repeats the bold token),
  * ties broken by the order the skills came back from routing (earliest
  * first-appearance wins). Returns null when no routed skill names a persona.
+ *
+ * `isEligible`, when supplied, filters which slugs can be counted or won at
+ * all — a slug that fails it (e.g. a `**bold**` token in the "Agents Used"
+ * window that is actually a script filename or checklist key, not a persona)
+ * is dropped before counting, so it can never win the count or the
+ * first-appearance tie-break, and the pick falls through to the next-best
+ * eligible slug instead of giving up. Omit it to keep the original
+ * behaviour (every bold token is eligible), which is what the pre-existing
+ * pure-function tests pin.
  */
-export function pickPersonaSlug(skillInstructions: string[]): string | null {
+export function pickPersonaSlug(
+  skillInstructions: string[],
+  isEligible?: (slug: string) => boolean,
+): string | null {
   const counts = new Map<string, number>();
   for (const instructions of skillInstructions) {
     const slugs = new Set(personaSlugsForSkill(instructions));
-    for (const slug of slugs) counts.set(slug, (counts.get(slug) || 0) + 1);
+    for (const slug of slugs) {
+      if (isEligible && !isEligible(slug)) continue;
+      counts.set(slug, (counts.get(slug) || 0) + 1);
+    }
   }
   // Map preserves insertion order, which is first-appearance order across
   // `skillInstructions` (already in routing order) — so a strict ">" here,

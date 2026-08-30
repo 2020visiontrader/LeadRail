@@ -273,6 +273,31 @@ just for a narrower and correct reason now.
 read by `resolvePersona`'s template fallback on every turn/plan a routed
 skill names a persona for.
 
+*Follow-up hardening, 2026-08-30:* `personaSlugsForSkill` returns every
+`**bold**` token in the `AGENTS_USED_WINDOW`, including tokens that are not
+persona names at all — script filenames and checklist keys that happen to be
+bolded in that window. As of this date, across the 431 harvested skills, 10
+such non-persona tokens are known: `schema-generator.py`,
+`competitor-scraper.py`, `content-scorer.py`, `tech-seo-auditor.py`,
+`keyword_cluster.py`, `lead_theme_named`, `specialist_coverage`,
+`roadmap_phased`, `kpi_attached`, `drift_re-measure_scheduled`. This was
+latent, not firing (0/431 skills lost their voice to one of these, because a
+real persona name happened to appear before the junk token and the
+first-appearance tie-break favoured it) but not guaranteed to stay latent —
+one upstream edit reordering a bold token could silently kill the voice.
+Fixed by giving `pickPersonaSlug` an optional `isEligible?: (slug: string) =>
+boolean` predicate; `resolveSkillPersonaForTurn` (`lib/agent/loop.ts`) now
+loads `rows` before picking and passes `(slug) =>
+Boolean(resolvePersona(slug, rows, HARVESTED_PERSONA_TEMPLATES))`, so an
+unresolvable token can never win the count or the tie-break and the pick
+falls through to the next-best real candidate instead of giving up.
+`personaSlugsForSkill` itself is unchanged and intentionally so — it stays a
+faithful parser of what the markdown says; eligibility is the caller's
+concern, since a future source may legitimately name a persona this repo
+does not have a template or row for yet. The next person reading this
+window's parser should expect these 10 tokens (and others like them) to keep
+showing up as bold matches — that is normal, not a parser bug.
+
 **5c. `scripts/harvest-personas.ts` does not exist.**
 `lib/agent/harvested-personas.ts:2` instructs the reader to regenerate it with
 `HARVEST_ROOT=<clone-dir> npx tsx scripts/harvest-personas.ts`. That file is
