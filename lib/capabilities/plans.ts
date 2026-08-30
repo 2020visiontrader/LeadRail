@@ -27,7 +27,6 @@ import {
 } from '@/lib/plans/store';
 import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
 import { hermesRoute } from '@/lib/ai/hermes';
-import { selectPersonasForRequest } from '@/lib/agent/personas';
 
 export const PLAN_CAPABILITIES: Capability[] = [
   {
@@ -54,15 +53,38 @@ export const PLAN_CAPABILITIES: Capability[] = [
       //   skills  — routed through Hermes, the same shortlist-then-classify
       //             path an ordinary turn uses. Pinning ALL enabled skills
       //             would not be selection at all, and the catalog is 353.
-      //   persona — chosen the same way. Without pinning, a plan worked one
-      //             step per tick gets a strategist on step 1 and an analyst
-      //             on step 4: the voice and the judgement change mid-job
-      //             without anyone asking for it.
+      //   persona — NOT pinned at creation any more. See below.
       //
-      // Both degrade to nothing on failure: a plan with no pinned skills routes
-      // per turn as before, and no persona means the default assistant.
+      // Skills degrade to nothing on failure: a plan with no pinned skills
+      // routes per turn as before.
+      //
+      // WHY THE PERSONA PIN IS GONE (and what should replace it). The reason
+      // for pinning was sound and still is: a plan worked one step per tick
+      // must not get a strategist on step 1 and an analyst on step 4, with the
+      // voice and the judgement changing mid-job without anyone asking. What
+      // was NOT sound was how the persona got chosen —
+      // selectPersonasForRequest, which scored ROLE_SIGNALS regexes against
+      // `role + name`. The harvest sets `role` to the slug, so of its eight
+      // signal rows FOUR matched nothing in the 24-persona roster at all
+      // (copywriter, lifecycle, creative director, account), and one matched
+      // by substring accident (`/media/` hitting "social-media-manager" on a
+      // budget question). That function is deleted; a pin derived from it was
+      // choosing close to arbitrarily.
+      //
+      // The replacement is already in the data, not yet parsed: 118 harvested
+      // skills carry an "Agents Used" section naming which persona executes
+      // them, and 116 name a persona in the current roster with none naming
+      // one that doesn't exist. Once harvest-skills.ts lifts that into a
+      // `personas: string[]` field on HarvestedSkill, the pin comes from the
+      // skills Hermes ALREADY routed two lines below — the right persona for
+      // the work, derived from data upstream authored, instead of a regex
+      // guessing at a slug.
+      //
+      // Until then a plan runs as the default assistant, which is a real (and
+      // deliberate) behaviour change: consistent across every step, rather
+      // than consistently whatever the broken matcher happened to return.
       let skills: string[] = [];
-      let personaId: string | null = null;
+      const personaId: string | null = null;
       try {
         const enabled = await loadEnabledSkillsForAgent(accountId);
         const enabledSlugs = new Set(enabled.map((sk: any) => sk.slug).filter(Boolean));
@@ -71,10 +93,6 @@ export const PLAN_CAPABILITIES: Capability[] = [
         // always wins — the same rule selectSkillsForTurn applies.
         skills = (routed.skillIds || []).filter((slug: string) => enabledSlugs.has(slug));
       } catch { /* routes per turn instead */ }
-      try {
-        const picked = await selectPersonasForRequest(accountId, a.objective, 1);
-        personaId = picked[0]?.id ?? null;
-      } catch { /* default assistant */ }
 
       const plan = await createPlan({
         accountId,

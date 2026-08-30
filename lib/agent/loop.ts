@@ -16,11 +16,10 @@
 // comes from the server session — never from the (round-tripped) transcript.
 
 import { BUDGET } from '@/lib/ai/context-budget';
-import { contextCharBudget } from '@/lib/documents/attachments';
 import { generateChat, textConfigured, type ChatMessage } from '@/lib/ai/router';
 import { type StoredMessage, toWireMessages } from './transcript-store';
 import {
-  comprehend, routingTextFor, describeMaterial, formatUnderstandingBlock, type Understanding,
+  comprehend, formatUnderstandingBlock, type Understanding,
 } from './comprehension';
 import {
   TOOLS, runTool, toolCatalogForPrompt, toolCatalogStaged, AGENT_STAGED_CATALOG, capabilityFor,
@@ -30,7 +29,7 @@ import { loadExternalCapabilities } from '@/lib/capabilities/external-mcp';
 import type { Capability, Analysis, Basis } from '@/lib/capabilities/types';
 import { estimateTokens, carryoverBlock, type CarryoverMemo } from './memory';
 import {
-  loadPersonaForAgent, resolveMentionedPersonas, getCoordinator, selectPersonasForRequest,
+  loadPersonaForAgent, resolveMentionedPersonas, getCoordinator,
   buildPersonaSystemBlock, buildCoordinatorSystemBlock, type PersonaRow,
 } from './personas';
 import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
@@ -250,16 +249,16 @@ export interface RunAgentInput {
    *  Set by the caller (a UI toggle), never by the model — the model must not
    *  be able to decide it is allowed to skip the operator's go-ahead. */
   planOnly?: boolean;
-  /** Optional override of MAX_STEPS for THIS call only (Packet 6.2). Used
-   *  exclusively to give each delegate in a coordinator fan-out a smaller
-   *  step budget than a normal top-level turn — never set by ordinary
-   *  callers, so every existing caller keeps the unchanged MAX_STEPS cap.
-   *  Clamped to [1, MAX_STEPS]; never allows a LARGER budget than default. */
+  /** Optional override of MAX_STEPS for THIS call only. Used by
+   *  askSpecialist (lib/capabilities/delegation.ts) to give a delegate sub-run
+   *  a smaller step budget than a normal top-level turn — never set by
+   *  ordinary callers, so every existing caller keeps the unchanged MAX_STEPS
+   *  cap. Clamped to [1, MAX_STEPS]; never allows a LARGER budget than default. */
   maxSteps?: number;
-  /** Absolute epoch-ms deadline inherited from a PARENT turn. Set only by
-   *  runFanoutDelegates when spawning a delegate sub-run — never by an
-   *  ordinary top-level caller, so every existing caller keeps computing its
-   *  own full TURN_DEADLINE_MS unchanged. A delegate's effective deadline is
+  /** Absolute epoch-ms deadline inherited from a PARENT turn, when this run is
+   *  a delegate sub-run spawned by another turn — never set by an ordinary
+   *  top-level caller, so every existing caller keeps computing its own full
+   *  TURN_DEADLINE_MS unchanged. A delegate's effective deadline is
    *  min(its own default turnDeadline, this value): a delegate must never be
    *  able to legally outlive the parent that spawned it (see lib/ai/deadline.ts). */
   deadlineAt?: number;
@@ -577,18 +576,13 @@ const TURN_DEADLINE_MS = Number(process.env.AGENT_TURN_DEADLINE_MS) || 5 * 60 * 
 
 /** This turn's absolute deadline: its own full TURN_DEADLINE_MS budget from
  *  right now, clamped to the PARENT's deadline when this run is a delegate
- *  (input.deadlineAt, set only by runFanoutDelegates). Never larger than
- *  either bound — a delegate must never legally outlive the parent that
- *  spawned it, which was a real, separate bug from the unbounded-retry one:
- *  runFanoutDelegates used to call runAgent() with no deadline at all, so
- *  each delegate computed its own fresh 5-minute budget regardless of how
- *  much of the coordinator's own turn had already elapsed.
+ *  sub-run (input.deadlineAt). Never larger than either bound — a delegate
+ *  must never legally outlive the parent that spawned it.
  *
- *  Computed once, at the very top of runAgentImpl/runAgentStreamImpl —
- *  BEFORE the fan-out branch — so the coordinator's own deadline check (via
- *  runCoordinatorFanout/runCoordinatorFanoutStream) and every delegate's
- *  inherited deadline are measured from the same start-of-turn instant,
- *  not from whenever the step loop happens to begin after several awaits. */
+ *  Computed once, at the very top of runAgentImpl/runAgentStreamImpl, so
+ *  every model call in the turn (step loop, forced-final) is measured from
+ *  the same start-of-turn instant, not from whenever the step loop happens to
+ *  begin after several awaits. */
 export function computeTurnDeadline(input: RunAgentInput): number {
   const ownDeadline = Date.now() + TURN_DEADLINE_MS;
   return input.deadlineAt != null ? Math.min(ownDeadline, input.deadlineAt) : ownDeadline;
@@ -915,17 +909,14 @@ export function buildSalvageMessage(steps: AgentStep[], extraTools?: Record<stri
 // resolve to the account's coordinator (if enabled) so the reply is framed by
 // one voice rather than several.
 //
-// Packet 6.2 added the REAL multi-agent fan-out (runCoordinatorFanout /
-// runCoordinatorFanoutStream, above runAgent/runAgentStream): runAgent and
-// runAgentStream check resolveCoordinatorFanout() BEFORE ever calling this
-// function, and take that path instead whenever it applies. The
-// matched.length > 1 branch below is what still runs when that primary path
-// declines — no coordinator configured, or a lookup error inside
-// resolveCoordinatorFanout — so it stays a lightweight framing-only fallback,
-// not the real thing: it does NOT run each persona independently, it only
-// tells the coordinator model which names were mentioned and asks it to
-// answer as if synthesizing them. That fallback intentionally does not
-// fabricate more than it already did — it is the pre-6.2 behavior, unchanged.
+// An automatic multi-persona fan-out (running each mentioned persona as its
+// own independent runAgent turn, then synthesizing) used to preempt this
+// function and has been REMOVED — see the "Attached-material comprehension"
+// section above for why. The matched.length > 1 branch below is now the ONLY
+// behaviour for multiple @mentions: it does NOT run each persona
+// independently, it tells the coordinator model which names were mentioned
+// and asks it to answer as if synthesizing them, framing-only. This is
+// unchanged from before the (now-removed) fan-out existed.
 async function resolvePersonaForTurn(
   accountId: string,
   personaId?: string,
@@ -944,10 +935,7 @@ async function resolvePersonaForTurn(
         return { systemBlock: buildPersonaSystemBlock(persona), modelId: persona.model_id || undefined };
       }
       if (matched.length > 1) {
-        // NOTE (not a TODO): the full fan-out EXISTS — see runCoordinatorFanout
-        // above, which runAgent/runAgentStream check first. This branch is only
-        // the fallback for when that path declines. Historical text follows:
-        // a full pass would run each mentioned
+        // A full pass would run each mentioned
         // persona's instructions independently and merge their outputs. That
         // multi-call fan-out doesn't fit safely inside the existing
         // single-transcript ReAct loop without risking MAX_STEPS/token
@@ -1080,51 +1068,32 @@ function capTranscript(transcript: StoredMessage[]): StoredMessage[] {
   return messages;
 }
 
-// --- Coordinator fan-out (Packet 6.2) ---------------------------------------
+// --- Attached-material comprehension (folded into the single-turn context) --
 //
-// `personas.is_coordinator` (migration 024) has existed since Packet 5.x with
-// nothing reading it. This is that reader: when a turn @mentions 2+ enabled
-// personas AND the account has an enabled coordinator, the turn is no longer
-// framed by a single persona — it is answered by running each mentioned
-// persona as its OWN independent runAgent() call (a "delegate"), then having
-// the coordinator persona synthesize their actual outputs into one reply.
+// The automatic multi-persona fan-out that used to live in this section
+// (resolveCoordinatorFanout / runCoordinatorFanout / runFanoutDelegates /
+// synthesizeCoordinatorAnswer and friends) has been REMOVED. It keyword-routed
+// to up to 3 personas via ROLE_SIGNALS (lib/agent/personas.ts), ran each as a
+// full independent runAgent turn, then made a synthesis call — costing 1
+// comprehension + up to 18 delegate calls + 1 synthesis for a single user
+// turn. ROLE_SIGNALS matched against `role + name`, but the harvest sets
+// `role` to the slug, so 4 of its 8 signal rows matched nothing in the
+// 24-template roster: the routing was provably broken, not merely expensive.
 //
-// Design constraints (binding, see COPILOT_REMEDIATION_PLAN.md Packet 6.2):
-//   1. Delegation must not multiply spend or approvals. Every delegate is a
-//      normal runAgent() call, so every tool it invokes still funnels through
-//      runTool() (lib/agent/tools.ts) — the SAME sensitive-tool approval gate
-//      (0.1) and the SAME monthly spend gate (1.4) apply, unmodified. If any
-//      delegate proposes a sensitive tool, the WHOLE fan-out stops right there
-//      and that one proposal is returned as the turn's result — no other
-//      delegate keeps running while a human decision is outstanding, so one
-//      coordinator turn can never produce more than one pending approval.
-//   2. Bounded fan-out. MAX_FANOUT_DELEGATES caps how many personas one turn
-//      may delegate to; MAX_FANOUT_TOTAL_STEPS is a hard ceiling on the SUM of
-//      every delegate's own step budget (each delegate gets its own slice via
-//      the `maxSteps` override added above — never more than MAX_STEPS, never
-//      more than what's left of the shared budget). An account cannot turn a
-//      single message into an unbounded number of model/tool round-trips by
-//      mentioning many personas.
-//   3. Synthesis must not fabricate. The coordinator's synthesis pass is given
-//      ONLY the delegates' actual returned messages and is explicitly told not
-//      to invent a result a delegate did not produce (mirrors the OBSERVATION
-//      discipline from Packet 10.1's digest hook). A delegate that errors is
-//      reported as a failure, never silently dropped or guessed at.
-//   4. No scope widening. Every delegate call passes the SAME accountId as the
-//      coordinator turn — there is no parameter by which a delegate could
-//      target a different account.
-
-/** One delegate's finished run — enough to attribute + synthesize honestly. */
-interface DelegateOutcome {
-  persona: PersonaRow;
-  status: AgentStatus;
-  message: string;
-  stepsUsed: number;
-}
-
-const MAX_FANOUT_DELEGATES = 3;
-const MAX_FANOUT_STEPS_PER_DELEGATE = 4;
-const MAX_FANOUT_TOTAL_STEPS = MAX_FANOUT_DELEGATES * MAX_FANOUT_STEPS_PER_DELEGATE; // hard ceiling, constraint (2) above
+// Explicit @mention and pinned personaId behaviour (resolvePersonaForTurn,
+// below) is unchanged. A specialist can still be brought in mid-turn via the
+// askSpecialist capability (lib/capabilities/delegation.ts), which is the
+// correct shape for delegation: decided by the model, at the point it
+// discovers it needs one, not pre-committed before a single tool has run.
+//
+// comprehend() (lib/agent/comprehension.ts) stays wired in, because it is
+// still valuable for attachments on its own: when a turn has material
+// attached, one cheap comprehension pass runs over the WHOLE document (never
+// just its opening — see sampleAcrossDocument) and its structured
+// understanding is folded into agentContext, in the same place the raw
+// attachment text already lives, before the system prompt is built. It never
+// gates anything — a failed or skipped comprehension just leaves agentContext
+// untouched, exactly as if nothing here had run.
 
 // attachmentContextBlock() (lib/documents/attachments.ts) always OPENS its
 // output with this exact line when there is at least one attachment, and
@@ -1134,43 +1103,10 @@ const MAX_FANOUT_TOTAL_STEPS = MAX_FANOUT_DELEGATES * MAX_FANOUT_STEPS_PER_DELEG
 // grounding; everything from it to the end is the attached-document text.
 const ATTACHMENT_MARKER = 'ATTACHED DOCUMENTS — the user attached these to this conversation.';
 
-// How much of the attached material a ROUTING decision — "who should work
-// this" — is allowed to see. Deliberately tiny next to contextCharBudget()
-// (which can be hundreds of thousands of characters on a large-window tier):
-// selectPersonasForRequest is keyword/topic matching against a persona's
-// ROLE, not comprehension of the document's substance, so the opening of the
-// attached block (its title, its first paragraph) carries essentially the
-// same routing signal the full 34,000 characters would. Spending a
-// six-figure character budget on a decision that needs a few hundred is
-// exactly the kind of oversized-context risk Defect 4 is about, just at the
-// routing step instead of the delegate step — so it gets the same discipline.
-const ROUTING_DIGEST_CHARS = 1200;
-
-/** Bounded excerpt of the ATTACHED-DOCUMENT portion of agentContext — never
- *  the static grounding sections, never the whole thing. Empty string when
- *  nothing is attached (agentContext is populated for reasons that have
- *  nothing to do with a file — venture/account/memory grounding runs on every
- *  turn regardless). Exported so a test can pin the boundary directly.
- *
- *  ONLY used as the FALLBACK routing input now, when the real comprehension
- *  pass (comprehend(), lib/agent/comprehension.ts) fails or is skipped — see
- *  resolveCoordinatorFanout below. It is exactly the head slice that produced
- *  the reproduced defect (a numbers persona and a spend persona picked from
- *  the caller's opening small talk on a 34,649-character pitch transcript),
- *  which is why it is no longer the PRIMARY routing input; it is kept only
- *  because SOME routing signal beats none when comprehension itself fails. */
-export function attachmentDigest(agentContext: string | undefined, maxChars: number): string {
-  if (!agentContext) return '';
-  const idx = agentContext.indexOf(ATTACHMENT_MARKER);
-  if (idx === -1) return '';
-  return agentContext.slice(idx, idx + maxChars);
-}
-
 /** The FULL, unbounded ATTACHED-DOCUMENT portion of agentContext — what the
  *  comprehension pass reads (it owns its own bounding via
  *  sampleAcrossDocument, which samples across the document rather than
- *  slicing its head, unlike attachmentDigest above). undefined when nothing
- *  is attached. */
+ *  slicing its head). undefined when nothing is attached. */
 export function attachmentMaterial(agentContext: string | undefined): string | undefined {
   if (!agentContext) return undefined;
   const idx = agentContext.indexOf(ATTACHMENT_MARKER);
@@ -1178,605 +1114,61 @@ export function attachmentMaterial(agentContext: string | undefined): string | u
   return agentContext.slice(idx);
 }
 
-/** Hard ceiling on what ONE fan-out delegate reads out of the attached
- *  material, independent of contextCharBudget().
+/** Run comprehend() over any attached material and fold its understanding
+ *  block into agentContext, ahead of the raw attachment text — the same
+ *  place a fan-out delegate used to receive it (see formatUnderstandingBlock,
+ *  lib/agent/comprehension.ts). Runs at most once per turn, and only when
+ *  there is material to read; a bare chat message never pays this cost.
  *
- *  WHY A SEPARATE NUMBER FROM contextCharBudget(): that budget is derived
- *  from the ANSWERING model's context window (now 1,000,000 tokens, since
- *  the primary tiers are 1M-window models) via a 50% share — 2,000,000
- *  characters. Divided across even a handful of delegates that never binds
- *  at realistic attachment sizes: a 35,238-character transcript split two
- *  ways stays comfortably under 1,000,000 characters per delegate, so
- *  delegateContext() silently handed each delegate the ENTIRE document
- *  anyway — the exact duplication Defect 4 was supposed to have fixed, just
- *  hiding behind a budget number that grew past the point of ever binding.
- *  contextCharBudget() answers "how much could the model hold"; this answers
- *  "how much does ONE delegate — which also receives a comprehended
- *  UNDERSTANDING of the whole document via formatUnderstandingBlock, and can
- *  call readDocument for more — actually need out of the raw text".
- *
- *  DEFECT (2026-08-28, production, THIS constant): this was itself a flat
- *  16,000 — not derived from the window at all, while every other budget in
- *  lib/ai/context-budget.ts was. The coordinator can read up to
- *  BUDGET.attachmentChars (2,000,000 at the default window) of an attached
- *  document; every delegate it dispatches saw 16,000 of the same document —
- *  0.8% of it — regardless of window size, so delegates reasoned from a
- *  truncated opening and disagreed with each other (production: one
- *  conversation's delegates reported 60 / 25 / 24 / 22 / 20 leads for the
- *  same question). FIX: derive this from BUDGET.delegateMaterialChars
- *  (lib/ai/context-budget.ts), the same way every other budget here is
- *  derived, with the OLD 16,000 kept as the floor so a misconfigured window
- *  can never make a delegate's slice worse than it is today. */
-const DELEGATE_MATERIAL_CHARS = Number(process.env.DELEGATE_MATERIAL_CHARS) || BUDGET.delegateMaterialChars;
-
-/** What ONE delegate gets to read out of agentContext.
- *
- *  DEFECT 4: this used to be `agentContext: input.agentContext` handed to
- *  every delegate verbatim — a 34,456-character document duplicated N times
- *  into N concurrent prompts, all in flight together. Oversized, duplicated
- *  context arriving on every delegate's slowest, most model-call-heavy path
- *  at once is the prime suspect for the observed failure (the stream route's
- *  `!terminalSent` fallback — no terminal event at all).
- *
- *  FIX: keep the small static grounding sections intact (cheap, and every
- *  delegate needs the same venture/account grounding an ordinary turn gets),
- *  and cap the ATTACHED-DOCUMENT slice at DELEGATE_MATERIAL_CHARS (further
- *  bounded by contextCharBudget(), for the rare case that budget is
- *  configured smaller than DELEGATE_MATERIAL_CHARS itself) so the bound
- *  actually BINDS at realistic attachment sizes instead of only at the (now
- *  enormous) window-derived ceiling. A delegate that genuinely needs more
- *  than its slice can still call readDocument for the rest — the same tool
- *  an ordinary turn would reach for on truncation (see the "…truncated
- *  here" note attachmentContextBlock leaves in the text).
- *
- *  DEFECT (2026-08-28, production): this budget used to be divided by
- *  `delegateCount` — `Math.floor(contextCharBudget() / delegateCount)` —
- *  on the theory that N delegates were sharing one pool. They are not: each
- *  delegate is an INDEPENDENT `runAgent` call with its OWN model context
- *  window (see the call site below — each delegate gets its own
- *  generateChat call, not a shared one). Dividing the budget meant a
- *  3-delegate fan-out gave each delegate a THIRD of the material a
- *  1-delegate turn would see, always the same opening slice, so delegates
- *  reasoned from partial material and disagreed with each other on the same
- *  question (production: one conversation's delegates reported 60 / 25 / 24
- *  / 22 / 20 leads for the same count). `delegateCount` is intentionally
- *  UNUSED for sizing now — the slice size must not shrink as the team grows,
- *  only the two real per-call bounds below still apply. Do not reintroduce
- *  a division here.
- *
- *  `understanding`, when given, is folded in ahead of the raw slice (see
- *  formatUnderstandingBlock) — a delegate gets the comprehended UNDERSTANDING
- *  plus a bounded slice of the source, not N verbatim copies of the whole
- *  document and nothing else. */
-export function delegateContext(
+ *  NEVER gates or fails the turn: nothing attached, or a failed/unparseable
+ *  comprehension call, both fall straight through with agentContext
+ *  untouched — this is strictly additive framing for the SAME single turn
+ *  that would have run anyway, never a routing or delegation decision. */
+async function withMaterialUnderstanding(
   agentContext: string | undefined,
-  _delegateCount: number,
-  understanding?: Understanding | null,
-): string | undefined {
-  if (!agentContext) return undefined;
-  const idx = agentContext.indexOf(ATTACHMENT_MARKER);
-  if (idx === -1) return agentContext; // nothing attached to bound — grounding sections alone are small
-  const head = agentContext.slice(0, idx);
-  const perDelegateDocBudget = Math.max(2_000, Math.min(
-    DELEGATE_MATERIAL_CHARS,
-    contextCharBudget(),
-  ));
-  const doc = agentContext.slice(idx, idx + perDelegateDocBudget);
-  const understandingBlock = understanding ? `${formatUnderstandingBlock(understanding)}\n\n` : '';
-  return head + understandingBlock + doc;
-}
-
-/** Detect a fan-out turn: 2+ @mentioned enabled personas, OR (when fewer than
- *  two were named) 2+ personas the ASSISTANT auto-selects for a request that
- *  a real comprehension pass says genuinely decomposes into multiple
- *  capabilities — in both cases requires an enabled coordinator configured
- *  for the account. Returns null (never throws) for every other case, so the
- *  caller falls back to today's single-persona / framing-only behavior in
- *  resolvePersonaForTurn unchanged.
- *
- *  `kind` on the result tells the caller WHICH path fired: an explicit
- *  "@Ada @Nia" is the user naming the team themselves — honour it
- *  UNCONDITIONALLY, never gated on comprehension, because the user already
- *  decided the work needs a team. An AUTO-selected fan-out is the
- *  assistant's own inference, and that inference must be informed by a real
- *  understanding of what's attached, not a head-sliced guess — see
- *  lib/agent/comprehension.ts's module comment for the reproduced defect this
- *  replaces (a numbers persona and a spend persona picked from a pitch call's
- *  opening small talk).
- *
- *  Order, matching the task spec: understand the material (comprehend) →
- *  decide whether the work decomposes (`needs.length >= 2`, computed BEFORE
- *  ever calling selectPersonasForRequest — convening two personas to produce
- *  two framings of one capability is worse than one agent doing the job
- *  once) → only then route. `emit`, when given, turns the comprehension call
- *  into a real, resolving trace step instead of the old "Reading the attached
- *  material…" thought that resolved on nothing but a string slice. */
-async function resolveCoordinatorFanout(
+  message: string | undefined,
   accountId: string,
-  personaMentions?: string[],
-  input_message?: string,
-  agentContext?: string,
-  emit?: (e: AgentEvent) => void,
-): Promise<{ coordinator: PersonaRow; delegates: PersonaRow[]; kind: 'explicit' | 'auto'; understanding?: Understanding | null } | null> {
-  try {
-    // Explicit @mentions still win — if someone names the team, honour it.
-    // Otherwise the ASSISTANT picks, because the user has no reason to know
-    // which personas exist. Requiring "@Ada @Nia" meant the whole fan-out was
-    // unreachable for anyone who had not read the persona list. This branch
-    // never touches comprehension at all — the user already named the team.
-    let matched = personaMentions?.length
-      ? await resolveMentionedPersonas(accountId, personaMentions)
-      : [];
-    if (matched.length >= 2) {
-      const coordinator = await getCoordinator(accountId);
-      if (!coordinator) return null;
-      return { coordinator, delegates: matched, kind: 'explicit' };
-    }
-    // Below this point: nothing (or fewer than two) explicit mentions — an
-    // AUTO-selected fan-out, which is the branch the reproduced defect is
-    // about. Comprehension only runs when there is actually attached
-    // material to misread — a bare text message was never the failure mode,
-    // and running an extra model call on every plain chat turn would be
-    // spending latency the defect never asked for.
-    const material = attachmentMaterial(agentContext);
-    let understanding: Understanding | null = null;
-    if (material) {
-      emit?.({ type: 'thought', text: 'Reading the attached material…' });
-      understanding = await comprehend({ message: input_message || '', material, accountId });
-      // Resolves the step above with something concrete when comprehension
-      // actually produced one — the trace-honesty fix. When it didn't (a
-      // failed or unparseable call), the fallback text below is still
-      // truthful: a read WAS attempted, even though it did not come back
-      // structured.
-      emit?.({ type: 'observation', ok: Boolean(understanding), text: describeMaterial(understanding) || 'Read the attached material.' });
-    }
-
-    let routingText: string;
-    if (understanding) {
-      // Fan out only when the work genuinely decomposes: a single-capability
-      // `needs` is one job for one agent, not a team question, so it is
-      // rejected here — BEFORE selectPersonasForRequest ever runs — rather
-      // than convening two personas to produce two framings of one job.
-      if (understanding.needs.length < 2) return null;
-      routingText = routingTextFor(understanding);
-    } else if (material) {
-      // Comprehension failed or degraded (no model configured, a parse
-      // failure, a thrown error) — fall back to the bounded head digest
-      // rather than either dropping the attachment from routing entirely or
-      // failing the turn. Comprehension must never be a new way to fail.
-      const digest = attachmentDigest(agentContext, ROUTING_DIGEST_CHARS);
-      routingText = digest ? `${input_message || ''}\n\n${digest}` : (input_message || '');
-    } else {
-      routingText = input_message || '';
-    }
-
-    const auto = await selectPersonasForRequest(accountId, routingText, MAX_FANOUT_DELEGATES);
-    // One match is a specialist question, not a team question — let the normal
-    // single-agent path handle it rather than convening a fan-out of one.
-    if (auto.length < 2) return null;
-    const coordinator = await getCoordinator(accountId);
-    if (!coordinator) return null;
-    return { coordinator, delegates: auto, kind: 'auto', understanding };
-  } catch {
-    return null;
-  }
+): Promise<string | undefined> {
+  const material = attachmentMaterial(agentContext);
+  if (!material) return agentContext;
+  const understanding = await comprehend({ message: message || '', material, accountId });
+  if (!understanding) return agentContext;
+  const idx = agentContext!.indexOf(ATTACHMENT_MARKER);
+  if (idx === -1) return agentContext; // defensive — attachmentMaterial already found it above
+  return agentContext!.slice(0, idx) + formatUnderstandingBlock(understanding) + '\n\n' + agentContext!.slice(idx);
 }
 
-/** Run each delegate persona as its own bounded runAgent() call, sequentially,
- *  stopping immediately (constraint 1) if any delegate needs approval. Every
- *  delegate shares the same accountId, message, and agentContext as the
- *  coordinator turn — each reasons independently and does not see the others'
- *  tool calls, only the same starting request. */
-/** What a persona is doing, phrased for the person watching. Derived from the
- *  ROLE rather than hardcoded per persona, so a new persona narrates correctly
- *  the moment it is created. */
-function personaVerb(persona: PersonaRow): string {
-  const role = `${persona.role || ''}`.toLowerCase();
-  if (/analyst/.test(role)) return 'checking the numbers';
-  if (/media|buyer/.test(role)) return 'reviewing spend and channels';
-  if (/copywriter/.test(role)) return 'working on the messaging';
-  if (/creative director|director of creative/.test(role)) return 'reviewing the work';
-  if (/strategist/.test(role)) return 'thinking about positioning';
-  if (/lifecycle/.test(role)) return 'mapping the sequence';
-  if (/social/.test(role)) return 'looking at social';
-  if (/account/.test(role)) return 'checking scope and goals';
-  return 'looking into it';
-}
 
-async function runFanoutDelegates(
-  accountId: string,
-  personas: PersonaRow[],
-  input: RunAgentInput,
-  // Optional so the non-streaming runAgent path is unaffected. When present,
-  // each delegate announces itself BEFORE it runs — previously every
-  // "Consulting X…" line was emitted upfront and the UI then went silent for the
-  // whole fan-out, which is the longest operation in the system.
-  emit?: (e: AgentEvent) => void,
-  // The comprehended understanding of this turn's material, when a
-  // comprehension pass produced one — folded into each delegate's context
-  // alongside its bounded raw-material slice (see delegateContext) rather
-  // than delegates getting N verbatim copies of the document and nothing
-  // else. Undefined on the explicit-@mention path, which never comprehends.
-  understanding?: Understanding | null,
-  // The COORDINATOR's own turnDeadline (computeTurnDeadline), inherited by
-  // every delegate below via RunAgentInput.deadlineAt. Optional/additive —
-  // callers that omit it (there are none left in this file, but a future one
-  // is free to) get delegates with their own unbounded default deadline,
-  // same as before this parameter existed. A real, separate bug this closes:
-  // before this parameter existed, each delegate computed a fresh full
-  // TURN_DEADLINE_MS regardless of how much of the coordinator's own budget
-  // was already spent, so a delegate could legally outlive its parent.
-  deadlineAt?: number,
-): Promise<{ outcomes: DelegateOutcome[]; needsApproval?: AgentResult }> {
-  const delegates = personas.slice(0, MAX_FANOUT_DELEGATES); // constraint (2)
-
-  // CONCURRENT, not sequential — this was the single biggest source of latency
-  // in the product.
-  //
-  // Each delegate is a FULL agent turn: its own loop, its own model calls, its
-  // own DB reads. Running three of them one after another meant a fan-out cost
-  // the SUM of three complete turns before the coordinator had even started
-  // composing, which is how a single request reached four minutes. They are
-  // independent by construction — the comment above says so: each reasons from
-  // the same starting request and never sees the others' tool calls — so the
-  // sequencing bought nothing except waiting.
-  //
-  // Wall-clock is now the SLOWEST delegate rather than the sum of all of them.
-  //
-  // WHAT THE OLD ORDERING GAVE UP, and why it is affordable: the shared step
-  // budget could be spent adaptively, a later delegate getting whatever an
-  // earlier one left. Concurrently there is no "later", so each is given an
-  // equal slice of the same ceiling. The total is identical; only the
-  // distribution is fixed in advance.
-  const perDelegate = Math.max(1, Math.min(
-    MAX_FANOUT_STEPS_PER_DELEGATE,
-    Math.floor(MAX_FANOUT_TOTAL_STEPS / Math.max(1, delegates.length)),
-  ));
-
-  // Announced up front because they genuinely all start now. The previous
-  // version announced each one as it began, which was honest when they ran in
-  // sequence and would be a lie here.
-  for (const persona of delegates) {
-    emit?.({ type: 'step_start', text: `${persona.name} is ${personaVerb(persona)}…`, parallel: true, key: `delegate:${persona.id}` });
-  }
-
-  // Progress is reported AS EACH DELEGATE SETTLES, not once they all have.
-  // Folding still happens in delegate order below — the synthesis input stays
-  // reproducible — but the trace no longer goes silent for the length of the
-  // slowest delegate while the other two have already finished. That silence is
-  // what made a fan-out indistinguishable from a hang.
-  const announce = (persona: PersonaRow, result: { status: string; message: string }) => {
-    if (result.status === 'needs_approval') return;
-    emit?.({
-      type: 'observation',
-      key: `delegate:${persona.id}`,
-      ok: result.status !== 'error',
-      text: result.status === 'error'
-        ? `${persona.name} hit a problem: ${truncate(result.message)}`
-        : `${persona.name}: ${truncate(result.message)}`,
-    });
-  };
-
-  // Defect 4 — see delegateContext() above: bound what each delegate reads
-  // out of agentContext instead of broadcasting the full raw document
-  // unbounded to every one of them. Computed once, outside the map, purely
-  // because every delegate gets the SAME slice (independent calls, same
-  // bounded material) — delegates.length no longer affects the size of that
-  // slice (see the 2026-08-28 defect note on delegateContext above).
-  const boundedContext = delegateContext(input.agentContext, delegates.length, understanding);
-
-  const settled = await Promise.all(delegates.map(async (persona) => {
-    try {
-      const result = await runAgent({
-        accountId,                 // constraint (4) — never a different account
-        message: input.message,
-        agentContext: boundedContext,
-        personaId: persona.id,
-        maxSteps: perDelegate,
-        requestedBy: input.requestedBy,
-        conversationId: input.conversationId,
-        // Inherits the COORDINATOR's own deadline (see this function's
-        // deadlineAt param) rather than letting the delegate compute a fresh
-        // full TURN_DEADLINE_MS of its own — computeTurnDeadline clamps to
-        // whichever is sooner, so a delegate can never legally outlive the
-        // parent turn that spawned it.
-        deadlineAt,
-        // Deliberately no `transcript`/`carryover`/`approve` here: a delegate
-        // is a fresh, self-contained sub-turn, not a resume of the
-        // coordinator's own conversation.
-      });
-      announce(persona, result);
-      return { persona, result };
-    } catch (e: any) {
-      // One delegate throwing must not take the fan-out with it. Before, a
-      // rejection propagated out of the loop and the whole turn died with
-      // whatever the others had already produced thrown away.
-      const result = {
-        status: 'error' as const,
-        message: String(e?.message || e).slice(0, 300),
-        steps: [] as AgentStep[],
-      };
-      // Announced here too: a delegate that FAILED must close its own line. If
-      // only the success path reported, a thrown delegate would spin forever in
-      // the trace while the fan-out had already moved on without it.
-      announce(persona, result);
-      return { persona, result };
-    }
-  }));
-
-  const outcomes: DelegateOutcome[] = [];
-
-  // Results are folded in DELEGATE ORDER, not completion order, so the same
-  // request produces the same synthesis input every time. A fan-out whose
-  // observations arrive in whatever order the network settled would make the
-  // coordinator's answer irreproducible for no benefit.
-  for (const { persona, result } of settled) {
-    if (result.status === 'needs_approval') {
-      // Constraint (1) still holds: an approval stops the fan-out. Concurrently
-      // the others have already run, so this returns what completed alongside
-      // it rather than pretending they did not.
-      return { outcomes, needsApproval: result as AgentResult };
-    }
-    // Already announced by `announce` as this delegate settled — emitting here
-    // too would double every line in the trace.
-    outcomes.push({
-      persona,
-      status: result.status,
-      message: result.message,
-      stepsUsed: result.steps.length,
-    });
-  }
-  return { outcomes };
-}
-
-/** Phrases that mark a synthesis which has abstracted away the substance it
- *  was given. Each one is a construction that can be written without having
- *  read the delegates at all — which is precisely the failure being caught. */
-const VAGUE_SYNTHESIS_PHRASES = [
-  'several factors',
-  'it depends on your',
-  'there are many ways',
-  'a variety of approaches',
-  'each has its own merits',
-  'the team has provided',
-  'based on the analysis above',
-  'in conclusion, it is important',
-  'further analysis is needed',
-  'more information is required',
-  'consider all the options',
-];
-
-/** Returns the phrases a synthesis tripped, empty when it is specific enough. */
-function validateSynthesis(text: string): string[] {
-  const lower = text.toLowerCase();
-  const hits = VAGUE_SYNTHESIS_PHRASES.filter((p) => lower.includes(p));
-  // A synthesis shorter than the shortest delegate answer has almost certainly
-  // compressed rather than reconciled. Length is a weak signal on its own, so
-  // it only counts alongside at least one phrase hit.
-  return hits;
-}
-
-/** Synthesize the coordinator's final reply strictly from what the delegates
- *  actually returned (constraint 3). Falls back to a plain concatenation of
- *  the delegate outputs on any synthesis failure — never drops a delegate's
- *  result, never invents one. */
-async function synthesizeCoordinatorAnswer(
-  accountId: string,
-  coordinator: PersonaRow,
-  outcomes: DelegateOutcome[],
-  userMessage?: string,
-  // The coordinator turn's own deadline (computeTurnDeadline) — optional/
-  // additive, a caller that omits it gets the unbounded behaviour this call
-  // already had. Threaded through so the compose pass that reconciles the
-  // delegates into ONE answer cannot itself run past what remains of the
-  // turn, the same as the step loop and forced-final calls.
-  deadlineAt?: number,
-): Promise<string> {
-  if (!outcomes.length) {
-    return "None of the mentioned team members were able to respond, so I don't have anything grounded to report.";
-  }
-  const block = outcomes
-    .map((o) => `### ${o.persona.name}${o.status === 'error' ? ' — FAILED' : ''}\n${o.message}`)
-    .join('\n\n');
-  const system = [
-    buildCoordinatorSystemBlock(coordinator),
-    '',
-    'CRITICAL — grounding rule: base this synthesis ONLY on the delegate responses below. Never invent, assume, or add a result a delegate did not actually produce. If a delegate failed, say so honestly instead of guessing what they would have said. Reconcile overlaps and disagreements; do not just concatenate.',
-  ].join('\n');
-  try {
-    const raw = await generateChat({
-      system,
-      messages: [{
-        role: 'user',
-        content: `User's request: ${userMessage || '(none)'}\n\nDelegate responses:\n${block}\n\nWrite the single unified final answer for the user now. Plain language, no JSON, no markdown headers. Every claim must be traceable to a delegate response above — do not summarise them into vagueness.`,
-      }],
-      temperature: 0.3,
-      // Was a hard 800 tokens — enough to truncate a synthesis of three
-      // delegates mid-sentence. Follows the selected model's own ceiling now.
-      maxOutputCeiling: AGENT_ROUTE_CEILING,
-      // AGENT_SYNTHESIS_TIER, not AGENT_ROUTE_TIER — see that constant's
-      // comment above. Synthesis always prefers the account's strongest
-      // tier, independent of whatever the per-step routing passes are
-      // configured to.
-      preferTier: AGENT_SYNTHESIS_TIER,
-      zoAskModel: AGENT_ZOASK_MODEL,
-      // PRODUCTION DEFECT (2026-08-28, same shape as the forced-final routing
-      // fix in 8d41f2b): `accountId` used to be passed ONLY inside the
-      // `coordinator.model_id` branch below, so an ordinary fan-out (no
-      // coordinator model override) never consulted the account's paid
-      // provider registry for its synthesis call — the pass that reconciles
-      // the delegates into ONE answer fell straight to the hardcoded
-      // last-resort OpenCode tier (below) with no `task` tag to prefer a
-      // paid model. `accountId` MUST be unconditional here so the call that
-      // composes the user-facing answer is routed exactly like every other
-      // substantive call in the turn. Do not move it back inside the
-      // coordinator.model_id branch.
-      accountId,
-      // 'draft' — the router's own "compose pass" task tag (lib/ai/router.ts),
-      // the same tag 8d41f2b chose for the analogous forced-final compose
-      // call. This call assembles the single user-facing answer from the
-      // delegates' gathered findings — the most substantive shape in
-      // SUBSTANTIVE_TASKS (lib/ai/providers.ts) — so orderByCost prefers a
-      // paid model for it, same as 'reason' does for tool-routing calls.
-      task: 'draft',
-      // No hard `model: AGENT_OPENCODE_MODEL` pin: that only mattered if the
-      // call fell all the way to the OpenCode tier, and with `accountId` and
-      // `task` now wired through, the registry (or a healthier ladder tier)
-      // is tried first. Leaving OpenCode to use its own default model when
-      // it IS reached avoids hard-pinning this call to one specific model on
-      // the tier tried last.
-      deadlineAt,
-      ...(coordinator.model_id ? { modelId: coordinator.model_id } : {}),
-    });
-    const trimmed = raw.trim();
-    if (!trimmed) {
-      // Silent-fallback fix: this used to fall back to the `### Name`
-      // concatenation with nothing logged, so a synthesis that came back
-      // empty was invisible — the owner saw two persona blocks and assumed
-      // that was the design. Log it, then still return `block` (the
-      // fallback itself is required behaviour — never drop a delegate's
-      // result on a failed synthesis).
-      log.warn('coordinator synthesis returned empty, falling back to concatenation', {
-        accountId, coordinator: coordinator.name,
-      });
-      return block;
-    }
-
-    // OUTPUT VALIDATION. A synthesis pass has a specific failure mode: given
-    // three specialists' findings it produces something that reads well and
-    // says nothing — "several factors are at play", "it depends on your
-    // goals" — because generic hedging is the safest text that fits every
-    // input. That output is worse than the raw delegate answers it replaced,
-    // and it is invisible: it looks like a good answer.
-    //
-    // So the result is checked for the phrases that mark it, and a synthesis
-    // that trips the check is DISCARDED in favour of the delegates' actual
-    // words. Falling back to slightly rough attributed text beats shipping
-    // fluent emptiness.
-    const violations = validateSynthesis(trimmed);
-    if (violations.length) {
-      log.warn('coordinator synthesis rejected as vague', {
-        accountId, coordinator: coordinator.name, violations, preview: trimmed.slice(0, 200),
-      });
-      return block;
-    }
-    return trimmed;
-  } catch (err: any) {
-    log.warn('coordinator synthesis call failed, falling back to concatenation', {
-      accountId, coordinator: coordinator.name, error: String(err?.message || err),
-    });
-    return block; // never silently drop the delegates' actual outputs
-  }
-}
-
-/** The runAgent-side fan-out path: gather delegate outcomes, then synthesize
- *  or bubble up a pending approval, and return exactly the AgentResult shape
- *  runAgent already promises callers. */
-async function runCoordinatorFanout(
-  accountId: string,
-  fanout: { coordinator: PersonaRow; delegates: PersonaRow[]; understanding?: Understanding | null },
-  input: RunAgentInput,
-  // The coordinator turn's own deadline (computeTurnDeadline, from
-  // runAgentImpl) — passed down to every delegate and to the synthesis call.
-  // Optional/additive: omitted, delegates and synthesis fall back to their
-  // own unbounded defaults, unchanged from before this parameter existed.
-  deadlineAt?: number,
-): Promise<AgentResult> {
-  const messages: StoredMessage[] = capTranscript(input.transcript || []);
-  const steps: AgentStep[] = [];
-  if (input.message) messages.push({ role: 'user', content: input.message, ...(input.userMessageId ? { id: input.userMessageId } : {}) });
-
-  const { outcomes, needsApproval } = await runFanoutDelegates(accountId, fanout.delegates, input, undefined, fanout.understanding, deadlineAt);
-  for (const o of outcomes) {
-    steps.push({
-      thought: `${o.persona.name} ${o.status === 'error' ? 'ran into an error' : 'responded'}.`,
-      observation: truncate(o.message),
-    });
-  }
-  if (needsApproval) return needsApproval; // constraint (1) — a delegate's own pending approval IS the turn's result
-
-  const answer = await synthesizeCoordinatorAnswer(accountId, fanout.coordinator, outcomes, input.message, deadlineAt);
-  messages.push({ role: 'assistant', content: answer });
-  const tokenEstimate = estimateTokens(messages);
-  return { status: 'done', message: answer, transcript: messages, steps, tokenEstimate, compaction: compactionLevel(tokenEstimate) };
-}
-
-/** The runAgentStream-side fan-out path: same delegate/synthesis logic as
- *  runCoordinatorFanout, but emits live events instead of accumulating
- *  `steps`, matching the emit-channel divergence already documented on the
- *  LOOP-CONTROL INVARIANT above (delegates are not sub-streamed — a fan-out
- *  turn does not get token-by-token deltas from each delegate's own internal
- *  loop, only a "consulting X" thought and X's finished observation; the
- *  synthesis itself is emitted as one final message, not streamed token by
- *  token — a deliberate simplification, not a divergence in loop control). */
-async function runCoordinatorFanoutStream(
-  accountId: string,
-  fanout: { coordinator: PersonaRow; delegates: PersonaRow[]; understanding?: Understanding | null },
-  input: RunAgentInput,
-  emit: (e: AgentEvent) => void,
-  // See runCoordinatorFanout's identical parameter.
-  deadlineAt?: number,
-): Promise<void> {
-  const messages: StoredMessage[] = capTranscript(input.transcript || []);
-  if (input.message) messages.push({ role: 'user', content: input.message, ...(input.userMessageId ? { id: input.userMessageId } : {}) });
-
-  // Name the team ONCE, then let each delegate narrate itself as it runs. The
-  // previous version emitted every "Consulting X…" line upfront and then went
-  // silent until all delegates had finished — the longest silence in the app,
-  // during its slowest operation.
-  const delegates = fanout.delegates.slice(0, MAX_FANOUT_DELEGATES);
-  emit({
-    type: 'thought',
-    text: delegates.length === 1
-      ? `Bringing in ${delegates[0].name}.`
-      : `Bringing in ${delegates.slice(0, -1).map((p) => p.name).join(', ')} and ${delegates[delegates.length - 1].name}.`,
-  });
-
-  const { outcomes, needsApproval } = await runFanoutDelegates(accountId, fanout.delegates, input, emit, fanout.understanding, deadlineAt);
-  if (needsApproval) {
-    emit({ type: 'needs_approval', proposal: needsApproval.proposal!, message: needsApproval.message, transcript: needsApproval.transcript });
-    return;
-  }
-
-  emit({ type: 'step_start', text: `${fanout.coordinator.name} is pulling it together…` });
-  const answer = await synthesizeCoordinatorAnswer(accountId, fanout.coordinator, outcomes, input.message, deadlineAt);
-  messages.push({ role: 'assistant', content: answer });
-  const tokenEstimate = estimateTokens(messages);
-  emit({ type: 'final', message: answer, transcript: messages, tokenEstimate });
-  const level = compactionLevel(tokenEstimate);
-  if (level) emit({ type: 'compaction_suggested', level, tokenEstimate });
-}
-
-async function runAgentImpl(input: RunAgentInput): Promise<AgentResult> {
-  const { accountId, brandContext } = input;
+async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
+  const { accountId, brandContext } = rawInput;
   // Computed BEFORE anything else in the turn — see computeTurnDeadline's
-  // comment — so the fan-out path below and every model call further down
-  // (step loop, forced-final, synthesis, and each delegate's inherited
-  // deadline) all measure against the same start-of-turn instant.
-  const turnDeadline = computeTurnDeadline(input);
+  // comment — so every model call further down (step loop, forced-final)
+  // measures against the same start-of-turn instant.
+  const turnDeadline = computeTurnDeadline(rawInput);
   // Server-derived context handed to every tool call. The MODEL never supplies
   // these: a conversation id it could set would be forgeable, and plans, grants
   // and memory are all keyed on it.
   const toolCtx = {
-    conversationId: input.conversationId ?? null,
+    conversationId: rawInput.conversationId ?? null,
     brandId: brandContext?.id ?? null,
-    requestedBy: input.requestedBy ?? null,
-    planOnly: Boolean(input.planOnly),
+    requestedBy: rawInput.requestedBy ?? null,
+    planOnly: Boolean(rawInput.planOnly),
+    // The turn's own deadline, so a capability that spawns a SUB-RUN can hand
+    // it down instead of letting the sub-run compute a fresh full budget of
+    // its own. Until the coordinator fan-out was removed it was the only path
+    // that inherited this; askSpecialist — now the only way to spawn a
+    // sub-agent — was bounded solely by its own 90s wall clock and could
+    // therefore legally outlive the parent turn that spawned it.
+    deadlineAt: turnDeadline,
   };
-  // Packet 6.2: only ever enter fan-out on a fresh turn — never mid-resume
-  // (input.approve set) and never when the caller already pinned a single
-  // explicit personaId. A resumed approval always finishes as one ordinary
-  // step in the normal single-persona loop below, never a fresh fan-out —
-  // that is what keeps "approve one action" from ever re-triggering N more.
-  if (!input.approve && !input.personaId) {
-    // See resolveCoordinatorFanout's comment: an AUTO-selected fan-out is
-    // decided from a real comprehension of what's actually attached, not a
-    // head-sliced guess or the bare sentence that came with it. No `emit`
-    // here — runAgent (unlike runAgentStream) has no live channel to announce
-    // "reading the attached material" on.
-    const fanout = await resolveCoordinatorFanout(accountId, input.personaMentions, input.message, input.agentContext);
-    if (fanout) return runCoordinatorFanout(accountId, fanout, input, turnDeadline);
-  }
+  // One comprehension pass, folded into agentContext, when this turn has
+  // material attached — see withMaterialUnderstanding's comment above. A no-op
+  // (returns rawInput.agentContext untouched) on every turn with nothing
+  // attached, which is the common case.
+  const input: RunAgentInput = {
+    ...rawInput,
+    agentContext: await withMaterialUnderstanding(rawInput.agentContext, rawInput.message, accountId),
+  };
   const { systemBlock: personaBlock, modelId: personaModelId } = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
   const allEnabledSkills = await loadEnabledSkillsForAgent(accountId);
   // Hermes picks the 1-4 that apply to THIS request instead of injecting all.
@@ -2391,51 +1783,46 @@ function emitAnalysis(emit: (e: AgentEvent) => void, analysis: Analysis | null):
 // variant owns an `emit` channel, streams `final_delta`, and passes an onDelta
 // callback to composeAnswer that runAgent intentionally does not. Do not
 // "harmonize" the streaming/compose paths.
-async function runAgentStreamImpl(input: RunAgentInput, emit: (e: AgentEvent) => void): Promise<void> {
-  const { accountId, brandContext } = input;
+async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent) => void): Promise<void> {
+  const { accountId, brandContext } = rawInput;
   // Computed BEFORE anything else in the turn — see computeTurnDeadline's
   // comment and the identical placement in runAgentImpl above (CLAUDE.md:
   // the two loops must stay identical).
-  const turnDeadline = computeTurnDeadline(input);
+  const turnDeadline = computeTurnDeadline(rawInput);
   // Server-derived context handed to every tool call. The MODEL never supplies
   // these: a conversation id it could set would be forgeable, and plans, grants
   // and memory are all keyed on it.
   const toolCtx = {
-    conversationId: input.conversationId ?? null,
+    conversationId: rawInput.conversationId ?? null,
     brandId: brandContext?.id ?? null,
-    requestedBy: input.requestedBy ?? null,
-    planOnly: Boolean(input.planOnly),
+    requestedBy: rawInput.requestedBy ?? null,
+    planOnly: Boolean(rawInput.planOnly),
+    // The turn's own deadline, so a capability that spawns a SUB-RUN can hand
+    // it down instead of letting the sub-run compute a fresh full budget of
+    // its own. Until the coordinator fan-out was removed it was the only path
+    // that inherited this; askSpecialist — now the only way to spawn a
+    // sub-agent — was bounded solely by its own 90s wall clock and could
+    // therefore legally outlive the parent turn that spawned it.
+    deadlineAt: turnDeadline,
   };
-  // Packet 6.2 — same fan-out gate as runAgent above; see the comment there.
-  // These four reads don't depend on each other, so they run concurrently
-  // instead of as one sequential chain — on an ordinary (non-fanout) turn this
-  // is the difference between ~4 back-to-back DB round-trips and one, all of
-  // which used to happen before this loop's own step_start (below) could ever
-  // fire. The fanout check runs speculatively alongside the rest; if it comes
-  // back truthy the other three results are simply discarded for the fanout
-  // path below, which is cheap relative to the latency this saves on the
-  // common case.
-  // See resolveCoordinatorFanout's comment. Passing `input.agentContext`
-  // (rather than a pre-sliced digest) is what lets an AUTO-selected fan-out
-  // run a real comprehension pass over the attached material before deciding
-  // to delegate, instead of pattern-matching a head-sliced guess; `emit` is
-  // what puts that reading on the visible trace, resolving with something
-  // concrete once comprehension actually finishes — exactly what the user
-  // could not see in the evidence that opened this fix (three delegate
-  // steps, never a line saying the document was opened, and the one
-  // "Reading…" line that DID appear resolved on nothing but a string slice).
-  // An EXPLICIT multi-mention ("@Milo @Ezra") never reaches comprehension at
-  // all — the user named the team, so resolveCoordinatorFanout returns kind:
-  // 'explicit' before ever touching it.
-  const [fanout, personaResult, allEnabledSkills, externalCaps] = await Promise.all([
-    (!input.approve && !input.personaId)
-      ? resolveCoordinatorFanout(accountId, input.personaMentions, input.message, input.agentContext, emit)
-      : Promise.resolve(null),
-    resolvePersonaForTurn(accountId, input.personaId, input.personaMentions),
+  // These three reads don't depend on each other, so they run concurrently
+  // instead of as one sequential chain — the difference between ~3
+  // back-to-back DB round-trips and one, all of which used to happen before
+  // this loop's own step_start (below) could ever fire.
+  const [personaResult, allEnabledSkills, externalCaps] = await Promise.all([
+    resolvePersonaForTurn(accountId, rawInput.personaId, rawInput.personaMentions),
     loadEnabledSkillsForAgent(accountId),
     loadExternalCapabilities(accountId),
   ]);
-  if (fanout) { await runCoordinatorFanoutStream(accountId, fanout, input, emit, turnDeadline); return; }
+  // One comprehension pass, folded into agentContext, when this turn has
+  // material attached — see withMaterialUnderstanding's comment above. A no-op
+  // (returns rawInput.agentContext untouched, no model call) on every turn
+  // with nothing attached, which is the common case — so this is not folded
+  // into the Promise.all above; it would only add a branch for no benefit.
+  const input: RunAgentInput = {
+    ...rawInput,
+    agentContext: await withMaterialUnderstanding(rawInput.agentContext, rawInput.message, accountId),
+  };
   const { systemBlock: personaBlock, modelId: personaModelId } = personaResult;
   // Hermes picks the 1-4 that apply to THIS request instead of injecting all.
   // This is the one hop that must stay sequential — it genuinely depends on

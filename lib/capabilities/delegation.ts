@@ -32,7 +32,8 @@
 //     watching, never to a sub-run they never saw.
 
 import { z } from 'zod';
-import { listPersonas } from '@/lib/agent/personas';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { listPersonas, type PersonaRow } from '@/lib/agent/personas';
 import { obj, S, type Capability, rowsOf, plural, samples, digestLine } from './types';
 
 /** How many delegate calls one turn may make. Past this the agent is told to
@@ -60,13 +61,34 @@ export function endDelegationScope(turnId: string): void {
   counters.delete(turnId);
 }
 
-/** Set by the loop for the duration of a turn, so the capability knows which
- *  counter it is spending against and whether it is already inside a delegate
- *  (in which case delegation is refused — see the depth cap above). */
-let activeTurn: { id: string; isDelegate: boolean } | null = null;
+/** Which turn is running, and whether IT is itself a delegate — read by
+ *  askSpecialist below to enforce the depth cap and per-turn counter.
+ *
+ *  DEFECT (fixed here): this used to be a MODULE-LEVEL SINGLETON variable —
+ *  `let activeTurn`. Sub-runs execute CONCURRENTLY, and whichever one finished
+ *  first called setDelegationContext(null) in its `finally`, clearing the
+ *  context out from under every other turn still in flight. The depth cap and
+ *  the per-turn delegation counter were both unreliable as a direct result: a
+ *  still-running delegate could read a null or a SIBLING's context depending
+ *  on timing. Reproduced before the fix — see
+ *  tests/delegation-context-isolation.test.ts, where the long-running turn read
+ *  null after a short concurrent turn finished.
+ *
+ *  AsyncLocalStorage isolates this correctly: each runAgent/runAgentStream
+ *  invocation gets its own async execution context, so two concurrent turns
+ *  each setting then clearing no longer interfere. */
+type DelegationCtx = { id: string; isDelegate: boolean };
+const delegationStorage = new AsyncLocalStorage<DelegationCtx | null>();
 
-export function setDelegationContext(ctx: { id: string; isDelegate: boolean } | null): void {
-  activeTurn = ctx;
+export function setDelegationContext(ctx: DelegationCtx | null): void {
+  delegationStorage.enterWith(ctx);
+}
+
+/** The current turn's delegation context, or null outside any tracked turn.
+ *  Exported so the isolation itself can be tested directly, without standing
+ *  up the full agent loop — see tests/delegation-context-isolation.test.ts. */
+export function getDelegationContext(): DelegationCtx | null {
+  return delegationStorage.getStore() ?? null;
 }
 
 export const DELEGATION_CAPABILITIES: Capability[] = [
@@ -99,20 +121,22 @@ export const DELEGATION_CAPABILITIES: Capability[] = [
     domain: 'workspace',
     title: 'Consult a specialist',
     description:
-      "Hand ONE specific question to a specialist persona and get their answer back, then carry on with your own work. Use it the moment you hit something outside your depth — an odd number in the spend, a positioning call, a deliverability question — rather than guessing or telling the user to start again. Give the full question and any context they need: they cannot see this conversation. They can read data but cannot take actions that need approval; if they recommend one, propose it yourself.",
+      "Dispatch a bounded sub-agent to work ONE specific question, then get its answer back and carry on with your own work. Use it the moment you hit something outside your depth — an odd number in the spend, a positioning call, a deliverability question, or any side task worth running on its own — rather than guessing or telling the user to start again. Give it a personaId to consult a NAMED specialist in that persona's voice (call listSpecialists for the roster), OR give it a brief — written task instructions — to dispatch a plain sub-agent with no persona framing for a general one-off task. At least one of personaId or brief is required; give both to hand a named specialist extra written instructions. Always include the specific question and any context it needs: it cannot see this conversation. It can read data but cannot take actions that need approval; if it recommends one, propose it yourself.",
     gate: 'read',
-    inputSchema: obj({ personaId: S.string, question: S.string, context: S.string }, ['personaId', 'question']),
+    inputSchema: obj({ personaId: S.string, question: S.string, context: S.string, brief: S.string }, ['question']),
     zod: z.object({
-      personaId: z.string().min(1),
+      personaId: z.string().min(1).optional(),
       question: z.string().min(5).max(4000),
       context: z.string().max(8000).optional(),
+      brief: z.string().min(1).max(4000).optional(),
     }),
-    run: async (accountId, a) => {
+    run: async (accountId, a, ctx) => {
       // Depth cap. A delegate asking a delegate has no natural floor.
-      if (activeTurn?.isDelegate) {
+      const turn = getDelegationContext();
+      if (turn?.isDelegate) {
         return { error: 'You are already answering as a specialist and cannot consult another. Answer with what you know.' };
       }
-      const turnId = activeTurn?.id;
+      const turnId = turn?.id;
       if (turnId) {
         const used = counters.get(turnId) ?? 0;
         if (used >= MAX_DELEGATIONS_PER_TURN) {
@@ -123,11 +147,22 @@ export const DELEGATION_CAPABILITIES: Capability[] = [
         counters.set(turnId, used + 1);
       }
 
-      const personas = await listPersonas(accountId);
-      const persona = personas.find((p) => p.id === a.personaId && p.enabled && !p.is_coordinator);
-      if (!persona) {
-        return { error: `No available specialist with id ${a.personaId}. Call listSpecialists for the current roster.` };
+      // personaId given -> consult that named specialist, exactly as before.
+      // No personaId -> a written brief is required, since a persona-less
+      // sub-agent has nothing else to frame the task with.
+      let persona: PersonaRow | null = null;
+      if (a.personaId) {
+        const personas = await listPersonas(accountId);
+        persona = personas.find((p) => p.id === a.personaId && p.enabled && !p.is_coordinator) ?? null;
+        if (!persona) {
+          return { error: `No available specialist with id ${a.personaId}. Call listSpecialists for the current roster.` };
+        }
+      } else if (!a.brief) {
+        return {
+          error: 'Provide either personaId (to consult a named specialist — call listSpecialists for the roster) or brief (a written task for a plain sub-agent). Neither was given.',
+        };
       }
+      const label = persona ? persona.name : 'the sub-agent';
 
       // Imported at call time, not at module load: loop.ts imports the
       // capability registry, so a static import here would close an import
@@ -151,18 +186,34 @@ export const DELEGATION_CAPABILITIES: Capability[] = [
         timer = setTimeout(() => resolve('timeout'), budgetMs);
       });
 
+      // brief, when given, is prepended ahead of the question — the written
+      // task for a persona-less sub-agent, or extra instructions on top of a
+      // named specialist's own framing. Unchanged construction (question, then
+      // context) when brief is absent, so the personaId-only path is
+      // byte-for-byte what it always was.
+      const message = [a.brief, a.question, a.context ? `Context from the operator:\n${a.context}` : null]
+        .filter(Boolean)
+        .join('\n\n');
+
       const result = await Promise.race([runAgent({
         accountId,                 // never a different account
-        message: a.context ? `${a.question}\n\nContext from the operator:\n${a.context}` : a.question,
-        personaId: persona.id,
+        message,
+        personaId: persona?.id,
         maxSteps: DELEGATE_STEPS,
         isDelegate: true,          // blocks further delegation and approvals
+        // Inherit the PARENT turn's deadline rather than computing a fresh full
+        // budget down here. computeTurnDeadline clamps to whichever is sooner,
+        // so this can only tighten the sub-run, never extend it. budgetMs above
+        // is a separate wall clock: it bounds how long the CALLER waits, while
+        // this bounds the sub-run itself. Without it a sub-run spawned with 10s
+        // left on the parent turn would still run its own full budget.
+        deadlineAt: ctx?.deadlineAt,
       }), expired]).finally(() => clearTimeout(timer));
 
       if (result === 'timeout') {
         return {
-          specialist: persona.name,
-          error: `${persona.name} did not come back within ${Math.round(budgetMs / 1000)}s and was left to finish on their own. Answer with what you have, and say that you could not get their input in time.`,
+          specialist: label,
+          error: `${label} did not come back within ${Math.round(budgetMs / 1000)}s and was left to finish on their own. Answer with what you have, and say that you could not get their input in time.`,
         };
       }
 
@@ -171,14 +222,14 @@ export const DELEGATION_CAPABILITIES: Capability[] = [
         // turn, not this sub-run; an approval card raised from inside a
         // delegate would be a decision about work the user never saw proposed.
         return {
-          specialist: persona.name,
-          answer: `${persona.name} recommends an action that needs your approval rather than something they can do themselves: ${result.message}`,
+          specialist: label,
+          answer: `${label} recommends an action that needs your approval rather than something they can do themselves: ${result.message}`,
           recommendsAction: true,
         };
       }
       return {
-        specialist: persona.name,
-        role: persona.role,
+        specialist: label,
+        role: persona?.role,
         answer: result.message,
         status: result.status,
       };

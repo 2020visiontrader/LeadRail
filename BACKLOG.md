@@ -5,11 +5,11 @@ trigger, because the failure mode this file exists to prevent is a real risk
 living only in a conversation nobody re-reads.
 
 Recurring pattern behind most of these: **something is written but never read,
-or configured in prose but never in a config file.** Ten instances found so far.
+or configured in prose but never in a config file.** Thirteen instances found so far.
 When adding an entry, say what proves it is done — a passing test, a row in a
 table, a non-401 log line — not "wire it up".
 
-Last reviewed: 2026-08-27
+Last reviewed: 2026-08-30
 
 ---
 
@@ -215,3 +215,74 @@ grepping `export async function DELETE` against a codebase that writes
   never drained). Company enrichment only, no outbound send. Cancelled rather
   than drained so the first real tick would not spend Apollo credits on
   18-day-old intent. Re-enqueue on demand.
+
+---
+
+## 5. Fan-out removal — three loose ends, 2026-08-30
+
+The coordinator fan-out (`resolveCoordinatorFanout`, `runFanoutDelegates`,
+`selectPersonasForRequest`, `ROLE_SIGNALS`, the synthesis pass) is deleted.
+`askSpecialist` is now the only way to spawn a sub-agent. Three things it left
+behind, none of them breaking, all of them the "written but never read" pattern
+in one direction or the other.
+
+**5a. `AgentConsole` parallel-step branch now has no producer.**
+`src/components/AgentConsole.tsx:952-964` keeps the reducer rule that stops a
+`parallel` step from being auto-resolved by the next event. Nothing in `lib/`
+or `app/` emits `parallel: true` or a `delegate:<id>` key any more — the
+fan-out was its only producer, and `askSpecialist` runs sequentially inside the
+step loop. `tests/fanout-trace.test.ts` tests a LOCAL reimplementation of that
+branch, so it passes whether or not the real branch is reachable.
+Harmless (a defensive branch that never fires), and deliberately not deleted
+here: it is UI, and a future concurrent-step feature would want exactly this
+rule back.
+**Done when:** either something emits `parallel: true` again and the branch is
+reachable, or the branch, its `Step.parallel`/`key` fields, and
+`tests/fanout-trace.test.ts` are removed together in one change.
+
+**5b. Plans no longer pin a persona.**
+`lib/capabilities/plans.ts` used `selectPersonasForRequest` to pin ONE persona
+for the life of a multi-step plan, so voice and judgement would not drift
+between step 1 and step 4. The reason was sound; the selector was not (four of
+its eight signal rows matched nothing in the 24-persona roster, and one matched
+by substring accident). The pin is removed, not replaced — a plan currently
+runs as the default assistant on every step. That is consistent, which the old
+behaviour was not, but it is less than what was intended.
+The replacement is already in the harvested data and is not yet parsed: 118
+skills carry an `## Agents Used` section naming the persona that executes them,
+116 of which name a persona in the current roster, with none naming one that
+does not exist.
+**Done when:** `harvest-skills.ts` lifts that section into a
+`personas: string[]` field on `HarvestedSkill`, and `createPlan` derives its
+pin from the skills Hermes already routed rather than from the objective text.
+
+**5c. `scripts/harvest-personas.ts` does not exist.**
+`lib/agent/harvested-personas.ts:2` instructs the reader to regenerate it with
+`HARVEST_ROOT=<clone-dir> npx tsx scripts/harvest-personas.ts`. That file is
+not in the repo. The 24 templates therefore cannot be regenerated or extended,
+and the outreach-side personas are unharvested — while 50 cold-outbound skills
+from `growthenginenowoslawski/coldoutboundskills` and 118 from `Citedy/adclaw`
+were harvested into `lib/skills/harvested.ts` by the script that DOES exist.
+**Done when:** the script exists and a run reproduces the current
+`harvested-personas.ts` byte-for-byte before it is used to add anything.
+
+**5d. Two helpers and one budget constant now have tests as their only readers.**
+Found while verifying 5a-5c, listed separately because each is a live example of
+the pattern this file opens with, and none was deleted with the fan-out:
+- `routingTextFor` and `describeMaterial` (`lib/agent/comprehension.ts:211,228`)
+  built the text `selectPersonasForRequest` scored against and the fan-out's
+  trace line. Both are now referenced only by
+  `tests/agent-comprehension.test.ts`. `comprehend`, `sampleAcrossDocument` and
+  `parseUnderstanding` in the same module ARE still live — the module stays.
+- `BUDGET.delegateMaterialChars` (`lib/ai/context-budget.ts:118,217`) existed to
+  size `DELEGATE_MATERIAL_CHARS` in the loop, which is deleted. Its only
+  remaining readers are the six assertions in `tests/context-budget.test.ts`,
+  which now pin a number nothing sizes anything with.
+Left in place deliberately: a sub-agent context budget is the obvious thing
+`askSpecialist` would want if it ever passes `agentContext` down (it currently
+passes none), and deleting the constant plus its tests at the tail end of a
+large change trades a real risk for a cosmetic gain.
+**Done when:** either `askSpecialist` reads `delegateMaterialChars` to bound
+material it passes to a sub-run, or the constant, its `budgetsFor` branch and
+those six assertions are deleted together — and likewise for the two helpers
+and their two describe blocks.
