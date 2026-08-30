@@ -180,11 +180,23 @@ export async function resolveMentionedPersonas(accountId: string, mentions: stri
   return all.filter((p) => p.enabled && wanted.has(p.name.toLowerCase()));
 }
 
+/** The minimal shape buildPersonaSystemBlock needs to render a voice. A
+ *  PersonaRow satisfies this structurally (it carries every field and more),
+ *  and so does a harvested template adapted to it (lib/agent/loop.ts) — ONE
+ *  renderer for both a DB-row persona and a template-sourced one (BACKLOG
+ *  5b), rather than two divergent blocks drifting apart over time. */
+export interface PersonaVoice {
+  name: string;
+  role: string | null;
+  instructions: string;
+  tone: string | null;
+}
+
 /** Build the system-prompt block for a single active persona: its
  *  instructions framed as an identity override, plus tone if set. Prepended
  *  ahead of the base LeadRail AI system prompt so the persona's voice and
  *  focus take precedence while every tool/grounding rule still applies. */
-export function buildPersonaSystemBlock(persona: PersonaRow): string {
+export function buildPersonaSystemBlock(persona: PersonaVoice): string {
   const lines = [
     `You are currently acting as the persona "${persona.name}"${persona.role ? ` (${persona.role})` : ''}.`,
     persona.instructions?.trim() ? persona.instructions.trim() : '',

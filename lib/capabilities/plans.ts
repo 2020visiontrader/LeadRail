@@ -27,6 +27,9 @@ import {
 } from '@/lib/plans/store';
 import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
 import { hermesRoute } from '@/lib/ai/hermes';
+import { listPersonas } from '@/lib/agent/personas';
+import { pickPersonaSlug, resolvePersona } from '@/lib/agent/persona-routing';
+import { HARVESTED_PERSONA_TEMPLATES } from '@/lib/agent/harvested-personas';
 
 export const PLAN_CAPABILITIES: Capability[] = [
   {
@@ -53,38 +56,30 @@ export const PLAN_CAPABILITIES: Capability[] = [
       //   skills  — routed through Hermes, the same shortlist-then-classify
       //             path an ordinary turn uses. Pinning ALL enabled skills
       //             would not be selection at all, and the catalog is 353.
-      //   persona — NOT pinned at creation any more. See below.
+      //   persona — derived from those SAME routed skills (BACKLOG 5b), not
+      //             from the objective text. A plan worked one step per tick
+      //             must not get a strategist on step 1 and an analyst on
+      //             step 4 with the voice drifting mid-job, so the persona is
+      //             picked once, here, the same way a single turn's voice is
+      //             picked in lib/agent/loop.ts: each routed skill's
+      //             "## Agents Used" section names the persona that executes
+      //             it (lib/agent/persona-routing.ts personaSlugsForSkill),
+      //             pickPersonaSlug picks the one named by the most routed
+      //             skills, and resolvePersona resolves that slug to an
+      //             account's own enabled row before falling back to the
+      //             harvested template.
+      //
+      //             `plans.personaId` is a DB row FK, so only a ROW resolution
+      //             is pinned — when the winner resolves to a template with no
+      //             matching row, nothing is pinned rather than inventing a
+      //             row, and the plan runs as the default assistant on every
+      //             step (still consistent, just voiceless).
       //
       // Skills degrade to nothing on failure: a plan with no pinned skills
-      // routes per turn as before.
-      //
-      // WHY THE PERSONA PIN IS GONE (and what should replace it). The reason
-      // for pinning was sound and still is: a plan worked one step per tick
-      // must not get a strategist on step 1 and an analyst on step 4, with the
-      // voice and the judgement changing mid-job without anyone asking. What
-      // was NOT sound was how the persona got chosen —
-      // selectPersonasForRequest, which scored ROLE_SIGNALS regexes against
-      // `role + name`. The harvest sets `role` to the slug, so of its eight
-      // signal rows FOUR matched nothing in the 24-persona roster at all
-      // (copywriter, lifecycle, creative director, account), and one matched
-      // by substring accident (`/media/` hitting "social-media-manager" on a
-      // budget question). That function is deleted; a pin derived from it was
-      // choosing close to arbitrarily.
-      //
-      // The replacement is already in the data, not yet parsed: 118 harvested
-      // skills carry an "Agents Used" section naming which persona executes
-      // them, and 116 name a persona in the current roster with none naming
-      // one that doesn't exist. Once harvest-skills.ts lifts that into a
-      // `personas: string[]` field on HarvestedSkill, the pin comes from the
-      // skills Hermes ALREADY routed two lines below — the right persona for
-      // the work, derived from data upstream authored, instead of a regex
-      // guessing at a slug.
-      //
-      // Until then a plan runs as the default assistant, which is a real (and
-      // deliberate) behaviour change: consistent across every step, rather
-      // than consistently whatever the broken matcher happened to return.
+      // routes per turn as before, and the persona pin degrades with it since
+      // it is derived from the same routed set.
       let skills: string[] = [];
-      const personaId: string | null = null;
+      let personaId: string | null = null;
       try {
         const enabled = await loadEnabledSkillsForAgent(accountId);
         const enabledSlugs = new Set(enabled.map((sk: any) => sk.slug).filter(Boolean));
@@ -92,6 +87,17 @@ export const PLAN_CAPABILITIES: Capability[] = [
         // Intersect: Hermes routes over the whole catalog, but enabled-ness
         // always wins — the same rule selectSkillsForTurn applies.
         skills = (routed.skillIds || []).filter((slug: string) => enabledSlugs.has(slug));
+
+        const bySlug = new Map(enabled.map((sk: any) => [sk.slug, sk]));
+        const routedInstructions = skills
+          .map((slug) => bySlug.get(slug)?.instructions)
+          .filter((instructions): instructions is string => Boolean(instructions));
+        const personaSlug = pickPersonaSlug(routedInstructions);
+        if (personaSlug) {
+          const rows = await listPersonas(accountId);
+          const resolved = resolvePersona(personaSlug, rows, HARVESTED_PERSONA_TEMPLATES);
+          if (resolved?.source === 'row') personaId = resolved.row.id;
+        }
       } catch { /* routes per turn instead */ }
 
       const plan = await createPlan({

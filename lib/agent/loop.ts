@@ -29,9 +29,11 @@ import { loadExternalCapabilities } from '@/lib/capabilities/external-mcp';
 import type { Capability, Analysis, Basis } from '@/lib/capabilities/types';
 import { estimateTokens, carryoverBlock, type CarryoverMemo } from './memory';
 import {
-  loadPersonaForAgent, resolveMentionedPersonas, getCoordinator,
+  loadPersonaForAgent, resolveMentionedPersonas, getCoordinator, listPersonas,
   buildPersonaSystemBlock, buildCoordinatorSystemBlock, type PersonaRow,
 } from './personas';
+import { pickPersonaSlug, resolvePersona } from './persona-routing';
+import { HARVESTED_PERSONA_TEMPLATES } from './harvested-personas';
 import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
 import { composeAnswer } from './compose';
 import { stripAiMarkers } from '@/lib/ai/humanizer';
@@ -958,6 +960,48 @@ async function resolvePersonaForTurn(
   return {};
 }
 
+/**
+ * Fill the turn's voice from the skills Hermes just routed, when the turn has
+ * no persona of its own (resolvePersonaForTurn above found neither a pinned
+ * personaId nor an @mention). Wired per BACKLOG 5b:
+ *
+ *   routed skills' "Agents Used" slugs → pickPersonaSlug (at most ONE winner,
+ *   the persona named by the most routed skills, ties broken by routing
+ *   order) → resolvePersona (an account's own enabled, non-coordinator row
+ *   beats the harvested template of the same slug; template is the fallback;
+ *   null when neither names it) → buildPersonaSystemBlock.
+ *
+ * Never throws: a DB error here degrades to "no persona this turn", exactly
+ * like resolvePersonaForTurn's own failure mode, rather than failing the
+ * whole turn over a voice pick.
+ */
+async function resolveSkillPersonaForTurn(
+  accountId: string,
+  skills: { instructions: string }[],
+): Promise<{ systemBlock?: string; modelId?: string }> {
+  if (!skills.length) return {};
+  const slug = pickPersonaSlug(skills.map((s) => s.instructions));
+  if (!slug) return {};
+  try {
+    const rows = await listPersonas(accountId);
+    const resolved = resolvePersona(slug, rows, HARVESTED_PERSONA_TEMPLATES);
+    if (!resolved) return {};
+    if (resolved.source === 'row') {
+      return { systemBlock: buildPersonaSystemBlock(resolved.row), modelId: resolved.row.model_id || undefined };
+    }
+    return {
+      systemBlock: buildPersonaSystemBlock({
+        name: resolved.template.name,
+        role: resolved.template.role,
+        instructions: resolved.template.instructions,
+        tone: null,
+      }),
+    };
+  } catch {
+    return {};
+  }
+}
+
 
 /**
  * Re-raise a proposal whose approval lapsed before it could run.
@@ -1169,7 +1213,7 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
     ...rawInput,
     agentContext: await withMaterialUnderstanding(rawInput.agentContext, rawInput.message, accountId),
   };
-  const { systemBlock: personaBlock, modelId: personaModelId } = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
+  const pinnedPersona = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
   const allEnabledSkills = await loadEnabledSkillsForAgent(accountId);
   // Hermes picks the 1-4 that apply to THIS request instead of injecting all.
   // Pinned skills (a plan) REPLACE routing; otherwise route against this turn.
@@ -1178,6 +1222,12 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
   const enabledSkills = input.pinnedSkills?.length
     ? allEnabledSkills.filter((sk) => input.pinnedSkills!.includes(sk.slug))
     : await selectSkillsForTurn(allEnabledSkills, input.message, brandContext?.name);
+  // An explicit pin/@mention always wins and skill-derived routing does not
+  // run at all (BACKLOG 5b) — only fill the voice when the turn has none of
+  // its own.
+  const { systemBlock: personaBlock, modelId: personaModelId } = pinnedPersona.systemBlock
+    ? pinnedPersona
+    : await resolveSkillPersonaForTurn(accountId, enabledSkills);
   // Packet 4: this account's connected, enabled external-MCP-client tools for
   // THIS turn only — a pure cached DB read (see lib/capabilities/external-mcp.ts),
   // never a network call, so it cannot add hot-path latency or hang the turn.
@@ -1804,7 +1854,6 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
     ...rawInput,
     agentContext: await withMaterialUnderstanding(rawInput.agentContext, rawInput.message, accountId),
   };
-  const { systemBlock: personaBlock, modelId: personaModelId } = personaResult;
   // Hermes picks the 1-4 that apply to THIS request instead of injecting all.
   // This is the one hop that must stay sequential — it genuinely depends on
   // allEnabledSkills (which skills exist to route over).
@@ -1814,6 +1863,12 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
   const enabledSkills = input.pinnedSkills?.length
     ? allEnabledSkills.filter((sk) => input.pinnedSkills!.includes(sk.slug))
     : await selectSkillsForTurn(allEnabledSkills, input.message, brandContext?.name);
+  // An explicit pin/@mention always wins and skill-derived routing does not
+  // run at all (BACKLOG 5b) — only fill the voice when the turn has none of
+  // its own.
+  const { systemBlock: personaBlock, modelId: personaModelId } = personaResult.systemBlock
+    ? personaResult
+    : await resolveSkillPersonaForTurn(accountId, enabledSkills);
   const extraTools = toolsFromCapabilities(externalCaps);
   const extraCapsByName: Record<string, Capability> = Object.fromEntries(externalCaps.map((c) => [c.name, c]));
   const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId, input.planOnly);

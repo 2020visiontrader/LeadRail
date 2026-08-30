@@ -246,21 +246,32 @@ rule back.
 reachable, or the branch, its `Step.parallel`/`key` fields, and
 `tests/fanout-trace.test.ts` are removed together in one change.
 
-**5b. Plans no longer pin a persona.**
-`lib/capabilities/plans.ts` used `selectPersonasForRequest` to pin ONE persona
-for the life of a multi-step plan, so voice and judgement would not drift
-between step 1 and step 4. The reason was sound; the selector was not (four of
-its eight signal rows matched nothing in the 24-persona roster, and one matched
-by substring accident). The pin is removed, not replaced — a plan currently
-runs as the default assistant on every step. That is consistent, which the old
-behaviour was not, but it is less than what was intended.
-The replacement is already in the harvested data and is not yet parsed: 118
-skills carry an `## Agents Used` section naming the persona that executes them,
-116 of which name a persona in the current roster, with none naming one that
-does not exist.
-**Done when:** `harvest-skills.ts` lifts that section into a
-`personas: string[]` field on `HarvestedSkill`, and `createPlan` derives its
-pin from the skills Hermes already routed rather than from the objective text.
+**5b. ~~Plans no longer pin a persona.~~ — RESOLVED 2026-08-30**
+`lib/agent/persona-routing.ts` (new, pure, no DB imports) is the parser
+`harvested-personas.ts` was missing a reader for: `personaSlugsForSkill`
+scans a skill's `## Agents Used` section for `**slug**` tokens,
+`pickPersonaSlug` picks the one slug named by the most routed skills (ties
+broken by routing order) so a turn is never voiced by more than one persona
+at once, and `resolvePersona` resolves that slug to a voice — an account's
+own enabled, non-coordinator `personas` row beats the harvested template of
+the same slug, which beats null. `lib/agent/loop.ts` calls this, in both
+`runAgentImpl` and `runAgentStreamImpl`, right after `selectSkillsForTurn`
+returns, and only when the turn has no pinned `personaId`/`@mention` of its
+own (an explicit pin still wins outright, unchanged). The resolved persona
+renders through the same `buildPersonaSystemBlock` a DB-row persona always
+used — widened to a minimal `PersonaVoice` shape so a template-sourced
+persona needs no second renderer — and lands exactly where `personaBlock`
+already sat in the static prompt-cache prefix.
+`lib/capabilities/plans.ts` `createPlan` now derives its pin the way this
+entry originally asked: from the skills Hermes already routed two lines
+above, through the same `pickPersonaSlug` + `resolvePersona`. Because
+`plans.personaId` is a DB row FK, only a **row** resolution is pinned — a
+template-only match pins nothing rather than inventing a row, so a plan
+still degrades to the default assistant exactly when 5b originally described,
+just for a narrower and correct reason now.
+`lib/agent/harvested-personas.ts` is no longer imported by nothing — it is
+read by `resolvePersona`'s template fallback on every turn/plan a routed
+skill names a persona for.
 
 **5c. `scripts/harvest-personas.ts` does not exist.**
 `lib/agent/harvested-personas.ts:2` instructs the reader to regenerate it with
