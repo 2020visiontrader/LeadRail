@@ -5,11 +5,11 @@ trigger, because the failure mode this file exists to prevent is a real risk
 living only in a conversation nobody re-reads.
 
 Recurring pattern behind most of these: **something is written but never read,
-or configured in prose but never in a config file.** Ten instances found so far.
+or configured in prose but never in a config file.** Thirteen instances found so far.
 When adding an entry, say what proves it is done — a passing test, a row in a
 table, a non-401 log line — not "wire it up".
 
-Last reviewed: 2026-08-27
+Last reviewed: 2026-08-30
 
 ---
 
@@ -215,3 +215,150 @@ grepping `export async function DELETE` against a codebase that writes
   never drained). Company enrichment only, no outbound send. Cancelled rather
   than drained so the first real tick would not spend Apollo credits on
   18-day-old intent. Re-enqueue on demand.
+
+---
+
+## 5. Fan-out removal — three loose ends, 2026-08-30
+
+The coordinator fan-out (`resolveCoordinatorFanout`, `runFanoutDelegates`,
+`selectPersonasForRequest`, `ROLE_SIGNALS`, the synthesis pass) is deleted.
+`askSpecialist` is now the only way to spawn a sub-agent. Three things it left
+behind, none of them breaking, all of them the "written but never read" pattern
+in one direction or the other.
+
+**5a. ~~`AgentConsole` parallel-step branch now has no producer.~~ — RESOLVED 2026-08-30**
+Deleted together: the `parallel`/`key` guard and spread in `AgentConsole.tsx`'s
+event reducer, `Step.parallel`/`Step.key`, `AgentEvent`'s `parallel`/`key`
+fields in `lib/agent/loop.ts`, and `tests/fanout-trace.test.ts`. Confirmed by
+grep that nothing in `lib/` or `app/` ever set `parallel: true` or a
+`delegate:` key before deleting.
+
+`src/components/AgentConsole.tsx:952-964` keeps the reducer rule that stops a
+`parallel` step from being auto-resolved by the next event. Nothing in `lib/`
+or `app/` emits `parallel: true` or a `delegate:<id>` key any more — the
+fan-out was its only producer, and `askSpecialist` runs sequentially inside the
+step loop. `tests/fanout-trace.test.ts` tests a LOCAL reimplementation of that
+branch, so it passes whether or not the real branch is reachable.
+Harmless (a defensive branch that never fires), and deliberately not deleted
+here: it is UI, and a future concurrent-step feature would want exactly this
+rule back.
+**Done when:** either something emits `parallel: true` again and the branch is
+reachable, or the branch, its `Step.parallel`/`key` fields, and
+`tests/fanout-trace.test.ts` are removed together in one change.
+
+**5b. ~~Plans no longer pin a persona.~~ — RESOLVED 2026-08-30**
+`lib/agent/persona-routing.ts` (new, pure, no DB imports) is the parser
+`harvested-personas.ts` was missing a reader for: `personaSlugsForSkill`
+scans a skill's `## Agents Used` section for `**slug**` tokens,
+`pickPersonaSlug` picks the one slug named by the most routed skills (ties
+broken by routing order) so a turn is never voiced by more than one persona
+at once, and `resolvePersona` resolves that slug to a voice — an account's
+own enabled, non-coordinator `personas` row beats the harvested template of
+the same slug, which beats null. `lib/agent/loop.ts` calls this, in both
+`runAgentImpl` and `runAgentStreamImpl`, right after `selectSkillsForTurn`
+returns, and only when the turn has no pinned `personaId`/`@mention` of its
+own (an explicit pin still wins outright, unchanged). The resolved persona
+renders through the same `buildPersonaSystemBlock` a DB-row persona always
+used — widened to a minimal `PersonaVoice` shape so a template-sourced
+persona needs no second renderer — and lands exactly where `personaBlock`
+already sat in the static prompt-cache prefix.
+`lib/capabilities/plans.ts` `createPlan` now derives its pin the way this
+entry originally asked: from the skills Hermes already routed two lines
+above, through the same `pickPersonaSlug` + `resolvePersona`. Because
+`plans.personaId` is a DB row FK, only a **row** resolution is pinned — a
+template-only match pins nothing rather than inventing a row, so a plan
+still degrades to the default assistant exactly when 5b originally described,
+just for a narrower and correct reason now.
+`lib/agent/harvested-personas.ts` is no longer imported by nothing — it is
+read by `resolvePersona`'s template fallback on every turn/plan a routed
+skill names a persona for.
+
+*Follow-up hardening, 2026-08-30:* `personaSlugsForSkill` returns every
+`**bold**` token in the `AGENTS_USED_WINDOW`, including tokens that are not
+persona names at all — script filenames and checklist keys that happen to be
+bolded in that window. As of this date, across the 431 harvested skills, 10
+such non-persona tokens are known: `schema-generator.py`,
+`competitor-scraper.py`, `content-scorer.py`, `tech-seo-auditor.py`,
+`keyword_cluster.py`, `lead_theme_named`, `specialist_coverage`,
+`roadmap_phased`, `kpi_attached`, `drift_re-measure_scheduled`. This was
+latent, not firing (0/431 skills lost their voice to one of these, because a
+real persona name happened to appear before the junk token and the
+first-appearance tie-break favoured it) but not guaranteed to stay latent —
+one upstream edit reordering a bold token could silently kill the voice.
+Fixed by giving `pickPersonaSlug` an optional `isEligible?: (slug: string) =>
+boolean` predicate; `resolveSkillPersonaForTurn` (`lib/agent/loop.ts`) now
+loads `rows` before picking and passes `(slug) =>
+Boolean(resolvePersona(slug, rows, HARVESTED_PERSONA_TEMPLATES))`, so an
+unresolvable token can never win the count or the tie-break and the pick
+falls through to the next-best real candidate instead of giving up.
+`personaSlugsForSkill` itself is unchanged and intentionally so — it stays a
+faithful parser of what the markdown says; eligibility is the caller's
+concern, since a future source may legitimately name a persona this repo
+does not have a template or row for yet. The next person reading this
+window's parser should expect these 10 tokens (and others like them) to keep
+showing up as bold matches — that is normal, not a parser bug.
+
+**5c. ~~`scripts/harvest-personas.ts` does not exist.~~ — RESOLVED 2026-08-30**
+The script exists (commit 241a9ad) and regenerates `lib/agent/harvested-personas.ts`
+from two local clones: `indranilbanerjee/digital-marketing-pro` @ fa4ccd0a (24
+agents, `agents/<slug>.md`) and `Citedy/adclaw` @ 25bf9601 (5 personas parsed out
+of `src/adclaw/agents/persona_templates.py`). Verified the way the "Done when"
+below asks: a re-run produced a zero-byte diff against the committed output.
+It also fixed a much larger problem than the missing script. The previous
+generator kept **3.2%** of each persona — 9,010 characters against 284,003 bytes
+upstream, several capped at exactly 500 — so `content-creator` was a
+231-character paragraph instead of its 12,909-character framework. Fidelity is
+now 95.6% (the remainder is YAML frontmatter, which is not instruction text),
+minimum 8,238 characters, and `tests/harvested-personas.test.ts` pins
+`instructions.length > 2000` on every digital-marketing-pro entry so the
+truncation cannot come back unnoticed.
+STILL TRUE, and the reason this section's premise about outreach stands: there
+are **no outreach personas in either source**. 27 of the 29 are `domain:
+'marketing'`, 2 are `'shared'`, none are `'outreach'`.
+`growthenginenowoslawski/coldoutboundskills` ships no `agents/` directory, so
+there was never anything upstream to harvest. Outreach personas have to be
+WRITTEN, not imported — that is not a harvest gap and no script will close it.
+RESIDUAL: the root `NOTICE` is wholesale-regenerated by `harvest-skills.ts`, so
+re-running THAT script drops the persona credits `harvest-personas.ts` adds. Two
+scripts write one file. Reconcile them before the next skills re-harvest.
+
+Original entry follows.
+
+`lib/agent/harvested-personas.ts:2` instructs the reader to regenerate it with
+`HARVEST_ROOT=<clone-dir> npx tsx scripts/harvest-personas.ts`. That file is
+not in the repo. The 24 templates therefore cannot be regenerated or extended,
+and the outreach-side personas are unharvested — while 50 cold-outbound skills
+from `growthenginenowoslawski/coldoutboundskills` and 118 from `Citedy/adclaw`
+were harvested into `lib/skills/harvested.ts` by the script that DOES exist.
+**Done when:** the script exists and a run reproduces the current
+`harvested-personas.ts` byte-for-byte before it is used to add anything.
+
+**5d. ~~Two helpers and one budget constant now have tests as their only readers.~~ — RESOLVED 2026-08-30**
+Deleted together: `routingTextFor` and `describeMaterial` (and their two
+`describe` blocks in `tests/agent-comprehension.test.ts`) from
+`lib/agent/comprehension.ts`, and `BUDGET.delegateMaterialChars` (both the
+literal and the `budgetsFor()` branch, plus the comments that existed only for
+it) from `lib/ai/context-budget.ts`, with the six assertions in
+`tests/context-budget.test.ts` that referenced it. `comprehend`,
+`sampleAcrossDocument`, `parseUnderstanding`, `attachmentChars` and the rest
+are untouched.
+
+Found while verifying 5a-5c, listed separately because each is a live example of
+the pattern this file opens with, and none was deleted with the fan-out:
+- `routingTextFor` and `describeMaterial` (`lib/agent/comprehension.ts:211,228`)
+  built the text `selectPersonasForRequest` scored against and the fan-out's
+  trace line. Both are now referenced only by
+  `tests/agent-comprehension.test.ts`. `comprehend`, `sampleAcrossDocument` and
+  `parseUnderstanding` in the same module ARE still live — the module stays.
+- `BUDGET.delegateMaterialChars` (`lib/ai/context-budget.ts:118,217`) existed to
+  size `DELEGATE_MATERIAL_CHARS` in the loop, which is deleted. Its only
+  remaining readers are the six assertions in `tests/context-budget.test.ts`,
+  which now pin a number nothing sizes anything with.
+Left in place deliberately: a sub-agent context budget is the obvious thing
+`askSpecialist` would want if it ever passes `agentContext` down (it currently
+passes none), and deleting the constant plus its tests at the tail end of a
+large change trades a real risk for a cosmetic gain.
+**Done when:** either `askSpecialist` reads `delegateMaterialChars` to bound
+material it passes to a sub-run, or the constant, its `budgetsFor` branch and
+those six assertions are deleted together — and likewise for the two helpers
+and their two describe blocks.

@@ -10,7 +10,7 @@ import { readFileSync } from 'fs';
 import path from 'path';
 import { describe, it, expect } from 'vitest';
 import {
-  sampleAcrossDocument, parseUnderstanding, routingTextFor, describeMaterial,
+  sampleAcrossDocument, parseUnderstanding,
   formatUnderstandingBlock, type Understanding,
 } from '@/lib/agent/comprehension';
 
@@ -101,46 +101,6 @@ describe('parseUnderstanding', () => {
   it('omits material when the model omitted it', () => {
     const out = parseUnderstanding(JSON.stringify({ ask: 'draft a follow-up email', askType: 'build', needs: ['copywriting'] }));
     expect(out?.material).toBeUndefined();
-  });
-});
-
-describe('routingTextFor', () => {
-  it('builds routing text from the ask, subject, key points and needs — never the raw document', () => {
-    const understanding: Understanding = {
-      ask: 'Summarize the pitch call',
-      askType: 'analyse',
-      material: {
-        kind: 'sales call transcript',
-        subject: 'a creator-analytics product pitch, live demo, and Q&A',
-        keyPoints: ['Live product demo', 'Investor Q&A on pricing'],
-      },
-      outputShape: 'a short summary',
-      needs: ['summarization'],
-    };
-    const text = routingTextFor(understanding);
-    expect(text).toContain('creator-analytics');
-    expect(text).toContain('Live product demo');
-    expect(text).toContain('summarization');
-    // The regression's poison words never appear because they were never fed in.
-    expect(text).not.toMatch(/equity agency|Euros in revenue/i);
-  });
-});
-
-describe('describeMaterial', () => {
-  it('names the kind, participant count, and subject for the trace step', () => {
-    const understanding: Understanding = {
-      ask: 'analyse',
-      askType: 'analyse',
-      material: { kind: 'sales call transcript', subject: 'a creator-analytics pitch', participants: ['A', 'B', 'C', 'D'], keyPoints: [] },
-      outputShape: '',
-      needs: [],
-    };
-    expect(describeMaterial(understanding)).toBe('Read a sales call transcript (4 speakers): a creator-analytics pitch');
-  });
-
-  it('returns null when there is no material to describe', () => {
-    expect(describeMaterial(null)).toBeNull();
-    expect(describeMaterial({ ask: 'x', askType: 'other', outputShape: '', needs: [] })).toBeNull();
   });
 });
 

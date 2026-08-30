@@ -86,6 +86,13 @@ export interface CapabilityContext {
   requestedBy?: string | null;
   /** Plan mode: write the plan, do not start executing it. */
   planOnly?: boolean;
+  /** Epoch ms this TURN must finish by (lib/agent/loop.ts computeTurnDeadline).
+   *  Set by the loop on every tool call. A capability that spawns a sub-run
+   *  passes it down so the sub-run clamps to whichever is sooner — its own
+   *  default or the parent's — and can never legally outlive the turn that
+   *  spawned it. Optional: a capability that never spawns anything ignores it,
+   *  and a caller that omits it degrades to the sub-run's own budget. */
+  deadlineAt?: number;
 }
 
 export interface Capability {
