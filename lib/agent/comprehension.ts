@@ -203,38 +203,6 @@ export function parseUnderstanding(raw: string): Understanding | null {
   };
 }
 
-/** Text for selectPersonasForRequest to score against — built from the
- *  UNDERSTANDING (ask + material subject/keyPoints + needs), never a raw
- *  slice of the document. This is the direct fix for the reproduced defect:
- *  routing now sees "creator-analytics product pitch, live demo, Q&A" instead
- *  of "we are equity agency… over 20 million kind of Euros in revenue". */
-export function routingTextFor(understanding: Understanding): string {
-  const parts = [understanding.ask];
-  if (understanding.material) {
-    if (understanding.material.subject) parts.push(understanding.material.subject);
-    parts.push(...understanding.material.keyPoints);
-  }
-  parts.push(...understanding.needs);
-  return parts.filter(Boolean).join('\n');
-}
-
-/** Short trace line for what got read, drawn from the ACTUAL comprehension
- *  result. This is the fix for the trace-honesty defect: the old "Reading the
- *  attached material…" step resolved on nothing but a string slice; this one
- *  resolves with a description that only exists because the material was
- *  really read. Returns null when there is no material to describe (nothing
- *  attached, or comprehension came back without one) — the caller supplies
- *  its own honest fallback text in that case. */
-export function describeMaterial(understanding: Understanding | null): string | null {
-  const m = understanding?.material;
-  if (!m || !m.kind) return null;
-  const who = m.participants?.length
-    ? ` (${m.participants.length} speaker${m.participants.length === 1 ? '' : 's'})`
-    : '';
-  const subject = m.subject ? `: ${m.subject}` : '';
-  return `Read a ${m.kind}${who}${subject}`;
-}
-
 /** Compact block folded into a fan-out delegate's context alongside its
  *  bounded raw-material slice (see delegateContext in lib/agent/loop.ts) — a
  *  delegate gets the UNDERSTANDING plus a slice, not N verbatim copies of the

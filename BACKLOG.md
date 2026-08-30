@@ -226,7 +226,13 @@ The coordinator fan-out (`resolveCoordinatorFanout`, `runFanoutDelegates`,
 behind, none of them breaking, all of them the "written but never read" pattern
 in one direction or the other.
 
-**5a. `AgentConsole` parallel-step branch now has no producer.**
+**5a. ~~`AgentConsole` parallel-step branch now has no producer.~~ — RESOLVED 2026-08-30**
+Deleted together: the `parallel`/`key` guard and spread in `AgentConsole.tsx`'s
+event reducer, `Step.parallel`/`Step.key`, `AgentEvent`'s `parallel`/`key`
+fields in `lib/agent/loop.ts`, and `tests/fanout-trace.test.ts`. Confirmed by
+grep that nothing in `lib/` or `app/` ever set `parallel: true` or a
+`delegate:` key before deleting.
+
 `src/components/AgentConsole.tsx:952-964` keeps the reducer rule that stops a
 `parallel` step from being auto-resolved by the next event. Nothing in `lib/`
 or `app/` emits `parallel: true` or a `delegate:<id>` key any more — the
@@ -266,7 +272,16 @@ were harvested into `lib/skills/harvested.ts` by the script that DOES exist.
 **Done when:** the script exists and a run reproduces the current
 `harvested-personas.ts` byte-for-byte before it is used to add anything.
 
-**5d. Two helpers and one budget constant now have tests as their only readers.**
+**5d. ~~Two helpers and one budget constant now have tests as their only readers.~~ — RESOLVED 2026-08-30**
+Deleted together: `routingTextFor` and `describeMaterial` (and their two
+`describe` blocks in `tests/agent-comprehension.test.ts`) from
+`lib/agent/comprehension.ts`, and `BUDGET.delegateMaterialChars` (both the
+literal and the `budgetsFor()` branch, plus the comments that existed only for
+it) from `lib/ai/context-budget.ts`, with the six assertions in
+`tests/context-budget.test.ts` that referenced it. `comprehend`,
+`sampleAcrossDocument`, `parseUnderstanding`, `attachmentChars` and the rest
+are untouched.
+
 Found while verifying 5a-5c, listed separately because each is a live example of
 the pattern this file opens with, and none was deleted with the fan-out:
 - `routingTextFor` and `describeMaterial` (`lib/agent/comprehension.ts:211,228`)

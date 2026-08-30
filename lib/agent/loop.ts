@@ -1682,29 +1682,10 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
 // sensitive tool it emits `needs_approval` with the transcript to resume from.
 
 export type AgentEvent =
-  | {
-      type: 'step_start';
-      text: string;
-      /** This step runs ALONGSIDE its siblings rather than after them.
-       *
-       *  The client resolves the previous pending step whenever a new event
-       *  arrives, which is right for a sequential trace — a new step means the
-       *  last one ended. In a fan-out it is a lie: three step_starts in a row
-       *  put a tick against the first two while all three are still running.
-       *  Flagged steps are left open until their own observation lands. */
-      parallel?: boolean;
-      /** Identifies this step so its own observation can close it. */
-      key?: string;
-    }
+  | { type: 'step_start'; text: string }
   | { type: 'thought'; text: string }
   | { type: 'tool'; tool: string; title: string; args: Record<string, any> }
-  | {
-      type: 'observation'; text: string; ok: boolean; tool?: string; metrics?: Record<string, number>;
-      /** Closes the `step_start` that carried this same `key`. Only fan-out
-       *  delegates use it: their lines run concurrently, so "the most recent
-       *  open step" is not enough to say which one just finished. */
-      key?: string;
-    }
+  | { type: 'observation'; text: string; ok: boolean; tool?: string; metrics?: Record<string, number> }
   // Structured analysis of a tool's result (see Capability.findings in
   // lib/capabilities/types.ts) — emitted alongside `observation`, never
   // instead of it. `evidence` and `claim` events may appear with no matching
