@@ -17,6 +17,7 @@
 
 import { BUDGET } from '@/lib/ai/context-budget';
 import { generateChat, textConfigured, type ChatMessage } from '@/lib/ai/router';
+import { DeadlineExceededError } from '@/lib/ai/deadline';
 import { type StoredMessage, toWireMessages } from './transcript-store';
 import {
   comprehend, formatUnderstandingBlock, type Understanding,
@@ -573,8 +574,26 @@ function salvageFinalMessage(raw: string): string | null {
  *
  * Sized above the slow-but-real case — the primary tier can legitimately take
  * ~2 minutes on a large prompt, and a turn may take several such steps.
+ *
+ * WHY 270s, NOT 300s. This used to equal app/api/agent/stream/route.ts's
+ * `maxDuration = 300` exactly — the SAME 300 seconds — so the two raced: the
+ * platform could kill the route (and the in-flight response) before this
+ * deadline ever had a chance to fire and let the loop answer with what it
+ * had. Production evidence: a turn that died at durationMs 300005 — five
+ * milliseconds AFTER the platform's own ceiling — with everything gathered
+ * that turn discarded. 270s leaves a 30s margin: enough for the deadline to
+ * trip, the salvage/forced-final path to run (bounded by what remains of
+ * THIS budget, via computeTurnDeadline/deadlineAt), and the SSE response to
+ * actually flush before the platform's harder cutoff lands.
+ *
+ * INVARIANT — DO NOT BREAK: TURN_DEADLINE_MS < maxDuration * 1000. The two
+ * constants live in different files and nothing enforces this at the type
+ * level, so if you raise one, raise the other by at least as much and keep
+ * the margin. See the twin comment on `maxDuration` in
+ * app/api/agent/stream/route.ts, and tests/turn-deadline-invariant.test.ts,
+ * which asserts this relationship directly against both real values.
  */
-const TURN_DEADLINE_MS = Number(process.env.AGENT_TURN_DEADLINE_MS) || 5 * 60 * 1000;
+export const TURN_DEADLINE_MS = Number(process.env.AGENT_TURN_DEADLINE_MS) || 270 * 1000;
 
 /** This turn's absolute deadline: its own full TURN_DEADLINE_MS budget from
  *  right now, clamped to the PARENT's deadline when this run is a delegate
@@ -855,7 +874,18 @@ function analysisFor(tool: string, args: any, res: { ok: boolean; result?: any }
 // full shape catalogue (single object / record array / batch / plain text /
 // embedded JSON) and why each is handled the way it is. This function just
 // wires it to the per-step budget and the honest salvage framing.
-export function buildSalvageMessage(steps: AgentStep[], extraTools?: Record<string, AgentTool>): string | null {
+export function buildSalvageMessage(
+  steps: AgentStep[],
+  extraTools?: Record<string, AgentTool>,
+  // Optional override of the intro/outro copy around the listing. Added for
+  // the deadline path (see deadlineSalvageFraming below): the LISTING logic
+  // — what counts as a qualifying step, how each is rendered, the budget —
+  // must stay exactly one implementation regardless of why the turn is being
+  // salvaged, so only the framing text is pluggable. Omitted, this is
+  // byte-identical to before this parameter existed (the forced-final-failed
+  // framing, unchanged).
+  framing?: { intro: string; outro: string },
+): string | null {
   const succeeded = steps.filter(
     (s): s is AgentStep & { tool: string; observation: string } =>
       Boolean(s.tool) && typeof s.observation === 'string' && !s.observation.startsWith('ERROR:'),
@@ -885,15 +915,59 @@ export function buildSalvageMessage(steps: AgentStep[], extraTools?: Record<stri
       : `- ${label}: ${rendered}`;
   });
 
-  return [
-    "I wasn't able to put together a final answer for this one — the summarizing step failed — " +
+  const { intro, outro } = framing ?? {
+    intro:
+      "I wasn't able to put together a final answer for this one — the summarizing step failed — " +
       "but here is what was actually found before that happened:",
-    '',
-    ...lines,
-    '',
-    'Ask again, a bit more specifically, and I can turn this into a proper answer.',
-  ].join('\n');
+    outro: 'Ask again, a bit more specifically, and I can turn this into a proper answer.',
+  };
+  return [intro, '', ...lines, '', outro].join('\n');
 }
+
+// DEADLINE SALVAGE — the honest framing for the OTHER reason buildSalvageMessage
+// gets called: not "the summarizing call failed", but "the turn's own clock
+// (TURN_DEADLINE_MS) ran out mid-step, and generateChat threw
+// DeadlineExceededError instead of returning text at all". This is a
+// materially different fact and telling the user "please try again" — as the
+// generic model-failure message does — is actively dishonest here: retrying
+// the SAME request starts the SAME clock and hits the SAME wall. What earlier
+// steps this turn actually completed is real work and is reused via
+// buildSalvageMessage's own listing (never re-implemented — see its framing
+// param above); only the intro/outro differ, and the intro says plainly how
+// far the turn got before time ran out.
+//
+// Named after the steps actually taken, not just the ones that produced a
+// qualifying (non-ERROR) observation, so a turn that ran three tool calls and
+// then timed out reports "3 steps" even if one of them had failed — the point
+// is to tell the user how far the turn traveled, not to only count the good
+// parts (buildSalvageMessage's own listing already handles which OBSERVATIONS
+// are trustworthy to show).
+export function deadlineSalvageFraming(steps: AgentStep[]): { intro: string; outro: string } {
+  const toolSteps = steps.filter((s) => s.tool);
+  const stepCount = toolSteps.length;
+  const toolNames = [...new Set(toolSteps.map((s) => s.tool as string))];
+  const progress = stepCount > 0
+    ? `it got through ${stepCount} step${stepCount === 1 ? '' : 's'} (${toolNames.join(', ')}) `
+    : 'it had not completed any steps '; // buildSalvageMessage returns null in this case anyway — see DEADLINE_EMPTY_MESSAGE below, kept in sync in wording.
+  return {
+    intro:
+      `This turn ran out of time before it could finish — ${progress}before the deadline hit. ` +
+      "Retrying the exact same request will very likely hit the same limit, so here is what it had gathered:",
+    outro: 'Try breaking this into a smaller request — asking about part of it at a time — and it should finish inside the time limit.',
+  };
+}
+
+// The bare fallback when a deadline hit with NOTHING salvageable (zero
+// qualifying steps — buildSalvageMessage returns null even with the framing
+// above, because there is genuinely nothing to list). Distinct from the
+// generic 'LeadRail AI is temporarily unavailable. Please try again.' message
+// used for ordinary model failures: that copy implies retrying might just
+// work, which is false for a deadline — the same request runs into the same
+// TURN_DEADLINE_MS again. Says so, and points at the fix (a narrower ask)
+// instead of a bare retry.
+export const DEADLINE_EMPTY_MESSAGE =
+  "This turn ran out of time before it could produce an answer, and nothing had completed yet to salvage. " +
+  'Retrying the exact same request will very likely hit the same limit — try a narrower one.';
 
 // PORTED (Packet 2.1 step 5): the per-tool deriveMetrics switch that used to
 // live here now lives with each capability (lib/capabilities/metrics-port.ts,
@@ -1368,6 +1442,17 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
       log.error('agent: model call failed', e, {
         accountId, step: i, afterTool: lastToolName ?? null, messageCount: messages.length,
       });
+      // A deadline expiry is not an outage — checked with `instanceof` against
+      // the exported type (lib/ai/deadline.ts), never by string-matching the
+      // message, which is free to change. Route it through the SAME salvage
+      // machinery the forced-final failure path below already uses
+      // (buildSalvageMessage), rather than inventing a second path: only the
+      // framing differs (deadlineSalvageFraming), the listing logic is shared.
+      if (e instanceof DeadlineExceededError) {
+        const salvage = buildSalvageMessage(steps, extraTools, deadlineSalvageFraming(steps));
+        if (salvage) return { status: 'salvage', message: salvage, transcript: messages, steps };
+        return { status: 'error', message: DEADLINE_EMPTY_MESSAGE, transcript: messages, steps };
+      }
       return { status: 'error', message: 'LeadRail AI is temporarily unavailable. Please try again.', transcript: messages, steps };
     }
 
@@ -2008,6 +2093,24 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
       log.error('agent stream: model call failed', e, {
         accountId, step: i, afterTool: lastToolName ?? null, messageCount: messages.length,
       });
+      // Mirrors runAgentImpl above verbatim (CLAUDE.md: both loops stay
+      // identical) — a deadline expiry is detected the same way (instanceof
+      // DeadlineExceededError, never a string match) and routed through the
+      // SAME buildSalvageMessage machinery, only emitted as a terminal `final`
+      // event (salvage: true) instead of returned, so the streaming turn ends
+      // with what was accomplished rather than a bare `error` event carrying
+      // nothing.
+      if (e instanceof DeadlineExceededError) {
+        const salvage = buildSalvageMessage(steps, extraTools, deadlineSalvageFraming(steps));
+        if (salvage) {
+          messages.push({ role: 'assistant', content: salvage });
+          await streamTokens(salvage, emit);
+          emit({ type: 'final', message: salvage, transcript: messages, salvage: true });
+          return;
+        }
+        emit({ type: 'error', message: DEADLINE_EMPTY_MESSAGE });
+        return;
+      }
       emit({ type: 'error', message: 'LeadRail AI is temporarily unavailable. Please try again.' });
       return;
     }
