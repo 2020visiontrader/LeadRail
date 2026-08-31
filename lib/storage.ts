@@ -8,12 +8,21 @@ import { supabase } from '@/lib/db';
 
 export const DECK_BUCKET = 'venture-decks';
 export const ATTACHMENT_BUCKET = 'outreach-attachments';
+// Binary files createFile (lib/capabilities/deliverables.ts) hands back to a
+// chat user — xlsx/docx/pdf. Kept separate from ATTACHMENT_BUCKET because
+// these are chat deliverables, not outbound email attachments, and can be
+// purged/retained on a different policy later without touching outreach.
+export const DELIVERABLE_BUCKET = 'chat-deliverables';
 
 // Signed-URL lifetimes. Decks are re-signed on demand (short). Outreach
 // attachments are embedded in an email a recipient may open days later, so they
 // get a longer window — but still finite and revocable (delete the object).
 export const DECK_URL_TTL = 60 * 60;               // 1 hour
 export const ATTACHMENT_URL_TTL = 60 * 60 * 24 * 30; // 30 days
+// Chat deliverables: long enough that a user coming back to a conversation
+// hours or days later can still open the link, short enough that a leaked
+// link doesn't stay live forever.
+export const DELIVERABLE_URL_TTL = 60 * 60 * 24 * 7; // 7 days
 
 /** Ensure a bucket exists and is PRIVATE. Idempotent; never throws. */
 export async function ensurePrivateBucket(bucket: string): Promise<void> {
