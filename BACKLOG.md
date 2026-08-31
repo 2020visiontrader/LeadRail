@@ -362,3 +362,27 @@ large change trades a real risk for a cosmetic gain.
 material it passes to a sub-run, or the constant, its `budgetsFor` branch and
 those six assertions are deleted together — and likewise for the two helpers
 and their two describe blocks.
+
+## 6. Text deliverables still on local disk, not storage — 2026-08-31
+
+`createFile` (`lib/capabilities/deliverables.ts`) now has TWO storage paths,
+by design, not by oversight: the three binary formats it gained this packet
+(xlsx/docx/pdf) go through `lib/storage.ts` (`DELIVERABLE_BUCKET`, a private
+Supabase bucket, signed URLs) because writing binary bytes to the old path
+with an implicit utf8 encoding corrupts them outright. The five original text
+formats (md/csv/json/txt/html) were left exactly as they were — writing to
+`join(process.cwd(), 'public', 'generated', 'files')` — because moving them
+was out of scope for this packet and the deploy target was (and still is)
+unconfirmed; `infra/cloudflare` exists in this repo, and whether that target's
+filesystem survives a redeploy is unknown.
+
+That split is a real inconsistency: five of eight `createFile` formats live on
+a filesystem whose durability nobody has verified, while the other three are
+durable and private. It should not persist once the deploy target is known.
+
+**Done when:** either (a) the deploy target is confirmed to have a durable,
+persistent filesystem across redeploys, and that fact is written down here or
+in a comment at the write site — no further code change needed — or (b) the
+five text formats are moved onto `DELIVERABLE_BUCKET` the same way xlsx/docx/pdf
+are, and `tests/deliverable-formats.test.ts`'s text-format-pinning block is
+updated to assert a signed storage URL instead of a `/generated/files/` path.
