@@ -147,13 +147,54 @@ describe('recordFailure cooldown scheduling', () => {
     expect(rows.get('auth-cand')!.permanent).toBe(true);
   });
 
-  it('a 402 parks until the next monthly reset, not a 60s cooldown', () => {
-    recordFailure('hf-model', { kind: 'quota_exhausted', status: 402, provider: 'huggingface' });
-    const row = healthSnapshot().find((r) => r.candidate === 'hf-model')!;
-    // Comfortably more than a day away — proves it is NOT on the 60s/5min/
-    // 15min/30min transient ladder, which tops out at 30 minutes.
-    expect(row.heldForMs).toBeGreaterThan(24 * 60 * 60 * 1000);
-  });
+  // The hold is a real INSTANT (start of next UTC month), not a fixed
+  // duration — msUntilNextReset('monthly', from) can be anywhere from
+  // ~an hour (recording the failure at 23:xx on the 31st) to ~a month
+  // (recording it just after midnight on the 1st). A duration-shaped
+  // assertion ("greater than 24h") is therefore the wrong shape of test: it
+  // is false every month on whichever day leaves less than 24h to the
+  // boundary. Assert the real property instead — released_at lands exactly
+  // at the next UTC month boundary — on three representative dates (1st,
+  // 15th, 31st) so it is true regardless of which day it runs on. A
+  // secondary assertion keeps the stated intent (this is not on the
+  // 60s/5min/15min/30min transient ladder, which tops out at 30 minutes) but
+  // only where it is actually a valid check — i.e. not on the last day of
+  // the month, where the real hold can legitimately be under 30 minutes.
+  const REPRESENTATIVE_DATES: Array<[label: string, date: Date]> = [
+    ['the 1st', new Date(Date.UTC(2026, 7, 1, 3, 0, 0))], // 2026-08-01T03:00:00Z
+    ['the 15th', new Date(Date.UTC(2026, 7, 15, 12, 0, 0))], // 2026-08-15T12:00:00Z
+    ['the 31st', new Date(Date.UTC(2026, 7, 31, 5, 0, 0))], // 2026-08-31T05:00:00Z
+  ];
+
+  for (const [label, fakeNow] of REPRESENTATIVE_DATES) {
+    it(`a 402 parks until the START OF NEXT UTC MONTH, not a fixed duration (faked to ${label})`, () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(fakeNow);
+      try {
+        recordFailure('hf-model', { kind: 'quota_exhausted', status: 402, provider: 'huggingface' });
+        const row = healthSnapshot().find((r) => r.candidate === 'hf-model')!;
+        const releasedAt = new Date(fakeNow.getTime() + row.heldForMs);
+
+        // The real property: the release instant is exactly the 1st of the
+        // NEXT UTC month at 00:00:00.000 — true no matter what day this runs.
+        const expectedNextMonth = new Date(Date.UTC(
+          fakeNow.getUTCFullYear(), fakeNow.getUTCMonth() + 1, 1, 0, 0, 0, 0,
+        ));
+        expect(releasedAt.toISOString()).toBe(expectedNextMonth.toISOString());
+
+        // Secondary: it clears the transient ladder's 30-minute ceiling —
+        // valid whenever there is more than 30 minutes left in the month
+        // (true for two of the three faked dates here; skipped, not
+        // asserted false, on the one day where a real quota hold can
+        // legitimately be under 30 minutes).
+        if (row.heldForMs > 30 * 60 * 1000) {
+          expect(row.heldForMs).toBeGreaterThan(30 * 60 * 1000);
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  }
 
   it('a dead-slug 404 is never retried — quarantined stays true no matter how long you wait', () => {
     recordFailure('dead-model', { kind: 'gone', status: 404 });

@@ -66,7 +66,42 @@ function renderRecordFields(obj: Record<string, any>): string {
   return entries.map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`).join(', ');
 }
 
+/** Matches createFile's result shape (lib/capabilities/deliverables.ts) — and
+ *  any other tool that hands back a file the same way, since this keys on
+ *  shape, not on the tool name. A real produced-file result always carries a
+ *  non-empty string `url` (where the bytes live) AND a non-empty string
+ *  `filename` (what to call them) together; `format`/`mimeType`/`bytes`/
+ *  `description` are read if present but not required. Requiring BOTH fields
+ *  as non-empty strings is what keeps this from mis-firing: plenty of other
+ *  records carry a bare `url` (a lead's company website, a social post link)
+ *  but none of those also carry a `filename` — that pairing is specific to a
+ *  produced file, so a listLeads row with a `url` field renders as a normal
+ *  record, never as a bogus "file ready" line. */
+function isFileValue(value: Record<string, any>): value is {
+  url: string; filename: string; format?: string; mimeType?: string; bytes?: number; description?: string | null;
+} {
+  return typeof value.url === 'string' && value.url.length > 0
+    && typeof value.filename === 'string' && value.filename.length > 0;
+}
+
+/** Render the file shape as prose naming the file and its link — never raw
+ *  JSON. Mirrors createFile's own digest() line (lib/capabilities/
+ *  deliverables.ts) so the two stay consistent, but this path also covers a
+ *  tool that produced a file WITHOUT declaring a digest, or one whose digest
+ *  fell through to the raw-JSON fallback (see buildObservation in
+ *  lib/agent/loop.ts) — this is what renders that raw JSON readably. */
+function renderFileValue(value: { url: string; filename: string; format?: string; mimeType?: string; bytes?: number; description?: string | null }): string {
+  const kb = typeof value.bytes === 'number' && value.bytes >= 0 ? ` (${Math.max(1, Math.round(value.bytes / 1024))} KB)` : '';
+  const kind = typeof value.format === 'string' && value.format ? ` (${value.format})` : '';
+  const lines = [`File ready: ${value.filename}${kind}${kb}`, `Link: ${value.url}`];
+  if (value.description) lines.push(String(value.description));
+  return lines.join('\n');
+}
+
 /** Render one parsed JSON value as readable text. Shape-driven, in order:
+ *   - An object carrying `url` + `filename` (a produced-file result, e.g.
+ *     createFile's) renders as a readable "file ready" line with its link —
+ *     because THOSE are its keys, not because of which tool ran.
  *   - An object with string `subject` + `body` (the drafted-email shape,
  *     e.g. draftOutreach's result) renders as a readable email — because
  *     THOSE are its keys, not because of which tool ran.
@@ -84,6 +119,7 @@ export function renderJsonValue(value: any): string {
 }
 
 function renderObjectValue(value: Record<string, any>): string {
+  if (isFileValue(value)) return renderFileValue(value);
   if (typeof value.subject === 'string' && typeof value.body === 'string') {
     const extras = Object.entries(value)
       .filter(([k, v]) => k !== 'subject' && k !== 'body' && v !== null && v !== undefined && v !== '')
@@ -117,6 +153,33 @@ function renderArray(value: any[]): string {
     ...lines,
     ...(omitted > 0 ? [`  … and ${omitted} more (omitted for length — the count above still covers them).`] : []),
   ].join('\n');
+}
+
+/** Public shape of a produced file, as parsed off an observation's raw JSON
+ *  by parseFileFromObservation() below. */
+export interface ObservedFile {
+  url: string; filename: string; format?: string; mimeType?: string; bytes?: number; description?: string | null;
+}
+
+/** Pull the file-shaped payload (if any) out of a raw observation string, for
+ *  callers that want the structured fields themselves rather than
+ *  renderObservation()'s prose — e.g. a UI that draws a file card with a
+ *  preview. Same digest+raw / raw-alone parsing renderPayload() does, and the
+ *  same isFileValue() shape predicate, so this can never disagree with what
+ *  renderObservation() would have shown for the same text. Returns undefined
+ *  (never throws) for anything that isn't a file-shaped payload. */
+export function parseFileFromObservation(text: string): ObservedFile | undefined {
+  try {
+    const nl = text.indexOf('\n');
+    const rest = nl > 0 ? text.slice(nl + 1) : text;
+    const parsed = tryParseJson(rest) ?? tryParseJson(text);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed) && isFileValue(parsed)) {
+      return parsed;
+    }
+  } catch {
+    // Malformed payload — no file to show, same as "no digest".
+  }
+  return undefined;
 }
 
 /** Render one call's payload — the text after a batch item's "ok — ", or a

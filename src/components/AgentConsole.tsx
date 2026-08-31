@@ -8,6 +8,8 @@ import {
 import { apiGet, apiSend } from '@/lib/api';
 import VoiceInput from '@/components/composer/VoiceInput';
 import Attachments, { useAttachmentUpload, type UploadedAttachment } from '@/components/composer/Attachments';
+import { parseFileFromObservation, type ObservedFile } from '@/lib/agent/observation-render';
+import FileCard from '@/components/FileCard';
 
 // Live agentic console. Streams the assistant's real reasoning from
 // /api/agent/stream and renders it Claude-desktop style: one plain-language
@@ -35,6 +37,14 @@ export type Step =
       synthetic?: boolean;
       startedAt?: number;
       endedAt?: number;
+      /** Set when this step's observation is a produced-file result (any tool
+       *  returning createFile's `{url, filename, …}` shape — detected by
+       *  PAYLOAD SHAPE via parseFileFromObservation, never by tool name, same
+       *  rule as observation-render.ts). Parsed off the FULL observation text
+       *  before it is truncated to 240 chars for `observation` below, so a
+       *  long signed URL is never lost to that display truncation. Renders as
+       *  a FileCard with a download link and inline preview. */
+      file?: ObservedFile;
     }
   | { kind: 'error'; text: string }
   /** A neutral confirmation — e.g. "won't ask again this chat". Distinct from
@@ -961,7 +971,13 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
           last.ok = e.ok;
           if (e.metrics && Object.keys(e.metrics).length) last.metrics = e.metrics;
           const text = typeof e.text === 'string' ? e.text.trim() : '';
-          if (text) last.observation = text.length > 240 ? `${text.slice(0, 237)}…` : text;
+          if (text) {
+            // Parsed off the FULL text, before the 240-char display truncation
+            // below — a signed URL or a long filename must not be cut off.
+            const file = parseFileFromObservation(text);
+            if (file) last.file = file;
+            last.observation = text.length > 240 ? `${text.slice(0, 237)}…` : text;
+          }
         }
       }
       // Structured analysis events — additive, never resolve a pending step
@@ -1448,7 +1464,9 @@ function StepRow({ step }: { step: Step }) {
       )}
       <div className="min-w-0 flex-1">
         <span className={done ? '' : 'text-[var(--text-primary)]'}>{text}{!done && !/[.…]$/.test(text) && '…'}</span>
-        {step.kind === 'tool' && step.observation && (
+        {step.kind === 'tool' && step.file ? (
+          <div className="mt-1.5 pl-2"><FileCard file={step.file} /></div>
+        ) : step.kind === 'tool' && step.observation && (
           <div className="mt-1 max-w-full truncate pl-2 text-xs text-[var(--text-muted)]" title={step.observation}>
             {step.observation}
           </div>
