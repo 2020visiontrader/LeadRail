@@ -18,6 +18,23 @@ function rowsFor(table: string) { return table === 'agent_plans' ? plans : steps
 
 vi.mock('@/lib/db', () => ({
   supabase: {
+    // Mirrors advance_plan_step_cursor's real semantics (migration 079): a
+    // single conditional update, only against a row still `in_progress`,
+    // resetting attempts to 0 on success — see tests/plan-store-batch.test.ts
+    // for the same guard exercised directly against lib/plans/store.ts.
+    rpc: async (fn: string, params: any) => {
+      if (fn !== 'advance_plan_step_cursor') return { data: null, error: null };
+      const row = steps.find((s: any) => s.id === params.p_step_id);
+      if (!row || row.status !== 'in_progress') return { data: [], error: null };
+      const by = Math.max(0, Math.floor(params.p_by) || 0);
+      const raw = (row.cursor ?? 0) + by;
+      const newCursor = row.total != null ? Math.min(raw, row.total) : raw;
+      row.cursor = newCursor;
+      row.attempts = 0;
+      const done = row.total != null && newCursor >= row.total;
+      if (!done) row.status = 'pending';
+      return { data: [{ new_cursor: newCursor, step_total: row.total }], error: null };
+    },
     from(table: string) {
       const q: any = {
         _f: [] as ((r: any) => boolean)[], _mode: 'select', _patch: null as any,
@@ -64,6 +81,22 @@ function seed(opts: { stepsUsed?: number; maxSteps?: number; attempts?: number; 
 async function tick() {
   const { runPlanTick } = await import('@/lib/plans/runner');
   return runPlanTick();
+}
+
+function seedBatch(opts: { over: string[]; cursor?: number; attempts?: number; itemsPerTick?: number } = { over: [] }) {
+  plans = [{
+    id: 'p1', account_id: 'acct-1', conversation_id: 'c1', brand_id: null,
+    objective: 'Work the leads', status: 'running',
+    max_steps: 200, steps_used: 0,
+    expires_at: new Date(Date.now() + 3600_000).toISOString(), last_error: null,
+  }];
+  steps = [{
+    id: 's1', plan_id: 'p1', seq: 1, title: 'Handle every lead', status: 'pending',
+    result: null, attempts: opts.attempts ?? 0, blocked_reason: null, approval_id: null,
+    over: opts.over, cursor: opts.cursor ?? 0, total: opts.over.length,
+  }];
+  if (opts.itemsPerTick != null) process.env.PLAN_ITEMS_PER_TICK = String(opts.itemsPerTick);
+  else delete process.env.PLAN_ITEMS_PER_TICK;
 }
 
 describe('advances one step at a time', () => {
@@ -241,5 +274,214 @@ describe('resuming after approval', () => {
     const { resumeStepForApproval } = await import('@/lib/plans/store');
     // The normal case, not an error.
     expect(await resumeStepForApproval('acct-1', 'unrelated')).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Batch steps (migration 079) — one step iterating a list across ticks.
+//
+// The property that matters: no item is ever processed twice and none is
+// skipped, across a crashed tick, a parked approval, and two concurrent
+// ticks. Each block below targets exactly one of those three failure modes.
+// ---------------------------------------------------------------------------
+
+describe('a batch step spans multiple ticks and completes exactly once', () => {
+  beforeEach(() => {
+    vi.resetModules(); runAgent.mockClear();
+    agentResult = { status: 'done', message: 'batch tick ok', steps: [{}, {}], transcript: [] };
+  });
+
+  it('advances the cursor a slice at a time and only finishes on the tick that reaches the end', async () => {
+    const items = Array.from({ length: 20 }, (_, i) => `lead-${i}`);
+    seedBatch({ over: items, itemsPerTick: 8 });
+
+    let r = await tick();                      // items 0..7
+    expect(steps[0].cursor).toBe(8);
+    expect(steps[0].status).toBe('pending');    // NOT done, re-claimable next tick
+    expect(r.stepsCompleted).toBe(0);
+
+    r = await tick();                           // items 8..15
+    expect(steps[0].cursor).toBe(16);
+    expect(steps[0].status).toBe('pending');
+    expect(r.stepsCompleted).toBe(0);
+
+    r = await tick();                           // items 16..19 (only 4 left)
+    expect(steps[0].cursor).toBe(20);
+    expect(steps[0].status).toBe('done');
+    expect(r.stepsCompleted).toBe(1);            // completes EXACTLY once
+
+    // A later tick must not touch the finished step again.
+    runAgent.mockClear();
+    const r2 = await tick();
+    expect(runAgent).not.toHaveBeenCalled();
+    expect(r2.stepsCompleted).toBe(0);
+  });
+
+  it('REVERT-CHECK TARGET: every item is processed exactly once — the full sequence of slices matches the list with no repeats and no gaps', async () => {
+    const items = Array.from({ length: 10 }, (_, i) => `lead-${i}`);
+    seedBatch({ over: items, itemsPerTick: 3 });
+
+    const slicesSeen: string[] = [];
+    for (let guard = 0; guard < 10 && steps[0].status !== 'done'; guard++) {
+      await tick();
+      const msg = String(runAgent.mock.calls[runAgent.mock.calls.length - 1][0].message);
+      const m = msg.match(/Items to handle THIS TURN ONLY: ([^\n]+)/);
+      if (m) slicesSeen.push(...m[1].split('; '));
+    }
+    expect(steps[0].status).toBe('done');
+    expect(slicesSeen).toEqual(items); // exact order, no repeats, none skipped
+  });
+
+  it('does not call completePlanStep-style single-shot closure — the runner, not the model, completes it', async () => {
+    // Guards against the batch prompt accidentally reusing the ordinary
+    // step's "call completePlanStep" instruction, which would close the step
+    // after only the first slice.
+    seedBatch({ over: ['a', 'b', 'c'], itemsPerTick: 8 });
+    await tick();
+    const msg = String(runAgent.mock.calls[0][0].message);
+    expect(msg).toMatch(/do not call completePlanStep/i);
+  });
+});
+
+describe('a crashed or failed tick leaves a batch step re-claimable', () => {
+  beforeEach(() => { vi.resetModules(); runAgent.mockClear(); });
+
+  it('REVERT-CHECK TARGET: an error result does not advance the cursor, and the step returns to pending', async () => {
+    const items = Array.from({ length: 10 }, (_, i) => `lead-${i}`);
+    seedBatch({ over: items, cursor: 4, itemsPerTick: 3 });
+    agentResult = { status: 'error', message: 'upstream died', steps: [], transcript: [] };
+
+    await tick();
+    expect(steps[0].cursor).toBe(4);            // untouched
+    expect(steps[0].status).toBe('pending');     // re-claimable, not stuck in_progress
+    expect(steps[0].attempts).toBe(1);           // the failed tick counted
+
+    // Next tick, with a healthy result, resumes from the SAME slice rather
+    // than skipping past it.
+    agentResult = { status: 'done', message: 'ok', steps: [{}], transcript: [] };
+    await tick();
+    const msg = String(runAgent.mock.calls[runAgent.mock.calls.length - 1][0].message);
+    expect(msg).toContain('lead-4'); // the item the failed tick was supposed to do
+    expect(msg).not.toContain('lead-7'); // not skipped ahead
+    expect(steps[0].cursor).toBe(7);
+  });
+
+  it('REVERT-CHECK TARGET: a thrown exception (not a returned error) also leaves the step re-claimable, cursor untouched', async () => {
+    seedBatch({ over: ['a', 'b', 'c', 'd'], cursor: 1, itemsPerTick: 2 });
+    runAgent.mockImplementationOnce(async () => { throw new Error('container died'); });
+
+    await tick();
+    expect(steps[0].cursor).toBe(1);
+    expect(steps[0].status).toBe('pending');
+  });
+});
+
+describe('MAX_STEP_ATTEMPTS counts consecutive failed TICKS, not total ticks worked', () => {
+  beforeEach(() => { vi.resetModules(); runAgent.mockClear(); });
+
+  it('REVERT-CHECK TARGET: a 20-item step at 3 items/tick (7 ticks) does not block itself despite every tick succeeding', async () => {
+    const items = Array.from({ length: 20 }, (_, i) => `lead-${i}`);
+    seedBatch({ over: items, itemsPerTick: 3 });
+    agentResult = { status: 'done', message: 'ok', steps: [{}], transcript: [] };
+
+    for (let i = 0; i < 10 && steps[0].status !== 'done'; i++) {
+      const r = await tick();
+      expect(r.stepsBlocked).toBe(0); // never blocked on the way
+    }
+    expect(steps[0].status).toBe('done');
+    expect(steps[0].cursor).toBe(20);
+  });
+
+  it('still blocks after three CONSECUTIVE failing ticks with no progress between them', async () => {
+    seedBatch({ over: Array.from({ length: 10 }, (_, i) => `lead-${i}`), itemsPerTick: 2 });
+    agentResult = { status: 'error', message: 'down', steps: [], transcript: [] };
+
+    await tick(); // attempts -> 1
+    await tick(); // attempts -> 2
+    const r = await tick(); // attempts would reach 3 on the NEXT claim
+    // Attempts reached 3 exactly after the third failed claim; the fourth
+    // tick sees attempts >= MAX_STEP_ATTEMPTS before claiming and blocks.
+    expect(steps[0].attempts).toBe(3);
+    const r2 = await tick();
+    expect(steps[0].status).toBe('blocked');
+    expect(r2.stepsBlocked).toBe(1);
+    expect(steps[0].cursor).toBe(0); // nothing was ever skipped or double-run
+  });
+});
+
+describe('an approval parks a batch step without advancing its cursor', () => {
+  beforeEach(() => { vi.resetModules(); runAgent.mockClear(); });
+
+  it('REVERT-CHECK TARGET: needs_approval leaves the cursor exactly where it was, and resuming continues from the same item', async () => {
+    const items = Array.from({ length: 10 }, (_, i) => `lead-${i}`);
+    seedBatch({ over: items, cursor: 4, itemsPerTick: 3 });
+    agentResult = {
+      status: 'needs_approval', message: 'needs you',
+      proposal: { approvalId: 'appr-1', summary: 'Send outreach to 3 leads' },
+      steps: [{}], transcript: [],
+    };
+
+    const r = await tick();
+    expect(r.stepsBlocked).toBe(1);
+    expect(steps[0].status).toBe('blocked');
+    expect(steps[0].approval_id).toBe('appr-1');
+    expect(steps[0].cursor).toBe(4); // untouched by the park
+
+    // Resume: releases the step, cursor still untouched.
+    const { resumeStepForApproval } = await import('@/lib/plans/store');
+    expect(await resumeStepForApproval('acct-1', 'appr-1')).toBe(true);
+    expect(steps[0].status).toBe('pending');
+    expect(steps[0].cursor).toBe(4);
+
+    // The next tick works the SAME slice the approval interrupted, not the
+    // one after it.
+    agentResult = { status: 'done', message: 'ok', steps: [{}], transcript: [] };
+    await tick();
+    const msg = String(runAgent.mock.calls[runAgent.mock.calls.length - 1][0].message);
+    expect(msg).toContain('lead-4');
+    expect(msg).not.toContain('lead-7');
+    expect(steps[0].cursor).toBe(7);
+  });
+});
+
+describe('two concurrent ticks cannot both advance the same batch step', () => {
+  beforeEach(() => { vi.resetModules(); runAgent.mockClear(); });
+
+  // Integration-level pin: claimStep's pre-existing atomicity is what stops
+  // the second tick before it ever calls runAgent (revert-checked directly
+  // against claimStep would also break unrelated updates in this shared fake
+  // client, so it is not repeated here); advanceCursor's OWN atomicity is
+  // revert-checked in isolation in tests/plan-store-batch.test.ts.
+  it('only one of two racing ticks does the work; the cursor moves by exactly one slice', async () => {
+    const items = Array.from({ length: 20 }, (_, i) => `lead-${i}`);
+    seedBatch({ over: items, itemsPerTick: 8 });
+    agentResult = { status: 'done', message: 'ok', steps: [{}], transcript: [] };
+
+    const [r1, r2] = await Promise.all([tick(), tick()]);
+    // Exactly one tick's worth of items (8) advanced — not 16, not 0.
+    expect(steps[0].cursor).toBe(8);
+    expect(runAgent).toHaveBeenCalledTimes(1);
+    void r1; void r2;
+  });
+});
+
+describe('a step with no `over` behaves exactly as before batch steps existed', () => {
+  beforeEach(() => {
+    vi.resetModules(); runAgent.mockClear();
+    agentResult = { status: 'done', message: 'Did it.', steps: [{}, {}], transcript: [] };
+    seed(); // the pre-existing helper — no `over` on either step
+  });
+
+  it('completes in one tick via completePlanStep-style closure, same as before', async () => {
+    const r = await tick();
+    expect(r.stepsCompleted).toBe(1);
+    expect(steps.find((s: any) => s.id === 's1')!.status).toBe('done');
+  });
+
+  it('never mentions batch-only language for an ordinary step', async () => {
+    await tick();
+    const msg = String(runAgent.mock.calls[0][0].message);
+    expect(msg).not.toMatch(/do not call completePlanStep/i);
+    expect(msg).not.toContain('Items to handle THIS TURN ONLY');
   });
 });

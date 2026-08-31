@@ -1,12 +1,22 @@
-// Durable plans (migration 063) — the cursor for agentic work.
+// Durable plans (migration 063; batch steps added in 079) — the cursor for
+// agentic work.
 //
-// Every mutation here defends one of three invariants:
+// Every mutation here defends one of four invariants:
 //   1. AT MOST ONE step in_progress per plan. The database enforces it; this
 //      file must not create a situation where it fires.
 //   2. BUDGETS ARE CEILINGS, NOT SUGGESTIONS. steps_used only ever rises, and
 //      nothing in the agent path may raise max_steps — only a human.
 //   3. A STEP THAT KEEPS FAILING STOPS. attempts is incremented before work,
-//      not after success, so a step that crashes mid-run still counts.
+//      not after success, so a step that crashes mid-run still counts. For a
+//      BATCH step (one with `over`), advanceCursor resets attempts to 0 on
+//      every successful tick, so this counts CONSECUTIVE FAILED TICKS, not
+//      total ticks worked — see migration 079's comment on
+//      advance_plan_step_cursor for why that distinction matters.
+//   4. A BATCH STEP'S ITEM IS NEVER PROCESSED TWICE OR SKIPPED. cursor only
+//      ever advances through advanceCursor's atomic, conditional UPDATE
+//      (migration 079) — never a JS read-then-write — so two concurrent ticks
+//      cannot both advance the same step, and a tick that fails leaves the
+//      cursor exactly where it was.
 
 import { supabase } from '@/lib/db';
 import { log } from '@/lib/logger';
@@ -26,6 +36,9 @@ export const PLAN_TTL_MS = Number(process.env.PLAN_TTL_MS) || 24 * 60 * 60 * 100
 /** Most steps one plan may contain. A "plan" of 400 items is a list operation
  *  the model should be batching, not a plan. */
 export const MAX_PLAN_STEPS = Number(process.env.PLAN_MAX_STEP_COUNT) || 40;
+/** Most items a single step's `over` list may hold, enforced at creation (see
+ *  migration 079's comment on the matching CHECK constraint for why 2000). */
+export const MAX_STEP_OVER_ITEMS = Number(process.env.PLAN_MAX_STEP_OVER_ITEMS) || 2000;
 
 export interface PlanStep {
   id: string;
@@ -36,6 +49,14 @@ export interface PlanStep {
   attempts: number;
   blockedReason: string | null;
   approvalId: string | null;
+  /** Opaque item identifiers this step iterates, one slice per tick. Null for
+   *  an ordinary single-shot step. */
+  over: string[] | null;
+  /** How many of `over`'s items are done. Always 0 when `over` is null. */
+  cursor: number;
+  /** Item count at creation (over's length, frozen) — null when `over` is
+   *  null. Never recomputed from `over` at read time. */
+  total: number | null;
 }
 
 export interface Plan {
@@ -61,6 +82,9 @@ function toStep(r: any): PlanStep {
     id: r.id, seq: r.seq, title: r.title, status: r.status,
     result: r.result ?? null, attempts: r.attempts ?? 0,
     blockedReason: r.blocked_reason ?? null, approvalId: r.approval_id ?? null,
+    over: Array.isArray(r.over) ? r.over.map(String) : null,
+    cursor: r.cursor ?? 0,
+    total: r.total ?? null,
   };
 }
 
@@ -76,6 +100,11 @@ function toPlan(r: any, steps: any[]): Plan {
   };
 }
 
+/** One step as given to createPlan: a bare title (an ordinary step), or a
+ *  title plus the list of items it should iterate — a BATCH step, worked a
+ *  few items per tick (lib/plans/runner.ts) instead of all at once. */
+export type PlanStepInput = string | { title: string; over?: string[] };
+
 /**
  * Create a plan and its steps.
  *
@@ -87,7 +116,7 @@ function toPlan(r: any, steps: any[]): Plan {
 export async function createPlan(args: {
   accountId: string;
   objective: string;
-  steps: string[];
+  steps: PlanStepInput[];
   conversationId?: string | null;
   brandId?: string | null;
   createdBy?: string | null;
@@ -98,8 +127,25 @@ export async function createPlan(args: {
   skills?: string[];
   personaId?: string | null;
 }): Promise<Plan | null> {
-  const titles = args.steps.map((s) => String(s || '').trim()).filter(Boolean).slice(0, MAX_PLAN_STEPS);
-  if (!titles.length) return null;
+  const parsed = args.steps
+    .map((s) => (typeof s === 'string' ? { title: s, over: undefined as string[] | undefined } : s))
+    .map((s) => ({
+      title: String(s?.title || '').trim(),
+      over: Array.isArray(s?.over) ? s.over.map((x) => String(x)).filter(Boolean) : undefined,
+    }))
+    .filter((s) => s.title)
+    .slice(0, MAX_PLAN_STEPS);
+  if (!parsed.length) return null;
+
+  // Refused HERE, at creation — not discovered mid-run. A silently truncated
+  // `over` would quietly drop items nobody asked to drop, which is worse than
+  // refusing the whole plan outright.
+  if (parsed.some((s) => s.over && s.over.length > MAX_STEP_OVER_ITEMS)) {
+    log.warn('plan: rejected — a batch step exceeded the over cap', {
+      accountId: args.accountId, cap: MAX_STEP_OVER_ITEMS,
+    });
+    return null;
+  }
 
   try {
     const { data: planRow, error } = await supabase
@@ -123,7 +169,11 @@ export async function createPlan(args: {
 
     const { data: stepRows, error: stepErr } = await supabase
       .from('agent_plan_steps')
-      .insert(titles.map((title, i) => ({ plan_id: (planRow as any).id, seq: i + 1, title: title.slice(0, 500) })))
+      .insert(parsed.map((s, i) => ({
+        plan_id: (planRow as any).id, seq: i + 1, title: s.title.slice(0, 500),
+        over: s.over ? s.over : null,
+        total: s.over ? s.over.length : null,
+      })))
       .select();
     if (stepErr) {
       // A plan with no steps is a plan that will spin. Remove it rather than
@@ -132,7 +182,8 @@ export async function createPlan(args: {
       return null;
     }
     log.info('plan: created', {
-      accountId: args.accountId, steps: titles.length,
+      accountId: args.accountId, steps: parsed.length,
+      batchSteps: parsed.filter((s) => s.over).length,
       status: (planRow as any).status, actorEmail: args.createdBy ?? undefined,
     });
     return toPlan(planRow, stepRows || []);
@@ -233,6 +284,60 @@ export async function claimStep(planId: string, stepId: string): Promise<boolean
   } catch {
     return false;
   }
+}
+
+/**
+ * Advance a batch step's cursor by `by` items, atomically.
+ *
+ * Backed by advance_plan_step_cursor (migration 079) — a single conditional
+ * UPDATE, the same discipline claimStep uses for the single-active invariant:
+ * only a row still `in_progress` is touched, so two concurrent ticks racing
+ * the same step cannot both advance it (one update returns a row, the other
+ * returns none). This is why it is NOT a JS read-cursor-then-write-cursor+by —
+ * that would race exactly the way claimStep's header comment warns against.
+ *
+ * Returns null when nothing was advanced: the step was not `in_progress`
+ * (lost the race, or was closed some other way) — the caller should treat
+ * that as "nothing safe to do this tick", not as a completion.
+ *
+ * `done` and the returned `cursor`/`total` are exactly what a progress
+ * reporter ("31 of 95 sent") would need — Phase 2's job, not built here, but
+ * the shape is ready for it.
+ */
+export async function advanceCursor(
+  stepId: string,
+  by: number,
+): Promise<{ cursor: number; total: number; done: boolean } | null> {
+  try {
+    const { data, error } = await supabase.rpc('advance_plan_step_cursor', {
+      p_step_id: stepId,
+      p_by: Math.max(0, Math.floor(by) || 0),
+    });
+    if (error) return null;
+    const row = Array.isArray(data) ? data[0] : data;
+    if (!row || row.new_cursor == null) return null;
+    const cursor = Number(row.new_cursor);
+    const total = row.step_total == null ? cursor : Number(row.step_total);
+    return { cursor, total, done: row.step_total != null && cursor >= Number(row.step_total) };
+  } catch {
+    return null;
+  }
+}
+
+/** Return an unfinished batch step to `pending` after a failed tick, WITHOUT
+ *  touching its cursor — so no item is skipped — and without resetting
+ *  `attempts`, so repeated failures still accumulate toward MAX_STEP_ATTEMPTS.
+ *  Conditional on `in_progress`, the same claim discipline as everywhere else
+ *  here: a step already moved on by another tick is left alone. This is what
+ *  makes a crashed or errored tick RE-CLAIMABLE next tick rather than stuck. */
+export async function releaseStepForRetry(stepId: string): Promise<void> {
+  try {
+    await supabase
+      .from('agent_plan_steps')
+      .update({ status: 'pending', updated_at: new Date().toISOString() })
+      .eq('id', stepId)
+      .eq('status', 'in_progress');
+  } catch { /* the runner re-reads state next tick */ }
 }
 
 export async function completeStep(stepId: string, result: string): Promise<void> {
@@ -365,6 +470,7 @@ export function renderPlan(plan: Plan): string {
         : s.status === 'skipped' ? '-' : ' ';
       const detail = s.status === 'done' && s.result ? ` — ${s.result.slice(0, 200)}`
         : s.status === 'blocked' && s.blockedReason ? ` — WAITING: ${s.blockedReason.slice(0, 200)}`
+        : s.total != null && s.status !== 'done' ? ` — batch, ${s.cursor}/${s.total} items done`
         : '';
       return `[${mark}] ${s.seq}. ${s.title}${detail}`;
     }),

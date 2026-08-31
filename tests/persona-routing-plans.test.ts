@@ -19,6 +19,7 @@ vi.mock('@/lib/plans/store', () => ({
   createPlan: (a: any) => createPlanMock(a),
   getPlan: vi.fn(), activePlanForConversation: vi.fn(), completeStep: vi.fn(),
   blockStep: vi.fn(), cancelPlans: vi.fn(), renderPlan: vi.fn(), MAX_PLAN_STEPS: 16,
+  MAX_STEP_OVER_ITEMS: 2000,
 }));
 
 const SKILL_ROW = (slug: string, instructions: string) => ({ slug, instructions });
