@@ -6,14 +6,21 @@
 // account-level re-enable of either provider must not silently put it back
 // in the ladder.
 //
-// It also asserts OpenCode Go's position AHEAD of OpenRouter — reordered
-// 2026-08-31 at the user's explicit request, after OpenRouter was observed
-// out of credit (402 on every chain model) that same day; OpenCode Go's own
-// last-observed failure (401, 2026-08-28) is no more disqualifying than
-// OpenRouter's, and orderByHealth + the health tracker's auth(401)->permanent
-// and quota_exhausted(402)->hold-until-reset classification demote whichever
-// tier is actually dead after ONE failure, not once per call — see
-// lib/ai/router.ts's DEFAULT_TIER_ORDER header comment for the full reasoning.
+// It also asserts OpenRouter's position AHEAD of both zoask and opencode —
+// corrected 2026-08-31, reversing the PR #8 reorder that put opencode ahead
+// of openrouter on a mistaken reading that OpenRouter was out of credit.
+// Queried against PRODUCTION `ai_usage`, last 48h, successful calls only:
+// zoask p50 35,621ms (77 calls, 15 timeouts), openrouter p50 8,233ms (66
+// calls, 0 logged failures — it 402s on two chain models and succeeds on a
+// third). opencode is last not because it is unproven but because it is
+// measured SLOW and partly dead: its hardcoded tier's key 401'd 21/21 times
+// (2026-08-27..28, none since), while its separate registry route (DeepSeek
+// V4 Flash) does work — 152 successful calls — at ~46.1s average, the
+// slowest of the three. See lib/ai/router.ts's DEFAULT_TIER_ORDER header
+// comment for the full breakdown, and lib/ai/health.ts for HEALTH_REORDER —
+// since this same date, the LIVE order is normally decided by measured
+// latency, not this static seed; this constant only matters cold (nothing
+// measured yet) or with AI_HEALTH_REORDER=0.
 
 import { describe, it, expect, beforeEach } from 'vitest';
 
@@ -22,9 +29,9 @@ beforeEach(() => {
 });
 
 describe('DEFAULT_TIER_ORDER', () => {
-  it('is exactly zoask, opencode, openrouter', async () => {
+  it('is exactly openrouter, zoask, opencode', async () => {
     const { DEFAULT_TIER_ORDER } = await import('@/lib/ai/router');
-    expect(DEFAULT_TIER_ORDER).toEqual(['zoask', 'opencode', 'openrouter']);
+    expect(DEFAULT_TIER_ORDER).toEqual(['openrouter', 'zoask', 'opencode']);
   });
 
   it('never contains nim or huggingface', async () => {
@@ -40,10 +47,11 @@ describe('tierOrder()', () => {
     expect(tierOrder()).toEqual([...DEFAULT_TIER_ORDER]);
   });
 
-  it('opencode is tried before openrouter (user-requested reorder, 2026-08-31)', async () => {
+  it('openrouter is tried before zoask and opencode (corrected 2026-08-31 — it is not out of credit, is the fastest proven tier, and opencode is measured slow/partly dead-keyed, not merely unproven)', async () => {
     const { tierOrder } = await import('@/lib/ai/router');
     const order = tierOrder();
-    expect(order.indexOf('opencode')).toBeLessThan(order.indexOf('openrouter'));
+    expect(order.indexOf('openrouter')).toBeLessThan(order.indexOf('zoask'));
+    expect(order.indexOf('openrouter')).toBeLessThan(order.indexOf('opencode'));
   });
 
   it('ignores nim/huggingface even if an operator sets them via AI_TIER_ORDER', async () => {

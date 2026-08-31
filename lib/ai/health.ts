@@ -16,12 +16,43 @@
 // So a candidate is whatever the selector will actually attempt: a ladder tier
 // where the client owns its own internal chain, or a single ai_models row.
 //
-// LATENCY IS RECORDED BUT DOES NOT REORDER, by default. router.ts documents
-// ladder order as an operator decision (AI_TIER_ORDER, set from a measured
-// probe) rather than something the code guesses at, and quietly overriding
-// that from a rolling average would take the decision away from the person who
-// made it deliberately. The measurement is kept and exposed so the operator can
-// act on it; AI_HEALTH_REORDER=1 opts into letting it sort automatically.
+// LATENCY REORDERS HEALTHY CANDIDATES BY DEFAULT, as of 2026-08-31. This
+// overrides the decision recorded above (and, before that, in PR #8) that the
+// order was purely the operator's call via AI_TIER_ORDER/DEFAULT_TIER_ORDER.
+// That was a deliberate choice and is being deliberately reversed, on
+// production evidence, not quietly:
+//
+//   PRODUCTION `ai_usage`, last 48h, successful calls only:
+//     zoask        77 calls   p50 35,621ms   p90 64,867ms   worst 109,044ms   15 timeouts
+//     openrouter   66 calls   p50  8,233ms   p90 24,239ms   worst 140,163ms   0 logged failures
+//     opencode      0 calls in this 48h window — the hardcoded tier's key
+//                   401'd 21/21 times 2026-08-27..28 and nothing has retried
+//                   it since (health.ts parks 'auth' failures permanently).
+//                   Its SEPARATE registry route (a different account-scoped
+//                   code path, DeepSeek V4 Flash) does work — 152 successful
+//                   calls in the full history — but at ~46.1s average, the
+//                   slowest of the three; see router.ts's DEFAULT_TIER_ORDER
+//                   comment for the full breakdown. Not "unproven" — tested,
+//                   and slow (registry) / dead-keyed (hardcoded tier).
+//
+// zoask sat FIRST in the static ladder at a 35.6s median. Four steps at its
+// p90 alone is 260s — inside the 270s turn deadline with no room for anything
+// else, and a real production turn died at 300,005ms after only two steps.
+// openrouter is measured 4.3x faster and is the only tier demonstrably
+// serving live traffic, yet PR #8 put it LAST on a mistaken reading that it
+// was out of credit (it 402s on two chain models and succeeds on a third, 66
+// times in this window). A human operator picking the order by hand did not
+// catch either of these; a rolling measurement of what is actually happening
+// does. So: reorder by measured latency BY DEFAULT, with an explicit OPT-OUT
+// (AI_HEALTH_REORDER=0) for an operator who wants the static order back —
+// same escape hatch as before, inverted polarity.
+//
+// This does NOT reopen the NIM regression below. Latency only ever reorders
+// candidates already sorted into the HEALTHY half by quarantined() — a
+// candidate that is failing (quarantined/held) is never promoted by being
+// fast, no matter how good its last EWMA was before it started failing. See
+// orderByHealth: the healthy/held split happens first, unconditionally, and
+// HEALTH_REORDER only touches the healthy half.
 //
 // ─────────────────────────────────────────────────────────────────────────
 // FAILURE TAXONOMY (added after the 2026-08-27 production trace).
@@ -94,9 +125,12 @@ const BACKOFF_MS = [60_000, 300_000, 900_000, 1_800_000];
 // plain transient failure is.
 const RATE_LIMIT_DEFAULT_MS = Number(process.env.AI_RATE_LIMIT_COOLDOWN_MS) || 5 * 60_000;
 
-/** Opt-in: sort healthy candidates by measured latency. Off by default — see
- *  the note at the top of this file about whose decision the order is. */
-export const HEALTH_REORDER = process.env.AI_HEALTH_REORDER === '1';
+/** Sort healthy candidates by measured latency. ON by default since
+ *  2026-08-31 (see the note at the top of this file for the production
+ *  evidence and why this overrides the earlier "operator's decision" stance).
+ *  Opt OUT with AI_HEALTH_REORDER=0 to restore the pure static/operator
+ *  order. */
+export const HEALTH_REORDER = process.env.AI_HEALTH_REORDER !== '0';
 
 /** How much a new sample moves the rolling latency. High enough to react to a
  *  provider degrading within a handful of calls, low enough that one slow
@@ -439,12 +473,26 @@ export function orderByHealth<T>(candidates: T[], idOf: (c: T) => string): T[] {
   if (HEALTH_REORDER) {
     // Unmeasured candidates sort as if average rather than best or worst: a
     // model nobody has called yet should not leapfrog a proven fast one, and
-    // should not be buried below a proven slow one either.
-    const rank = (c: T) => entries.get(idOf(c))?.ewmaMs ?? Number.POSITIVE_INFINITY;
+    // should not be buried below a proven slow one either. Concretely: give
+    // it the mean of the measured ewmaMs values and sort it into the SAME
+    // list as the measured candidates, so it lands mid-pack — ahead of
+    // measured-slow, behind measured-fast — rather than unconditionally
+    // after every measured candidate (which is what "buried below a proven
+    // slow one" meant, and what the previous [...measured, ...unmeasured]
+    // concatenation did despite this comment).
     const measured = healthy.filter((c) => entries.get(idOf(c))?.ewmaMs != null);
     const unmeasured = healthy.filter((c) => entries.get(idOf(c))?.ewmaMs == null);
-    measured.sort((a, b) => rank(a) - rank(b));
-    return [...measured, ...unmeasured, ...held];
+    const measuredValues = measured.map((c) => entries.get(idOf(c))!.ewmaMs as number);
+    const avgMs = measuredValues.length > 0
+      ? measuredValues.reduce((sum, v) => sum + v, 0) / measuredValues.length
+      : Number.POSITIVE_INFINITY; // nothing measured yet: order is a no-op, all equal
+    const rank = (c: T) => entries.get(idOf(c))?.ewmaMs ?? avgMs;
+    const all = [...measured, ...unmeasured];
+    // Stable sort: ties (including an unmeasured candidate landing exactly at
+    // avgMs, or multiple unmeasured candidates) keep the caller's order.
+    const withIndex = all.map((c, i) => ({ c, i }));
+    withIndex.sort((a, b) => rank(a.c) - rank(b.c) || a.i - b.i);
+    return [...withIndex.map((x) => x.c), ...held];
   }
 
   return [...healthy, ...held];

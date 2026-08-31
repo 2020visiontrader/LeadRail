@@ -3,7 +3,7 @@
 // the old per-tier breaker got wrong: one candidate failing must not take its
 // neighbours with it.
 
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   orderByHealth, quarantined, recordSuccess, recordFailure, healthSnapshot, resetHealth,
 } from '@/lib/ai/health';
@@ -40,13 +40,51 @@ describe('candidate health', () => {
     expect(quarantined('zoask')).toBe(false);
   });
 
-  it('preserves the caller order among healthy candidates', () => {
-    // Ladder order is an operator decision (AI_TIER_ORDER). With reordering off
-    // — the default — health must not quietly rearrange it.
+  it('with AI_HEALTH_REORDER=0, preserves the caller order among healthy candidates', async () => {
+    // Ladder order is an operator decision (AI_TIER_ORDER). Latency reordering
+    // is ON by default since 2026-08-31 (see lib/ai/health.ts's header note),
+    // but AI_HEALTH_REORDER=0 must still restore the pure static/operator
+    // order — this pins that opt-out.
+    process.env.AI_HEALTH_REORDER = '0';
+    vi.resetModules();
+    const healthMod = await import('@/lib/ai/health');
+    healthMod.resetHealth();
     const order = ['zoask', 'opencode', 'nim', 'huggingface', 'openrouter'];
-    recordSuccess('openrouter', 10);
-    recordSuccess('zoask', 20_000);
-    expect(orderByHealth(order, id)).toEqual(order);
+    healthMod.recordSuccess('openrouter', 10);
+    healthMod.recordSuccess('zoask', 20_000);
+    expect(healthMod.orderByHealth(order, id)).toEqual(order);
+    delete process.env.AI_HEALTH_REORDER;
+    vi.resetModules();
+  });
+
+  it('with reordering on (the default) and measured latencies, a faster healthy candidate sorts ahead of a slower healthy one', () => {
+    const order = ['zoask', 'openrouter'];
+    recordSuccess('zoask', 35_621); // measured p50 from production evidence
+    recordSuccess('openrouter', 8_233);
+    expect(orderByHealth(order, id)).toEqual(['openrouter', 'zoask']);
+  });
+
+  it('a QUARANTINED candidate stays held and is never promoted by being fast — the NIM regression this file warns about', () => {
+    // NIM was observed at 413ms (very fast) and then went down upstream; a
+    // stale fast latency measurement must never let a currently-failing
+    // candidate leapfrog back to the front just because it used to be quick.
+    recordSuccess('nim', 413);
+    recordFailure('nim'); // now quarantined, regardless of its old ewmaMs
+    recordSuccess('openrouter', 8_233); // slower than nim's old measurement, but healthy
+    expect(quarantined('nim')).toBe(true);
+    const ordered = orderByHealth(['nim', 'openrouter'], id);
+    expect(ordered).toEqual(['openrouter', 'nim']); // nim held at the back despite being "faster"
+  });
+
+  it('an unmeasured candidate lands mid-pack: ahead of measured-slow, behind measured-fast', () => {
+    const order = ['zoask', 'opencode', 'openrouter'];
+    recordSuccess('zoask', 35_621); // measured slow
+    recordSuccess('openrouter', 8_233); // measured fast
+    // opencode is never recorded — unmeasured.
+    const ordered = orderByHealth(order, id);
+    expect(ordered.indexOf('opencode')).toBeGreaterThan(ordered.indexOf('openrouter'));
+    expect(ordered.indexOf('opencode')).toBeLessThan(ordered.indexOf('zoask'));
+    expect(ordered).toEqual(['openrouter', 'opencode', 'zoask']);
   });
 
   it('breaks ties within the same backoff tier deterministically', () => {
