@@ -20,6 +20,15 @@ export const dynamic = 'force-dynamic';
 // on a turn that legitimately runs for minutes is a stream cut off mid-answer
 // with nothing said about why.
 export const runtime = 'nodejs';
+// INVARIANT — DO NOT BREAK: this platform ceiling must stay ABOVE
+// lib/agent/loop.ts's TURN_DEADLINE_MS (currently 270s), never equal to it.
+// They used to both be 300s and raced: production observed a turn killed at
+// durationMs 300005 — 5ms past this ceiling — because the loop's own
+// deadline never got a chance to fire and hand back a salvaged answer before
+// the platform cut the response off entirely. Raising this number is safe on
+// its own; LOWERING it, or raising TURN_DEADLINE_MS to close on it again,
+// reopens that race. See the twin comment on TURN_DEADLINE_MS in
+// lib/agent/loop.ts, and tests/turn-deadline-invariant.test.ts.
 export const maxDuration = 300;
 
 // CONCURRENCY INSTRUMENTATION.

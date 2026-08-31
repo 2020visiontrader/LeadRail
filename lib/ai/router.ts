@@ -8,10 +8,11 @@
 //   1. Hardcoded ladder:
 //      1. Ask Zo  (user's Claude subscription — Haiku when set as the Zo account
 //         default model; billed to the user's own Anthropic subscription)
-//      2. OpenRouter (12 free + 7 paid models — the workhorse tier)
-//      3. OpenCode Go (deepseek-v4-pro) — LAST RESORT. Its 401 is not a bad
-//         credential, the account simply has no credit; tried last so a
-//         guaranteed-fail attempt never sits ahead of a tier that can answer.
+//      2. OpenCode Go (deepseek-v4-pro) — moved ahead of OpenRouter at the
+//         user's explicit request. See DEFAULT_TIER_ORDER's own header
+//         comment for the reasoning and the production evidence behind it.
+//      3. OpenRouter (paid MODEL_CHAIN — see ./openrouter's own header for
+//         the roster and its ordering).
 //
 // NVIDIA NIM and HuggingFace were removed from the ladder entirely (production
 // incident, 2026-08-28: NIM timing out, HuggingFace returning 402 "depleted
@@ -71,7 +72,33 @@ import { isPastDeadline, deadlineExceededError } from './deadline';
 // Unknown names are ignored and any tier missing from the list is appended in
 // its default position, so a typo degrades to today's behaviour instead of
 // silently disabling a tier.
-export const DEFAULT_TIER_ORDER = ['zoask', 'openrouter', 'opencode'] as const;
+//
+// OPENCODE GO MOVED AHEAD OF OPENROUTER, 2026-08-31 — at the user's explicit
+// request, and the observed state of both tiers supports it:
+//   - OpenRouter was observed OUT OF CREDIT on 2026-08-31: every model in
+//     MODEL_CHAIN 402'd ("This request requires more credits...") across
+//     twelve calls in the same incident this reorder is part of fixing.
+//   - OpenCode Go was last observed 401'ing on 2026-08-28 (no credit either,
+//     per its own client's comment) — the reasoning that used to put it last
+//     ("its 401 is not a bad credential, the account has no credit, so a
+//     guaranteed-fail attempt should never sit ahead of a tier that can
+//     answer") no longer holds: OpenRouter is no more reliably funded than
+//     OpenCode Go right now, so there is no "working tier" left to protect by
+//     keeping Go last, and the user's ask wins.
+//   - The reorder is safe even if one tier is still out of credit: this file
+//     does not retry a dead tier per call. orderByHealth (./health) plus the
+//     health tracker's failure classification — 'auth' (401) parks a
+//     candidate PERMANENTLY, 'quota_exhausted' (402) parks it until that
+//     provider's quota reset period — demote a genuinely dead tier to the
+//     back of the list after its FIRST failure this process, not once per
+//     call. A misordered-but-dead tier costs one wasted attempt, not a
+//     standing tax on every turn.
+// If either tier's credit status changes again, re-run POST /api/admin/ai-probe
+// and update this order (and this comment) from what it actually measures —
+// this comment documents the reasoning as of the date above, not a permanent
+// law; a stale comment here is worse than none (see the note that used to be
+// here about OpenCode being "LAST RESORT").
+export const DEFAULT_TIER_ORDER = ['zoask', 'opencode', 'openrouter'] as const;
 type TierName = (typeof DEFAULT_TIER_ORDER)[number];
 
 export function tierOrder(): TierName[] {

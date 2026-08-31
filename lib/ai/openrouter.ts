@@ -119,6 +119,35 @@ function shouldTryNextModel(status: number): boolean {
   return status === 402 || status === 404 || status === 429;
 }
 
+// AFFORDABLE-CEILING RETRY (fix 3 in this change's task spec).
+//
+// PRODUCTION EVIDENCE, 2026-08-31: OpenRouter refused every chain model with
+// 402s whose bodies said things like "This request requires more credits, or
+// fewer max_tokens. You requested up to 16000 tokens, but can only afford
+// 4605." — the account had SOME credit, just not enough to cover the
+// requested output ceiling (lib/agent/loop.ts's AGENT_ROUTE_CEILING, 16000).
+// Before this fix, a 402 of ANY kind fell straight to shouldTryNextModel(),
+// which abandons the model entirely and tries the next one in MODEL_CHAIN —
+// so a request that would have fit under a smaller cap on the SAME model
+// never got the chance; the whole chain paid another 402 each, one after
+// another, for a problem a smaller number would have fixed on the first try.
+//
+// Parses the affordable number out of the error body defensively: the number
+// is not guaranteed to be present (a 402 can mean "zero credit left" with no
+// usable ceiling in the message at all) and OpenRouter's wording is not a
+// contract this codebase controls — it can change. Returns null on anything
+// that doesn't confidently look like "afford <N>", and the caller falls
+// through to shouldTryNextModel exactly as it did before this function
+// existed (the additive guarantee every other lib/ai/deadline.ts-adjacent
+// helper in this codebase follows).
+export function parseAffordableTokens(detail: string | undefined): number | null {
+  if (!detail) return null;
+  const m = detail.match(/afford\s+([\d,]+)/i);
+  if (!m) return null;
+  const n = Number(m[1].replace(/,/g, ''));
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
 // Hard timeout on this tier so a stalled OpenRouter call aborts and the
 // caller gets a fast, honest failure instead of a request that hangs until
 // the platform kills it. Override with OPENROUTER_TIMEOUT_MS.
@@ -157,6 +186,30 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
     } catch (err: any) {
       lastErr = err;
       const status = Number(err?.status) || 0;
+      // See parseAffordableTokens' header comment. Retry the SAME model once
+      // with the smaller cap OpenRouter itself named, before falling through
+      // shouldTryNextModel's "abandon this model" path — a 402 that names an
+      // affordable ceiling is not "this model can't answer", it's "this
+      // request asked for more output than the account can pay for".
+      if (status === 402) {
+        const affordable = parseAffordableTokens(err?.detail);
+        if (affordable != null && affordable < maxTokens) {
+          log.warn('openrouter: 402 named an affordable ceiling, retrying same model with a smaller cap', {
+            model, requestedMaxTokens: maxTokens, affordable,
+          });
+          try {
+            return await completeWith(model, messages, temperature, affordable, deadlineAt);
+          } catch (err2: any) {
+            lastErr = err2;
+            const status2 = Number(err2?.status) || 0;
+            if (!shouldTryNextModel(status2) || i === MODEL_CHAIN.length - 1) throw err2;
+            log.warn('openrouter: model unavailable, falling back', {
+              model, status: status2, next: MODEL_CHAIN[i + 1], detail: String(err2?.detail || '').slice(0, 200),
+            });
+            continue;
+          }
+        }
+      }
       if (!shouldTryNextModel(status) || i === MODEL_CHAIN.length - 1) throw err;
       log.warn('openrouter: model unavailable, falling back', {
         model, status, next: MODEL_CHAIN[i + 1], detail: String(err?.detail || '').slice(0, 200),
@@ -248,6 +301,30 @@ async function completeStream(
     } catch (err: any) {
       lastErr = err;
       const status = Number(err?.status) || 0;
+      // Same affordable-ceiling retry as complete()'s chain loop — see its
+      // comment. A 402 here arrives on the response status before any delta
+      // has been emitted (see the comment on this function's caller), so
+      // retrying the same model with a smaller cap is exactly as safe as the
+      // ordinary model-to-model fallback below.
+      if (status === 402) {
+        const affordable = parseAffordableTokens(err?.detail);
+        if (affordable != null && affordable < maxTokens) {
+          log.warn('openrouter: 402 named an affordable ceiling, retrying same model with a smaller cap (stream)', {
+            model, requestedMaxTokens: maxTokens, affordable,
+          });
+          try {
+            return await completeStreamWith(model, messages, temperature, affordable, onDelta, deadlineAt);
+          } catch (err2: any) {
+            lastErr = err2;
+            const status2 = Number(err2?.status) || 0;
+            if (!shouldTryNextModel(status2) || i === MODEL_CHAIN.length - 1) throw err2;
+            log.warn('openrouter: model unavailable (stream), falling back', {
+              model, status: status2, next: MODEL_CHAIN[i + 1],
+            });
+            continue;
+          }
+        }
+      }
       if (!shouldTryNextModel(status) || i === MODEL_CHAIN.length - 1) throw err;
       log.warn('openrouter: model unavailable (stream), falling back', {
         model, status, next: MODEL_CHAIN[i + 1],
