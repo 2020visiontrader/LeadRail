@@ -44,6 +44,28 @@ Citedy/adclaw
   content (shell blocks, slash commands, plugin-manifest references) was
   removed.
 
+gtmagents/gtm-agents
+
+  Copyright 2025 LaunchIQ AI, Inc.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+  Skill content from plugins/*/skills/*/SKILL.md was modified: frontmatter
+  was normalised onto LeadRail's skill schema and CLI-bound content (shell
+  blocks, slash commands, plugin-manifest references) was removed. Each
+  entry's `personas` field was derived from the co-located
+  plugins/<plugin>/agents/*.md directory, not from SKILL.md content itself.
+
 --------------------------------------------------------------------------------
 All sources
 --------------------------------------------------------------------------------
@@ -62,7 +84,7 @@ indranilbanerjee/digital-marketing-pro
 
 cgallic/kai-cmo-harness
   License:   MIT (MIT subtrees only; the rest of that repo is Elastic-2.0 and is NOT used)
-  Commit:    64e7bc6a4b77e4228f15013dad61d27a109e8caa
+  Commit:    166ecbe7d872bb7b98a664cf7c2d9da1373b3060
   Used for:  58 normalised skill entries in lib/skills/harvested.ts
   Notes:     MIT — attribution retained here as a courtesy and audit trail.
 
@@ -74,7 +96,7 @@ ericosiu/marketing-os-starter
 
 zubair-trabzada/geo-seo-claude
   License:   MIT
-  Commit:    4f462d9e4e3c7a526651f1453a9bdc47ba5f3b76
+  Commit:    a58098a839e2c97df7ae89191b3021fa9e0f88c3
   Used for:  16 normalised skill entries in lib/skills/harvested.ts
   Notes:     MIT — attribution retained here as a courtesy and audit trail.
 
@@ -110,7 +132,7 @@ charlesdove977/re-walkthrough-pro
 
 Hao0321/claude-skill-social-post
   License:   MIT
-  Commit:    4ab38e478e8035d0e14dbd200db0a3896f56961f
+  Commit:    e2313da12016ac513be4d3bfdf39ab10c4ec49bc
   Used for:  1 normalised skill entries in lib/skills/harvested.ts
   Notes:     MIT — attribution retained here as a courtesy and audit trail.
 
@@ -128,14 +150,20 @@ growthenginenowoslawski/coldoutboundskills
 
 apify/apify-mcp-server
   License:   MIT
-  Commit:    91ee491b7337575f8ba747ad7b39d64815659d4c
-  Used for:  2 normalised skill entries in lib/skills/harvested.ts
+  Commit:    2089c69ae25d6c3b6793f92dd051a09637ce1600
+  Used for:  3 normalised skill entries in lib/skills/harvested.ts
   Notes:     MIT — attribution retained here as a courtesy and audit trail.
 
 Graphify-Labs/graphify
   License:   Apache-2.0
-  Commit:    b2cd36267456c166788c95be6e68574064a92a42
+  Commit:    33362d969292b57eda82f3fbd9eb5f3f5bc9bbc2
   Used for:  1 normalised skill entries in lib/skills/harvested.ts
+  Notes:     Apache-2.0 §4 attribution — see the copyright line in the section above.
+
+gtmagents/gtm-agents
+  License:   Apache-2.0
+  Commit:    78e0419f4440bcb43bc80127e174ecf5adef1753
+  Used for:  236 normalised skill entries in lib/skills/harvested.ts
   Notes:     Apache-2.0 §4 attribution — see the copyright line in the section above.
 
 --------------------------------------------------------------------------------
@@ -184,6 +212,27 @@ Citedy/adclaw
   preserved verbatim as `instructions`; slugs were prefixed "adclaw-" to
   avoid colliding with digital-marketing-pro's persona slugs.
 
+gtmagents/gtm-agents
+
+  Copyright 2025 LaunchIQ AI, Inc.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+  Persona content from the 204 files under plugins/*/agents/*.md is
+  used verbatim as `instructions`; slugs were prefixed "gtm-<plugin>-" to
+  avoid colliding with digital-marketing-pro's persona slugs and with each
+  other (a handful of agent filenames repeat across different plugins).
+
 --------------------------------------------------------------------------------
 All sources
 --------------------------------------------------------------------------------
@@ -198,5 +247,11 @@ Citedy/adclaw
   License:   Apache-2.0
   Commit:    25bf9601f30f069dc5c24f4845abc9ce120d809b
   Used for:  5 normalised persona-template entries (slugs "adclaw-*") in lib/agent/harvested-personas.ts
+  Notes:     Apache-2.0 §4 attribution — see the copyright line in the section above.
+
+gtmagents/gtm-agents
+  License:   Apache-2.0
+  Commit:    78e0419f4440bcb43bc80127e174ecf5adef1753
+  Used for:  204 normalised persona-template entries (slugs "gtm-<plugin>-*") in lib/agent/harvested-personas.ts
   Notes:     Apache-2.0 §4 attribution — see the copyright line in the section above.
 <!-- NOTICE:PERSONAS:END -->

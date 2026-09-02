@@ -19,12 +19,14 @@ import { HARVESTED_SKILLS } from '@/lib/skills/harvested';
 const personas = HARVESTED_PERSONA_TEMPLATES;
 const dmpPersonas = personas.filter((p) => p.sourceRepo === 'indranilbanerjee/digital-marketing-pro');
 const adclawPersonas = personas.filter((p) => p.sourceRepo === 'Citedy/adclaw');
+const gtmPersonas = personas.filter((p) => p.sourceRepo === 'gtmagents/gtm-agents');
 
 describe('the harvest is complete', () => {
-  it('has 29 entries: 24 digital-marketing-pro + 5 adclaw', () => {
-    expect(personas.length).toBe(29);
+  it('has 233 entries: 24 digital-marketing-pro + 5 adclaw + 204 gtm-agents', () => {
+    expect(personas.length).toBe(233);
     expect(dmpPersonas.length).toBe(24);
     expect(adclawPersonas.length).toBe(5);
+    expect(gtmPersonas.length).toBe(204);
   });
 
   it('every entry has non-empty instructions', () => {
@@ -76,8 +78,10 @@ describe('domain is gated correctly', () => {
     expect(byRole.get('social-media')).toBe('marketing');
   });
 
-  it('no persona is tagged "outreach" — neither upstream source has any outreach personas yet', () => {
-    expect(personas.some((p) => p.domain === 'outreach')).toBe(false);
+  it('digital-marketing-pro and adclaw have no "outreach" personas; gtm-agents contributes exactly 44', () => {
+    expect(dmpPersonas.some((p) => p.domain === 'outreach')).toBe(false);
+    expect(adclawPersonas.some((p) => p.domain === 'outreach')).toBe(false);
+    expect(gtmPersonas.filter((p) => p.domain === 'outreach').length).toBe(44);
   });
 });
 
