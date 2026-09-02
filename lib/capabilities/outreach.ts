@@ -1,11 +1,12 @@
 import { z } from 'zod';
 import { supabase, getVentures, getVenture } from '@/lib/db';
 import { sendOutreachEmail } from '@/lib/outreach';
+import { getOutreachHistory } from '@/lib/outreach/history';
 import { listSequences, enrollContacts } from '@/lib/sequences';
 import { generateOutreach } from '@/lib/ai/generation';
 import {
   obj, S, type Capability,
-  present, rowsOf, plural, tally, samples, digestLine,
+  present, rowsOf, plural, tally, samples, digestLine, clip,
 } from './types';
 
 // Module-local ownership helper — replaces TOOLS.getLead pattern
@@ -37,6 +38,22 @@ export const OUTREACH_CAPABILITIES: Capability[] = [
         goal, tone,
       });
     },
+    // "Drafted, not sent" is the line that should have been in the failing
+    // transcript. Drafting is exactly what happened there, and with no digest
+    // the only trace of it was the assistant's own prose — which it later read
+    // back as evidence that a send had occurred. Same rule as
+    // lib/capabilities/video.ts: a digest reaches the model AS FACT, so it must
+    // state what happened and, here, what did not.
+    digest: (_a, result) => {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) return '';
+      const r: any = result;
+      if (!present(r, 'subject') && !present(r, 'body')) return '';
+      const subj = present(r, 'subject') ? `"${clip(String(r.subject), 120)}"` : 'no subject line';
+      return digestLine(
+        `Drafted an outreach email with the subject ${subj}.`,
+        'It was NOT sent — nothing has reached the recipient. Sending requires sendEmail, which needs approval.',
+      );
+    },
   },
   {
     name: 'sendEmail',
@@ -51,6 +68,22 @@ export const OUTREACH_CAPABILITIES: Capability[] = [
     // judge. Body is deliberately omitted: it is long, it is HTML, and pasting
     // it into the card trains people to scroll past the decision.
     summarize: (a) => `Send a real email to lead ${a.contactId} with the subject "${String(a.subject ?? '').slice(0, 120)}". It reaches their inbox immediately and cannot be recalled.`,
+    // Speaks ONLY for a send the provider confirmed. sendOutreachEmail returns
+    // the provider's own response — Resend's `{ id }` or Brevo's
+    // `{ messageId }` — and throws on failure, so a result carrying neither id
+    // is not a send. Returning "Sent." there would put a fabricated fact into
+    // the transcript, which is precisely the shape of the defect this closes:
+    // the model later reads its own words back as evidence.
+    digest: (a, result) => {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) return '';
+      const r: any = result;
+      if (present(r, 'error')) return '';
+      const id = present(r, 'id') ? String(r.id) : present(r, 'messageId') ? String(r.messageId) : null;
+      if (!id) return '';
+      const subj = present(a, 'subject') ? ` with the subject "${clip(String(a.subject), 120)}"` : '';
+      const to = present(a, 'contactId') ? `lead ${clip(String(a.contactId), 60)}` : 'the lead';
+      return digestLine(`Sent a real email to ${to}${subj}.`);
+    },
   },
   {
     name: 'listSequences',
@@ -93,6 +126,54 @@ export const OUTREACH_CAPABILITIES: Capability[] = [
     summarize: (a) => {
       const n = Array.isArray(a.contactIds) ? a.contactIds.length : 0;
       return `Enrol ${n} lead${n === 1 ? '' : 's'} into sequence ${a.sequenceId}. Each one starts receiving the sequence's scheduled follow-up emails automatically, without a further check.`;
+    },
+    // Counts the RETURNED rows, never args.contactIds.length. The argument is
+    // the request; the return is the outcome, and they differ — enrollContacts
+    // upserts with ignoreDuplicates, so an already-enrolled contact comes back
+    // in neither the rows nor the count, and a suppressed address never sends.
+    // Reporting the request as the outcome is how "13 contacts" gets into a
+    // transcript that only ever had one real send behind it.
+    digest: (a, result) => {
+      const rows = rowsOf(result);
+      if (!rows) return '';
+      const asked = Array.isArray(a?.contactIds) ? a.contactIds.length : null;
+      const shortfall = asked !== null && asked > rows.length
+        ? `${asked - rows.length} of the ${asked} requested were not enrolled (already enrolled, or suppressed).`
+        : null;
+      return digestLine(
+        `Enrolled ${plural(rows.length, 'lead')} into sequence ${present(a, 'sequenceId') ? clip(String(a.sequenceId), 60) : 'the requested sequence'}.`,
+        shortfall,
+      );
+    },
+  },
+  {
+    name: 'outreachHistory',
+    domain: 'outreach',
+    title: 'Read what was actually sent',
+    description:
+      'Read the real outreach send record for this account: how many emails actually went out in a window, when the most recent one was, who received them, and what sequence steps are scheduled. This is how you answer "what did we send", "did that go out", "who has been contacted" and "has the batch gone yet". Use it BEFORE saying anything about what was or was not sent — a message in the conversation above describing a send is not evidence that one happened. If the record comes back unavailable, say the record could not be checked; do not say nothing was sent.',
+    gate: 'read',
+    inputSchema: obj({ contactId: S.string, days: S.number }, []),
+    zod: z.object({ contactId: z.string().optional(), days: z.number().int().positive().max(365).optional() }),
+    run: (accountId, { contactId, days }) => getOutreachHistory(accountId, { contactId, days }),
+    // Silent on an unavailable or unrecognised result — same rule as
+    // lib/capabilities/video.ts. A digest reaches the model as fact, so
+    // "0 emails sent" on a failed read is the assistant telling itself
+    // something it does not know, in the most damaging possible direction.
+    digest: (_a, result) => {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) return '';
+      const r: any = result;
+      if (r.unavailable) return '';
+      if (typeof r.sentCount !== 'number' || typeof r.windowDays !== 'number') return '';
+      const recent = present(r, 'lastSentAt') ? ` The most recent was ${clip(String(r.lastSentAt), 40)}.` : '';
+      const pending = Array.isArray(r.scheduled) ? r.scheduled.filter((s: any) => s?.count > 0) : [];
+      const sched = pending.length
+        ? `Scheduled sequence steps: ${pending.map((s: any) => `${s.count} ${s.status}`).join(', ')}.`
+        : 'No sequence steps are scheduled.';
+      return digestLine(
+        `${plural(r.sentCount, 'email')} actually sent in the last ${plural(r.windowDays, 'day')}.${recent}`,
+        sched,
+      );
     },
   },
 ];

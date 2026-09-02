@@ -115,7 +115,12 @@ export interface Attachment {
  *  contents, and the answer is confidently based on everything EXCEPT the thing
  *  the person attached. */
 function imageNote(): string {
-  return 'This is an image, so there is no text to extract from it. Describe what you need from it in the message and it can be looked at directly.';
+  // The second sentence used to end "and it can be looked at directly". It
+  // cannot: nothing in this codebase sends an image to a model (ChatMessage is
+  // role + string, and no image-input path exists), so that note promised a
+  // capability that was never there and invited answers about a picture nobody
+  // had seen. Say what is true instead.
+  return 'This is an image, so there is no text to extract from it. It is stored and attached, but it cannot be read yet — describe what it shows if it matters to the answer.';
 }
 
 /** Video extensions the browser can decode, which is where a video IS read —

@@ -491,3 +491,25 @@ any new ones since) have `secret_encrypted IS NOT NULL` and no `access_token`/
 `refresh_token`/`user_token` key left in `meta`. Until that query is run
 against production, "the fix shipped" is not the same claim as "the exposure
 is closed" — the five known-plaintext rows are still sitting there.
+
+## 9. Campaign asset image analysis is refused, not fixed — 2026-09-02
+
+`POST /api/campaigns/[id]/assets/analyze` used to put an image URL into a TEXT
+prompt and write the model's invented `score` / `issues` / `recommendation`
+onto the asset row, flipping `status` to `approved` or `rejected`. A text model
+never opened the image; the verdicts were fabricated and they mutated real
+state. The route now returns **501 `not_supported`** and writes nothing
+(`tests/campaign-asset-analyze-route.test.ts` pins both halves).
+
+It is refused because there is **no image-input path anywhere in this
+codebase**: `ChatMessage` in `lib/ai/opencode.ts` is `{ role, content: string }`,
+`generateChat` in `lib/ai/router.ts` takes those messages with no image parts,
+and nothing constructs one. The "Analyze assets" button in
+`app/campaigns/page.tsx` therefore can now only ever report the refusal.
+
+**Done when:** either (a) a vision-capable model is configured and a real
+image-input path exists — proven by a test that asserts an image part actually
+reaches the provider payload, not that a call returned 200 — and the route is
+reimplemented on top of it; or (b) the button and the route are removed
+outright. Leaving a button whose only outcome is a refusal is the
+written-but-never-read pattern in UI form.

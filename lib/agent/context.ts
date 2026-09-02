@@ -140,6 +140,24 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
     } catch { return null; /* snapshot omitted */ }
   })();
 
+  // --- Outbox: what was ACTUALLY sent --------------------------------------
+  // THE DEFECT THIS CLOSES. Asked to rework some drafts, the assistant replied
+  // that "the last batch already went out to all 13 contacts". Nothing had been
+  // sent. It was reading its own earlier prose in the transcript, because
+  // nothing in the prompt stated the real count — so the transcript was the
+  // only evidence available and it read as fact.
+  //
+  // This block is the counterweight: a live count, stated as fact, every turn.
+  // The model cannot claim thirteen sends while its own context says one. Note
+  // that an unreadable record renders as "could not be checked", NOT as zero —
+  // see lib/outreach/history.ts for why those must never collapse together.
+  const outboxSection = (async () => {
+    try {
+      const { getOutreachHistory, renderOutboxBlock } = await import('@/lib/outreach/history');
+      return renderOutboxBlock(await getOutreachHistory(accountId));
+    } catch { return null; /* outbox omitted */ }
+  })();
+
   // --- Connected social accounts (Packet 2.2-S) ----------------------------
   // Without this the model has to call listSocialAccounts before it can even
   // answer "what am I connected to?", and it cannot name the right account when
@@ -264,8 +282,8 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
     } catch { return null; /* a failed read must not blank the whole context */ }
   })();
 
-  const [venture, snapshot, social, memory, subjectMemory, plan, attachments] = await Promise.all([
-    ventureSection, snapshotSection, socialSection, memorySection, subjectMemorySection, planSection, attachmentSection,
+  const [venture, snapshot, outbox, social, memory, subjectMemory, plan, attachments] = await Promise.all([
+    ventureSection, snapshotSection, outboxSection, socialSection, memorySection, subjectMemorySection, planSection, attachmentSection,
   ]);
 
   const sections: string[] = [PLATFORM_BRIEF];
@@ -273,7 +291,10 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
   // recency in the prompt favours what comes later.
   // The plan goes LAST of the trusted sections: it is the most immediately
   // actionable thing in the prompt, and recency is what the model attends to.
-  for (const s of [venture, snapshot, social, memory, subjectMemory, plan]) if (s) sections.push(s);
+  // The outbox sits right after the account snapshot: both are live counts, and
+  // the one thing the model must not do is reason about outreach before it has
+  // read what actually went out.
+  for (const s of [venture, snapshot, outbox, social, memory, subjectMemory, plan]) if (s) sections.push(s);
   // LAST, deliberately. Untrusted document text goes closest to the user's own
   // message so the boundary between "what the platform knows" and "what a file
   // claims" is unambiguous — and so no trusted instruction follows it, which is

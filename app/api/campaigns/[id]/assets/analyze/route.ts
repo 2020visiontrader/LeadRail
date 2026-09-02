@@ -1,27 +1,39 @@
+// WHY THIS ROUTE NO LONGER ANALYSES ANYTHING. Do not restore the old body.
+//
+// It used to put the asset's image URL into a TEXT prompt (generateText from
+// lib/ai/opencode), parse whatever JSON came back, and write the resulting
+// `score` / `issues` / `recommendation` onto the asset row — flipping `status`
+// to 'approved' or 'rejected' on the strength of it.
+//
+// A text model cannot see a URL. It never opened the image. Every score,
+// every listed issue and every verdict was invented from the file name and the
+// shape of the prompt, and those inventions were mutating real state: an asset
+// nobody had looked at could be marked rejected and dropped from a campaign.
+//
+// There is no image-input (vision) path anywhere in this codebase to fix it
+// with: ChatMessage in lib/ai/opencode.ts is `{ role, content: string }`, and
+// generateChat in lib/ai/router.ts takes those messages with no image parts —
+// nothing anywhere constructs one. Until a vision-capable model is configured
+// and a real image-input path exists, the honest behaviour is to refuse. A
+// route that says "not supported" costs a user one request; a route that
+// invents verdicts costs them the asset.
+
 import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
-import { getCampaignAssets, updateCampaignAsset } from '@/lib/crm';
-import { generateText, opencodeConfigured } from '@/lib/ai/opencode';
-import { requireSession, errorResponse } from '@/lib/http';
+import { requireSession } from '@/lib/http';
 export const dynamic = 'force-dynamic';
-// Admin-only, on-demand. Analyzes each raw static image asset for ad-quality issues.
-async function POST__impl(request: NextRequest, { params }: { params: { id: string } }) {
-  const { session, error } = await requireSession(request);
+
+async function POST__impl(request: NextRequest, _ctx: { params: { id: string } }) {
+  const { error } = await requireSession(request);
   if (error) return error;
-  if (!opencodeConfigured()) return NextResponse.json({ error: 'not_configured', message: 'Connect OpenCode to analyze assets' }, { status: 409 });
-  try {
-    const assets = (await getCampaignAssets(params.id, session.accountId)).filter((a: any) => a.kind === 'image' && a.status === 'raw');
-    const results: any[] = [];
-    for (const a of assets) {
-      const prompt = `You are an ad-creative QA reviewer. For the static ad image at ${a.url}, return a JSON object {"score":0-100,"issues":[..],"recommendation":"approve|cleanup|reject"} judging composition, text legibility, brand safety, and platform ad-policy fit. Output JSON only.`;
-      let analysis: any = { note: 'analysis unavailable' };
-      try { analysis = JSON.parse((await generateText({ prompt })).replace(/```json|```/g, '').trim()); } catch { /* keep raw */ }
-      const status = analysis.recommendation === 'reject' ? 'rejected' : analysis.recommendation === 'approve' ? 'approved' : 'raw';
-      await updateCampaignAsset(a.id, { ai_analysis: analysis, status });
-      results.push({ id: a.id, status, analysis });
-    }
-    return NextResponse.json({ analyzed: results.length, results });
-  } catch (error) { return errorResponse(error); }
+  return NextResponse.json(
+    {
+      error: 'not_supported',
+      message:
+        'Image analysis needs a model that can actually look at the image, and no vision-capable model is configured. Nothing was scored and no asset was changed — the previous version of this endpoint judged images it had never seen.',
+    },
+    { status: 501 },
+  );
 }
 
 // --- request logging (auto-wrapped) ---

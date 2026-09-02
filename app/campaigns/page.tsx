@@ -81,7 +81,11 @@ export default function CampaignsPage() {
     try {
       const r = await apiSend<{ analyzed: number }>(`/api/campaigns/${assetCampaign.id}/assets/analyze`, 'POST');
       notify(`Analyzed ${r.analyzed} asset(s)`); openAssets(assetCampaign);
-    } catch (e: any) { notify(e.message === 'not_configured' ? 'LeadRail AI is temporarily unavailable' : e.message || 'Analyze failed', 'error'); }
+    // 'not_supported' is now the permanent answer: judging an image needs a
+    // vision-capable model and no image-input path exists here. The endpoint
+    // used to score images it had never opened, so this is a refusal rather
+    // than an outage — say that, instead of surfacing the raw error code.
+    } catch (e: any) { notify(e.message === 'not_configured' ? 'LeadRail AI is temporarily unavailable' : e.message === 'not_supported' ? 'Image analysis needs a vision-capable model, which is not configured. Nothing was changed.' : e.message || 'Analyze failed', 'error'); }
     finally { setAssetBusy(false); }
   };
 
