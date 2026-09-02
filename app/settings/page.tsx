@@ -462,6 +462,125 @@ function TokenTools({ connections, onChange }: { connections: Connection[]; onCh
   );
 }
 
+// ---- Gmail ----
+// Distinct from the OAuth cards above in one deliberate way: EXACTLY ONE
+// connected Gmail account per LeadRail account (2026-09-02 product decision;
+// see migrations/081_gmail_accounts.sql). No "add another", no active-account
+// picker — a user with a Gmail connection sees its address, status, scopes
+// and connected-at, and a single Disconnect button; a user without one sees a
+// single Connect button. Reads its own /api/email/accounts, not the shared
+// `connections` prop (a different table, email_accounts, not
+// integration_connections).
+interface GmailAccountView {
+  id: string;
+  provider: string;
+  address: string;
+  status: string;
+  scopes: string[];
+  last_error: string | null;
+  connected_at: string | null;
+  updated_at: string | null;
+}
+
+const GMAIL_SCOPE_LABELS: Record<string, string> = {
+  'https://www.googleapis.com/auth/gmail.readonly': 'Read',
+  'https://www.googleapis.com/auth/gmail.send': 'Send',
+  'https://www.googleapis.com/auth/gmail.modify': 'Labels & read state',
+  'https://www.googleapis.com/auth/userinfo.email': 'Email address',
+};
+
+function GmailSection() {
+  const [account, setAccount] = useState<GmailAccountView | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const load = useCallback(() => {
+    setLoading(true);
+    apiGet('/api/email/accounts')
+      .then((r) => setAccount(r.account || null))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+
+  async function disconnect() {
+    setBusy(true); setMsg(null);
+    try {
+      await apiSend('/api/email/accounts', 'DELETE');
+      setAccount(null);
+      load();
+    } catch (e: any) {
+      setMsg({ ok: false, text: e?.message || 'Could not disconnect Gmail' });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Gmail</h3>
+        <p className="mt-1 text-sm text-slate-500">
+          The Gmail account this workspace reads and sends through. Only one may be connected at a time — to switch
+          addresses, disconnect this one first, then connect the new one.
+        </p>
+      </div>
+      <div className="max-w-md rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
+        <div className="flex items-start justify-between">
+          <div className="flex items-center gap-3">
+            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-[#EA4335] text-sm font-bold text-white">G</span>
+            <div>
+              <h3 className="font-semibold">Gmail</h3>
+              <p className="text-sm text-slate-500">Read, send, and organize mail from this address</p>
+            </div>
+          </div>
+          {!loading && (
+            <Badge tone={account?.status === 'connected' ? 'green' : account?.status === 'error' ? 'red' : 'gray'}>
+              {account?.status === 'connected' ? 'connected' : account?.status === 'error' ? 'error' : 'off'}
+            </Badge>
+          )}
+        </div>
+
+        {loading ? (
+          <div className="mt-3"><LoadingSpinner /></div>
+        ) : account ? (
+          <div className="mt-3 space-y-2">
+            <div className="rounded-lg bg-slate-50 px-3 py-2 text-sm">
+              <span className="block truncate font-medium">{account.address}</span>
+              {account.connected_at && (
+                <span className="block text-xs text-[var(--text-secondary)]">
+                  Connected {new Date(account.connected_at).toLocaleDateString()}
+                </span>
+              )}
+              {account.scopes.length > 0 && (
+                <span className="mt-1 flex flex-wrap gap-1">
+                  {account.scopes.map((s) => (
+                    <span key={s} className="rounded-full bg-slate-200 px-2 py-0.5 text-[10px] text-slate-600">
+                      {GMAIL_SCOPE_LABELS[s] || s}
+                    </span>
+                  ))}
+                </span>
+              )}
+              {account.status === 'error' && account.last_error && (
+                <span className="mt-1 block text-xs text-[var(--text-negative)]">{account.last_error}</span>
+              )}
+            </div>
+            <Button variant="ghost" className="w-full text-xs" onClick={disconnect} loading={busy}>
+              Disconnect
+            </Button>
+          </div>
+        ) : (
+          <a href="/api/email/gmail/connect" className="mt-3 block">
+            <Button variant="secondary" className="w-full text-xs">Connect Gmail</Button>
+          </a>
+        )}
+      </div>
+      {msg && <p className={`text-xs ${msg.ok ? 'text-[var(--text-positive)]' : 'text-[var(--text-negative)]'}`}>{msg.text}</p>}
+    </div>
+  );
+}
+
 // ---- Social connections ----
 // Users connect THEIR OWN accounts via OAuth into LeadRail's apps. No app IDs,
 // no env vars, no backend service names — that's the Postiz/Buffer model.
@@ -553,6 +672,10 @@ function ClientConnections({ connections, onChange }: { connections: Connection[
       <div className="border-t border-slate-200 pt-6">
         <TokenTools connections={connections} onChange={onChange} />
       </div>
+
+      <div className="border-t border-slate-200 pt-6">
+        <GmailSection />
+      </div>
     </div>
   );
 }
@@ -589,6 +712,21 @@ export default function Settings() {
       setFeedback({ ok: true, msg: `Instagram connected — @${ig}` });
     } else if (connected === 'google_drive') {
       setFeedback({ ok: true, msg: `Google Drive connected — ${q.get('email') || 'your account'}` });
+    } else if (connected === 'gmail') {
+      setFeedback({ ok: true, msg: `Gmail connected — ${q.get('email') || 'your account'}` });
+    } else if (q.get('error')?.startsWith('gmail')) {
+      const map: Record<string, string> = {
+        gmail_not_configured: 'Gmail sign-in is not configured yet (missing Google OAuth client).',
+        gmail_denied: 'You declined the Gmail permission request.',
+        gmail_bad_state: 'Security check failed — please try connecting again.',
+        gmail_exchange: 'Could not complete the Gmail handshake.',
+        gmail_no_refresh_token: 'Google did not grant a refresh token — please try connecting again.',
+        gmail_no_email: 'Could not read the Gmail address for that account.',
+        gmail_already_connected: `A Gmail account is already connected${q.get('existing') ? ` (${q.get('existing')})` : ''}. Disconnect it first, then connect the new one.`,
+      };
+      const code = q.get('error')!;
+      const detail = q.get('detail');
+      setFeedback({ ok: false, msg: `${map[code] || 'Gmail connection failed.'}${detail ? ` (${detail})` : ''}` });
     } else if (q.get('error')?.startsWith('gdrive')) {
       const map: Record<string, string> = {
         gdrive_not_configured: 'Google Drive sign-in is not configured yet (missing Google OAuth client).',
