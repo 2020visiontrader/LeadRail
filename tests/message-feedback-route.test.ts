@@ -104,6 +104,35 @@ describe('POST /api/agent/feedback', () => {
     expect(feedback).toHaveLength(1);
   });
 
+  // GAP 1 (message_feedback.skill_slugs had no writer): a vote cast for a
+  // turn that routed skills persists them, in the real row, not just in the
+  // response echo. Proves the writer end to end through recordMessageFeedback
+  // (lib/agent/feedback.ts) and the route (app/api/agent/feedback/route.ts) —
+  // see that file's header for the full path from lib/agent/loop.ts down.
+  it('REVERT-CHECK TARGET: a vote persists non-empty skill_slugs for a turn that routed skills', async () => {
+    const { status, body } = await callPost({
+      conversationId: 'conv-mine', messageId: 'msg-2', up: true,
+      skillSlugs: ['lead-scoring', 'campaign-copy'],
+    });
+    expect(status).toBe(200);
+    expect(body.feedback.skillSlugs).toEqual(['lead-scoring', 'campaign-copy']);
+    // Not just the response — the actual row the fake store holds.
+    expect(feedback).toHaveLength(1);
+    expect(feedback[0].skill_slugs).toEqual(['lead-scoring', 'campaign-copy']);
+  });
+
+  it('stores skill_slugs as NULL, not an empty array, when the turn routed none', async () => {
+    const { body } = await callPost({ conversationId: 'conv-mine', messageId: 'msg-2', up: true, skillSlugs: [] });
+    expect(body.feedback.skillSlugs).toBeNull();
+    expect(feedback[0].skill_slugs).toBeNull();
+  });
+
+  it('ignores a non-array skillSlugs from a malformed client rather than throwing', async () => {
+    const { status, body } = await callPost({ conversationId: 'conv-mine', messageId: 'msg-2', up: true, skillSlugs: 'not-an-array' });
+    expect(status).toBe(200);
+    expect(body.feedback.skillSlugs).toBeNull();
+  });
+
   it('REVERT-CHECK TARGET: changing a vote UPDATES the same row, never appends a second one', async () => {
     await callPost({ conversationId: 'conv-mine', messageId: 'msg-2', up: true });
     const { status, body } = await callPost({ conversationId: 'conv-mine', messageId: 'msg-2', up: false });

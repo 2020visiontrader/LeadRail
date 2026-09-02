@@ -37,6 +37,7 @@
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
+import { writeNoticeSection } from './lib/notice';
 
 const REPO_ROOT = join(__dirname, '..');
 const DEFAULT_ROOT = join(REPO_ROOT, '..');
@@ -428,6 +429,65 @@ export const HARVESTED_PERSONA_TEMPLATES: HarvestedPersonaTemplate[] = ${JSON.st
 `;
   writeFileSync(OUTPUT_FILE, header, 'utf8');
 
+  // ---------------------------------------------------------------------------
+  // Emit this script's OWN section of the root NOTICE (BACKLOG 5c, residual).
+  // Previously this script's persona attribution existed only inside
+  // harvest-skills.ts's wholesale NOTICE write, so it had no writer of its
+  // own here at all — a re-run of harvest-skills.ts silently dropped it. See
+  // scripts/lib/notice.ts: this call touches ONLY the PERSONAS section,
+  // regardless of whether harvest-skills.ts has ever run on this machine.
+  // ---------------------------------------------------------------------------
+  const personaNoticeSources = `${DMP_REPO}
+  License:   ${DMP_LICENSE}
+  Commit:    ${dmpCommit}
+  Used for:  ${dmp.length} normalised persona-template entries in lib/agent/harvested-personas.ts (one per agents/<slug>.md)
+  Notes:     MIT — attribution retained here as a courtesy and audit trail.
+
+${ADCLAW_REPO}
+  License:   ${ADCLAW_LICENSE}
+  Commit:    ${adclawCommit}
+  Used for:  ${adclaw.length} normalised persona-template entries (slugs "adclaw-*") in lib/agent/harvested-personas.ts
+  Notes:     Apache-2.0 §4 attribution — see the copyright line in the section above.`;
+
+  const personasSection = `--------------------------------------------------------------------------------
+Persona-template content (scripts/harvest-personas.ts -> lib/agent/harvested-personas.ts)
+--------------------------------------------------------------------------------
+
+No upstream source code is executed, imported, or distributed for these
+sources — only normalised persona-template text (\`instructions\`, verbatim).
+
+--------------------------------------------------------------------------------
+Apache License 2.0 attribution
+--------------------------------------------------------------------------------
+
+Citedy/adclaw
+
+  Copyright 2025 The CoPaw Authors
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+  Persona content from src/adclaw/agents/persona_templates.py (the 5 entries
+  of the TEMPLATES list) is used with only the \`soul_md\` field's structure
+  preserved verbatim as \`instructions\`; slugs were prefixed "adclaw-" to
+  avoid colliding with digital-marketing-pro's persona slugs.
+
+--------------------------------------------------------------------------------
+All sources
+--------------------------------------------------------------------------------
+
+${personaNoticeSources}`;
+  writeNoticeSection('PERSONAS', personasSection);
+
   const elapsedMs = Date.now() - startedAt;
   console.log(`[harvest-personas] digital-marketing-pro: ${dmp.length} personas @ ${dmpCommit.slice(0, 12)}`);
   console.log(`[harvest-personas] adclaw: ${adclaw.length} personas @ ${adclawCommit.slice(0, 12)}`);
@@ -435,6 +495,7 @@ export const HARVESTED_PERSONA_TEMPLATES: HarvestedPersonaTemplate[] = ${JSON.st
   for (const s of skipped) console.log(`    - ${s.path}: ${s.reason}`);
   console.log(`[harvest-personas] TOTAL: ${all.length}`);
   console.log(`[harvest-personas] wrote ${OUTPUT_FILE}`);
+  console.log(`[harvest-personas] wrote NOTICE (PERSONAS section)`);
   console.log(`[harvest-personas] done in ${elapsedMs}ms`);
 }
 

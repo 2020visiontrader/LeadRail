@@ -263,6 +263,10 @@ async function runTurn(
     compaction: result.compaction ?? null,
     userMessageId,
     lastMessageId: transcriptWithIds.length ? transcriptWithIds[transcriptWithIds.length - 1].id : undefined,
+    // Migration 080 (message_feedback.skill_slugs): the routed skill slugs
+    // for this turn, so the console can pass them back on a feedback vote.
+    // See the twin field on the stream route's 'conversation' event.
+    skillSlugs: result.skillSlugs,
   });
 }
 

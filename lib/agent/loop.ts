@@ -194,6 +194,12 @@ export interface AgentResult {
   tokenEstimate?: number;
   /** Set when the chat is large enough to suggest (soft) or urge (hard) a fresh one. */
   compaction?: 'soft' | 'hard' | null;
+  /** Routed skill slugs for this turn (migration 080's message_feedback.skill_slugs
+   *  writer). Optional/additive — populated by both loops from the same
+   *  enabledSkills routing decision; absent only for a result shape built
+   *  before this field existed (there are none in this repo any more, but the
+   *  type stays optional so nothing that destructures AgentResult breaks). */
+  skillSlugs?: string[];
 }
 
 export interface RunAgentInput {
@@ -325,7 +331,7 @@ async function selectSkillsForTurn(
   enabled: { slug: string; name: string; instructions: string }[],
   message: string | undefined,
   ventureName: string | undefined,
-): Promise<{ name: string; instructions: string }[]> {
+): Promise<{ slug: string; name: string; instructions: string }[]> {
   if (enabled.length <= SKILL_ROUTING_THRESHOLD) return enabled;
   const text = (message || '').trim();
   if (!text) return enabled.slice(0, MAX_ROUTED_SKILLS);
@@ -1533,6 +1539,13 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
   const enabledSkills = input.pinnedSkills?.length
     ? allEnabledSkills.filter((sk) => input.pinnedSkills!.includes(sk.slug))
     : await selectSkillsForTurn(allEnabledSkills, input.message, brandContext?.name);
+  // Migration 080 (message_feedback.skill_slugs): the routed skill slugs for
+  // THIS turn, exposed on AgentResult so a feedback vote can snapshot which
+  // skills produced the message being voted on. Computed once, right where
+  // routing itself is decided, and threaded into every return below —
+  // additive and optional, so a caller that never reads it (every caller
+  // before this field existed) is unaffected.
+  const skillSlugs = enabledSkills.map((sk) => sk.slug);
   // An explicit pin/@mention always wins and skill-derived routing does not
   // run at all (BACKLOG 5b) — only fill the voice when the turn has none of
   // its own.
@@ -1558,7 +1571,7 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
     const { approvalId, tool, args } = input.approve;
     const approveDef = TOOLS[tool] ?? extraTools[tool];
     if (!approveDef?.sensitive) {
-      return { status: 'error', message: 'That action can no longer be approved.', transcript: messages, steps };
+      return { status: 'error', message: 'That action can no longer be approved.', transcript: messages, steps, skillSlugs };
     }
     // The user clicking "Approve & run" in chat IS the decision — this is
     // self-service confirmation of the agent's own proposal, not a second
@@ -1590,11 +1603,11 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
           return {
             status: 'needs_approval',
             message: `That approval lapsed before I could run it, so nothing happened. Here it is again — ${proposal.summary}`,
-            proposal, transcript: messages, steps,
+            proposal, transcript: messages, steps, skillSlugs,
           };
         }
       }
-      return { status: 'error', message: approvalRefusal(e), transcript: messages, steps };
+      return { status: 'error', message: approvalRefusal(e), transcript: messages, steps, skillSlugs };
     }
     // A BATCH approval resumes as a batch. The row's args are the whole batch
     // ({calls:[...]}), which is what makes the hash cover every item — so
@@ -1651,7 +1664,7 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
         requestedBy: input.requestedBy, pinnedSkills: input.pinnedSkills, personaId: input.personaId,
         system, messages, steps, extraTools, personaModelId,
       });
-      if (escalated) return { status: 'salvage', message: escalated.message, transcript: messages, steps };
+      if (escalated) return { status: 'salvage', message: escalated.message, transcript: messages, steps, skillSlugs };
       // Escalation declined (no conversationId, a plan already runs, the
       // model call failed) — fall through to EXACTLY today's behaviour.
       break;
@@ -1706,12 +1719,12 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
           requestedBy: input.requestedBy, pinnedSkills: input.pinnedSkills, personaId: input.personaId,
           system, messages, steps, extraTools, personaModelId,
         });
-        if (escalated) return { status: 'salvage', message: escalated.message, transcript: messages, steps };
+        if (escalated) return { status: 'salvage', message: escalated.message, transcript: messages, steps, skillSlugs };
         const salvage = buildSalvageMessage(steps, extraTools, deadlineSalvageFraming(steps));
-        if (salvage) return { status: 'salvage', message: salvage, transcript: messages, steps };
-        return { status: 'error', message: DEADLINE_EMPTY_MESSAGE, transcript: messages, steps };
+        if (salvage) return { status: 'salvage', message: salvage, transcript: messages, steps, skillSlugs };
+        return { status: 'error', message: DEADLINE_EMPTY_MESSAGE, transcript: messages, steps, skillSlugs };
       }
-      return { status: 'error', message: 'LeadRail AI is temporarily unavailable. Please try again.', transcript: messages, steps };
+      return { status: 'error', message: 'LeadRail AI is temporarily unavailable. Please try again.', transcript: messages, steps, skillSlugs };
     }
 
     const parsed = extractJson(raw);
@@ -1729,7 +1742,7 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
       if (salv) {
         const cleaned = stripAiMarkers(salv);
         messages.push({ role: 'assistant', content: cleaned });
-        return { status: 'done', message: cleaned, transcript: messages, steps };
+        return { status: 'done', message: cleaned, transcript: messages, steps, skillSlugs };
       }
       // The model answered (no exception, so the ai router logged a tier
       // success) but never produced valid JSON even after one correction
@@ -1748,9 +1761,9 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
       const rescued = await answerFromObservations(input, messages, personaBlock);
       if (rescued) {
         messages.push({ role: 'assistant', content: rescued });
-        return { status: 'done', message: rescued, transcript: messages, steps };
+        return { status: 'done', message: rescued, transcript: messages, steps, skillSlugs };
       }
-      return { status: 'error', message: "I couldn't complete that request. Please rephrase and try again.", transcript: messages, steps };
+      return { status: 'error', message: "I couldn't complete that request. Please rephrase and try again.", transcript: messages, steps, skillSlugs };
     }
     jsonRetries = 0;
 
@@ -1774,7 +1787,7 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
       messages[messages.length - 1] = { role: 'assistant', content: message };
       steps.push({ thought: narrationFor(parsed) });
       const tokenEstimate = estimateTokens(messages);
-      return { status: 'done', message, transcript: messages, steps, tokenEstimate, compaction: compactionLevel(tokenEstimate) };
+      return { status: 'done', message, transcript: messages, steps, skillSlugs, tokenEstimate, compaction: compactionLevel(tokenEstimate) };
     }
 
     // action === 'tool'
@@ -1828,11 +1841,11 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
           });
           proposal.approvalId = row.id;
         } catch {
-          return { status: 'error', message: "I couldn't record that action for your approval, so I haven't run it. Please try again.", transcript: messages, steps };
+          return { status: 'error', message: "I couldn't record that action for your approval, so I haven't run it. Please try again.", transcript: messages, steps, skillSlugs };
         }
         steps.push({ thought: narrationFor(parsed), tool, args: batchArgs });
         messages.push(pendingApprovalObservation(tool));
-        return { status: 'needs_approval', message: proposal.summary, proposal, transcript: messages, steps };
+        return { status: 'needs_approval', message: proposal.summary, proposal, transcript: messages, steps, skillSlugs };
       }
 
       // Counts as ONE call against the duplicate guard, for the same reason.
@@ -1919,13 +1932,13 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
         });
         proposal.approvalId = row.id;
       } catch {
-        return { status: 'error', message: "I couldn't record that action for your approval, so I haven't run it. Please try again.", transcript: messages, steps };
+        return { status: 'error', message: "I couldn't record that action for your approval, so I haven't run it. Please try again.", transcript: messages, steps, skillSlugs };
       }
       steps.push({ thought: narrationFor(parsed), tool, args });
       // Close the gap in the transcript before it is persisted — see
       // pendingApprovalObservation.
       messages.push(pendingApprovalObservation(tool));
-      return { status: 'needs_approval', message: proposal.summary, proposal, transcript: messages, steps };
+      return { status: 'needs_approval', message: proposal.summary, proposal, transcript: messages, steps, skillSlugs };
     }
 
     const sig = `${tool}:${JSON.stringify(args)}`;
@@ -2031,7 +2044,7 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
       ...(personaModelId ? { modelId: personaModelId } : {}),
     });
     const p = extractJson(raw);
-    if (p?.action === 'final' && p.message) return { status: 'done', message: String(p.message), transcript: messages, steps };
+    if (p?.action === 'final' && p.message) return { status: 'done', message: String(p.message), transcript: messages, steps, skillSlugs };
     // The call succeeded but did not yield a usable {"action":"final",...}
     // envelope. That is NOT automatically a failure: this is the LAST call
     // of the turn, whose only job is a human-readable answer, so a plain
@@ -2044,7 +2057,7 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
       log.warn('agent loop: forced-final produced no final action', {
         accountId, raw: String(raw ?? '').slice(0, 500), path: 'prose_accepted',
       });
-      return { status: 'done', message: stripAiMarkers(prose), transcript: messages, steps };
+      return { status: 'done', message: stripAiMarkers(prose), transcript: messages, steps, skillSlugs };
     }
     // Distinguishable from the thrown ladder-exhausted error below only if we
     // log it. Without this, both causes produced the same generic
@@ -2067,8 +2080,8 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
   // user honestly rather than the bare apology. Only the bare apology when
   // there is truly nothing to show (buildSalvageMessage returns null).
   const salvage = buildSalvageMessage(steps, extraTools);
-  if (salvage) return { status: 'salvage', message: salvage, transcript: messages, steps };
-  return { status: 'error', message: 'I gathered the details but had trouble summarizing. Please ask again a bit more specifically.', transcript: messages, steps };
+  if (salvage) return { status: 'salvage', message: salvage, transcript: messages, steps, skillSlugs };
+  return { status: 'error', message: 'I gathered the details but had trouble summarizing. Please ask again a bit more specifically.', transcript: messages, steps, skillSlugs };
 }
 
 // --- Streaming variant -----------------------------------------------------
@@ -2107,6 +2120,8 @@ export type AgentEvent =
        *  own); this flag exists only so the server-side turn log — see
        *  logTurn — can record 'salvage' instead of a dishonest 'done'. */
       salvage?: boolean;
+      /** Routed skill slugs for this turn — see AgentResult.skillSlugs. */
+      skillSlugs?: string[];
     }
   | { type: 'needs_approval'; proposal: AgentProposal; message: string; transcript: StoredMessage[] }
   | { type: 'compaction_suggested'; level: 'soft' | 'hard'; tokenEstimate: number }
@@ -2209,6 +2224,10 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
   const enabledSkills = input.pinnedSkills?.length
     ? allEnabledSkills.filter((sk) => input.pinnedSkills!.includes(sk.slug))
     : await selectSkillsForTurn(allEnabledSkills, input.message, brandContext?.name);
+  // Migration 080 (message_feedback.skill_slugs) — identical computation to
+  // runAgentImpl's, right where the two loops already share the same routing
+  // decision (CLAUDE.md: the two loops must stay identical).
+  const skillSlugs = enabledSkills.map((sk) => sk.slug);
   // An explicit pin/@mention always wins and skill-derived routing does not
   // run at all (BACKLOG 5b) — only fill the voice when the turn has none of
   // its own.
@@ -2324,7 +2343,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
       if (escalated) {
         messages.push({ role: 'assistant', content: escalated.message });
         await streamTokens(escalated.message, emit);
-        emit({ type: 'final', message: escalated.message, transcript: messages, salvage: true });
+        emit({ type: 'final', message: escalated.message, transcript: messages, salvage: true, skillSlugs });
         return;
       }
       // Escalation declined — fall through to EXACTLY today's behaviour.
@@ -2386,14 +2405,14 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
         if (escalated) {
           messages.push({ role: 'assistant', content: escalated.message });
           await streamTokens(escalated.message, emit);
-          emit({ type: 'final', message: escalated.message, transcript: messages, salvage: true });
+          emit({ type: 'final', message: escalated.message, transcript: messages, salvage: true, skillSlugs });
           return;
         }
         const salvage = buildSalvageMessage(steps, extraTools, deadlineSalvageFraming(steps));
         if (salvage) {
           messages.push({ role: 'assistant', content: salvage });
           await streamTokens(salvage, emit);
-          emit({ type: 'final', message: salvage, transcript: messages, salvage: true });
+          emit({ type: 'final', message: salvage, transcript: messages, salvage: true, skillSlugs });
           return;
         }
         emit({ type: 'error', message: DEADLINE_EMPTY_MESSAGE });
@@ -2419,7 +2438,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
         const cleaned = stripAiMarkers(salv);
         messages.push({ role: 'assistant', content: cleaned });
         await streamTokens(cleaned, emit);
-        emit({ type: 'final', message: cleaned, transcript: messages });
+        emit({ type: 'final', message: cleaned, transcript: messages, skillSlugs });
         return;
       }
       // Same gap as runAgent's twin above, and it matters MORE here: the SSE
@@ -2435,7 +2454,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
       if (rescued) {
         messages.push({ role: 'assistant', content: rescued });
         await streamTokens(rescued, emit);
-        emit({ type: 'final', message: rescued, transcript: messages });
+        emit({ type: 'final', message: rescued, transcript: messages, skillSlugs });
         return;
       }
       emit({ type: 'error', message: "I couldn't complete that request. Please rephrase and try again.", transcript: messages });
@@ -2471,7 +2490,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
       // user was actually shown instead of re-deriving it from raw observations.
       messages[messages.length - 1] = { role: 'assistant', content: message };
       const tokenEstimate = estimateTokens(messages);
-      emit({ type: 'final', message, transcript: messages, tokenEstimate });
+      emit({ type: 'final', message, transcript: messages, tokenEstimate, skillSlugs });
       const level = compactionLevel(tokenEstimate);
       if (level) emit({ type: 'compaction_suggested', level, tokenEstimate });
       return;
@@ -2728,7 +2747,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
       const finalMessage = stripAiMarkers(String(p.message));
       messages.push({ role: 'assistant', content: finalMessage });
       await streamTokens(finalMessage, emit);
-      emit({ type: 'final', message: finalMessage, transcript: messages });
+      emit({ type: 'final', message: finalMessage, transcript: messages, skillSlugs });
       return;
     }
     // Call succeeded but produced no usable {"action":"final",...} envelope.
@@ -2744,7 +2763,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
       });
       messages.push({ role: 'assistant', content: finalMessage });
       await streamTokens(finalMessage, emit);
-      emit({ type: 'final', message: finalMessage, transcript: messages });
+      emit({ type: 'final', message: finalMessage, transcript: messages, skillSlugs });
       return;
     }
     // See the twin comment in runAgentImpl (non-streaming): this and the
@@ -2768,7 +2787,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
   if (salvage) {
     messages.push({ role: 'assistant', content: salvage });
     await streamTokens(salvage, emit);
-    emit({ type: 'final', message: salvage, transcript: messages, salvage: true });
+    emit({ type: 'final', message: salvage, transcript: messages, salvage: true, skillSlugs });
     return;
   }
   emit({ type: 'error', message: 'I gathered the details but had trouble summarizing. Please ask again a bit more specifically.', transcript: messages });

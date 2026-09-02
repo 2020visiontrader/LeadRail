@@ -1,11 +1,16 @@
 // Per-message thumbs up/down (migration 080_message_feedback.sql).
 //
-// See that migration's header for the full design and for exactly which
-// columns are reliably populated (persona_id, model_label) versus reserved
-// for a future writer (skill_slugs — see attachment_evidence, 076, for the
-// precedent this follows). This file is the one place that writes and reads
-// the table; account scoping is applied INSIDE every query here, never
-// trusted from a caller, same discipline as lib/documents/attachment-bindings.ts.
+// See that migration's header for the full design. skill_slugs now HAS a
+// writer: lib/agent/loop.ts exposes the turn's routed skill slugs on
+// AgentResult (non-streaming) and the streaming 'final' event, both API
+// routes (app/api/agent/route.ts, app/api/agent/stream/route.ts) hand them to
+// the client alongside lastMessageId, and AgentConsole.tsx forwards them back
+// on a vote — recordMessageFeedback below is where they land. Same
+// reliability caveat as persona_id: real for a turn the client just
+// completed this session, null for a rehydrated (post-reload) turn nothing
+// re-fetches it for. This file is the one place that writes and reads the
+// table; account scoping is applied INSIDE every query here, never trusted
+// from a caller, same discipline as lib/documents/attachment-bindings.ts.
 
 import { supabase } from '@/lib/db';
 import { log } from '@/lib/logger';
@@ -76,6 +81,14 @@ export async function recordMessageFeedback(args: {
   messageId: string;
   up: boolean;
   personaId?: string | null;
+  /** Routed skill slugs for the turn that produced this message (migration
+   *  080's message_feedback.skill_slugs writer — see lib/agent/loop.ts's
+   *  AgentResult.skillSlugs / the streaming 'final' event, threaded through
+   *  the feedback route). Same reliability caveat as personaId: real when the
+   *  console has it (a turn just completed this session), null on a
+   *  rehydrated turn the client never re-fetches it for. NOT trusted as an
+   *  authorization value — it is a snapshot of routing metadata only. */
+  skillSlugs?: string[] | null;
   votedBy?: string | null;
 }): Promise<MessageFeedback | null> {
   const modelLabel = await snapshotModelLabel(args.accountId, args.conversationId);
@@ -90,6 +103,7 @@ export async function recordMessageFeedback(args: {
           up: args.up,
           persona_id: args.personaId ?? null,
           model_label: modelLabel,
+          skill_slugs: args.skillSlugs && args.skillSlugs.length ? args.skillSlugs : null,
           voted_by: args.votedBy ?? null,
           updated_at: new Date().toISOString(),
         }],

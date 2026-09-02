@@ -52,15 +52,21 @@
 --                  an approximation at conversation granularity, not an exact
 --                  per-message join — documented rather than presented as
 --                  more precise than it is.
---   skill_slugs  — SCHEMA ONLY, exactly like attachment_evidence in 076: NO
---                  WRITER POPULATES THIS COLUMN as of this migration. Routed
---                  skill slugs are computed inside lib/agent/loop.ts
---                  (selectPersonasForRequest / skillsBlock) and never
---                  returned in AgentResult, so nothing outside loop.ts can
---                  observe them today. Reserved here so a future change to
---                  loop.ts's return shape has a column to land in without a
---                  second migration; do not build a reader against it, and do
---                  not treat its presence as this being wired end to end.
+--   skill_slugs  — HAS A WRITER, as of the same session that added this
+--                  column. lib/agent/loop.ts now exposes the turn's routed
+--                  skill slugs (selectSkillsForTurn's picks) on
+--                  AgentResult.skillSlugs (non-streaming) and on the
+--                  streaming 'final' AgentEvent, computed identically in both
+--                  loops. Both API routes (app/api/agent/route.ts,
+--                  app/api/agent/stream/route.ts) hand the slugs to the
+--                  client alongside lastMessageId; AgentConsole.tsx stashes
+--                  them on the turn and forwards them on a vote;
+--                  recordMessageFeedback (lib/agent/feedback.ts) writes them
+--                  here. Same reliability caveat as persona_id above: real
+--                  for a turn the client just completed this session, NULL
+--                  for a rehydrated (post-reload) turn nothing re-fetches it
+--                  for — the client never invents a value, it only forwards
+--                  what the server computed for that turn.
 --
 -- ONE VOTE PER MESSAGE PER ACCOUNT, CHANGEABLE. A plain UNIQUE constraint
 -- (not a partial "live rows only" index like 076's — there is no soft-delete
@@ -117,4 +123,4 @@ COMMENT ON COLUMN message_feedback.persona_id IS
 COMMENT ON COLUMN message_feedback.model_label IS
   'Best-effort snapshot of ai_usage.model_label for this conversation at vote time (conversation granularity — ai_usage has no message_id). NULL when no usage row could be matched.';
 COMMENT ON COLUMN message_feedback.skill_slugs IS
-  'SCHEMA ONLY as of migration 080 — no writer populates this column yet. Routed skill slugs are computed inside lib/agent/loop.ts and are not exposed on AgentResult today. Do not build a reader against this column until a writer exists (same discipline as attachment_evidence, 076).';
+  'Routed skill slugs for the turn that produced this message, exposed on AgentResult.skillSlugs / the streaming final event by lib/agent/loop.ts and written here by lib/agent/feedback.ts (recordMessageFeedback). Same reliability caveat as persona_id: real for a turn just completed this session, NULL for a rehydrated turn.';
