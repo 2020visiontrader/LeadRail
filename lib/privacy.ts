@@ -178,6 +178,9 @@ export const EXPORT_TABLE_NAMES = [
   'ai_routing', 'social_automations',
   // migration 076 — durable, message-level attachment provenance.
   'attachment_bindings',
+  // migration 080 — per-message thumbs up/down. User-authored reaction data,
+  // not internal telemetry (contrast ai_usage in EXPORT_EXCLUDED below).
+  'message_feedback',
 ];
 
 // Table -> scope, derived from the name list above plus the overrides. This

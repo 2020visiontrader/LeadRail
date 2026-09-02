@@ -7,7 +7,7 @@ import { supabase } from '@/lib/db';
 import { runAgent, agentConfigured, generateCarryover } from '@/lib/agent/loop';
 import { loadAgentContext } from '@/lib/agent/context';
 import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts, markConversationRunning, clearConversationRunning } from '@/lib/agent/memory';
-import { mintMessageId } from '@/lib/agent/transcript-store';
+import { mintMessageId, ensureMessageIds } from '@/lib/agent/transcript-store';
 import { parseMentions } from '@/lib/agent/personas';
 import { log } from '@/lib/logger';
 
@@ -207,10 +207,20 @@ async function runTurn(
     planOnly,
     userMessageId,
   });
+  // Message-action Packet — see the twin comment in
+  // app/api/agent/stream/route.ts's `finally` block for why this reads back
+  // the id-bearing copy of the transcript rather than trusting
+  // result.transcript's ids: saveConversation mints ids internally
+  // (migration 076) but never returns that copy, and this response is what
+  // the console uses to key a thumbs vote or a retry the moment the turn
+  // finishes, without waiting for a reload. ensureMessageIds is pure and
+  // idempotent, so calling it here duplicates no minting saveConversation
+  // would otherwise do.
+  const transcriptWithIds = ensureMessageIds(result.transcript);
   const savedId = await saveConversation({
     id: conversationId, accountId: session.accountId, brandId: brandId ?? null,
     title: typeof message === 'string' ? message.slice(0, 80) : undefined,
-    transcript: result.transcript,
+    transcript: transcriptWithIds,
   });
 
   // Durable, message-level provenance (migration 076) — separate from, and
@@ -247,10 +257,12 @@ async function runTurn(
     message: result.message,
     proposal: result.proposal,
     steps: result.steps,
-    transcript: result.transcript,
+    transcript: transcriptWithIds,
     conversationId: savedId ?? conversationId,
     tokenEstimate: result.tokenEstimate,
     compaction: result.compaction ?? null,
+    userMessageId,
+    lastMessageId: transcriptWithIds.length ? transcriptWithIds[transcriptWithIds.length - 1].id : undefined,
   });
 }
 

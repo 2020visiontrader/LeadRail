@@ -402,6 +402,60 @@ export async function deleteConversation(accountId: string, id: string): Promise
   }
 }
 
+/**
+ * Truncate a conversation's transcript to drop `messageId` and everything
+ * after it, for edit-and-rerun and retry (Packet: message actions).
+ *
+ * WHY THIS BYPASSES saveConversation's SHRINK GUARD ON PURPOSE.
+ * saveConversation refuses to write a transcript shorter than half its
+ * stored size (SHRINK_TOLERANCE, above) — that guard exists to catch an
+ * ACCIDENTAL shrink, e.g. a failed read silently treated as an empty
+ * conversation. Editing message #2 of a 40-message chat is not that: it is
+ * a deliberate, user-requested discard, and the guard would refuse it just
+ * as loudly as it would refuse the bug it exists to catch. So this writes
+ * directly, scoped by id + account_id + NOT deleted (same tenancy and
+ * soft-delete discipline as every other write in this file), rather than
+ * routing through saveConversation.
+ *
+ * Returns the truncated transcript on success (so the caller can repaint the
+ * client's local turns to match exactly what the server now holds), or null
+ * if the conversation doesn't exist / isn't this account's / messageId isn't
+ * in it. Never throws — a failed truncate must not corrupt the chat further;
+ * the caller treats null as "nothing changed, don't proceed with the rerun".
+ */
+export async function truncateConversationAt(
+  accountId: string,
+  id: string,
+  messageId: string,
+): Promise<StoredMessage[] | null> {
+  if (!id || !messageId) return null;
+  try {
+    const convo = await loadConversation(id, accountId);
+    if (!convo || !Array.isArray(convo.transcript)) return null;
+    const idx = convo.transcript.findIndex((m: any) => m?.id === messageId);
+    if (idx === -1) return null;
+    const truncated = convo.transcript.slice(0, idx);
+    const tokenEstimate = estimateTokens(truncated);
+    const { data, error } = await supabase.from('agent_conversations')
+      .update({
+        transcript: truncated,
+        token_estimate: tokenEstimate,
+        message_count: truncated.length,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', id).eq('account_id', accountId).is('deleted_at', null)
+      .select('id').maybeSingle();
+    if (error || !data?.id) {
+      log.error('truncateConversationAt: write failed', error, { conversationId: id, messageId });
+      return null;
+    }
+    return truncated;
+  } catch (e) {
+    log.error('truncateConversationAt: threw', e, { conversationId: id, messageId });
+    return null;
+  }
+}
+
 /** Persist a carryover memo on a conversation (used at compaction). */
 export async function saveCarryover(id: string, accountId: string, carryover: CarryoverMemo): Promise<void> {
   try {
