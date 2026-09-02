@@ -34,7 +34,7 @@ import {
   buildPersonaSystemBlock, buildCoordinatorSystemBlock, type PersonaRow,
 } from './personas';
 import { pickPersonaSlug, resolvePersona } from './persona-routing';
-import { HARVESTED_PERSONA_TEMPLATES } from './harvested-personas';
+import { PERSONA_TEMPLATES } from './persona-registry';
 import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
 import { composeAnswer } from './compose';
 import { stripAiMarkers } from '@/lib/ai/humanizer';
@@ -1291,17 +1291,17 @@ async function resolvePersonaForTurn(
  */
 async function resolveSkillPersonaForTurn(
   accountId: string,
-  skills: { instructions: string }[],
+  skills: { slug?: string; instructions: string }[],
 ): Promise<{ systemBlock?: string; modelId?: string }> {
   if (!skills.length) return {};
   try {
     const rows = await listPersonas(accountId);
     const slug = pickPersonaSlug(
-      skills.map((s) => s.instructions),
-      (candidate) => Boolean(resolvePersona(candidate, rows, HARVESTED_PERSONA_TEMPLATES)),
+      skills,
+      (candidate) => Boolean(resolvePersona(candidate, rows, PERSONA_TEMPLATES)),
     );
     if (!slug) return {};
-    const resolved = resolvePersona(slug, rows, HARVESTED_PERSONA_TEMPLATES);
+    const resolved = resolvePersona(slug, rows, PERSONA_TEMPLATES);
     if (!resolved) return {};
     if (resolved.source === 'row') {
       return { systemBlock: buildPersonaSystemBlock(resolved.row), modelId: resolved.row.model_id || undefined };

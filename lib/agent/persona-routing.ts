@@ -14,6 +14,7 @@
 
 import type { PersonaRow } from './personas';
 import type { HarvestedPersonaTemplate } from './harvested-personas';
+import { COLDOUTBOUND_SKILL_PERSONA_MAP } from './coldoutbound-skill-personas';
 
 // How far past the "Agents Used" heading to look for `**slug**` bold tokens.
 // Generous enough to catch every persona in a multi-agent section (the
@@ -24,12 +25,32 @@ import type { HarvestedPersonaTemplate } from './harvested-personas';
 const AGENTS_USED_WINDOW = 1500;
 
 /**
- * Persona slugs a skill's instructions name in its "## Agents Used" section,
- * in order of first appearance, deduped. Returns [] when the skill has no
- * such section (true for every AdClaw skill and skills that predate the
- * convention).
+ * Persona slugs a skill names, in order of first appearance, deduped.
+ *
+ * Two sources, checked in this order:
+ *   1. The explicit COLDOUTBOUND_SKILL_PERSONA_MAP, keyed by `skillSlug` when
+ *      given. The 50 coldoutbound skills lib/agent/authored-personas.ts is
+ *      grounded in were never written with LeadRail's "## Agents Used"
+ *      convention in mind, so without this explicit map every one of them
+ *      would route to no persona at all — the outreach personas would sit
+ *      unreachable exactly like harvested-personas.ts once did. When
+ *      `skillSlug` matches an entry, that ONE mapped slug wins outright and
+ *      the instructions text is never parsed.
+ *   2. Falls back to parsing a "## Agents Used" section out of `instructions`
+ *      — the original behaviour, unchanged, which is what keeps
+ *      digital-marketing-pro's 210 existing references resolving byte-
+ *      identically for every skill NOT in the explicit map (including when
+ *      `skillSlug` is omitted entirely, e.g. from a caller that only has
+ *      instructions text).
+ *
+ * Returns [] when neither source names a persona (true for every AdClaw
+ * skill and skills that predate the convention and aren't coldoutbound).
  */
-export function personaSlugsForSkill(instructions: string): string[] {
+export function personaSlugsForSkill(instructions: string, skillSlug?: string): string[] {
+  if (skillSlug) {
+    const mapped = COLDOUTBOUND_SKILL_PERSONA_MAP[skillSlug];
+    if (mapped) return [mapped];
+  }
   const idx = instructions.indexOf('Agents Used');
   if (idx === -1) return [];
   const window = instructions.slice(idx, idx + AGENTS_USED_WINDOW);
@@ -115,14 +136,25 @@ export function resolvePersona(
  * eligible slug instead of giving up. Omit it to keep the original
  * behaviour (every bold token is eligible), which is what the pre-existing
  * pure-function tests pin.
+ *
+ * Each routed skill may be given as a bare instructions string (the original
+ * shape, still fully supported — every pre-existing call keeps working
+ * unchanged) or as `{ slug, instructions }`, which lets personaSlugsForSkill
+ * check the explicit COLDOUTBOUND_SKILL_PERSONA_MAP by that skill's catalog
+ * slug before falling back to "## Agents Used" text-parsing. Pass the object
+ * form whenever the caller has the skill's slug on hand (it always does —
+ * EnabledSkillInstruction and loadEnabledSkillsForAgent's rows both carry
+ * one) so coldoutbound skills route correctly.
  */
 export function pickPersonaSlug(
-  skillInstructions: string[],
+  skillInstructions: Array<string | { slug?: string; instructions: string }>,
   isEligible?: (slug: string) => boolean,
 ): string | null {
   const counts = new Map<string, number>();
-  for (const instructions of skillInstructions) {
-    const slugs = new Set(personaSlugsForSkill(instructions));
+  for (const item of skillInstructions) {
+    const instructions = typeof item === 'string' ? item : item.instructions;
+    const skillSlug = typeof item === 'string' ? undefined : item.slug;
+    const slugs = new Set(personaSlugsForSkill(instructions, skillSlug));
     for (const slug of slugs) {
       if (isEligible && !isEligible(slug)) continue;
       counts.set(slug, (counts.get(slug) || 0) + 1);
