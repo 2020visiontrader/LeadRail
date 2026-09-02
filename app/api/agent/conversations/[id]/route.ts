@@ -2,6 +2,7 @@ import { withApi, requireSession, errorResponse } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { loadTranscript, deleteConversation, isConversationRunning } from '@/lib/agent/memory';
 import { pendingApprovalForConversation } from '@/lib/approvals/store';
+import { stripPrivateReasoning } from '@/lib/agent/transcript-privacy';
 
 export const dynamic = 'force-dynamic';
 
@@ -32,7 +33,14 @@ async function GET__impl(request: NextRequest, { params }: { params: { id: strin
       pendingApprovalForConversation(session.accountId, params.id).catch(() => null),
       isConversationRunning(params.id, session.accountId),
     ]);
-    return NextResponse.json({ id: params.id, transcript, pendingApproval, running });
+    // The reload path is a CLIENT boundary like any other, so the model's
+    // private `plan` comes off here too. The stored row keeps it — this strips
+    // the response only, never the store. Without this the two POST routes
+    // could be perfectly clean and every page refresh would hand the browser
+    // the reasoning anyway. See lib/agent/transcript-privacy.ts.
+    return NextResponse.json({
+      id: params.id, transcript: stripPrivateReasoning(transcript), pendingApproval, running,
+    });
   } catch (e) {
     return errorResponse(e);
   }

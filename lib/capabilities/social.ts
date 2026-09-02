@@ -45,7 +45,7 @@ import { publishTiktokDraft } from '@/lib/social/tiktok-oauth';
 import { publishXPost } from '@/lib/social/x-oauth';
 import { generateContentPost } from '@/lib/ai/generation';
 import { LIVE_SOCIALS, SOCIAL_KEYS, type SocialKey } from '@/lib/social/providers';
-import { obj, S, type Capability, rowsOf, plural, samples, tally, present, digestLine } from './types';
+import { obj, S, type Capability, rowsOf, plural, samples, tally, present, clip, digestLine } from './types';
 
 // ---------------------------------------------------------------------------
 // Registry-driven platform validation
@@ -179,6 +179,44 @@ const MESSENGERS: Partial<Record<SocialKey, Dispatch>> = {
   facebook: (accountId, a, externalId) =>
     sendMetaMessage(accountId, 'facebook', a.recipientId, a.text, externalId),
 };
+
+// ---------------------------------------------------------------------------
+// Result readers for the outbound digests
+// ---------------------------------------------------------------------------
+//
+// WHY THESE EXIST. Every outbound capability in this file hands back the
+// PLATFORM's own response, unchanged, and each platform names its receipt
+// differently: Meta's Graph edges return `{id}` (and `{id, post_id}` for a Page
+// photo), the Send API returns `{message_id, recipient_id}`, LinkedIn returns
+// `{id: "urn:li:share:…"}`, X returns `{data: {id}}`, TikTok returns
+// `{data: {publish_id}}`. A digest is read by the model AS FACT, so it may
+// speak only when one of those receipts is actually present — see the rule in
+// lib/capabilities/video.ts. Every publisher and messenger THROWS on a non-2xx,
+// so "resolved without a receipt" means a shape we do not recognise, and the
+// honest response to that is silence, not a cheerful "Published".
+//
+// None of this ever reads `args`. The argument is the request; the receipt is
+// what the platform says happened.
+
+/** The platform's own id for the thing that was just created, or null. */
+function platformReceiptId(result: any): string | null {
+  if (!result || typeof result !== 'object' || Array.isArray(result)) return null;
+  const r: any = result;
+  const direct = ['id', 'post_id', 'message_id', 'publish_id'];
+  for (const k of direct) if (present(r, k)) return String(r[k]);
+  // X and TikTok nest theirs one level down under `data`.
+  const d = r.data;
+  if (d && typeof d === 'object' && !Array.isArray(d)) {
+    for (const k of ['id', 'publish_id', 'post_id']) if (present(d, k)) return String(d[k]);
+  }
+  return null;
+}
+
+/** True only for the `{success: true}` acknowledgement Meta returns on the
+ *  edges that have no object to name (hiding a comment, setting a status). */
+function acknowledged(result: any): boolean {
+  return !!result && typeof result === 'object' && !Array.isArray(result) && (result as any).success === true;
+}
 
 // Comment reading/replying is Meta-only today; the map keeps that fact in one
 // place rather than in an if/else inside each capability.
@@ -501,6 +539,26 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
       return pub(accountId, a, externalId);
     },
     summarize: (a) => `Publish this post to ${a.platform}${a.accountExternalId ? ` (${a.accountExternalId})` : ''}. It goes live immediately to that account's real audience.`,
+    // THE TIKTOK CASE IS WHY THIS READS THE RESULT AND NOT THE ARGUMENTS.
+    // `publishSocialPost` on TikTok does not publish anything: publishTiktokDraft
+    // pushes the video to the creator's TikTok inbox as a DRAFT they must post
+    // themselves (the DIRECT_POST scope needs an app audit this app has not
+    // passed — see lib/social/tiktok-oauth.ts). A digest built from
+    // `args.platform` and the capability's own title would have written
+    // "Published to TikTok" for a post that is sitting unposted in someone's
+    // drafts. The `publish_id` receipt TikTok returns — and only TikTok returns
+    // — is what distinguishes the two, so the wording keys off THAT.
+    digest: (_args, result) => {
+      const id = platformReceiptId(result);
+      if (!id) return '';
+      const isTiktokDraft = !!(result as any)?.data && present((result as any).data, 'publish_id');
+      return isTiktokDraft
+        ? digestLine(
+            `Sent to the creator's TikTok inbox as a DRAFT (${clip(id, 60)}).`,
+            'It is NOT published — nobody can see it until the creator opens TikTok and posts it themselves.',
+          )
+        : digestLine(`Published. The platform returned post id ${clip(id, 60)}, so it is live to that account's real audience.`);
+    },
   },
   {
     name: 'replyToSocialComment',
@@ -521,6 +579,16 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     run: (accountId, a) =>
       replyToComment(accountId, a.commentId, a.message, commentPlatform(a.platform), a.accountExternalId),
     summarize: (a) => `Post a public reply to comment ${a.commentId} on ${a.platform}: "${String(a.message).slice(0, 120)}". Everyone who sees the post sees this reply.`,
+    // replyToComment posts to the `${commentId}/comments` edge and returns
+    // Meta's `{id}` for the reply it created; graphPost throws on any non-2xx.
+    // The reply's OWN id is the receipt — the comment id in the args is the
+    // thing replied TO, and echoing that back would prove nothing about whether
+    // a reply now exists.
+    digest: (_args, result) => {
+      const id = platformReceiptId(result);
+      if (!id) return '';
+      return digestLine(`Posted a public reply; it exists on the platform as comment ${clip(id, 60)}.`);
+    },
   },
   {
     name: 'hideSocialComment',
@@ -542,6 +610,22 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     summarize: (a) => (a.hide === false
       ? `Unhide comment ${a.commentId} so the public can see it again.`
       : `Hide comment ${a.commentId} from everyone else viewing the post.`),
+    // NAMED LIMITATION, not papered over: Meta's hide edge answers
+    // `{success: true}` and nothing else — no comment id, no echoed hidden
+    // state. So the ONLY thing the return proves is that the Graph call for
+    // THIS invocation was accepted (graphPost throws otherwise). The direction
+    // is therefore taken from `args.hide`, which is the one place it exists,
+    // and the line says "Meta accepted" rather than asserting the comment's
+    // current visibility as an independently observed fact. Without the
+    // acknowledgement there is no digest at all.
+    digest: (a, result) => {
+      if (!acknowledged(result)) return '';
+      const hiding = a?.hide !== false;
+      return digestLine(
+        `Meta accepted the request to ${hiding ? 'hide' : 'unhide'} that comment.`,
+        'The response carries no comment id or visibility field, so this confirms the call was accepted, not a re-read of the comment.',
+      );
+    },
   },
   {
     name: 'deleteSocialComment',
@@ -579,6 +663,19 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
       return send(accountId, a, externalId);
     },
     summarize: (a) => `Send a direct message on ${a.platform} to ${a.recipientId}: "${String(a.text).slice(0, 120)}". It reaches a real person immediately.`,
+    // sendMetaMessage posts to me/messages and returns the Send API's
+    // `{recipient_id, message_id}`; it throws on any non-2xx. `message_id` is
+    // the receipt, and `recipient_id` is the platform's OWN statement of who it
+    // went to — preferred over `args.recipientId` for exactly the reason this
+    // packet exists: one is what was asked for, the other is what happened.
+    digest: (_args, result) => {
+      const id = platformReceiptId(result);
+      if (!id) return '';
+      const to = present(result, 'recipient_id') ? String((result as any).recipient_id) : null;
+      return digestLine(
+        `Delivered a direct message${to ? ` to ${clip(to, 60)}` : ''}; the platform returned message id ${clip(id, 60)}.`,
+      );
+    },
   },
   {
     name: 'scheduleSocialPost',
@@ -600,6 +697,29 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
       return bufferCreatePost(accountId, a.channelId, a.text, a.dueAt);
     },
     summarize: (a) => `Schedule a ${a.platform} post for ${a.dueAt}: "${String(a.text).slice(0, 120)}". It publishes automatically at that time.`,
+    // Buffer's create_post comes back through the MCP envelope reader
+    // (lib/social/buffer.ts `extractText`), which parses whatever JSON the tool
+    // put in its text block — so the shape is the vendor's, not ours, and it can
+    // legitimately be a bare string on an unexpected response. A queued post id
+    // is the only thing that proves the post is in the queue, so that is the
+    // only thing this speaks on.
+    //
+    // The scheduled TIME is read back from the result when Buffer states it, and
+    // is otherwise left unsaid rather than restated from `args.dueAt` — Buffer
+    // normalises and may reject or shift a due time, and a digest that recites
+    // the requested slot would have the model telling the user a post goes out
+    // at a time nothing confirmed.
+    digest: (_args, result) => {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) return '';
+      const r: any = result;
+      const id = present(r, 'id') ? String(r.id) : present(r, 'post_id') ? String(r.post_id) : null;
+      if (!id) return '';
+      const due = ['due_at', 'dueAt', 'scheduled_at'].map((k) => (present(r, k) ? String(r[k]) : null)).find(Boolean) || null;
+      return digestLine(
+        `Queued in Buffer as post ${clip(id, 60)}${due ? `, due ${clip(due, 40)}` : ''}.`,
+        'It is scheduled, NOT published — nothing has reached the audience yet.',
+      );
+    },
   },
   {
     name: 'listScheduledSocialPosts',
@@ -647,5 +767,23 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     summarize: (a) => (a.status === 'ACTIVE'
       ? `Set ${a.metaObjectId} to ACTIVE. This restarts real ad spend immediately.`
       : `Set ${a.metaObjectId} to PAUSED. This stops its ad spend.`),
+    // NAMED LIMITATION. updateStatus (lib/social/meta-ads.ts) is typed
+    // `Promise<{ success: true }>` and returns that literal — it never echoes
+    // the object id or the resulting status, so the return carries no
+    // independent evidence of WHAT the object now is, only that the Graph POST
+    // for this call was accepted (graphPost throws otherwise). This is the
+    // weakest evidence of the twelve gated capabilities and the wording says so
+    // plainly instead of dressing an acknowledgement up as an observation. If
+    // the true status is ever needed as fact, it has to be re-read — getInsights
+    // and getAdBreakdown are the reads that do it.
+    digest: (a, result) => {
+      if (!acknowledged(result)) return '';
+      const status = a?.status === 'ACTIVE' || a?.status === 'PAUSED' ? a.status : null;
+      if (!status) return '';
+      return digestLine(
+        `Meta accepted the status change to ${status}${status === 'ACTIVE' ? ' — real ad spend restarts now' : ' — its ad spend stops'}.`,
+        'The response is a bare acknowledgement with no object id or status field, so re-read the ad to confirm what it is now.',
+      );
+    },
   },
 ];

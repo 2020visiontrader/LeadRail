@@ -9,13 +9,24 @@
 // The streaming loop is what real chat turns run (CLAUDE.md), so that is where
 // the rendering half is pinned.
 //
-// ONE HONEST EXCLUSION, and it is a real exposure worth naming rather than
-// hiding behind a green test: the `final` SSE event carries `transcript`, and
-// the transcript is exactly where requirement 1 puts the raw envelope. So the
-// plan text DOES cross the wire inside that field — it is round-tripped for
-// resume and persisted with the conversation. Nothing renders it, but "never
-// leaves the server" is not true and this file does not pretend otherwise. The
-// assertions below are about every field a human actually reads.
+// THE EXCLUSION THIS FILE USED TO NAME IS CLOSED. It read: "the `final` SSE
+// event carries `transcript`, and the transcript is exactly where requirement 1
+// puts the raw envelope, so the plan text DOES cross the wire … 'never leaves
+// the server' is not true and this file does not pretend otherwise." That was
+// accurate, and it meant the system prompt's promise to the model ("shown to NO
+// ONE") was stronger than what the code delivered.
+//
+// It no longer crosses. Every route that hands a transcript to a browser now
+// passes it through stripPrivateReasoning first — all FOUR of them, including
+// the reload and rerun paths the original packet did not name. See
+// lib/agent/transcript-privacy.ts and tests/agent-transcript-privacy.test.ts,
+// which owns that half.
+//
+// This file keeps the RENDERING half, and the `transcript` field is still
+// excluded from its scan below — but now because that field is the SERVER's
+// copy (requirement 1), not because of an exposure. The test directly under
+// this comment block asserts the plan is STILL in it, which is what stops the
+// privacy assertions from going vacuous.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -82,8 +93,9 @@ async function stream(...responses: string[]) {
   return events;
 }
 
-/** Every event field a human reads, with the resume-only `transcript` removed
- *  (see the header). */
+/** Every event field a human reads, with the server-side `transcript` removed
+ *  (see the header): the loop EMITS the full envelope there on purpose, and the
+ *  route strips it at the wire. This scan is about the other fields. */
 const renderedText = (events: any[]) =>
   JSON.stringify(events.map(({ transcript, ...rest }: any) => rest));
 

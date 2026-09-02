@@ -7,6 +7,7 @@ import { runAgentStream, agentConfigured, generateCarryover, type AgentEvent } f
 import { loadAgentContext } from '@/lib/agent/context';
 import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts, markConversationRunning, clearConversationRunning } from '@/lib/agent/memory';
 import { mintMessageId, ensureMessageIds, type StoredMessage } from '@/lib/agent/transcript-store';
+import { stripPrivateReasoning } from '@/lib/agent/transcript-privacy';
 import { parseMentions } from '@/lib/agent/personas';
 import { createStreamGuard } from '@/lib/agent/stream-guard';
 import { providersLookDown, turnFailureMessage } from '@/lib/agent/failure-copy';
@@ -331,7 +332,19 @@ export async function POST(request: NextRequest) {
             }
             if (e.type === 'error') terminalSent = true;
             if (e.type === 'compaction_suggested') compaction = e.level;
-            send(e);
+            // ORDER MATTERS. `finalTranscript` is captured from the RAW event
+            // above, because it is what `saveConversation` writes below — the
+            // server's copy must keep the model's private `plan` so a later
+            // step and a later turn can still read the reasoning. What goes
+            // ON THE WIRE is the stripped copy. Doing this the other way round
+            // would persist a transcript with the reasoning already removed.
+            // See lib/agent/transcript-privacy.ts; twin of the strip on the
+            // JSON route's response body.
+            send(
+              (e.type === 'final' || e.type === 'needs_approval')
+                ? { ...e, transcript: stripPrivateReasoning(e.transcript) }
+                : e,
+            );
           },
         );
       } catch (e: any) {

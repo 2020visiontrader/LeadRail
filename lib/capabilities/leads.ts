@@ -116,6 +116,39 @@ export const LEAD_CAPABILITIES: Capability[] = [
       ].filter(Boolean);
       return `Spend sourcing credits to find up to ${a.limit ?? 10} new leads${filters.length ? `: ${filters.join(', ')}` : ' (no filters set — this searches broadly)'}.`;
     },
+    // Counts the RETURNED candidates, never `args.limit`. searchPeople resolves
+    // to `{ candidates: ApolloCandidate[]; total: number }` and THROWS on a
+    // missing key, a budget refusal or an Apollo error — so a result without a
+    // `candidates` array is not a search that found nothing, it is a shape this
+    // digest does not recognise, and it gets no digest at all.
+    //
+    // The gap between `limit` and `candidates.length` is the whole point: a
+    // request for 25 that comes back with 3 must not be narrated as 25. So is
+    // the gap between `candidates.length` and `total` — Apollo's estimate of
+    // how many people match — because "found 25" and "25 of 1,621 matches" are
+    // different facts and only the second one is true.
+    //
+    // Emails are stated as MASKED because that is what `email_status` says on
+    // the candidate rows; a sourced candidate is not a contactable person until
+    // enrichLead reveals it, and the model must not plan a send off this.
+    digest: (_args, result) => {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) return '';
+      const cands = rowsOf((result as any).candidates);
+      if (!cands) return '';
+      if (!cands.length) return digestLine('Found no candidates matching that search. No lead was added.');
+      const total = present(result, 'total') && Number.isFinite(Number((result as any).total))
+        ? Number((result as any).total) : null;
+      const who = samples(cands, ['name', 'title'], 3);
+      const locked = cands.filter((c: any) => c?.email_status === 'locked' || !c?.email).length;
+      return digestLine(
+        `Found ${plural(cands.length, 'candidate')}${total !== null && total > cands.length ? ` (of about ${total} matching)` : ''}.`,
+        who.length ? `Including: ${who.join(', ')}.` : null,
+        locked
+          ? `${locked === cands.length ? 'Every' : `${locked} of these`} candidate's email is still masked — enrichLead must reveal one before it can be emailed.`
+          : null,
+        'Nothing was saved to the CRM: createLead does that.',
+      );
+    },
   },
   {
     name: 'enrichLead',
@@ -161,6 +194,34 @@ export const LEAD_CAPABILITIES: Capability[] = [
         || (a.externalId ? `sourced candidate ${a.externalId}` : null)
         || 'this person';
       return `Spend a sourcing credit to reveal the verified email and full profile for ${who}${a.company ? ` at ${a.company}` : ''}.`;
+    },
+    // THE ARGUMENT IS NOT THE OUTCOME, and this capability is the clearest case
+    // of it in the registry. matchPerson resolves to an ApolloEnrichment whose
+    // `email` is null and `email_status` is 'locked' whenever Apollo declined
+    // to unlock the address — the credit is spent either way. A digest that
+    // read back `args.email` (or just said "revealed") would tell the model it
+    // now holds an address it does not have, and the next step would be a
+    // sendEmail against nothing. So the email is stated ONLY from
+    // `result.email`, and a locked result says so in as many words.
+    digest: (_args, result) => {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) return '';
+      const r: any = result;
+      const revealed = present(r, 'email') && r.email_status === 'verified';
+      const facts = [
+        present(r, 'title') ? `title ${clip(String(r.title), 40)}` : null,
+        r.organization && present(r.organization, 'name') ? `at ${clip(String(r.organization.name), 40)}` : null,
+        present(r, 'location') ? `in ${clip(String(r.location), 40)}` : null,
+      ].filter(Boolean) as string[];
+      // Neither an address nor a single profile fact: the credit bought nothing
+      // this digest can honestly report, so it reports nothing.
+      if (!revealed && !facts.length && !present(r, 'email_status')) return '';
+      return digestLine(
+        revealed
+          ? `Revealed the verified email ${clip(String(r.email), 80)}.`
+          : 'No email was revealed — Apollo returned this profile with the address still locked. There is no address to send to.',
+        facts.length ? `Profile: ${facts.join(', ')}.` : null,
+        'This did NOT save a contact — createLead does that.',
+      );
     },
   },
   {
