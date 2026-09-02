@@ -26,7 +26,8 @@ import { log } from '@/lib/logger';
 import { improvePrompt } from '@/lib/ai/prompt-improver';
 import {
   runnablePlans, nextStep, claimStep, completeStep, blockStep,
-  recordProgress, renderPlan, MAX_STEP_ATTEMPTS, type Plan,
+  recordProgress, renderPlan, MAX_STEP_ATTEMPTS, advanceCursor, releaseStepForRetry,
+  type Plan, type PlanStep,
 } from './store';
 
 /** Plans advanced per tick. Small: each one is a full agent turn, and a tick
@@ -36,6 +37,14 @@ const PLANS_PER_TICK = Number(process.env.PLAN_RUNNER_BATCH) || 2;
  *  step is meant to be one concrete outcome, and a step that needs sixteen tool
  *  calls was written too coarsely. */
 const STEPS_PER_PLAN_STEP = Number(process.env.PLAN_STEPS_PER_RUN) || 6;
+/** Items a BATCH step (one with `over`) advances per tick. This is the knob
+ *  an operator trades tick cost against wall-clock with: at the measured
+ *  production cadence (~35 minutes across 1,216 ticks / 30 days), 8 items per
+ *  tick clears a 95-item batch in ceil(95/8) = 12 ticks, roughly 7 hours.
+ *  Raising it finishes sooner at the cost of a bigger, riskier single tick
+ *  (still bounded by STEPS_PER_PLAN_STEP agent steps); lowering it shrinks
+ *  each tick at the cost of wall-clock time. */
+const ITEMS_PER_STEP_TICK = Number(process.env.PLAN_ITEMS_PER_TICK) || 8;
 
 export interface PlanTickResult {
   plansTouched: number;
@@ -80,6 +89,14 @@ async function advance(plan: Plan): Promise<'completed' | 'blocked' | 'idle' | '
   if (step.status === 'pending' && !(await claimStep(plan.id, step.id))) {
     // Another tick took it between the read and the claim. Not an error.
     return 'idle';
+  }
+
+  // A BATCH step (one with `over`) is worked a slice at a time across many
+  // ticks, with its own cursor bookkeeping — everything below this point is
+  // the single-shot path, pinned exactly as it behaved before batch steps
+  // existed.
+  if (step.over && step.over.length) {
+    return advanceBatch(plan, step);
   }
 
   const { runAgent } = await import('@/lib/agent/loop');
@@ -152,6 +169,101 @@ async function advance(plan: Plan): Promise<'completed' | 'blocked' | 'idle' | '
     await recordProgress(plan.id, result.steps.length);
     return 'completed';
   } catch (e: any) {
+    await recordProgress(plan.id, 0, String(e?.message || e));
+    return 'error';
+  }
+}
+
+/**
+ * Advance ONE tick of a BATCH step: the next ITEMS_PER_STEP_TICK items from
+ * `over`, starting at `cursor`, through the SAME runAgent path and the SAME
+ * STEPS_PER_PLAN_STEP budget an ordinary step uses — same gates, same
+ * approvals, nothing here runs any action a normal step could not also run.
+ *
+ * The correctness property this exists to hold: no item is ever processed
+ * twice, and none is skipped, across a crashed tick, a parked approval, and
+ * two concurrent ticks.
+ *   - Two concurrent ticks: claimStep already made only one of them own the
+ *     step (`in_progress`) before this function runs; advanceCursor's
+ *     conditional UPDATE is the same guard one level down, for the same
+ *     reason — see its comment in lib/plans/store.ts.
+ *   - A crashed/errored tick: releaseStepForRetry puts the step back to
+ *     `pending` WITHOUT touching the cursor, so the next tick reclaims it and
+ *     redoes the SAME slice rather than skipping ahead.
+ *   - A parked approval: blockStep runs instead of advanceCursor, so the
+ *     cursor does not move; unblockStep (existing, unchanged) returns the
+ *     step to `pending` with the cursor untouched, so it resumes on the same
+ *     slice rather than skipping it or repeating an earlier one.
+ */
+async function advanceBatch(plan: Plan, step: PlanStep): Promise<'completed' | 'blocked' | 'idle' | 'error'> {
+  const items = step.over || [];
+  const slice = items.slice(step.cursor, step.cursor + ITEMS_PER_STEP_TICK);
+
+  const { runAgent } = await import('@/lib/agent/loop');
+  try {
+    const result = await runAgent({
+      accountId: plan.accountId,
+      message: improvePrompt({
+        goal: `Work step ${step.seq} of the current plan, for this tick's slice of a batch: ${step.title}`,
+        inputs: {
+          'Plan objective': plan.objective,
+          'This step (a batch step)': step.title,
+          'Step id': step.id,
+          'Items to handle THIS TURN ONLY': slice.join('; '),
+          'Progress before this turn': `${step.cursor} of ${step.total} items already done`,
+        },
+        rules: [
+          `Work ONLY the ${slice.length} item(s) listed above — the rest of the list belongs to later turns, not this one.`,
+          'The full plan is in your context above — read it rather than re-planning.',
+          'This step spans many turns. Do NOT call completePlanStep for it — the system advances and completes it automatically as items finish.',
+          'If the batch genuinely cannot proceed because something only the user can supply is missing, call blockPlanStep with the reason. Do not park it merely because it is hard.',
+        ],
+        deliverable: `Each of the ${slice.length} listed item(s) handled, exactly as this step describes.`,
+      }),
+      conversationId: plan.conversationId ?? undefined,
+      brandContext: plan.brandId ? { id: plan.brandId } : undefined,
+      maxSteps: STEPS_PER_PLAN_STEP,
+      requestedBy: `plan:${plan.id}`,
+      pinnedSkills: plan.skills,
+      ...(plan.personaId ? { personaId: plan.personaId } : {}),
+    });
+
+    if (result.status === 'needs_approval') {
+      await blockStep(
+        step.id,
+        result.proposal?.summary || 'Waiting on your approval.',
+        result.proposal?.approvalId ?? null,
+      );
+      await recordProgress(plan.id, result.steps.length);
+      return 'blocked';
+    }
+
+    if (result.status === 'error') {
+      // Re-claimable next tick, cursor untouched — see the function comment.
+      await releaseStepForRetry(step.id);
+      await recordProgress(plan.id, result.steps.length, result.message);
+      return 'error';
+    }
+
+    const progress = await advanceCursor(step.id, slice.length);
+    if (!progress) {
+      // Lost the race to another tick, or the model closed the step itself
+      // against instructions — either way there is nothing safe to do this
+      // tick. Not an error: the next tick re-reads real state.
+      await recordProgress(plan.id, result.steps.length);
+      return 'idle';
+    }
+
+    if (progress.done) {
+      await completeStep(step.id, result.message || `Completed all ${progress.total} items.`);
+      await recordProgress(plan.id, result.steps.length);
+      return 'completed';
+    }
+
+    await recordProgress(plan.id, result.steps.length);
+    return 'idle';
+  } catch (e: any) {
+    await releaseStepForRetry(step.id);
     await recordProgress(plan.id, 0, String(e?.message || e));
     return 'error';
   }

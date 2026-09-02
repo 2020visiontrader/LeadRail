@@ -23,7 +23,7 @@ import { z } from 'zod';
 import { obj, S, type Capability } from './types';
 import {
   createPlan, getPlan, activePlanForConversation, completeStep, blockStep,
-  cancelPlans, renderPlan, MAX_PLAN_STEPS,
+  cancelPlans, renderPlan, MAX_PLAN_STEPS, MAX_STEP_OVER_ITEMS,
 } from '@/lib/plans/store';
 import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
 import { hermesRoute } from '@/lib/ai/hermes';
@@ -37,15 +37,36 @@ export const PLAN_CAPABILITIES: Capability[] = [
     domain: 'workspace',
     title: 'Write a plan',
     description:
-      'Break a large piece of work into ordered steps and save it, so the work survives across turns and you never lose your place. Use for anything that will take more than a handful of tool calls — researching a list of companies, building and launching a campaign, working through a batch of leads. Each step should be one concrete outcome, not a vague phase.',
+      'Break a large piece of work into ordered steps and save it, so the work survives across turns and you never lose your place; give a step { title, over: [...] } instead of a bare string when it means "for each of these N things, do X" (research/draft/send N leads, enrich N companies) — that is ONE batch step worked a few items per tick, not N separate steps. Use for anything that will take more than a handful of tool calls. Each step should be one concrete outcome, not a vague phase.',
     gate: 'internal_write',
     inputSchema: obj(
-      { objective: S.string, steps: { type: 'array', items: { type: 'string' } } },
+      {
+        objective: S.string,
+        steps: {
+          type: 'array',
+          items: {
+            oneOf: [
+              { type: 'string' },
+              {
+                type: 'object',
+                properties: { title: S.string, over: { type: 'array', items: S.string } },
+                required: ['title', 'over'],
+              },
+            ],
+          },
+        },
+      },
       ['objective', 'steps'],
     ),
     zod: z.object({
       objective: z.string().min(3).max(2000),
-      steps: z.array(z.string().min(1)).min(2).max(MAX_PLAN_STEPS),
+      steps: z.array(z.union([
+        z.string().min(1),
+        z.object({
+          title: z.string().min(1),
+          over: z.array(z.string().min(1)).min(1).max(MAX_STEP_OVER_ITEMS),
+        }),
+      ])).min(2).max(MAX_PLAN_STEPS),
     }),
     run: async (accountId, a, ctx?: any) => {
       // STRUCTURE THE PLAN AGAINST THE OBJECTIVE, then pin what it chose.
@@ -118,7 +139,7 @@ export const PLAN_CAPABILITIES: Capability[] = [
       return {
         planId: plan.id,
         status: plan.status,
-        steps: plan.steps.map((s) => ({ seq: s.seq, title: s.title })),
+        steps: plan.steps.map((s) => ({ seq: s.seq, title: s.title, ...(s.total != null ? { items: s.total } : {}) })),
         // Surfaced so the operator can see how the work was framed before
         // approving it — a plan mode that hides its own reasoning is just a
         // delay.
