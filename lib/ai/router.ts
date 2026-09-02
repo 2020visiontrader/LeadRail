@@ -10,22 +10,28 @@
 //      HEALTH_REORDER, on by default since 2026-08-31). See
 //      DEFAULT_TIER_ORDER's own header comment below for the reasoning and
 //      the production evidence behind the current seed order:
-//      1. OpenRouter (paid MODEL_CHAIN — see ./openrouter's own header for
-//         the roster and its ordering) — fastest proven tier, last-48h p50
-//         8.2s over successful calls (its ALL-TIME average in ai_usage is
-//         ~142.8s, but that figure is misleading — it includes an earlier
-//         era of failures and ~300s deadline-hitting calls; the recent p50
-//         is the number that describes current behaviour).
-//      2. Ask Zo  (user's Claude subscription — Haiku when set as the Zo account
+//      1. Ask Zo  (user's Claude subscription — Haiku when set as the Zo account
 //         default model; billed to the user's own Anthropic subscription) —
-//         proven but slow, p50 35.6s.
-//      3. OpenCode Go (deepseek-v4-flash by default since 2026-09-02; was
-//         deepseek-v4-pro) — genuinely the slowest measured path, not merely
-//         unproven: its registry route (DeepSeek V4 Flash, paid) has 152
-//         successful calls at ~46.1s average. Its hardcoded tier's key, which
-//         401'd on all 21 calls from 2026-08-27 to 2026-08-28, has since been
-//         ROTATED and succeeds again (3 calls, ~10.5s avg, measured against
-//         production 2026-09-02) — see OPENCODE'S TRUE STATE below.
+//         seeded FIRST by owner decision, 2026-09-02, NOT by latency: it is
+//         the slowest of the three at the median (p50 39.1s over 299
+//         successful calls, 14 days) but it is the one tier billed to a
+//         subscription rather than to a paid balance that is currently
+//         depleted. See DEFAULT_TIER_ORDER's header for the full figures.
+//      2. OpenCode Go (deepseek-v4-flash by default since 2026-09-02; was
+//         deepseek-v4-pro) — hardcoded tier p50 9.9s, but on only 3 calls.
+//         Its key, which 401'd on all 21 calls from 2026-08-27 to
+//         2026-08-28, has since been ROTATED and succeeds again — see
+//         OPENCODE'S TRUE STATE below. Its separate registry route (DeepSeek
+//         V4 Flash, paid) is much slower: 152 successful calls, p50 20.6s,
+//         ~46.1s average.
+//      3. OpenRouter (paid MODEL_CHAIN — see ./openrouter's own header for
+//         the roster and its ordering) — seeded LAST despite still being the
+//         fastest tier on RECENT successful calls (p50 8.5s since
+//         2026-08-28, n=71; minimum 1.8s). Its balance is depleted, which
+//         costs in-adapter 402 retries and eventual failures rather than
+//         median latency. This position is a cost decision, not a speed
+//         finding, and is expected to be revisited when the balance is
+//         topped up.
 //
 // NVIDIA NIM and HuggingFace were removed from the ladder entirely (production
 // incident, 2026-08-28: NIM timing out, HuggingFace returning 402 "depleted
@@ -39,9 +45,12 @@
 // stays ADDITIVE: an account with zero providers configured contributes no
 // candidates and the ladder runs exactly as it did. Ask Zo runs on the user's
 // Claude subscription: with the Zo default model set to Haiku it is accurate
-// on structured extraction, but it is measured slow (p50 35.6s) next to
-// OpenRouter (p50 8.2s), which is why the seed order and the live
-// latency-reordered order both put OpenRouter ahead of it. To pin a specific
+// on structured extraction, and it is billed to a subscription rather than to
+// a paid balance — which is why it is seeded first from 2026-09-02 even
+// though it is measured SLOW (p50 39.1s, 14 days) next to OpenRouter's recent
+// p50 of 8.5s. Note the live latency reordering (HEALTH_REORDER, below) will
+// still sort a warm process by measured latency and can move Ask Zo back
+// behind a faster tier; the seed decides cold starts only. To pin a specific
 // model for this app regardless of the Zo account default, set ZOASK_MODEL to
 // a `byok:` id. Each tier is
 // skipped when unconfigured; on any error/timeout we catch and fall through.
@@ -87,27 +96,79 @@ import { isPastDeadline, deadlineExceededError } from './deadline';
 // its default position, so a typo degrades to today's behaviour instead of
 // silently disabling a tier.
 //
-// OPENROUTER MOVED BACK TO FIRST, 2026-08-31 — correcting the PR #8 reorder
-// above (which had put opencode ahead of openrouter). PR #8 read OpenRouter as
-// "out of credit" from twelve 402s in one incident; that reading was wrong.
-// Queried against PRODUCTION `ai_usage`, last 48h, successful calls only:
+// HISTORY — OPENROUTER MOVED BACK TO FIRST, 2026-08-31 (superseded 2026-09-02,
+// kept because this file's comments are a decision log). This corrected the
+// PR #8 reorder above, which had put opencode ahead of openrouter after
+// reading OpenRouter as "out of credit" from twelve 402s in one incident; that
+// reading was wrong at the time. Queried against PRODUCTION `ai_usage`, last
+// 48h as of 2026-08-31, successful calls only:
 //
 //   tier         calls ok   p50 latency   p90 latency    worst        failures
 //   zoask        77         35,621ms      64,867ms       109,044ms    15 (timeouts)
 //   openrouter   66          8,233ms      24,239ms       140,163ms    0 logged
 //
-// (openrouter's ALL-TIME average latency in ai_usage is ~142,756ms — do not
+// (openrouter's ALL-TIME average latency in ai_usage is ~141,261ms — do not
 // cite that figure as current behaviour, it includes an earlier era of
-// failures and calls that ran into the old ~300s deadline; the 8,233ms
-// figure above, the last-48h p50 over successful calls, is what describes
-// OpenRouter today.)
+// failures and calls that ran into the old ~300s deadline.)
 //
-// OpenRouter is not out of credit — it 402s on two chain models
-// (anthropic/claude-haiku-4.5, openai/gpt-5.6-luna) and succeeds on a third
-// (openai/gpt-oss-120b), 66 times in this window. It is also the fastest
-// PROVEN tier: 4.3x faster than zoask's p50, and clearly faster than
-// opencode's registry route (below), so this constant seeds fastest-first:
-// openrouter, zoask, opencode.
+// ─────────────────────────────────────────────────────────────────────────────
+// CURRENT SEED — ASK ZO FIRST, 2026-09-02. OWNER DECISION, NOT A SPEED FINDING.
+// ─────────────────────────────────────────────────────────────────────────────
+// Measured against PRODUCTION `ai_usage` (project kqimpzbphdogvchqmtos) on
+// 2026-09-02, window = last 14 days, successful calls only
+// (`ok = true AND latency_ms IS NOT NULL`), percentiles via `percentile_cont`:
+//
+//   model_label    n      p50         p90          min        max
+//   opencode         3     9,873ms     12,650ms     8,146ms     13,344ms
+//   zoask          299    39,081ms     73,903ms    13,871ms    116,086ms
+//   openrouter     178    72,902ms    378,430ms     1,796ms    686,440ms
+//
+// READ THAT TABLE WITH THE CAVEAT BELOW — it does NOT say OpenRouter is slow
+// today. Broken out by day (same query, grouped by date), openrouter's
+// successful-call p50 is:
+//
+//   2026-08-27  n=107  186,227ms   <- 60% of the window's successes, one bad day
+//   2026-08-28  n=1     26,126ms
+//   2026-08-29  n=54     6,706ms
+//   2026-08-30  n=10    10,385ms
+//   2026-08-31  n=4      6,839ms
+//   2026-09-02  n=2      9,738ms
+//
+// Restricted to 2026-08-28 onward the same query gives openrouter p50 8,503ms
+// (n=71), opencode 9,873ms (n=3), zoask 36,794ms (n=131). So the 14-day 72.9s
+// median is an artifact of 2026-08-27 dominating the sample, and OpenRouter is
+// STILL the fastest tier on current behaviour — the older "~8.2s p50" claim
+// was, and remains, approximately right about speed. Anyone quoting the 72.9s
+// figure as "OpenRouter is the slowest tier" is quoting a one-day outage.
+//
+// WHY IT IS SEEDED LAST ANYWAY: the OpenRouter balance is depleted. The
+// adapter absorbs that internally — a 402 that names an affordable ceiling is
+// retried on the SAME model with a smaller cap (see ./openrouter's
+// `parseAffordableTokens` and the "402 named an affordable ceiling, retrying
+// same model with a smaller cap" warnings; 20 of them in app_logs on
+// 2026-09-02, 16 at 07:36-07:38 and 4 at 14:27), and only then does the chain
+// walk on to the next model. One `ai_usage` row can therefore cover several
+// HTTP attempts, and `latency_ms` is our own wrapper's wall clock, so that
+// cost is real time a user waits. It also produces outright failures: 44
+// failed openrouter rows in the window, including 400s on
+// openai/gpt-oss-120b on 2026-09-02. THIS ORDERING IS A RESPONSE TO A
+// DEPLETED BALANCE, NOT TO OPENROUTER BEING INHERENTLY SLOW. When the balance
+// is topped up, re-run POST /api/admin/ai-probe and REVISIT this order —
+// treat it as a cost decision with an expiry date, not as settled fact.
+//
+// Ask Zo is first because it is billed to the user's Claude subscription
+// rather than to that balance, so it keeps answering when the balance does
+// not — the owner's call on 2026-09-02, taken with the p50 39.1s cost in
+// view. It is NOT the fastest tier and this comment does not claim it is.
+//
+// OpenCode is seeded second on 9.9s p50 — but that is THREE calls, which is
+// too few to mean much; it is ahead of OpenRouter here for the same
+// balance reason, not on that sample.
+//
+// Note for whoever revisits this: on the recent-window numbers above,
+// openrouter (8.5s, n=71) is faster than opencode (9.9s, n=3), so if the
+// balance question goes away the evidence supports openrouter second, ahead
+// of opencode.
 //
 // OPENCODE'S TRUE STATE (queried separately, full ai_usage history, since the
 // 48h window this file otherwise cites has zero opencode calls in it).
@@ -120,25 +181,26 @@ import { isPastDeadline, deadlineExceededError } from './deadline';
 //     failed (401)", avg 101ms, window 2026-08-27 06:32 to 2026-08-28 13:45,
 //     then nothing until the rotation. So this tier is LIVE, and health.ts's
 //     'auth' parking (which held it out while the credential was dead) no
-//     longer applies. Its seeded-last position below now rests on measured
-//     speed alone — see the registry figures next — not on a dead key.
+//     longer applies.
 //   - The REGISTRY path (an ai_models row reached via resolveChainForTask,
 //     only for accounts with ai_routing configured — a different code path
 //     than this file's hardcoded ladder, see the two-layer note at the top of
 //     this file): "DeepSeek V4 Flash (paid)" — 152 SUCCESSFUL calls, 1
-//     failure (empty response), window 2026-08-28 to 2026-08-29, avg latency
-//     46,112ms. OpenCode's DeepSeek genuinely works through the registry —
-//     it is simply the SLOWEST measured path of the three (46.1s vs zoask's
-//     ~43.7s all-time average and openrouter's 8.2s recent p50). So opencode
-//     is seeded last here on measured speed, not on an assumption that nobody
-//     has tried it. The 2026-09-02 hardcoded-tier samples above are only three
-//     calls — too few to reorder on, and the live HEALTH_REORDER described
-//     below will re-rank it from real latency anyway once a process warms up.
+//     failure (empty response), window 2026-08-28 to 2026-08-29, p50
+//     20,566ms, avg latency 46,112ms. OpenCode's DeepSeek genuinely works
+//     through the registry, it is simply slow there. The 2026-09-02
+//     hardcoded-tier samples above are only three calls — too few to reorder
+//     on, and the live HEALTH_REORDER described below will re-rank it from
+//     real latency anyway once a process warms up.
 //
-// zoask sat FIRST in the order this constant is replacing, at a 35.6s p50 —
-// four steps at its own p90 is 260s, inside the 270s turn deadline with zero
-// margin, and a production turn actually died at 300,005ms after two steps
-// during the incident that prompted this fix.
+// zoask sat FIRST once before, in the order the 2026-08-31 reorder replaced,
+// and the cost of that is on the record: at a 35.6s p50, four steps at its own
+// p90 is 260s, inside the 270s turn deadline with zero margin, and a
+// production turn actually died at 300,005ms after two steps during the
+// incident that prompted that fix. Putting it first again on 2026-09-02
+// knowingly re-accepts that latency risk in exchange for a tier that is not
+// paying out of a depleted balance. The mitigation is the live reordering
+// below, which did not exist when that incident happened.
 //
 // THIS CONSTANT IS NOW ONLY THE COLD-START SEED, not the decision. Since
 // 2026-08-31, ./health's HEALTH_REORDER defaults ON: orderByHealth sorts the
@@ -146,15 +208,14 @@ import { isPastDeadline, deadlineExceededError } from './deadline';
 // once a process has made a few calls the live order tracks reality rather
 // than this hardcoded guess. This array only matters before anything has been
 // measured (a cold process, or AI_HEALTH_REORDER=0 restoring the pure static
-// order) — get the seed right so a cold start doesn't pay zoask's 35s median
-// before the first measurement exists to correct it.
+// order).
 //
 // If any tier's latency or credit status changes again, re-run
 // POST /api/admin/ai-probe to measure, and update this order (and this
 // comment) from what it actually measures — this comment documents the
 // reasoning as of the date above, not a permanent law; a stale comment here
 // is worse than none.
-export const DEFAULT_TIER_ORDER = ['openrouter', 'zoask', 'opencode'] as const;
+export const DEFAULT_TIER_ORDER = ['zoask', 'opencode', 'openrouter'] as const;
 type TierName = (typeof DEFAULT_TIER_ORDER)[number];
 
 export function tierOrder(): TierName[] {

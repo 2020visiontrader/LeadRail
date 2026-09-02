@@ -52,8 +52,8 @@ function fails(status: number) {
 
 beforeEach(async () => {
   vi.clearAllMocks();
-  // ladder order: openrouter, zoask, opencode (corrected 2026-08-31 — see
-  // lib/ai/router.ts's DEFAULT_TIER_ORDER header comment). Nothing is
+  // ladder order: zoask, opencode, openrouter (owner decision 2026-09-02 —
+  // see lib/ai/router.ts's DEFAULT_TIER_ORDER header comment). Nothing is
   // measured yet in these tests (resetHealth() below), so with
   // HEALTH_REORDER on by default the unmeasured ties keep this seed order.
   zoAskText.mockRejectedValue(fails(500));
@@ -83,13 +83,12 @@ describe('runCandidates deadline handling', () => {
   });
 
   it('does not start a THIRD candidate once the deadline passes between attempts', async () => {
-    // openrouter and zoask both fail (2026-08-31 correction: openrouter is
-    // now the FIRST candidate, zoask the second); by the time the loop
-    // reaches opencode (the third and last candidate) the deadline has
-    // passed.
+    // zoask and opencode both fail (2026-09-02 seed: zoask is the FIRST
+    // candidate, opencode the second); by the time the loop reaches
+    // openrouter (the third and last candidate) the deadline has passed.
     const start = Date.now();
-    openrouterText.mockImplementation(async () => { throw fails(500); });
-    zoAskText.mockImplementation(async () => {
+    zoAskText.mockImplementation(async () => { throw fails(500); });
+    opencodeGenerateText.mockImplementation(async () => {
       // Simulate real wall-clock time elapsing during this attempt.
       vi.spyOn(Date, 'now').mockReturnValue(start + 10_000);
       throw fails(500);
@@ -100,9 +99,9 @@ describe('runCandidates deadline handling', () => {
       generateText({ prompt: 'hi', deadlineAt: start + 5_000 }),
     ).rejects.toMatchObject({ code: 'deadline_exceeded' });
 
-    expect(openrouterText).toHaveBeenCalledTimes(1);
     expect(zoAskText).toHaveBeenCalledTimes(1);
-    expect(opencodeGenerateText).not.toHaveBeenCalled(); // never started
+    expect(opencodeGenerateText).toHaveBeenCalledTimes(1);
+    expect(openrouterText).not.toHaveBeenCalled(); // never started
     vi.restoreAllMocks();
   });
 
@@ -114,10 +113,11 @@ describe('runCandidates deadline handling', () => {
   });
 
   it('a candidate that succeeds before the deadline still wins normally', async () => {
-    openrouterText.mockResolvedValueOnce('the answer');
+    zoAskText.mockResolvedValueOnce('the answer');
     const { generateText } = await import('@/lib/ai/router');
     const result = await generateText({ prompt: 'hi', deadlineAt: Date.now() + 60_000 });
     expect(result).toBe('the answer');
-    expect(zoAskText).not.toHaveBeenCalled(); // never needed a fallback
+    expect(opencodeGenerateText).not.toHaveBeenCalled(); // never needed a fallback
+    expect(openrouterText).not.toHaveBeenCalled();
   });
 });
