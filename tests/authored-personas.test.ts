@@ -83,10 +83,12 @@ describe('PERSONA_TEMPLATES — combined registry', () => {
     expect(new Set(slugs).size).toBe(slugs.length);
   });
 
-  it('now has more than zero outreach personas (was zero before this change)', () => {
+  it('has 52 outreach personas: 8 authored + 44 from the gtm-agents harvest', () => {
     const outreach = PERSONA_TEMPLATES.filter((t) => t.domain === 'outreach');
     expect(outreach.length).toBeGreaterThan(0);
-    expect(outreach.length).toBe(8);
+    expect(outreach.length).toBe(52);
+    expect(outreach.filter((t) => t.sourceRepo === 'growthenginenowoslawski/coldoutboundskills').length).toBe(8);
+    expect(outreach.filter((t) => t.sourceRepo === 'gtmagents/gtm-agents').length).toBe(44);
   });
 
   it('still has the pre-existing marketing and shared personas untouched', () => {

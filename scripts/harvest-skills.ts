@@ -38,6 +38,10 @@
 //   git clone --filter=blob:none --sparse --depth 1 \
 //     https://github.com/growthenginenowoslawski/coldoutboundskills
 //   cd coldoutboundskills && git sparse-checkout set skills LICENSE   # 2.7MB
+//
+// gtm-agents (Apache-2.0, 275 SKILL.md files across 67 plugins) — the same
+// clone harvest-personas.ts reads its agents/ siblings from:
+//   git clone --depth 1 https://github.com/gtmagents/gtm-agents
 
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
@@ -69,7 +73,7 @@ const MIN_BODY_LENGTH = 80;
 // frontmatter shapes; widening one loose parser across all of them would let a
 // malformed mapping pass silently.
 // ---------------------------------------------------------------------------
-type Dialect = 'adclaw' | 'dmp' | 'kai' | 'mos' | 'arsenal';
+type Dialect = 'adclaw' | 'dmp' | 'kai' | 'mos' | 'arsenal' | 'gtm';
 
 interface SourceSpec {
   key: string;
@@ -325,6 +329,27 @@ const SOURCES: SourceSpec[] = [
     skillRoots: ['graphify'],
     dialect: 'arsenal',
     priority: 15,
+    requiresNotice: true,
+  },
+
+  // --- gtm-agents: the outreach-persona gap-closer ------------------------
+  //
+  // 67 plugins, each with BOTH an agents/ and a skills/ directory sharing one
+  // parent — that co-location is a structural persona<->skill mapping with
+  // no prose "## Agents Used" section to parse (see personas assignment
+  // below and lib/agent/persona-routing.ts's explicit-personas preference).
+  // Same repo scripts/harvest-personas.ts reads plugins/<plugin>/agents/*.md
+  // from; slugs there are prefixed "gtm-<plugin>-" (see gtmSlug() there) —
+  // this harvester's `personas` field is built to match that shape exactly.
+  {
+    key: 'gtm-agents',
+    repo: 'gtmagents/gtm-agents',
+    dir: 'gtm-agents',
+    licenseMode: 'root',
+    expectLicense: 'Apache-2.0',
+    skillRoots: ['plugins'],
+    dialect: 'gtm',
+    priority: 16,
     requiresNotice: true,
   },
 ];
@@ -608,6 +633,15 @@ function readDialect(dialect: Dialect, attrs: Record<string, string>, dirName: s
       const declared = (attrs.category || '').trim().toLowerCase();
       return declared ? { name, description, category: declared } : { name, description };
     }
+    // gtm-agents: `name` + `description`, nothing else (frontmatter carries
+    // no `model`/`allowed-tools` on SKILL.md — those only appear on the
+    // sibling agents/*.md files, which this dialect never reads directly).
+    case 'gtm': {
+      const name = (attrs.name || dirName).trim();
+      const description = (attrs.description || '').trim();
+      if (!name || !description) return null;
+      return { name, description };
+    }
   }
 }
 
@@ -703,6 +737,149 @@ function allHitsArePlaceholders(body: string, re: RegExp): boolean {
   });
 }
 
+// ---------------------------------------------------------------------------
+// gtm-agents structural persona mapping (see the SOURCES entry's comment).
+// A gtm-agents skill has no "## Agents Used" prose section, so
+// personaSlugsForSkill (lib/agent/persona-routing.ts) cannot find its
+// personas at runtime by parsing. This computes it at HARVEST TIME instead,
+// from the co-located plugins/<plugin>/agents/*.md directory — the same
+// files scripts/harvest-personas.ts turns into HARVESTED_PERSONA_TEMPLATES
+// entries — and emits the EXACT slug shape harvestGtm()'s gtmSlug() produces
+// ("gtm-<plugin>-<agent-slug>"), so every entry here resolves.
+// ---------------------------------------------------------------------------
+function gtmPluginFromRelPath(relPath: string): string | null {
+  const m = relPath.split('/');
+  return m[0] === 'plugins' && m[1] ? m[1] : null;
+}
+
+const gtmPersonaSlugsByPlugin = new Map<string, string[]>();
+
+/** Sibling agents/*.md basenames for one plugin, prefixed to match
+ *  gtmSlug(plugin, agentSlug) in scripts/harvest-personas.ts. Cached per
+ *  plugin — every skill under the same plugin shares the same persona set. A
+ *  plugin with no agents/ directory (none exist in gtm-agents today) yields
+ *  an empty array rather than throwing — a skill harvest never depends on
+ *  the persona harvest having run. */
+function gtmPersonaSlugsForPlugin(repoPath: string, plugin: string): string[] {
+  const cached = gtmPersonaSlugsByPlugin.get(plugin);
+  if (cached) return cached;
+  const agentsDir = join(repoPath, 'plugins', plugin, 'agents');
+  let files: string[] = [];
+  try {
+    files = readdirSync(agentsDir)
+      .filter((f) => f.toLowerCase().endsWith('.md'))
+      .sort();
+  } catch {
+    /* no agents/ dir for this plugin — empty personas, not fatal */
+  }
+  const slugs = files.map((f) => `gtm-${plugin}-${f.replace(/\.md$/i, '')}`);
+  gtmPersonaSlugsByPlugin.set(plugin, slugs);
+  return slugs;
+}
+
+// ---------------------------------------------------------------------------
+// gtm-agents category mapping — plugin name, not keyword-guessing.
+//
+// generic mapCategory() (below) scores a slug + description against loose
+// keyword regexes and, run against gtm-agents, filed 121 of 236 skills (51%)
+// into 'other' — worse than every other source (16 of 432 combined). The
+// signal it ignored: every gtm skill lives at
+// plugins/<plugin>/skills/<name>/SKILL.md, and the plugin it sits under
+// already says what discipline it is (sales-prospecting, paid-media, seo...).
+// That is a structural fact from the repo layout, not an inference, so it is
+// used directly instead of re-derived from prose.
+//
+// Built from the real 67 plugin names (`ls plugins` in the gtm-agents clone),
+// not guessed. Mapped ONLY onto categories SKILL_CATEGORIES already has
+// (lib/skills/registry.ts:216) — 'outreach' and 'lead-gen' included, since
+// both existed in that union but neither harvest source had ever populated
+// them. Every plugin gets a real, defensible category: gtm-agents' plugin
+// set is coherent GTM/RevOps vocabulary, so there is no plugin here where no
+// category honestly fits (unlike a mixed-purpose repo where 'other' would be
+// the honest answer) — see the harvest report for the reasoning behind each
+// bucket.
+const GTM_PLUGIN_CATEGORY: Record<string, string> = {
+  // seo
+  seo: 'seo',
+  'seo-workflow-orchestration': 'seo',
+  // ads
+  'paid-media': 'ads',
+  // social
+  'community-building': 'social',
+  'community-orchestration': 'social',
+  'social-media': 'social',
+  'social-media-marketing': 'social',
+  'social-scheduler-orchestration': 'social',
+  // email
+  'email-marketing': 'email',
+  'email-sequence-orchestration': 'email',
+  // content
+  'content-marketing': 'content',
+  'content-pipeline-orchestration': 'content',
+  copywriting: 'content',
+  'technical-writing': 'content',
+  'design-creative': 'content',
+  'video-marketing': 'content',
+  'pr-communications': 'content',
+  // analytics
+  'analytics-pipeline-orchestration': 'analytics',
+  'business-intelligence': 'analytics',
+  'competitive-intelligence': 'analytics',
+  'customer-analytics': 'analytics',
+  'marketing-analytics': 'analytics',
+  'revenue-analytics': 'analytics',
+  'revenue-forecasting-pipeline': 'analytics',
+  'market-research': 'analytics',
+  'growth-experiments': 'analytics',
+  'personalization-engine': 'analytics',
+  'voice-of-customer': 'analytics',
+  // outreach — direct, ongoing contact with a named prospect/partner/customer
+  'sales-prospecting': 'outreach',
+  'sales-calls': 'outreach',
+  'enterprise-sales': 'outreach',
+  'manufacturing-sales': 'outreach',
+  'partnership-development': 'outreach',
+  'lead-nurture-orchestration': 'outreach',
+  // lead-gen — identifying/qualifying/generating who to reach, not the reach itself
+  'abm-orchestration': 'lead-gen',
+  'data-enrichment-master': 'lead-gen',
+  'data-signal-enrichment': 'lead-gen',
+  'intent-signal-orchestration': 'lead-gen',
+  'referral-program-orchestration': 'lead-gen',
+  // ops — internal-facing process/enablement/lifecycle running of the business,
+  // not customer acquisition
+  'account-management': 'ops',
+  'customer-success': 'ops',
+  'customer-advocacy-orchestration': 'ops',
+  'customer-feedback-orchestration': 'ops',
+  'customer-journey-orchestration': 'ops',
+  'loyalty-lifecycle-orchestration': 'ops',
+  'renewal-orchestration': 'ops',
+  'sales-coaching': 'ops',
+  'sales-enablement': 'ops',
+  'sales-handoff-orchestration': 'ops',
+  'sales-operations': 'ops',
+  'sales-pipeline': 'ops',
+  // marketing — everything else: brand/campaign/vertical-playbook/GTM-motion
+  // work that is not specific enough to seo/ads/social/email/content/analytics
+  'b2b-saas': 'marketing',
+  'brand-strategy': 'marketing',
+  'campaign-orchestration': 'marketing',
+  'customer-marketing': 'marketing',
+  'e-commerce': 'marketing',
+  'edtech-growth': 'marketing',
+  'event-marketing': 'marketing',
+  'financial-services': 'marketing',
+  'healthcare-marketing': 'marketing',
+  'marketing-automation': 'marketing',
+  'partner-co-marketing-orchestration': 'marketing',
+  'pricing-strategy': 'marketing',
+  'product-launch-orchestration': 'marketing',
+  'product-led-growth': 'marketing',
+  'product-marketing': 'marketing',
+  'webinar-automation': 'marketing',
+};
+
 function scanQuality(body: string): string[] {
   const flags: string[] = [];
   for (const p of SECRET_PATTERNS) {
@@ -740,6 +917,14 @@ interface HarvestedSkillRaw {
   sourcePath: string;
   license: string;
   inspiredBy: string;
+  /** Explicit persona slugs that execute this skill, resolved at HARVEST
+   *  TIME from a structural source layout (co-located agents/ + skills/
+   *  directories) rather than parsed at runtime from an "## Agents Used"
+   *  prose section. Only gtm-agents populates this today; every other
+   *  source omits the field entirely (undefined, not []), so
+   *  personaSlugsForSkill's runtime "Agents Used" parsing keeps being the
+   *  path for them, unchanged. */
+  personas?: string[];
 }
 
 function walkSkillFiles(root: string, acc: string[] = [], depth = 0): string[] {
@@ -867,16 +1052,27 @@ function main() {
 
       const slug = slugify(meta.name, dirName);
       const posixPath = relPath.split(sep).join('/');
+      // Structural persona mapping — gtm-agents only (see the SOURCES entry
+      // and gtmPersonaSlugsForPlugin's doc comment above). Every other
+      // source leaves `personas` undefined so personaSlugsForSkill's runtime
+      // "Agents Used" parsing keeps being their path, unchanged.
+      const gtmPlugin = src.dialect === 'gtm' ? gtmPluginFromRelPath(posixPath) : null;
+      const personas = gtmPlugin ? gtmPersonaSlugsForPlugin(repoPath, gtmPlugin) : undefined;
       const entry: HarvestedSkillRaw = {
         slug,
         name: meta.name,
         description: meta.description || `Imported skill: ${meta.name}`,
         // An author's own label wins, but only if it is a category this catalog
-        // actually has. Anything else falls back to inference rather than
-        // inventing a bucket nothing can filter on.
+        // actually has. Next, gtm-agents' structural plugin→category map (a
+        // real signal from the repo layout, not a guess) — see
+        // GTM_PLUGIN_CATEGORY's doc comment. Everything else falls back to
+        // keyword inference rather than inventing a bucket nothing can filter
+        // on.
         category: meta.category && KNOWN_HARVEST_CATEGORIES.has(meta.category)
           ? meta.category
-          : mapCategory(slug, meta.description),
+          : gtmPlugin && GTM_PLUGIN_CATEGORY[gtmPlugin]
+            ? GTM_PLUGIN_CATEGORY[gtmPlugin]
+            : mapCategory(slug, meta.description),
         instructions: bodyTrimmed,
         source: src.key,
         sourceRepo: src.repo,
@@ -884,6 +1080,7 @@ function main() {
         sourcePath: posixPath,
         license,
         inspiredBy: `${src.repo}@${commit.slice(0, 12)} — ${posixPath}`,
+        ...(personas && personas.length ? { personas } : {}),
       };
 
       // Dedupe: prefer the more specific (longer) instruction body; on a tie,
@@ -955,6 +1152,13 @@ export interface HarvestedSkill {
   sourcePath: string;
   license: string;
   inspiredBy: string;
+  /** Explicit persona slugs (into HARVESTED_PERSONA_TEMPLATES) that execute
+   *  this skill, resolved at harvest time from the source's own directory
+   *  structure rather than parsed at runtime from an "## Agents Used" prose
+   *  section. Only gtm-agents skills carry this; every other source omits
+   *  it, so lib/agent/persona-routing.ts's personaSlugsForSkill falls back
+   *  to its existing runtime parse for them, unchanged. */
+  personas?: string[];
 }
 
 export const HARVESTED_SKILLS: HarvestedSkill[] = ${JSON.stringify(results, null, 2)};
@@ -1009,6 +1213,28 @@ Citedy/adclaw
   frontmatter was normalised onto LeadRail's skill schema and CLI-bound
   content (shell blocks, slash commands, plugin-manifest references) was
   removed.
+
+gtmagents/gtm-agents
+
+  Copyright 2025 LaunchIQ AI, Inc.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+  Skill content from plugins/*/skills/*/SKILL.md was modified: frontmatter
+  was normalised onto LeadRail's skill schema and CLI-bound content (shell
+  blocks, slash commands, plugin-manifest references) was removed. Each
+  entry's \`personas\` field was derived from the co-located
+  plugins/<plugin>/agents/*.md directory, not from SKILL.md content itself.
 
 --------------------------------------------------------------------------------
 All sources

@@ -1,13 +1,13 @@
 // scripts/harvest-personas.ts
 //
-// One-shot, offline import: read 24 agent definitions out of digital-marketing-pro
-// and 5 persona templates out of adclaw, and emit a typed
-// lib/agent/harvested-personas.ts array. This is a PURE, SYNCHRONOUS, LOCAL
-// FILE-PARSING script — no LLM/AI calls, no network, no MCP, no subprocesses
-// (the commit SHA is read out of .git/, not via `git`). The adclaw Python file
-// is parsed with a REGEX/string parser — Python is never executed. A single
-// malformed source file is skipped with a warning, never fatal — the whole run
-// must finish in well under 30s.
+// One-shot, offline import: read 24 agent definitions out of digital-marketing-pro,
+// 5 persona templates out of adclaw, and 204 agent definitions out of
+// gtm-agents, and emit a typed lib/agent/harvested-personas.ts array. This is
+// a PURE, SYNCHRONOUS, LOCAL FILE-PARSING script — no LLM/AI calls, no
+// network, no MCP, no subprocesses (the commit SHA is read out of .git/, not
+// via `git`). The adclaw Python file is parsed with a REGEX/string parser —
+// Python is never executed. A single malformed source file is skipped with a
+// warning, never fatal — the whole run must finish in well under 30s.
 //
 // A persona in this system is the VOICE AND FRAMEWORK that executes a skill —
 // tone, framing, judgement, boundaries — so `instructions` below is captured
@@ -19,12 +19,13 @@
 //   npx tsx scripts/harvest-personas.ts /path/to/clones
 //
 // Unlike harvest-skills.ts's oss-repos convention (one flat directory per
-// repo), these two sources were handed over already cloned at
+// repo), these three sources were handed over already cloned at
 // `<root>/<owner>/<repo>` (matching their disk layout: <root>/indranilbanerjee
-// /digital-marketing-pro and <root>/citedy/adclaw), so HARVEST_ROOT here is the
-// directory that CONTAINS the owner directories, not the repo directories
-// directly. The default (no argv, no env var) is one level above this repo
-// checkout — i.e. where these two repos actually live in this environment:
+// /digital-marketing-pro, <root>/citedy/adclaw and <root>/gtmagents/gtm-agents),
+// so HARVEST_ROOT here is the directory that CONTAINS the owner directories,
+// not the repo directories directly. The default (no argv, no env var) is one
+// level above this repo checkout — i.e. where these repos actually live in
+// this environment:
 //   npx tsx scripts/harvest-personas.ts
 // is sufficient as-is; HARVEST_ROOT only needs setting if the clones move.
 //
@@ -34,6 +35,7 @@
 // Clone with:
 //   git clone --depth 1 https://github.com/indranilbanerjee/digital-marketing-pro
 //   git clone --depth 1 https://github.com/Citedy/adclaw
+//   git clone --depth 1 https://github.com/gtmagents/gtm-agents
 
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -45,8 +47,10 @@ const HARVEST_ROOT = process.argv[2] || process.env.HARVEST_ROOT || DEFAULT_ROOT
 const OUTPUT_FILE = join(REPO_ROOT, 'lib', 'agent', 'harvested-personas.ts');
 
 // ---------------------------------------------------------------------------
-// Domain gating (see task brief). No 'outreach' personas exist upstream yet —
-// this script never assigns that value; it is reserved for a future source.
+// Domain gating (see task brief). digital-marketing-pro and adclaw never
+// assign 'outreach' — LeadRail had zero outreach-domain personas until the
+// gtm-agents source below, whose 14 sales/outreach plugins are the first
+// source to use that value.
 // ---------------------------------------------------------------------------
 type Domain = 'marketing' | 'outreach' | 'shared';
 
@@ -349,6 +353,229 @@ function harvestAdclaw(root: string, skipped: Skipped[]): HarvestedPersonaRaw[] 
 }
 
 // ---------------------------------------------------------------------------
+// Source C — gtm-agents: 204 agents at plugins/<plugin>/agents/<slug>.md
+// across 67 plugins. Same frontmatter shape as digital-marketing-pro
+// (`name` + `description`, plus a `model` key this script ignores — model
+// routing stays LeadRail's own).
+//
+// THE GAP THIS SOURCE CLOSES: LeadRail had 29 harvested personas — 27
+// 'marketing', 2 'shared', ZERO 'outreach' — on an outreach product.
+// coldoutboundskills (harvest-skills.ts) supplied 50 cold-outbound SKILLS but
+// ships no agents/ directory, so there was never an outreach PERSONA to
+// import until now. The 14 plugins in GTM_OUTREACH_PLUGINS below are the
+// outreach side of gtm-agents' 67 plugins; everything else is classified
+// 'marketing' or 'shared' by judgement (see GTM_MARKETING_PLUGINS /
+// GTM_SHARED_PLUGINS) — never left to infer from name alone.
+// ---------------------------------------------------------------------------
+const GTM_OWNER = 'gtmagents'; // on-disk directory name
+const GTM_REPO = 'gtmagents/gtm-agents'; // canonical attribution string
+const GTM_REPO_NAME = 'gtm-agents';
+const GTM_LICENSE = 'Apache-2.0';
+
+/** Sales/outreach plugins — the point of this whole harvest. ~44 agents,
+ *  including outreach-specialist, lead-researcher, qualification-expert,
+ *  social-seller, deliverability-lead, email-architect, enrichment-expert,
+ *  intent-analyst. */
+const GTM_OUTREACH_PLUGINS = new Set([
+  'sales-prospecting',
+  'enterprise-sales',
+  'sales-pipeline',
+  'lead-nurture-orchestration',
+  'email-sequence-orchestration',
+  'abm-orchestration',
+  'sales-operations',
+  'sales-enablement',
+  'sales-calls',
+  'sales-coaching',
+  'sales-handoff-orchestration',
+  'intent-signal-orchestration',
+  'data-enrichment-master',
+  'account-management',
+]);
+
+/** Marketing-channel and content plugins: campaign execution, content,
+ *  brand, paid/organic channels, vertical marketing playbooks. */
+const GTM_MARKETING_PLUGINS = new Set([
+  'brand-strategy',
+  'campaign-orchestration',
+  'community-building',
+  'community-orchestration',
+  'content-marketing',
+  'content-pipeline-orchestration',
+  'copywriting',
+  'customer-advocacy-orchestration',
+  'customer-marketing',
+  'design-creative',
+  'e-commerce',
+  'edtech-growth',
+  'email-marketing',
+  'event-marketing',
+  'financial-services',
+  'healthcare-marketing',
+  'loyalty-lifecycle-orchestration',
+  'paid-media',
+  'partner-co-marketing-orchestration',
+  'pr-communications',
+  'product-launch-orchestration',
+  'product-marketing',
+  'referral-program-orchestration',
+  'seo',
+  'seo-workflow-orchestration',
+  'social-media',
+  'social-media-marketing',
+  'social-scheduler-orchestration',
+  'technical-writing',
+  'video-marketing',
+  'webinar-automation',
+  'marketing-analytics',
+  'marketing-automation',
+]);
+
+/** Cross-cutting plugins: research, analytics, revenue/CS orchestration and
+ *  vertical GTM strategy that is not specifically an outreach mechanism or a
+ *  marketing content channel — applies to both surfaces, same spirit as
+ *  adclaw's researcher/content-writer 'shared' tagging. */
+const GTM_SHARED_PLUGINS = new Set([
+  'analytics-pipeline-orchestration',
+  'b2b-saas',
+  'business-intelligence',
+  'competitive-intelligence',
+  'customer-analytics',
+  'customer-feedback-orchestration',
+  'customer-journey-orchestration',
+  'customer-success',
+  'data-signal-enrichment',
+  'growth-experiments',
+  'manufacturing-sales',
+  'market-research',
+  'partnership-development',
+  'personalization-engine',
+  'pricing-strategy',
+  'product-led-growth',
+  'renewal-orchestration',
+  'revenue-analytics',
+  'revenue-forecasting-pipeline',
+  'voice-of-customer',
+]);
+
+function gtmDomainForPlugin(plugin: string): Domain | null {
+  if (GTM_OUTREACH_PLUGINS.has(plugin)) return 'outreach';
+  if (GTM_MARKETING_PLUGINS.has(plugin)) return 'marketing';
+  if (GTM_SHARED_PLUGINS.has(plugin)) return 'shared';
+  return null;
+}
+
+/** Slug collisions with digital-marketing-pro (and within gtm-agents itself —
+ *  three agent basenames, e.g. "research-lead", repeat across different
+ *  plugins) are certain. Every gtm-agents entry is uniformly prefixed with
+ *  its plugin, "gtm-<plugin>-<agent-slug>" — not just the colliding ones, so
+ *  the rule stays stable — which also happens to be exactly the shape
+ *  harvest-skills.ts's sibling-agents lookup emits for a skill's `personas`
+ *  field, so the two line up without a second mapping. digital-marketing-pro
+ *  and adclaw slugs are untouched, so the 210 existing "Agents Used"
+ *  references keep resolving only to them. */
+function gtmSlug(plugin: string, agentSlug: string): string {
+  return `gtm-${plugin}-${agentSlug}`;
+}
+
+function harvestGtm(root: string, skipped: Skipped[]): HarvestedPersonaRaw[] {
+  const repoPath = join(root, GTM_OWNER, GTM_REPO_NAME);
+  if (!existsSync(repoPath)) {
+    throw new Error(`[gtm-agents] clone missing at ${repoPath}`);
+  }
+  const commit = readGitSha(repoPath);
+  const pluginsDir = join(repoPath, 'plugins');
+  let plugins: string[];
+  try {
+    plugins = readdirSync(pluginsDir, { withFileTypes: true })
+      .filter((d) => d.isDirectory())
+      .map((d) => d.name)
+      .sort();
+  } catch (e) {
+    throw new Error(`[gtm-agents] cannot read ${pluginsDir}: ${(e as Error).message}`);
+  }
+
+  const out: HarvestedPersonaRaw[] = [];
+  for (const plugin of plugins) {
+    const domain = gtmDomainForPlugin(plugin);
+    if (!domain) {
+      skipped.push({ path: `plugins/${plugin}`, reason: `unrecognised gtm-agents plugin "${plugin}" — not in the documented domain map` });
+      continue;
+    }
+    const agentsDir = join(pluginsDir, plugin, 'agents');
+    let files: string[];
+    try {
+      files = readdirSync(agentsDir)
+        .filter((f) => f.toLowerCase().endsWith('.md'))
+        .sort();
+    } catch (e) {
+      skipped.push({ path: `plugins/${plugin}/agents`, reason: `cannot read: ${(e as Error).message}` });
+      continue;
+    }
+
+    for (const file of files) {
+      const full = join(agentsDir, file);
+      const relPath = `plugins/${plugin}/agents/${file}`;
+      let raw: string;
+      try {
+        raw = readFileSync(full, 'utf8');
+      } catch (e) {
+        skipped.push({ path: relPath, reason: `read-error: ${(e as Error).message}` });
+        continue;
+      }
+      const parsed = parseFrontmatter(raw);
+      if (!parsed) {
+        skipped.push({ path: relPath, reason: 'no-frontmatter' });
+        continue;
+      }
+      const { attrs, body } = parsed;
+      const agentSlug = (attrs.name || '').trim();
+      const description = (attrs.description || '').trim();
+      if (!agentSlug || !description) {
+        skipped.push({ path: relPath, reason: 'missing name/description in frontmatter' });
+        continue;
+      }
+      const fileStem = file.replace(/\.md$/i, '');
+      if (agentSlug !== fileStem) {
+        console.warn(`[harvest-personas] WARNING [gtm] frontmatter name "${agentSlug}" != filename stem "${fileStem}" (${relPath})`);
+      }
+
+      const instructions = body.trim();
+      if (!instructions) {
+        skipped.push({ path: relPath, reason: 'empty body after frontmatter' });
+        continue;
+      }
+
+      const h1 = instructions.match(/^#\s+(.+?)\s*$/m);
+      let name: string;
+      if (h1) {
+        name = h1[1].trim();
+      } else {
+        name = agentSlug
+          .split('-')
+          .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+          .join(' ');
+        console.warn(`[harvest-personas] WARNING [gtm] no H1 heading in ${relPath}; title-cased slug used as name: "${name}"`);
+      }
+
+      out.push({
+        slug: gtmSlug(plugin, agentSlug),
+        name,
+        description,
+        role: agentSlug,
+        instructions,
+        domain,
+        sourceRepo: GTM_REPO,
+        sourceCommit: commit,
+        sourcePath: relPath,
+        license: GTM_LICENSE,
+      });
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 function main() {
@@ -367,8 +594,9 @@ function main() {
   const skipped: Skipped[] = [];
   const dmp = harvestDmp(HARVEST_ROOT, skipped);
   const adclaw = harvestAdclaw(HARVEST_ROOT, skipped);
+  const gtm = harvestGtm(HARVEST_ROOT, skipped);
 
-  const all = [...dmp, ...adclaw].sort((a, b) => a.slug.localeCompare(b.slug));
+  const all = [...dmp, ...adclaw, ...gtm].sort((a, b) => a.slug.localeCompare(b.slug));
 
   // Slug uniqueness — fail closed, this is the whole point of the adclaw
   // prefix rule above.
@@ -380,13 +608,14 @@ function main() {
 
   const dmpCommit = dmp[0]?.sourceCommit ?? 'unknown';
   const adclawCommit = adclaw[0]?.sourceCommit ?? 'unknown';
+  const gtmCommit = gtm[0]?.sourceCommit ?? 'unknown';
 
   const header = `// AUTO-GENERATED by scripts/harvest-personas.ts — DO NOT EDIT BY HAND.
 // Regenerate with: HARVEST_ROOT=<clone-root-containing-owner-dirs> npx tsx scripts/harvest-personas.ts
 // (HARVEST_ROOT defaults to the directory one level above this repo checkout,
-// which is where both sources below are cloned as <root>/<owner>/<repo>.)
+// which is where all three sources below are cloned as <root>/<owner>/<repo>.)
 //
-// Sources (both permissively licensed; see the root NOTICE file):
+// Sources (all permissively licensed; see the root NOTICE file):
 //   - ${DMP_REPO} (${DMP_LICENSE}) @ ${dmpCommit} — ${dmp.length} agents (agents/<slug>.md)
 //   - ${ADCLAW_REPO} (${ADCLAW_LICENSE}) @ ${adclawCommit} — ${adclaw.length} persona templates
 //     (src/adclaw/agents/persona_templates.py; slugs prefixed "adclaw-" to
@@ -394,6 +623,12 @@ function main() {
 //     the harvester. digital-marketing-pro slugs are emitted VERBATIM so the
 //     "Agents Used" references in lib/skills/harvested.ts keep resolving to
 //     them.)
+//   - ${GTM_REPO} (${GTM_LICENSE}) @ ${gtmCommit} — ${gtm.length} agents
+//     (plugins/<plugin>/agents/<slug>.md across 67 plugins; slugs prefixed
+//     "gtm-<plugin>-" — see gtmSlug() in the harvester. 14 sales/outreach
+//     plugins are domain 'outreach' — the first source with that value; the
+//     rest are 'marketing' or 'shared' — see GTM_OUTREACH_PLUGINS /
+//     GTM_MARKETING_PLUGINS / GTM_SHARED_PLUGINS in the harvester.)
 //
 // A persona here is the VOICE AND FRAMEWORK that executes a skill — tone,
 // framing, judgement, boundaries — so \`instructions\` is the upstream agent's
@@ -412,9 +647,9 @@ export interface HarvestedPersonaTemplate {
   description: string;
   role: string;
   instructions: string;
-  /** Which product surface this persona applies to. There are currently no
-   *  'outreach' personas in either upstream source — that value is reserved
-   *  for a future source, never assigned today. */
+  /** Which product surface this persona applies to. digital-marketing-pro
+   *  and adclaw never assign 'outreach'; gtm-agents' 14 sales/outreach
+   *  plugins are the first (and, today, only) source of that value. */
   domain: HarvestedPersonaDomain;
   /** Upstream repo, e.g. "indranilbanerjee/digital-marketing-pro". */
   sourceRepo: string;
@@ -447,6 +682,12 @@ ${ADCLAW_REPO}
   License:   ${ADCLAW_LICENSE}
   Commit:    ${adclawCommit}
   Used for:  ${adclaw.length} normalised persona-template entries (slugs "adclaw-*") in lib/agent/harvested-personas.ts
+  Notes:     Apache-2.0 §4 attribution — see the copyright line in the section above.
+
+${GTM_REPO}
+  License:   ${GTM_LICENSE}
+  Commit:    ${gtmCommit}
+  Used for:  ${gtm.length} normalised persona-template entries (slugs "gtm-<plugin>-*") in lib/agent/harvested-personas.ts
   Notes:     Apache-2.0 §4 attribution — see the copyright line in the section above.`;
 
   const personasSection = `--------------------------------------------------------------------------------
@@ -481,6 +722,27 @@ Citedy/adclaw
   preserved verbatim as \`instructions\`; slugs were prefixed "adclaw-" to
   avoid colliding with digital-marketing-pro's persona slugs.
 
+gtmagents/gtm-agents
+
+  Copyright 2025 LaunchIQ AI, Inc.
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+  Persona content from the ${gtm.length} files under plugins/*/agents/*.md is
+  used verbatim as \`instructions\`; slugs were prefixed "gtm-<plugin>-" to
+  avoid colliding with digital-marketing-pro's persona slugs and with each
+  other (a handful of agent filenames repeat across different plugins).
+
 --------------------------------------------------------------------------------
 All sources
 --------------------------------------------------------------------------------
@@ -491,6 +753,7 @@ ${personaNoticeSources}`;
   const elapsedMs = Date.now() - startedAt;
   console.log(`[harvest-personas] digital-marketing-pro: ${dmp.length} personas @ ${dmpCommit.slice(0, 12)}`);
   console.log(`[harvest-personas] adclaw: ${adclaw.length} personas @ ${adclawCommit.slice(0, 12)}`);
+  console.log(`[harvest-personas] gtm-agents: ${gtm.length} personas @ ${gtmCommit.slice(0, 12)}`);
   console.log(`[harvest-personas] skipped: ${skipped.length}`);
   for (const s of skipped) console.log(`    - ${s.path}: ${s.reason}`);
   console.log(`[harvest-personas] TOTAL: ${all.length}`);

@@ -15,6 +15,25 @@
 import type { PersonaRow } from './personas';
 import type { HarvestedPersonaTemplate } from './harvested-personas';
 import { COLDOUTBOUND_SKILL_PERSONA_MAP } from './coldoutbound-skill-personas';
+import { HARVESTED_SKILLS } from '@/lib/skills/harvested';
+
+// Structural skill -> persona(s) map for gtm-agents, keyed by catalog slug
+// (HARVESTED_SKILLS[i].slug — the same bare slug the `skills` table and this
+// module's `skillSlug` param use; the COLDOUTBOUND_SKILL_PERSONA_MAP above is
+// keyed the same way). harvest-skills.ts already computes this at harvest
+// time, from each skill's sibling plugins/<plugin>/agents/ directory, and
+// writes it onto HARVESTED_SKILLS as `personas` — but nothing read that field
+// at runtime, which is exactly the "written but never read" failure mode
+// CLAUDE.md calls out: a gtm skill would route to no persona at all, same gap
+// coldoutbound skills had before COLDOUTBOUND_SKILL_PERSONA_MAP closed it.
+// Built once at module load, not per call.
+const GTM_SKILL_PERSONA_MAP: Record<string, string[]> = (() => {
+  const map: Record<string, string[]> = {};
+  for (const skill of HARVESTED_SKILLS) {
+    if (skill.personas && skill.personas.length) map[skill.slug] = skill.personas;
+  }
+  return map;
+})();
 
 // How far past the "Agents Used" heading to look for `**slug**` bold tokens.
 // Generous enough to catch every persona in a multi-agent section (the
@@ -27,7 +46,7 @@ const AGENTS_USED_WINDOW = 1500;
 /**
  * Persona slugs a skill names, in order of first appearance, deduped.
  *
- * Two sources, checked in this order:
+ * Three sources, checked in this order:
  *   1. The explicit COLDOUTBOUND_SKILL_PERSONA_MAP, keyed by `skillSlug` when
  *      given. The 50 coldoutbound skills lib/agent/authored-personas.ts is
  *      grounded in were never written with LeadRail's "## Agents Used"
@@ -36,20 +55,29 @@ const AGENTS_USED_WINDOW = 1500;
  *      unreachable exactly like harvested-personas.ts once did. When
  *      `skillSlug` matches an entry, that ONE mapped slug wins outright and
  *      the instructions text is never parsed.
- *   2. Falls back to parsing a "## Agents Used" section out of `instructions`
+ *   2. GTM_SKILL_PERSONA_MAP, keyed the same way — the structural
+ *      persona(s) harvest-skills.ts computed for each gtm-agents skill from
+ *      its sibling agents/ directory (HARVESTED_SKILLS[i].personas). gtm
+ *      skills carry no "## Agents Used" prose section either, so without
+ *      this they would route to nothing, same gap as (1). A skill can name
+ *      more than one persona here (unlike the coldoutbound map's one-to-one),
+ *      so all of them are returned.
+ *   3. Falls back to parsing a "## Agents Used" section out of `instructions`
  *      — the original behaviour, unchanged, which is what keeps
  *      digital-marketing-pro's 210 existing references resolving byte-
- *      identically for every skill NOT in the explicit map (including when
- *      `skillSlug` is omitted entirely, e.g. from a caller that only has
- *      instructions text).
+ *      identically for every skill NOT in either explicit map (including
+ *      when `skillSlug` is omitted entirely, e.g. from a caller that only
+ *      has instructions text).
  *
- * Returns [] when neither source names a persona (true for every AdClaw
- * skill and skills that predate the convention and aren't coldoutbound).
+ * Returns [] when no source names a persona (true for every AdClaw skill and
+ * skills that predate the convention and aren't coldoutbound or gtm).
  */
 export function personaSlugsForSkill(instructions: string, skillSlug?: string): string[] {
   if (skillSlug) {
     const mapped = COLDOUTBOUND_SKILL_PERSONA_MAP[skillSlug];
     if (mapped) return [mapped];
+    const gtmMapped = GTM_SKILL_PERSONA_MAP[skillSlug];
+    if (gtmMapped && gtmMapped.length) return gtmMapped;
   }
   const idx = instructions.indexOf('Agents Used');
   if (idx === -1) return [];
