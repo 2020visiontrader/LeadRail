@@ -518,18 +518,27 @@ reimplemented on top of it; or (b) the button and the route are removed
 outright. Leaving a button whose only outcome is a refusal is the
 written-but-never-read pattern in UI form.
 
-## 10. Migration 082 is written but not applied — 2026-09-02
+## 10. Migration 082 — APPLIED AND VERIFIED 2026-09-02
 
 `migrations/082_model_list_prices.sql` corrects
 `anthropic/claude-sonnet-5`'s `cost_per_mtok_in` from 3.00 to the published
 2.00 (Anthropic cancelled the September 1 increase to $3/$15; the catalogue
 was written 2026-08-29, three days before it would have taken effect). It has
-**not** been run against production — this was written and reviewed in a
-session that was told not to touch production data.
+been applied to production (project `kqimpzbphdogvchqmtos`) on 2026-09-02.
 
-**Done when:** `bun run migrations/push.ts` has been run and a direct query
-returns `cost_per_mtok_in = 2.00` for that row. `success: true` from the
-push script is not the proof; the query is.
+**CLOSED.** Verified the way this entry required — by querying the table, not
+by trusting the apply call's `success: true`:
+
+```
+label                    model_id                     in        out       enabled
+Claude Haiku 4.5 (paid)  anthropic/claude-haiku-4.5   1.000000  5.000000  true
+Claude Sonnet 5 (paid)   anthropic/claude-sonnet-5    2.000000  10.000000 true
+```
+
+`cost_per_mtok_out` is unchanged, so `isPaidModel` (lib/ai/providers.ts:359,
+`cost_per_mtok_out > 0`) still returns true for that row and `orderByCost`
+produces the same chain order it did before. That was the actual risk in this
+migration and it did not fire.
 
 ## 11. `AI_PROMPT_CACHE_MARKERS` is off and has never been exercised live — 2026-09-02
 
