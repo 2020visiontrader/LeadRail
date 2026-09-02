@@ -29,7 +29,7 @@ import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
 import { hermesRoute } from '@/lib/ai/hermes';
 import { listPersonas } from '@/lib/agent/personas';
 import { pickPersonaSlug, resolvePersona } from '@/lib/agent/persona-routing';
-import { HARVESTED_PERSONA_TEMPLATES } from '@/lib/agent/harvested-personas';
+import { PERSONA_TEMPLATES } from '@/lib/agent/persona-registry';
 
 export const PLAN_CAPABILITIES: Capability[] = [
   {
@@ -110,13 +110,13 @@ export const PLAN_CAPABILITIES: Capability[] = [
         skills = (routed.skillIds || []).filter((slug: string) => enabledSlugs.has(slug));
 
         const bySlug = new Map(enabled.map((sk: any) => [sk.slug, sk]));
-        const routedInstructions = skills
-          .map((slug) => bySlug.get(slug)?.instructions)
-          .filter((instructions): instructions is string => Boolean(instructions));
-        const personaSlug = pickPersonaSlug(routedInstructions);
+        const routedSkills = skills
+          .map((slug) => bySlug.get(slug))
+          .filter((sk): sk is { slug: string; instructions: string } => Boolean(sk?.instructions));
+        const personaSlug = pickPersonaSlug(routedSkills);
         if (personaSlug) {
           const rows = await listPersonas(accountId);
-          const resolved = resolvePersona(personaSlug, rows, HARVESTED_PERSONA_TEMPLATES);
+          const resolved = resolvePersona(personaSlug, rows, PERSONA_TEMPLATES);
           if (resolved?.source === 'row') personaId = resolved.row.id;
         }
       } catch { /* routes per turn instead */ }
