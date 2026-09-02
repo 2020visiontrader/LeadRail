@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyState, exchangeXCode, getXProfile, PKCE_COOKIE } from '@/lib/social/x-oauth';
 import { publicBase } from '@/lib/social/meta-oauth';
 import { upsertConnection, dbReady } from '@/lib/db';
+import { encryptTokenBundle } from '@/lib/social/connection-token';
 export const dynamic = 'force-dynamic';
 
 async function GET__impl(req: NextRequest) {
@@ -34,9 +35,9 @@ async function GET__impl(req: NextRequest) {
         display_name: profile.username ? `@${profile.username}` : 'X',
         username: profile.username || null,
         status: 'connected',
+        secret_ref: 'user-oauth:x',
+        secret_encrypted: encryptTokenBundle({ access_token: token, refresh_token: refreshToken }),
         meta: {
-          access_token: token,
-          refresh_token: refreshToken,
           expires_at: expiresIn ? new Date(Date.now() + expiresIn * 1000).toISOString() : null,
           source: 'x_oauth',
           connected_at: new Date().toISOString(),

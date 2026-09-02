@@ -457,3 +457,37 @@ Postgres, editable with the same Supabase access used to apply migrations.
 now lives in `lib/plans/runner.ts`'s `ITEMS_PER_STEP_TICK` comment, and the
 next person to tune batch throughput should find the reasoning rather than
 re-derive it from a stale average.
+
+## 8. Plaintext OAuth tokens still live in production `meta` until the backfill runs — 2026-09-02
+
+`claude/encrypt-oauth-tokens` closed the code-level exposure (writers now
+encrypt into `secret_encrypted`; every reader lazily migrates a row it
+touches — see `lib/social/connection-token.ts`), but the branch has not been
+deployed and the backfill has not been run. As of the exposure being verified
+(2026-09-02), production still has these rows with a live token sitting in
+plaintext `meta`:
+
+```
+instagram  2 rows
+facebook   2 rows
+notion     1 row
+```
+
+These stay plaintext until either (a) the connection is read through a
+migrated code path in production, or (b) `scripts/encrypt-connection-tokens.ts`
+is run. The script could not be run from this session — `AI_VAULT_KEY` lives
+on the deployed service, not this container.
+
+**Done when:** deploy the branch, then run (from an environment holding
+`AI_VAULT_KEY`, `NEXT_PUBLIC_SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`):
+
+```
+npx tsx scripts/encrypt-connection-tokens.ts --dry-run   # inspect first
+npx tsx scripts/encrypt-connection-tokens.ts             # then apply
+```
+
+and confirm via `information_schema`/a direct query that the 5 rows above (and
+any new ones since) have `secret_encrypted IS NOT NULL` and no `access_token`/
+`refresh_token`/`user_token` key left in `meta`. Until that query is run
+against production, "the fix shipped" is not the same claim as "the exposure
+is closed" — the five known-plaintext rows are still sitting there.

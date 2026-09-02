@@ -4,6 +4,7 @@
 // an accurate state. The same token powers the agent's notionSearch tool.
 
 import { getConnection } from '@/lib/db';
+import { resolveTokensForRow } from '@/lib/social/connection-token';
 
 const NOTION_API = 'https://api.notion.com/v1';
 const NOTION_VERSION = '2022-06-28';
@@ -12,8 +13,10 @@ export async function resolveNotionToken(accountId?: string): Promise<string | n
   if (accountId) {
     try {
       const conn = await getConnection(accountId, 'notion');
-      const t = conn?.meta?.access_token || conn?.secret_ref;
-      if (t) return String(t);
+      if (conn) {
+        const { accessToken } = await resolveTokensForRow(conn);
+        if (accessToken) return accessToken;
+      }
     } catch { /* fall through to env */ }
   }
   return process.env.NOTION_API_KEY || process.env.NOTION_TOKEN || null;

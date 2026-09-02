@@ -28,6 +28,7 @@
 
 import { z } from 'zod';
 import { getConnections, getConnection, getVentures, getVenture } from '@/lib/db';
+import { resolveTokensForRow } from '@/lib/social/connection-token';
 import {
   publishToInstagramForAccount, publishToFacebookPage, getInstagramInsights, getMetaCreds,
 } from '@/lib/integrations/meta';
@@ -142,10 +143,10 @@ const PUBLISHERS: Partial<Record<SocialKey, Dispatch>> = {
     publishToInstagramForAccount(accountId, { caption: a.message || '', imageUrl: a.imageUrl, videoUrl: a.videoUrl }, externalId),
   linkedin: async (accountId, a, externalId) => {
     const conn = await getConnection(accountId, 'linkedin', externalId);
-    const token = conn?.meta?.access_token;
     const memberId = conn?.meta?.member_id;
+    const { accessToken: token } = conn ? await resolveTokensForRow(conn) : { accessToken: null };
     if (!token || !memberId) throw new Error('No LinkedIn account connected — connect LinkedIn in Settings first');
-    return publishLinkedinPost(String(token), String(memberId), { text: a.message || '', link: a.link });
+    return publishLinkedinPost(token, String(memberId), { text: a.message || '', link: a.link });
   },
   // Packet 7.1: TikTok's unaudited Content Posting API can only push a video
   // to the creator's TikTok inbox as a draft — see lib/social/tiktok-oauth.ts.
@@ -153,17 +154,17 @@ const PUBLISHERS: Partial<Record<SocialKey, Dispatch>> = {
   // this never silently "posts" a text-only message.
   tiktok: async (accountId, a, externalId) => {
     const conn = await getConnection(accountId, 'tiktok', externalId);
-    const token = conn?.meta?.access_token;
+    const { accessToken: token } = conn ? await resolveTokensForRow(conn) : { accessToken: null };
     if (!token) throw new Error('No TikTok account connected — connect TikTok in Settings first');
     if (!a.videoUrl) throw new Error('TikTok posts require a video URL.');
-    return publishTiktokDraft(String(token), { videoUrl: a.videoUrl, title: a.message });
+    return publishTiktokDraft(token, { videoUrl: a.videoUrl, title: a.message });
   },
   x: async (accountId, a, externalId) => {
     const conn = await getConnection(accountId, 'x', externalId);
-    const token = conn?.meta?.access_token;
+    const { accessToken: token } = conn ? await resolveTokensForRow(conn) : { accessToken: null };
     if (!token) throw new Error('No X account connected — connect X in Settings first');
     if (!a.message) throw new Error('X posts require text.');
-    return publishXPost(String(token), a.message);
+    return publishXPost(token, a.message);
   },
   // threads lands here as its publisher is written.
 };

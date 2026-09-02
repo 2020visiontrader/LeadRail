@@ -2,6 +2,7 @@ import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { dbReady, upsertConnection } from '@/lib/db';
 import { storeSocialCredential, type TokenProvider } from '@/lib/social/credentials';
+import { encryptTokenBundle } from '@/lib/social/connection-token';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 
 export const dynamic = 'force-dynamic';
@@ -167,8 +168,8 @@ const VALIDATORS: Record<string, (token: string, body: any) => Promise<Validator
  * token belongs in neither. These are stored via storeSocialCredential, which
  * encrypts with the lib/ai/crypto vault before the value reaches Postgres.
  *
- * The other providers above still write `meta.access_token` — that predates
- * this packet and is reported, not silently changed here.
+ * The other providers above go through the plain (non-vaulted-provider) path
+ * below, which also encrypts the token — see the comment at that call site.
  */
 const VAULTED: Record<string, TokenProvider> = { buffer: 'buffer', ghl: 'ghl' };
 
@@ -216,12 +217,13 @@ async function POST__impl(request: NextRequest) {
     }
 
     if (dbReady()) {
+      // Not one of the VAULTED providers above, but the token still goes to
+      // the encrypted column, never `meta` — that was exactly how a Notion
+      // token shipped live in plaintext (see lib/social/connection-token.ts).
       const metaPayload: Record<string, any> = {
         platform_id: result.id,
         platform_name: result.name,
         last_validated: new Date().toISOString(),
-        // Persist the validated token so publish/send paths can use it per-account.
-        access_token: token,
       };
       if (result.igUserId) metaPayload.ig_user_id = result.igUserId;
       if (result.pageId) metaPayload.page_id = result.pageId;
@@ -232,9 +234,8 @@ async function POST__impl(request: NextRequest) {
         status: 'connected',
         meta: metaPayload,
         secret_ref: `user-provided:${provider}`,
+        secret_encrypted: encryptTokenBundle({ access_token: token }),
       });
-      // Never leak the raw token back to the client.
-      if (row?.meta?.access_token) row.meta = { ...row.meta, access_token: '***stored***' };
       response.connection = row;
       if (provider === 'meta') response.ig_linked = Boolean(result.igUserId);
     }

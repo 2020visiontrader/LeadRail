@@ -2,6 +2,7 @@ import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyState, exchangeCodeForToken, getLongLivedToken, getUserPages, getMeId, publicBase } from '@/lib/social/meta-oauth';
 import { upsertConnection, dbReady } from '@/lib/db';
+import { encryptTokenBundle } from '@/lib/social/connection-token';
 export const dynamic = "force-dynamic";
 
 // Meta redirects the user's browser here after they approve. This route is listed
@@ -38,15 +39,21 @@ async function GET__impl(req: NextRequest) {
     let igCount = 0;
     if (dbReady()) {
       for (const p of pages) {
+        // Per-page association is external_id = p.id (this row IS that one
+        // Page) — see the multi-page note in lib/social/connection-token.ts.
+        // The row's two secrets (the Page token that publishes, and the
+        // long-lived user token it was minted from) are encrypted together
+        // into one secret_encrypted blob; `meta` keeps only non-secret,
+        // display/lookup fields.
         await upsertConnection({
           account_id: verified.accountId,
           provider: 'facebook',
           external_id: p.id,
           display_name: p.name,
           status: 'connected',
+          secret_ref: 'user-oauth:facebook',
+          secret_encrypted: encryptTokenBundle({ access_token: p.access_token, user_token: userToken }),
           meta: {
-            access_token: p.access_token, // Page token — used for FB publish + linked-IG publish
-            user_token: userToken,
             fb_user_id: fbUserId ?? null,
             page_id: p.id,
             page_name: p.name,
@@ -64,9 +71,13 @@ async function GET__impl(req: NextRequest) {
             display_name: p.ig_username || 'Instagram',
             username: p.ig_username ?? null,
             status: 'connected',
+            secret_ref: 'user-oauth:instagram',
+            // The Page token also publishes to the linked IG account, so this
+            // row carries the SAME page token as its `facebook` sibling
+            // (they're two rows for two provider surfaces of one Page, not
+            // two Pages) plus the same user token.
+            secret_encrypted: encryptTokenBundle({ access_token: p.access_token, user_token: userToken }),
             meta: {
-              access_token: p.access_token, // Page token publishes to the linked IG
-              user_token: userToken,
               fb_user_id: fbUserId ?? null,
               ig_user_id: p.ig_user_id,
               ig_username: p.ig_username ?? null,
