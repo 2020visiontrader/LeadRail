@@ -13,6 +13,8 @@ let plans: any[] = [];
 let steps: any[] = [];
 let agentResult: any = { status: 'done', message: 'Did it.', steps: [{}, {}], transcript: [] };
 const runAgent = vi.fn(async (_input?: any) => agentResult);
+const loadTranscriptMock = vi.fn(async (..._a: any[]) => [] as any[]);
+const saveConversationMock = vi.fn(async (..._a: any[]) => 'conv-saved');
 
 function rowsFor(table: string) { return table === 'agent_plans' ? plans : steps; }
 
@@ -64,6 +66,10 @@ vi.mock('@/lib/db', () => ({
 }));
 vi.mock('@/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), request: vi.fn() } }));
 vi.mock('@/lib/agent/loop', () => ({ runAgent: (...a: any[]) => runAgent(...(a as [])) }));
+vi.mock('@/lib/agent/memory', () => ({
+  loadTranscript: (...a: any[]) => loadTranscriptMock(...a),
+  saveConversation: (...a: any[]) => saveConversationMock(...a),
+}));
 
 function seed(opts: { stepsUsed?: number; maxSteps?: number; attempts?: number; status?: string } = {}) {
   plans = [{
@@ -483,5 +489,48 @@ describe('a step with no `over` behaves exactly as before batch steps existed', 
     const msg = String(runAgent.mock.calls[0][0].message);
     expect(msg).not.toMatch(/do not call completePlanStep/i);
     expect(msg).not.toContain('Items to handle THIS TURN ONLY');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 2 — progress reporting. A batch step that advances across many ticks
+// should report itself into its own conversation ("31 of 95 done"), the same
+// way a human watching a long job would expect — reusing the EXISTING
+// conversation writer (loadTranscript + saveConversation, lib/agent/memory.ts)
+// rather than a second write path.
+// ---------------------------------------------------------------------------
+describe('batch progress is reported into the plan\'s conversation', () => {
+  beforeEach(() => {
+    vi.resetModules(); runAgent.mockClear();
+    loadTranscriptMock.mockClear(); saveConversationMock.mockClear();
+    loadTranscriptMock.mockResolvedValue([]);
+    agentResult = { status: 'done', message: 'batch tick ok', steps: [{}], transcript: [] };
+  });
+
+  it('appends a short "N of M done" line on advance', async () => {
+    const items = Array.from({ length: 10 }, (_, i) => `lead-${i}`);
+    seedBatch({ over: items, itemsPerTick: 3 });
+
+    await tick();
+
+    expect(loadTranscriptMock).toHaveBeenCalledWith('c1', 'acct-1');
+    expect(saveConversationMock).toHaveBeenCalledTimes(1);
+    const saved = saveConversationMock.mock.calls[0][0];
+    expect(saved.id).toBe('c1');
+    expect(saved.accountId).toBe('acct-1');
+    const lastMsg = saved.transcript[saved.transcript.length - 1];
+    expect(lastMsg.role).toBe('assistant');
+    expect(lastMsg.content).toMatch(/3 of 10 done/);
+  });
+
+  it('is NOT appended when the plan has no conversationId', async () => {
+    const items = Array.from({ length: 10 }, (_, i) => `lead-${i}`);
+    seedBatch({ over: items, itemsPerTick: 3 });
+    plans[0].conversation_id = null;
+
+    await tick();
+
+    expect(loadTranscriptMock).not.toHaveBeenCalled();
+    expect(saveConversationMock).not.toHaveBeenCalled();
   });
 });

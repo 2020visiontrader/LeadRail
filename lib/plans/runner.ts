@@ -195,6 +195,39 @@ async function advance(plan: Plan): Promise<'completed' | 'blocked' | 'idle' | '
  *     step to `pending` with the cursor untouched, so it resumes on the same
  *     slice rather than skipping it or repeating an earlier one.
  */
+/**
+ * Append a short "N of M done" progress line to the plan's own conversation,
+ * so a long batch job reports itself the way a human watching would expect —
+ * the same reasoning the screenshot this Phase 2 build is modelled on shows.
+ *
+ * Reuses the EXISTING conversation writer (loadTranscript + saveConversation,
+ * lib/agent/memory.ts) rather than inventing a second write path — that pair
+ * is already what every agent turn persists through (see e.g.
+ * lib/scheduled/store.ts), and saveConversation already carries the guards a
+ * hand-rolled append would have to reinvent (stable message ids, the
+ * shrink-refusal guard, the deleted-conversation refusal).
+ *
+ * Best-effort and silent on failure: a missed progress line must not fail the
+ * tick that earned it — the plan step itself already completed or advanced by
+ * the time this runs. Does nothing when the plan has no conversationId
+ * (nothing to append to).
+ */
+async function appendProgressLine(plan: Plan, text: string): Promise<void> {
+  if (!plan.conversationId) return;
+  try {
+    const { loadTranscript, saveConversation } = await import('@/lib/agent/memory');
+    const transcript = await loadTranscript(plan.conversationId, plan.accountId);
+    await saveConversation({
+      id: plan.conversationId,
+      accountId: plan.accountId,
+      brandId: plan.brandId ?? null,
+      transcript: [...transcript, { role: 'assistant', content: text }],
+    });
+  } catch {
+    // best-effort — see the function comment above.
+  }
+}
+
 async function advanceBatch(plan: Plan, step: PlanStep): Promise<'completed' | 'blocked' | 'idle' | 'error'> {
   const items = step.over || [];
   const slice = items.slice(step.cursor, step.cursor + ITEMS_PER_STEP_TICK);
@@ -253,6 +286,11 @@ async function advanceBatch(plan: Plan, step: PlanStep): Promise<'completed' | '
       await recordProgress(plan.id, result.steps.length);
       return 'idle';
     }
+
+    // Report the tick's advance into the conversation, whether or not this
+    // was the tick that finished the batch — see appendProgressLine's own
+    // comment for why this reuses the existing conversation writer.
+    await appendProgressLine(plan, `${progress.cursor} of ${progress.total} done.`);
 
     if (progress.done) {
       await completeStep(step.id, result.message || `Completed all ${progress.total} items.`);
