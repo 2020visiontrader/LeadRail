@@ -2,6 +2,7 @@ import { withApi, requireSession, badRequest, errorResponse } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { truncateConversationAt } from '@/lib/agent/memory';
 import { revokeAllForConversation } from '@/lib/approvals/grants';
+import { stripPrivateReasoning } from '@/lib/agent/transcript-privacy';
 import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
@@ -71,7 +72,10 @@ async function POST__impl(request: NextRequest, { params }: { params: { id: stri
 
     const transcript = await truncateConversationAt(session.accountId, params.id, messageId);
     if (!transcript) return badRequest('could not rerun from that message');
-    return NextResponse.json({ ok: true, transcript });
+    // Client boundary — the truncated transcript goes to the browser to
+    // repaint the chat, so the private `plan` comes off it. The truncation
+    // itself already happened in the store, on the full rows.
+    return NextResponse.json({ ok: true, transcript: stripPrivateReasoning(transcript) });
   } catch (e) {
     return errorResponse(e);
   }

@@ -111,7 +111,7 @@ const CATALOG_ORDER: string[] = [
   'listConversations', 'createCampaign', 'importAsset', 'launchCampaign',
   'pauseCampaign', 'syncCampaign', 'analyzeCampaign', 'searchNotion',
   'searchDrive', 'readNotionPage', 'readDriveFile', 'sourceLeads', 'enrichLead',
-  'draftOutreach', 'sendEmail', 'listSequences', 'enrollInSequence', 'listStages',
+  'draftOutreach', 'sendEmail', 'outreachHistory', 'listSequences', 'enrollInSequence', 'listStages',
   'createDeal', 'moveDeal', 'addNote', 'updateLeadStatus', 'listTags', 'tagLead',
   'getPersona', 'updatePersona', 'generateAdCopy', 'analyzeBrand', 'getBrandStrategy', 'reviewContent', 'judgeVoice', 'createGoal', 'listGoals', 'logGoalProgress',
   // --- appended by Packet 1.1 (durable memory). Appended, never sorted: the

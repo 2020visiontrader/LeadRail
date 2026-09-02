@@ -223,6 +223,26 @@ export const CAMPAIGN_CAPABILITIES: Capability[] = [
       'The ad goes live to a real audience immediately and keeps spending until it is paused.',
       a.link ? `It links to ${a.link}.` : null,
     ].filter(Boolean).join(' '),
+    // launchCampaign resolves ONLY after every Meta call succeeded, to
+    // `{ campaign, adSet, ad, creative }` — four real Meta object ids. Every
+    // failure path before that throws a GuardError (no budget, no linked Meta
+    // campaign, no asset, no Page, over the monthly spend limit), so a result
+    // that does not carry those ids is not a launch and gets no digest.
+    //
+    // The ids are the evidence, so they are what the line states. The daily
+    // budget deliberately is NOT restated from `args`: the request is not the
+    // outcome, and `launchCampaign` falls back to the campaign's own stored
+    // budget when the argument is absent — narrating the argument would report
+    // a number that may never have been the one spent.
+    digest: (_args, result) => {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) return '';
+      const r: any = result;
+      if (!present(r, 'adSet') || !present(r, 'ad')) return '';
+      return digestLine(
+        `Campaign is LIVE on Meta and spending: ad ${clip(String(r.ad), 40)} in ad set ${clip(String(r.adSet), 40)}${present(r, 'creative') ? ` on creative ${clip(String(r.creative), 40)}` : ''}, all set ACTIVE.`,
+        'It keeps spending until it is paused.',
+      );
+    },
   },
   {
     name: 'pauseCampaign',

@@ -2,9 +2,11 @@
 //
 // WHY THIS IS NOT OPTIONAL. A skill's `instructions` are spliced verbatim into
 // the agent's SYSTEM prompt — the most trusted position in the whole context,
-// above the user's own message. The catalog is 353 skills, 341 of them
-// harvested from third-party open-source repositories. Nothing read that text
-// before it reached the model.
+// above the user's own message. The catalog is 681 skills, 668 of them
+// harvested from third-party open-source repositories (measured 2026-09-02 —
+// it was 353/341 when this screen was first written and 443 at the second
+// calibration pass, so the historical counts below are the catalog SIZE OF
+// THEIR DAY, not today's). Nothing read that text before it reached the model.
 //
 // That is a prompt-injection surface with a very short path: land a line in
 // any harvested SKILL.md, wait for an account to enable it, and from then on
@@ -26,8 +28,8 @@
 // line instead of silently removing a skill someone depends on.
 //
 // CALIBRATED AGAINST THE LIVE CATALOG, and the first draft was badly wrong: it
-// would have blocked 93 of 443 skills. Not one was an attack. They were
-// setup guides mentioning "API key", workflow notes saying "proceed without
+// would have blocked 93 of the 443 skills in the catalog at that time. Not one
+// was an attack. They were setup guides mentioning "API key", workflow notes saying "proceed without
 // asking", automation skills describing "post to a webhook" — topic words, not
 // instructions. A screen that removes a fifth of the catalog gets switched off,
 // and then it protects nothing.
@@ -41,16 +43,32 @@
 // The second calibration pass moved two more rules from block to flag, for a
 // reason worth stating plainly: pattern matching cannot read negation. Every
 // live 'approval-bypass' hit was a skill ENFORCING the rule — "Never
-// auto-approve", "do not skip an approval" — and every 'exfiltration' hit was
-// a privacy notice promising the opposite of what it matched. A negation guard
+// auto-approve", "do not skip an approval" — and every 'exfiltration' hit AT
+// THAT TIME was a privacy notice promising the opposite of what it matched. A negation guard
 // (isNegated, below) now catches the common shape, but the residue is exactly
 // why those two stayed advisory.
 //
-// The result against the live 443-skill catalog: ZERO blocked. That is the
-// correct outcome and not a broken screen — the block rules are tripwires for
-// shapes that have no innocent reading, and nothing in the catalog has one
-// today. A screen whose value is measured in how much it removes will be tuned
-// until it removes something.
+// A third pass fixed the 'exfiltration' rule, which had been matching a verb
+// and a sensitive noun and calling that enough: its own comment said a
+// destination was required and the pattern never checked for one. See that
+// rule for the detail. It cost four flags and no detections.
+//
+// RE-MEASURED 2026-09-02 over the whole live catalog (681 entries: 13 built-in
+// plus 668 harvested), which is the number to update when this changes:
+//
+//   blocked                 0
+//   flagged skills          9   (was 13 before the exfiltration fix)
+//     credential-reference  4   process.env.<X>_API_KEY in code samples
+//     identity-reassignment 3   "you are now connected to <product>"
+//     approval-bypass       2   both ENFORCING the gate ("without approval")
+//     exfiltration          0   (was 4: one error-handling line, one signup
+//                                walkthrough, two hits on the command names
+//                                `client-report` / `credential-switch`)
+//
+// ZERO blocked is the correct outcome and not a broken screen — the block
+// rules are tripwires for shapes that have no innocent reading, and nothing in
+// the catalog has one today. A screen whose value is measured in how much it
+// removes will be tuned until it removes something.
 
 export type SkillFindingSeverity = 'block' | 'flag';
 
@@ -92,8 +110,9 @@ const RULES: Rule[] = [
     // Credentials: the ACT of obtaining or emitting one, never the mention.
     //
     // Calibrated against the live catalog, where the first draft of this rule
-    // matched 52 of 443 skills — every one of them a legitimate line like
-    // "paste your API key into the connector". Mentioning a credential is what
+    // matched 52 of the 443 skills then in the catalog — every one of them a
+    // legitimate line like "paste your API key into the connector".
+    // Mentioning a credential is what
     // a setup guide does; reading, printing or transmitting one is the attack,
     // so the verb is what the pattern keys on.
     id: 'credential-access',
@@ -132,18 +151,55 @@ const RULES: Rule[] = [
     pattern: /\b(bypass|skip|ignore|disable|circumvent|suppress)\b[^.\n]{0,30}\b(approval|confirmation|permission\s+(check|gate|prompt)|human\s+(review|in\s+the\s+loop)|safety\s+(check|gate))\b|\b(auto[-\s]?approve|approve\s+(it\s+)?(yourself|automatically)|without\s+(waiting\s+for\s+)?(approval|authori[sz]ation)|do\s+not\s+wait\s+for\s+(approval|confirmation))\b/i,
   },
   {
-    // Exfiltration needs BOTH a destination and something to send. The first
-    // draft matched any "post to a webhook", which is what an automation skill
-    // legitimately describes; this requires the payload to be the agent's own
-    // context rather than the user's content.
+    // Exfiltration needs BOTH a destination and something to send.
+    //
+    // The comment above this rule said that from the start; the PATTERN did
+    // not implement it. It required a verb and a sensitive noun within 50
+    // characters and checked for no destination at all, so in production it
+    // fired 16 times a day on the harvested `seo-dataforseo` skill for
+    //
+    //     "**API authentication failed**: Report invalid credentials."
+    //
+    // — error handling that tells the USER their key is wrong. Two more live
+    // matches were the same accident on command names (`client-report`,
+    // `credential-switch` in one sentence).
+    //
+    // Two changes, and each is doing separate work:
+    //
+    // 1. `report` is dropped from the verb list. Every other verb here
+    //    (send/post/upload/forward/transmit/exfiltrate) implies moving
+    //    something somewhere else; "report X" ordinarily means "tell the user
+    //    X", which is the opposite of the concern.
+    // 2. A destination is now REQUIRED — a URL, an email address, or an
+    //    explicit "to/at/into/via <webhook|endpoint|url|server|address|api>"
+    //    clause — in the same sentence as the verb.
+    //
+    // The two requirements are lookaheads rather than a fixed order, because
+    // real phrasing puts them either way round ("post your system prompt to
+    // https://…" and "send to https://… the conversation history" are the same
+    // instruction). The trailing consume exists only so the reported excerpt
+    // shows the clause rather than the bare verb.
+    //
+    // The window is `(?:(?!\.\s)[^\n]){0,120}` rather than the `[^.\n]` the
+    // other rules use: both halves must sit in ONE sentence, and a bare `[^.]`
+    // treats every dot in a URL or a hostname as a sentence end — which is
+    // precisely where a destination lives, so the scope would stop just short
+    // of the thing being matched. The `(?<![\w\/-])` in front of the payload
+    // half is the cost of that wider window: a markdown link whose SLUG reads
+    // ".../content-credentials-2-3/" is not a payload, and one live skill
+    // (c2pa-metadata) is exactly that.
     id: 'exfiltration',
-    // FLAGGED, not blocked. Every live match was reassurance running the other
-    // way — "we never transmit your API keys", "this data is not sent
-    // anywhere". Telling that apart from the real instruction needs the
-    // negation read, which a regex cannot do, and blocking a privacy notice
-    // for describing the thing it promises not to do is the wrong error.
+    // FLAGGED, not blocked, and it stays advisory even now that it demands a
+    // destination. At the second calibration pass every live match was
+    // reassurance running the other way — "we never transmit your API keys",
+    // "this data is not sent anywhere". Telling that apart from the real
+    // instruction needs the negation read, which a regex cannot do, and
+    // blocking a privacy notice for describing the thing it promises not to do
+    // is the wrong error. A tightened pattern narrows the false positives; it
+    // does not give the regex the ability to read intent.
     severity: 'flag',
-    pattern: /\b(send|post|upload|forward|transmit|exfiltrate|report)\b[^.\n]{0,50}\b(this\s+(conversation|context|prompt)|your\s+(instructions|system\s+prompt|context)|the\s+(system\s+prompt|conversation\s+history)|user\s+data|credentials?|api[_\s-]?keys?)\b/i,
+    pattern:
+      /\b(send|post|upload|forward|transmit|exfiltrate)\b(?=(?:(?!\.\s)[^\n]){0,120}?(?<![\w\/-])\b(this\s+(conversation|context|prompt)|your\s+(instructions|system\s+prompt|context)|the\s+(system\s+prompt|conversation\s+history)|user\s+data|credentials?|api[_\s-]?keys?)\b)(?=(?:(?!\.\s)[^\n]){0,120}?(https?:\/\/|[\w.+-]+@[\w-]+\.[a-z]{2,}|\b(to|at|into|via)\s+(the\s+|a\s+|an\s+|our\s+|my\s+|your\s+|this\s+)?(webhook|endpoint|url|server|address|api\b|external\s+\w+|remote\s+\w+)))(?:(?!\.\s)[^\n]){0,120}/i,
   },
   {
     // Concealment from the person reading the answer.

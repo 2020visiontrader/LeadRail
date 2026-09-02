@@ -5,7 +5,7 @@
 import { z } from 'zod';
 import { getConversation, markConversationRead } from '@/lib/conversations';
 import { sendInboxReply } from '@/lib/inbox/reply-send';
-import { obj, S, type Capability, present, digestLine } from './types';
+import { obj, S, type Capability, present, digestLine, clip } from './types';
 
 export const INBOX_CAPABILITIES: Capability[] = [
   {
@@ -36,6 +36,27 @@ export const INBOX_CAPABILITIES: Capability[] = [
     zod: z.object({ inboxMessageId: z.string(), subject: z.string().optional(), bodyHtml: z.string().min(1) }),
     run: (accountId, a) => sendInboxReply({ accountId, inboxMessageId: a.inboxMessageId, subject: a.subject || '', bodyHtml: a.bodyHtml }),
     summarize: (a) => `Send a reply to inbox message ${a.inboxMessageId}. It reaches the original sender immediately.`,
+    // sendInboxReply resolves to `{ sent: true, providerId, from, to }` and
+    // throws on every failure it can see — an unowned from-address, a Resend
+    // non-2xx, a failed inbox_messages insert. So `sent === true` is the
+    // evidence, and the recipient is read off `result.to` (which the function
+    // resolved from the ORIGINAL inbound message) rather than off the args,
+    // which never carried a recipient at all.
+    //
+    // `providerId` is null when the provider returned no id; that is reported
+    // as a send without a confirmation id rather than silently dropped, because
+    // the difference matters if the message is later chased.
+    digest: (_args, result) => {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) return '';
+      const r: any = result;
+      if (r.sent !== true) return '';
+      return digestLine(
+        `Sent a real reply${present(r, 'to') ? ` to ${clip(String(r.to), 80)}` : ''}${present(r, 'from') ? ` from ${clip(String(r.from), 80)}` : ''}.`,
+        present(r, 'providerId')
+          ? `Provider id ${clip(String(r.providerId), 60)}.`
+          : 'The provider returned no message id for it.',
+      );
+    },
   },
   {
     name: 'markRead',

@@ -5,7 +5,11 @@ trigger, because the failure mode this file exists to prevent is a real risk
 living only in a conversation nobody re-reads.
 
 Recurring pattern behind most of these: **something is written but never read,
-or configured in prose but never in a config file.** Thirteen instances found so far.
+or configured in prose but never in a config file.** Fourteen instances found
+so far. The fourteenth: `ai_usage.usage_status` / `usage_source` (migration
+075) were written on every insert from the day they shipped and read by
+nothing until 2026-09-02, when `getAiUsageSummary` started splitting
+estimated tokens out of the reported total on `usage_source`.
 When adding an entry, say what proves it is done — a passing test, a row in a
 table, a non-401 log line — not "wire it up".
 
@@ -491,3 +495,68 @@ any new ones since) have `secret_encrypted IS NOT NULL` and no `access_token`/
 `refresh_token`/`user_token` key left in `meta`. Until that query is run
 against production, "the fix shipped" is not the same claim as "the exposure
 is closed" — the five known-plaintext rows are still sitting there.
+
+## 9. Campaign asset image analysis is refused, not fixed — 2026-09-02
+
+`POST /api/campaigns/[id]/assets/analyze` used to put an image URL into a TEXT
+prompt and write the model's invented `score` / `issues` / `recommendation`
+onto the asset row, flipping `status` to `approved` or `rejected`. A text model
+never opened the image; the verdicts were fabricated and they mutated real
+state. The route now returns **501 `not_supported`** and writes nothing
+(`tests/campaign-asset-analyze-route.test.ts` pins both halves).
+
+It is refused because there is **no image-input path anywhere in this
+codebase**: `ChatMessage` in `lib/ai/opencode.ts` is `{ role, content: string }`,
+`generateChat` in `lib/ai/router.ts` takes those messages with no image parts,
+and nothing constructs one. The "Analyze assets" button in
+`app/campaigns/page.tsx` therefore can now only ever report the refusal.
+
+**Done when:** either (a) a vision-capable model is configured and a real
+image-input path exists — proven by a test that asserts an image part actually
+reaches the provider payload, not that a call returned 200 — and the route is
+reimplemented on top of it; or (b) the button and the route are removed
+outright. Leaving a button whose only outcome is a refusal is the
+written-but-never-read pattern in UI form.
+
+## 10. Migration 082 — APPLIED AND VERIFIED 2026-09-02
+
+`migrations/082_model_list_prices.sql` corrects
+`anthropic/claude-sonnet-5`'s `cost_per_mtok_in` from 3.00 to the published
+2.00 (Anthropic cancelled the September 1 increase to $3/$15; the catalogue
+was written 2026-08-29, three days before it would have taken effect). It has
+been applied to production (project `kqimpzbphdogvchqmtos`) on 2026-09-02.
+
+**CLOSED.** Verified the way this entry required — by querying the table, not
+by trusting the apply call's `success: true`:
+
+```
+label                    model_id                     in        out       enabled
+Claude Haiku 4.5 (paid)  anthropic/claude-haiku-4.5   1.000000  5.000000  true
+Claude Sonnet 5 (paid)   anthropic/claude-sonnet-5    2.000000  10.000000 true
+```
+
+`cost_per_mtok_out` is unchanged, so `isPaidModel` (lib/ai/providers.ts:359,
+`cost_per_mtok_out > 0`) still returns true for that row and `orderByCost`
+produces the same chain order it did before. That was the actual risk in this
+migration and it did not fire.
+
+## 11. `AI_PROMPT_CACHE_MARKERS` is off and has never been exercised live — 2026-09-02
+
+`lib/ai/prompt-cache-markers.ts` adds an Anthropic-style `cache_control`
+breakpoint to the first system message on `anthropic/*` OpenRouter models,
+behind `AI_PROMPT_CACHE_MARKERS` (default OFF). The marked request shape was
+never sent to the real API: openrouter.ai is unreachable from the environment
+it was written in, so every test is against a stubbed `fetch`. The default is
+off for exactly that reason.
+
+The saving it targets is measured and large: the tool catalogue alone is
+41,542 chars (~10,386 tokens), byte-identical across all ~16 steps of a turn,
+~27% of an average 38,878-token call.
+
+**Done when:** the flag has been set to `1` on the running service and
+OpenRouter's own dashboard shows non-zero cache reads on an `anthropic/*`
+model — the provider's counter, not our log line saying we sent the field. If
+the counter stays at zero, the marker is not landing and the flag should go
+back off rather than be left on as decoration. Watch `app_logs` for
+`retrying once without it` while it is on: that warning firing means the
+gateway is rejecting the field and every marked call is costing a round trip.

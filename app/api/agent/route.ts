@@ -8,6 +8,7 @@ import { runAgent, agentConfigured, generateCarryover } from '@/lib/agent/loop';
 import { loadAgentContext } from '@/lib/agent/context';
 import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts, markConversationRunning, clearConversationRunning } from '@/lib/agent/memory';
 import { mintMessageId, ensureMessageIds } from '@/lib/agent/transcript-store';
+import { stripPrivateReasoning } from '@/lib/agent/transcript-privacy';
 import { parseMentions } from '@/lib/agent/personas';
 import { log } from '@/lib/logger';
 
@@ -257,7 +258,12 @@ async function runTurn(
     message: result.message,
     proposal: result.proposal,
     steps: result.steps,
-    transcript: transcriptWithIds,
+    // The CLIENT-BOUND copy: the model's private `plan` removed from every
+    // assistant envelope. `transcriptWithIds` itself (unstripped) is what was
+    // saved above, so a later turn still resumes on the full reasoning — see
+    // lib/agent/transcript-privacy.ts. Twin of the strip on the stream route's
+    // `final`/`needs_approval` events.
+    transcript: stripPrivateReasoning(transcriptWithIds),
     conversationId: savedId ?? conversationId,
     tokenEstimate: result.tokenEstimate,
     compaction: result.compaction ?? null,

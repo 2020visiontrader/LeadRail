@@ -48,6 +48,7 @@ import { renderObservation } from './observation-render';
 import { beginDelegationScope, endDelegationScope, setDelegationContext } from '@/lib/capabilities/delegation';
 import { hermesRoute } from '@/lib/ai/hermes';
 import { parseBatch, runBatch, batchSummary, MAX_BATCH, type BatchItemResult } from './batch';
+import { parseReads, runReads, readsSummary, MAX_READS, type ReadCall, type ReadItemResult } from './reads';
 import {
   createPlan, activePlanForConversation, MAX_PLAN_STEPS, MAX_STEP_OVER_ITEMS, type PlanStepInput,
 } from '@/lib/plans/store';
@@ -391,15 +392,23 @@ function systemPrompt(brandName?: string, agentContext?: string, carryover?: Car
     // enabled (the default), so this is a no-op for every account today.
     skillsGuidance ? skillsGuidance + '\n' : '',
     '',
-    'HOW YOU RESPOND: on EACH turn output ONE JSON object and nothing else — no prose outside it, no markdown fences. Use exactly one shape:',
-    '  {"thought":"<short plain-language sentence describing what you\'re doing/thinking>","action":"tool","tool":"<toolName>","args":{...}}',
-    `  {"thought":"<short plain-language sentence>","action":"tool","tool":"<toolName>","calls":[{...args},{...args}]}   <- run the SAME tool over many inputs AT ONCE`,
-    '  {"thought":"<short plain-language sentence>","action":"final","message":"<your full reply to the user>"}',
-    'The "thought" is shown to the user live as your thinking step — write it as a human sentence ("Checking your active campaigns…"), never a raw tool name.',
-    'You MAY split that one field into two, in either shape — both are optional and either may be omitted:',
-    '  "plan": your own internal reasoning about what to do next. It is NEVER shown to the user, so be as technical as you like.',
-    '  "narration": the single line the user reads instead of "thought". Short, plain language, present tense, no tool, vendor, or model names ("Pulling this month\'s numbers…").',
-    'When "narration" is present it replaces "thought" in the live trace. When it is absent, "thought" is used exactly as described above — so omitting both new fields is always safe.',
+    // FIELD ORDER IS LOAD-BEARING — do not reorder these lines, and do not let
+    // an "action first, it reads better" edit through review. JSON is generated
+    // left to right, so reasoning emitted BEFORE the decision conditions that
+    // decision, while reasoning emitted after it is post-hoc narration of a
+    // choice the model has already committed to. `plan` therefore comes first
+    // in every shape shown below. narrationFor() still accepts the old
+    // `thought`-only envelope (Packet 10.2 Part B), which is why "thought" is
+    // documented last, as the fallback it now is — not removed.
+    'HOW YOU RESPOND: on EACH turn output ONE JSON object and nothing else — no prose outside it, no markdown fences. Every envelope opens with "plan", then "narration", then the action:',
+    '  {"plan":"<your private reasoning>","narration":"<one short sentence the user sees>","action":"tool","tool":"<toolName>","args":{...}}',
+    `  {"plan":"...","narration":"...","action":"tool","tool":"<toolName>","calls":[{...args},{...args}]}   <- run the SAME tool over many inputs AT ONCE`,
+    `  {"plan":"...","narration":"...","action":"tools","reads":[{"tool":"A","args":{...}},{"tool":"B","args":{...}}]}   <- use when you need several independent facts before you can answer; READ-ONLY tools, at most ${MAX_READS}, run together in one step`,
+    '  {"plan":"...","narration":"...","action":"final","message":"<your full reply to the user>"}',
+    '"plan" is shown to NO ONE — not the user, not the trace — so length is never penalised there. Use it: what you are uncertain about, what you still need to check before you can answer, what THIS turn has already established, and why this tool rather than another.',
+    '"narration" is the single line the user reads live as your thinking step. One short human sentence, present tense, no tool, vendor, or model names ("Checking your active campaigns…").',
+    'BEFORE you assert in a "final" message that something HAPPENED — an email sent, a campaign launched, content published — your "plan" must name the observation in THIS turn that shows it. If there is no such observation, say you have not verified it rather than asserting it.',
+    'Older envelopes used one "thought" field instead of "plan"+"narration"; that still works and is read as the narration, but prefer the three fields.',
     '',
     `WHEN YOU HAVE MANY OF THE SAME THING TO DO, USE "calls" — do NOT do them one per step. Revealing twenty leads is ONE decision applied to twenty rows, not twenty decisions: put all twenty argument sets in "calls" and they run together in a single step. Doing them one at a time runs out of steps long before the work is finished, so a list handled one-per-step is a job that never completes. Use "args" only for a genuinely single action. Never send both. At most ${MAX_BATCH} per batch — if you have more, do ${MAX_BATCH} in one step and the rest in the next.`,
     'A batch of an action that needs approval is ONE approval covering the whole batch, so the user sees a single card naming every item rather than being asked the same question twenty times.',
@@ -1399,6 +1408,35 @@ function batchObservation(tool: string, results: BatchItemResult[], extraCaps?: 
   return `${batchSummary(tool, results)}\n${lines.join('\n')}`;
 }
 
+/** Fold a multi-read step's results into ONE observation.
+ *
+ *  Every line is prefixed with the TOOL THAT PRODUCED IT. An unlabelled
+ *  concatenation of several different tools' results is unreadable to the
+ *  model and produces exactly the attribution confusion this path exists to
+ *  remove — it would answer about the budget using the venture list. The
+ *  index is kept alongside the name so input order is legible too. */
+function readsObservation(results: ReadItemResult[], extraCaps?: Record<string, Capability>): string {
+  const lines = results.map((r) =>
+    r.ok
+      ? `[${r.index + 1}] ${r.tool} — ok — ${observationFor(r.tool, r.args, { ok: true, result: r.result }, extraCaps)}`
+      : `[${r.index + 1}] ${r.tool} — FAILED — ${r.error || 'no reason given'}`,
+  );
+  return `${readsSummary(results)}\n${lines.join('\n')}`;
+}
+
+/** Observation budget for a folded multi-read step.
+ *
+ *  Mirrors the batch path exactly (see the comment there): undefined — meaning
+ *  "the shared default cap" — unless at least one tool in the step declares its
+ *  own larger limit, in which case the largest declared limit is scaled by the
+ *  number of reads. Scaled, but never unbounded: one step must not swallow the
+ *  context window because it named four tools instead of one. */
+function readsObsLimit(reads: ReadCall[], extraCaps?: Record<string, Capability>): number | undefined {
+  const per = reads.map((r) => obsLimitFor(r.tool, extraCaps));
+  if (per.every((p) => p === undefined)) return undefined;
+  return Math.max(...per.map((p) => p ?? OBSERVATION_CHAR_LIMIT)) * Math.min(reads.length, MAX_READS);
+}
+
 /**
  * Run (or resume) the agent loop. Returns when the agent produces a final
  * answer, needs approval for a sensitive tool, or exhausts its step budget.
@@ -1732,7 +1770,7 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
     // usable. `ok` on the row is already true by now; parse_ok is the column
     // that separates "text came back" from "text we could act on".
     if (usageRowId) void markParseOutcome(usageRowId, Boolean(parsed));
-    if (!parsed || (parsed.action !== 'tool' && parsed.action !== 'final')) {
+    if (!parsed || (parsed.action !== 'tool' && parsed.action !== 'tools' && parsed.action !== 'final')) {
       if (jsonRetries < MAX_JSON_RETRIES) {
         jsonRetries++;
         pushJsonRetry(messages, raw, jsonRetries, { accountId, step: i, afterTool: lastToolName });
@@ -1788,6 +1826,47 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
       steps.push({ thought: narrationFor(parsed) });
       const tokenEstimate = estimateTokens(messages);
       return { status: 'done', message, transcript: messages, steps, skillSlugs, tokenEstimate, compaction: compactionLevel(tokenEstimate) };
+    }
+
+    // MULTI-READ (action:"tools"). Several DIFFERENT read-only tools in ONE
+    // step — see lib/agent/reads.ts for why this path is read-gated and why it
+    // can never grow an approval flow. Placed before the single-tool path
+    // because it is a different envelope shape, not a variant of that one.
+    if (parsed.action === 'tools') {
+      const rd = parseReads(parsed, {
+        known: (n) => Boolean(TOOLS[n] ?? extraTools[n]),
+        gateOf: (n) => capabilityFor(n, extraCapsByName)?.gate,
+      });
+      if (rd.kind === 'unknown') {
+        // Routed through the EXISTING unknown-tool correction and its counter,
+        // so a model guessing names inside "reads" runs out of guesses at the
+        // same point it would guessing them one at a time.
+        unknownTools++;
+        steps.push({ thought: narrationFor(parsed), tool: rd.tool });
+        messages.push(unknownToolObservation(rd.tool, knownToolNames, unknownTools));
+        continue;
+      }
+      if (rd.kind !== 'reads') {
+        // NOTHING RAN. A non-read tool anywhere in the list rejects the WHOLE
+        // step — no partial execution, no "the reads worked and the write did
+        // not". A rejected step is a correctable mistake, not a dead turn.
+        const reason = rd.kind === 'invalid' ? rd.reason : 'action:"tools" needs a "reads" array.';
+        const text = `That "reads" step was not valid, so NOTHING ran: ${reason}`;
+        steps.push({ thought: narrationFor(parsed), observation: reason });
+        messages.push(observation(text));
+        continue;
+      }
+      const readsLabel = rd.reads.map((r) => r.tool).join(' + ');
+      // Counts as one call PER TOOL against the duplicate guard: unlike a
+      // batch, these really are several different decisions sharing a step.
+      for (const r of rd.reads) toolCalls[r.tool] = (toolCalls[r.tool] || 0) + 1;
+      const readResults = await runReads(rd.reads, (t, a) => runTool(t, accountId, a, extraTools, extraCapsByName, brandContext?.id, toolCtx));
+      const readsObs = readsObservation(readResults, extraCapsByName);
+      lastToolName = rd.reads[rd.reads.length - 1].tool;
+      const readsLimit = readsObsLimit(rd.reads, extraCapsByName);
+      steps.push({ thought: narrationFor(parsed), tool: readsLabel, args: { reads: rd.reads }, observation: truncate(readsObs, readsLimit) });
+      messages.push(observation(readsObs, readsLimit));
+      continue;
     }
 
     // action === 'tool'
@@ -2427,7 +2506,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
     // usable. `ok` on the row is already true by now; parse_ok is the column
     // that separates "text came back" from "text we could act on".
     if (usageRowId) void markParseOutcome(usageRowId, Boolean(parsed));
-    if (!parsed || (parsed.action !== 'tool' && parsed.action !== 'final')) {
+    if (!parsed || (parsed.action !== 'tool' && parsed.action !== 'tools' && parsed.action !== 'final')) {
       if (jsonRetries < MAX_JSON_RETRIES) {
         jsonRetries++;
         pushJsonRetry(messages, raw, jsonRetries, { accountId, step: i, afterTool: lastToolName });
@@ -2494,6 +2573,55 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
       const level = compactionLevel(tokenEstimate);
       if (level) emit({ type: 'compaction_suggested', level, tokenEstimate });
       return;
+    }
+
+    // MULTI-READ (action:"tools"). Several DIFFERENT read-only tools in ONE
+    // step — see lib/agent/reads.ts for why this path is read-gated and why it
+    // can never grow an approval flow. Placed before the single-tool path
+    // because it is a different envelope shape, not a variant of that one.
+    if (parsed.action === 'tools') {
+      const rd = parseReads(parsed, {
+        known: (n) => Boolean(TOOLS[n] ?? extraTools[n]),
+        gateOf: (n) => capabilityFor(n, extraCapsByName)?.gate,
+      });
+      if (rd.kind === 'unknown') {
+        // Routed through the EXISTING unknown-tool correction and its counter,
+        // so a model guessing names inside "reads" runs out of guesses at the
+        // same point it would guessing them one at a time.
+        unknownTools++;
+        emit({ type: 'observation', text: `Unknown tool "${rd.tool}".`, ok: false });
+        steps.push({ thought: narrationFor(parsed), tool: rd.tool });
+        messages.push(unknownToolObservation(rd.tool, knownToolNames, unknownTools));
+        continue;
+      }
+      if (rd.kind !== 'reads') {
+        // NOTHING RAN. A non-read tool anywhere in the list rejects the WHOLE
+        // step — no partial execution, no "the reads worked and the write did
+        // not". A rejected step is a correctable mistake, not a dead turn.
+        const reason = rd.kind === 'invalid' ? rd.reason : 'action:"tools" needs a "reads" array.';
+        const text = `That "reads" step was not valid, so NOTHING ran: ${reason}`;
+        emit({ type: 'observation', text, ok: false });
+        steps.push({ thought: narrationFor(parsed), observation: reason });
+        messages.push(observation(text));
+        continue;
+      }
+      const readsLabel = rd.reads.map((r) => r.tool).join(' + ');
+      // Counts as one call PER TOOL against the duplicate guard: unlike a
+      // batch, these really are several different decisions sharing a step.
+      for (const r of rd.reads) toolCalls[r.tool] = (toolCalls[r.tool] || 0) + 1;
+      emit({ type: 'tool', tool: readsLabel, title: `Looking up ${rd.reads.length} things at once — ${readsLabel}`, args: { reads: rd.reads } });
+      const readResults = await runReads(rd.reads, (t, a) => runTool(t, accountId, a, extraTools, extraCapsByName, brandContext?.id, toolCtx));
+      const readsObs = readsObservation(readResults, extraCapsByName);
+      lastToolName = rd.reads[rd.reads.length - 1].tool;
+      const readsLimit = readsObsLimit(rd.reads, extraCapsByName);
+      emit({
+        type: 'observation', text: truncate(readsObs, readsLimit), tool: readsLabel,
+        // ok only when EVERY read worked — same rule as a batch.
+        ok: readResults.every((r) => r.ok),
+      });
+      steps.push({ thought: narrationFor(parsed), tool: readsLabel, args: { reads: rd.reads }, observation: truncate(readsObs, readsLimit) });
+      messages.push(observation(readsObs, readsLimit));
+      continue;
     }
 
     const tool = String(parsed.tool || '');

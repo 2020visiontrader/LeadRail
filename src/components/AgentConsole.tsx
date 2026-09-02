@@ -240,6 +240,7 @@ const TOOL_VERB: Record<string, string> = {
   logGoalProgress: 'Recording progress on that goal',
   draftOutreach: 'Writing the outreach',
   sendEmail: 'Preparing to send the email',
+  outreachHistory: 'Checking what was actually sent',
   listSequences: 'Checking your follow-up sequences',
   enrollInSequence: 'Preparing to start the follow-ups',
   listStages: 'Checking your pipeline stages',
