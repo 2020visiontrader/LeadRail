@@ -9,7 +9,7 @@ or configured in prose but never in a config file.** Thirteen instances found so
 When adding an entry, say what proves it is done — a passing test, a row in a
 table, a non-401 log line — not "wire it up".
 
-Last reviewed: 2026-08-30
+Last reviewed: 2026-09-02
 
 ---
 
@@ -412,3 +412,48 @@ in a comment at the write site — no further code change needed — or (b) the
 five text formats are moved onto `DELIVERABLE_BUCKET` the same way xlsx/docx/pdf
 are, and `tests/deliverable-formats.test.ts`'s text-format-pinning block is
 updated to assert a signed storage URL instead of a `/generated/files/` path.
+
+---
+
+## 7. Tick cadence was mis-measured — CORRECTED 2026-09-02
+
+Not a risk; a correction, recorded because the wrong figure was repeated
+several times and written into merged code before anyone re-checked it.
+
+**The claim:** `/api/hermes/tick` runs about every 35 minutes, so a 95-item
+batch step at 8 items/tick takes roughly 7 hours, and tick frequency is the
+binding constraint on all long-running work.
+
+**The truth:** it runs every **5 minutes**. A 95-item batch takes about **one
+hour**.
+
+**How the error was made.** The average was computed over `app_logs` for the
+whole of August. The scheduler did not exist for most of that window — §2
+records `pg_cron` job `hermes-tick-every-5-min` as only stood up 2026-08-28 —
+so a mostly-unscheduled month was averaged and the result reported as current
+behaviour.
+
+```
+app_logs, route ilike '%hermes%', all of August   n=1754  mean gap 26.0 min
+app_logs, same filter, created_at >= 2026-08-28   n=1527  mean gap  5.0 min
+cron.job id 1 'hermes-tick-every-5-min'           */5 * * * *, active
+net._http_response                                72 rows, all 200, ~4.9 min apart
+```
+
+**What it changes.** `PLAN_ITEMS_PER_TICK` is a real lever, not a rounding
+error: 8 items/tick clears 95 in ~1 hour, 16 in ~30 minutes. And the scheduler
+is NOT outside the repo's reach — it is `cron.job` id 1 in this project's own
+Postgres, editable with the same Supabase access used to apply migrations.
+
+**Two traps for whoever measures this next.**
+1. `cron.job_run_details.status = 'succeeded'` means pg_net QUEUED the
+   request, not that it returned 200. Check `net._http_response.status_code`
+   or `app_logs.status`. (Also in §2 — it caught someone twice now.)
+2. Bound the window to the period the thing being measured actually existed.
+   A real query over the wrong range is still the wrong answer, and it is more
+   convincing than a guess because it comes with a number attached.
+
+**Done when:** nothing to do. Left as a record because the corrected figure
+now lives in `lib/plans/runner.ts`'s `ITEMS_PER_STEP_TICK` comment, and the
+next person to tune batch throughput should find the reasoning rather than
+re-derive it from a stale average.

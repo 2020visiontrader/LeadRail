@@ -38,12 +38,31 @@ const PLANS_PER_TICK = Number(process.env.PLAN_RUNNER_BATCH) || 2;
  *  calls was written too coarsely. */
 const STEPS_PER_PLAN_STEP = Number(process.env.PLAN_STEPS_PER_RUN) || 6;
 /** Items a BATCH step (one with `over`) advances per tick. This is the knob
- *  an operator trades tick cost against wall-clock with: at the measured
- *  production cadence (~35 minutes across 1,216 ticks / 30 days), 8 items per
- *  tick clears a 95-item batch in ceil(95/8) = 12 ticks, roughly 7 hours.
- *  Raising it finishes sooner at the cost of a bigger, riskier single tick
- *  (still bounded by STEPS_PER_PLAN_STEP agent steps); lowering it shrinks
- *  each tick at the cost of wall-clock time. */
+ *  an operator trades tick cost against wall-clock with: at the real
+ *  production cadence of 5 MINUTES, 8 items per tick clears a 95-item batch in
+ *  ceil(95/8) = 12 ticks, roughly ONE HOUR. Raising it finishes sooner at the
+ *  cost of a bigger, riskier single tick (still bounded by
+ *  STEPS_PER_PLAN_STEP agent steps); lowering it shrinks each tick at the cost
+ *  of wall-clock time.
+ *
+ *  CORRECTED 2026-09-02, and the mistake is worth keeping because it is easy
+ *  to repeat. This comment used to claim "~35 minutes across 1,216 ticks / 30
+ *  days", and therefore ~7 hours for 95 items. Both numbers were wrong. The
+ *  30-day average was taken over a window in which the scheduler DID NOT EXIST
+ *  for the first 26 days (BACKLOG §2: pg_cron `hermes-tick-every-5-min` was
+ *  only stood up 2026-08-28), so it averaged a mostly-unscheduled month and
+ *  reported the result as the current cadence.
+ *
+ *  Measured properly, over the window where the scheduler actually runs:
+ *    app_logs, route ilike '%hermes%', created_at >= 2026-08-28
+ *      -> n=1527, mean gap 5.0 minutes
+ *    cron.job id 1 'hermes-tick-every-5-min', schedule '*''/5 * * * *', active
+ *    net._http_response -> 72 rows, ALL 200, one per ~4.9 minutes
+ *
+ *  Do not read cron.job_run_details.status alone: pg_net is asynchronous and
+ *  'succeeded' means the request was QUEUED, not that it returned 200 (that
+ *  trap is written up in BACKLOG §2). The lesson generalises — a real query
+ *  over the wrong time range is still the wrong answer. */
 const ITEMS_PER_STEP_TICK = Number(process.env.PLAN_ITEMS_PER_TICK) || 8;
 
 export interface PlanTickResult {
