@@ -13,6 +13,15 @@ import path from 'path';
 const root = __dirname;
 
 export default defineConfig({
+  // JSX in .tsx source (e.g. src/components/*.tsx) needs a runtime here the
+  // same way Next's own SWC compiler provides one at build time — tsconfig's
+  // "jsx": "preserve" is FOR that build-time compiler, not for vitest's
+  // esbuild transform, which otherwise leaves raw JSX calling a global
+  // `React` that was never imported ("React is not defined"). Only matters
+  // for the one DOM test file (tests/message-actions-dom.test.ts) that
+  // imports and renders a real .tsx component; every other test here is
+  // plain .ts and unaffected.
+  esbuild: { jsx: 'automatic' },
   resolve: {
     // Mirrors tsconfig "paths": "@/*" -> ["./src/*", "./*"]. Only @/components
     // lives under src/; everything else resolves at the repo root.

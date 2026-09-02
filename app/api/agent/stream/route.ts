@@ -186,6 +186,12 @@ export async function POST(request: NextRequest) {
       // "(1 running) disappears while the trace still says Running" state.
       let terminalSent = false;
       let finalTranscript: StoredMessage[] | undefined;
+      // Migration 080 (message_feedback.skill_slugs): captured off the
+      // terminal 'final' event, same lifetime as finalTranscript above, so
+      // the 'conversation' event below can hand it to the client for a
+      // feedback vote to snapshot. Absent (undefined) on a needs_approval or
+      // error turn — there is no assistant message to attach it to.
+      let finalSkillSlugs: string[] | undefined;
       // Set from the trailing compaction_suggested event (emitted after `final`),
       // so the finally block below knows whether this turn hit a compaction
       // threshold. Null on every ordinary turn.
@@ -320,6 +326,9 @@ export async function POST(request: NextRequest) {
               finalTranscript = e.transcript;
               terminalSent = true;
             }
+            if (e.type === 'final') {
+              finalSkillSlugs = e.skillSlugs;
+            }
             if (e.type === 'error') terminalSent = true;
             if (e.type === 'compaction_suggested') compaction = e.level;
             send(e);
@@ -431,6 +440,9 @@ export async function POST(request: NextRequest) {
             // loop always appends the final answer last).
             userMessageId,
             lastMessageId,
+            // Migration 080 (message_feedback.skill_slugs) — see the twin
+            // field on the JSON route's response.
+            skillSlugs: finalSkillSlugs,
           });
 
           // Passive memory extraction (Packet 1.1) — mirrors /api/agent. Only

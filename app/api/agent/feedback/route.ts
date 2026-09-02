@@ -30,7 +30,7 @@ async function GET__impl(request: NextRequest) {
 }
 
 // POST /api/agent/feedback — record or change a vote on one message.
-// Body: { conversationId, messageId, up: boolean, personaId? }
+// Body: { conversationId, messageId, up: boolean, personaId?, skillSlugs? }
 //
 // Account scope is ALWAYS the session's. The conversation is loaded first
 // (account-scoped) and the target message_id must actually appear in ITS
@@ -49,6 +49,17 @@ async function POST__impl(request: NextRequest) {
   const messageId = typeof body?.messageId === 'string' && body.messageId ? body.messageId : undefined;
   const up = typeof body?.up === 'boolean' ? body.up : undefined;
   const personaId = typeof body?.personaId === 'string' && body.personaId ? body.personaId : null;
+  // Migration 080 (message_feedback.skill_slugs): the routed skill slugs the
+  // console captured off the turn's own 'conversation' SSE event (see
+  // lib/agent/loop.ts's AgentResult.skillSlugs / the streaming 'final'
+  // event). Trusted no more than personaId above — it is metadata about
+  // routing, not an access-control value, and account/message ownership is
+  // still verified below regardless of what this array says. Absent (rather
+  // than an empty array) on a turn that routed no skills or on a rehydrated
+  // (post-reload) turn the client never re-fetches it for.
+  const skillSlugs: string[] | null = Array.isArray(body?.skillSlugs)
+    ? body.skillSlugs.filter((s: unknown) => typeof s === 'string')
+    : null;
   if (!conversationId || !messageId || up === undefined) {
     return badRequest('conversationId, messageId, and up (boolean) are required');
   }
@@ -65,6 +76,7 @@ async function POST__impl(request: NextRequest) {
       messageId,
       up,
       personaId,
+      skillSlugs,
       votedBy: session.email,
     });
     if (!feedback) return errorResponse(new Error('write failed'), 500, 'Could not record that vote just now');

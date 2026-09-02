@@ -505,7 +505,7 @@ function BarButton({ label, active, onClick, children }: { label: string; active
  *  assistant turn, copy/edit/timestamp for a user turn. A single component
  *  for both roles because every action already receives the whole `turn` and
  *  decides what applies to it; two near-identical components would drift. */
-function MessageActions({
+export function MessageActions({
   turn, isUser, onCopy, copied, onReadAloud, speaking, speechSupported, vote, onVote, onEdit, onRetry, now,
 }: {
   turn: any; isUser: boolean;
@@ -1107,6 +1107,13 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
       if (typeof e.lastMessageId === 'string' && e.lastMessageId) {
         patchAssistant((t) => { t.messageId = e.lastMessageId; });
       }
+      // Migration 080 (message_feedback.skill_slugs): the routed skill slugs
+      // that produced this assistant reply, stashed on the turn so a thumbs
+      // vote can send them straight back — see handleVote below. Absent on a
+      // needs_approval turn (no assistant message was produced).
+      if (Array.isArray(e.skillSlugs)) {
+        patchAssistant((t) => { t.skillSlugs = e.skillSlugs; });
+      }
       return;
     }
     // Trailing event emitted after `final` once the transcript crosses
@@ -1396,8 +1403,12 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
       return;
     }
     try {
+      // skillSlugs (migration 080's message_feedback.skill_slugs) travels
+      // with the turn from the 'conversation' SSE event above — the client
+      // never invents it, only forwards what the server already computed.
+      const skillSlugs: string[] | undefined = Array.isArray(turn.skillSlugs) ? turn.skillSlugs : undefined;
       const res: any = await apiSend('/api/agent/feedback', 'POST', {
-        conversationId, messageId, up: desired, personaId: selectedPersonaId,
+        conversationId, messageId, up: desired, personaId: selectedPersonaId, skillSlugs,
       });
       const serverUp = res?.feedback?.up;
       setVotes((cur) => ({ ...cur, [messageId]: typeof serverUp === 'boolean' ? serverUp : cur[messageId] }));

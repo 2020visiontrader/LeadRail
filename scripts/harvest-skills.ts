@@ -41,12 +41,12 @@
 
 import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
+import { writeNoticeSection } from './lib/notice';
 
 const DEFAULT_ROOT = join(__dirname, '..', '..', 'oss-repos');
 const HARVEST_ROOT = process.argv[2] || process.env.HARVEST_ROOT || DEFAULT_ROOT;
 const REPO_ROOT = join(__dirname, '..');
 const OUTPUT_FILE = join(REPO_ROOT, 'lib', 'skills', 'harvested.ts');
-const NOTICE_FILE = join(REPO_ROOT, 'NOTICE');
 const MIN_BODY_LENGTH = 80;
 
 // ---------------------------------------------------------------------------
@@ -962,8 +962,12 @@ export const HARVESTED_SKILLS: HarvestedSkill[] = ${JSON.stringify(results, null
   writeFileSync(OUTPUT_FILE, header, 'utf8');
 
   // -------------------------------------------------------------------------
-  // Emit the root NOTICE (Apache-2.0 §4 attribution for adclaw; the MIT sources
-  // are listed too so the attribution file is the single place to look).
+  // Emit this script's OWN section of the root NOTICE (Apache-2.0 §4
+  // attribution for adclaw; the MIT sources are listed too so the
+  // attribution file is the single place to look) — see scripts/lib/notice.ts
+  // for why this is a named section, not a wholesale file write: a wholesale
+  // write here used to silently drop harvest-personas.ts's own section on
+  // every re-run (BACKLOG 5c).
   // -------------------------------------------------------------------------
   const noticeSources = SOURCES.map((s) => {
     const st = stats.find((x) => x.key === s.key)!;
@@ -974,13 +978,12 @@ export const HARVESTED_SKILLS: HarvestedSkill[] = ${JSON.stringify(results, null
   Notes:     ${s.requiresNotice ? 'Apache-2.0 §4 attribution — see the copyright line in the section above.' : 'MIT — attribution retained here as a courtesy and audit trail.'}`;
   }).join('\n\n');
 
-  const notice = `LeadRail
-Copyright (c) LeadRail
+  const skillsSection = `--------------------------------------------------------------------------------
+Skill content (scripts/harvest-skills.ts -> lib/skills/harvested.ts)
+--------------------------------------------------------------------------------
 
-This product includes marketing skill CONTENT derived from the open-source
-projects listed below. No upstream source code is executed, imported, or
-distributed — only normalised markdown prompt modules, emitted by
-scripts/harvest-skills.ts into lib/skills/harvested.ts.
+No upstream source code is executed, imported, or distributed for these
+sources — only normalised markdown prompt modules.
 
 --------------------------------------------------------------------------------
 Apache License 2.0 attribution
@@ -1023,9 +1026,8 @@ Excluded on licence grounds
     daemon/, agent/, gateway/, kai/, lib/, tools/, bin/, deploy/, evals/,
     site/, prod-static/ and the rest of scripts/.
   helio, Synapsr/fromHello — AGPL-3.0. Not used.
-  inbharatai/SocialFlow — no licence. Not used.
-`;
-  writeFileSync(NOTICE_FILE, notice, 'utf8');
+  inbharatai/SocialFlow — no licence. Not used.`;
+  writeNoticeSection('SKILLS', skillsSection);
 
   // -------------------------------------------------------------------------
   // Report
@@ -1049,7 +1051,7 @@ Excluded on licence grounds
   console.log(`[harvest-skills]   cross-source: ${dedupeLosers.length - withinKai}`);
   console.log(`[harvest-skills] FINAL unique skills: ${results.length}`);
   console.log(`[harvest-skills] wrote ${OUTPUT_FILE}`);
-  console.log(`[harvest-skills] wrote ${NOTICE_FILE}`);
+  console.log(`[harvest-skills] wrote NOTICE (SKILLS section)`);
   console.log(`[harvest-skills] done in ${elapsedMs}ms`);
 }
 

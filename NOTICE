@@ -1,12 +1,23 @@
 LeadRail
 Copyright (c) LeadRail
 
-This product includes marketing skill CONTENT derived from the open-source
-projects listed below. No upstream source code is executed, imported, or
-distributed — only normalised markdown prompt modules, emitted by
-scripts/harvest-skills.ts into lib/skills/harvested.ts. Two of these projects
-are also the source of persona-template CONTENT, emitted by
-scripts/harvest-personas.ts into lib/agent/harvested-personas.ts.
+This product includes CONTENT — never upstream source code — derived from the
+open-source projects attributed in the sections below. Each section is
+generated and owned by exactly one script, named in its own heading:
+scripts/harvest-skills.ts owns "Skill content" (-> lib/skills/harvested.ts),
+scripts/harvest-personas.ts owns "Persona-template content"
+(-> lib/agent/harvested-personas.ts). Re-running either script regenerates
+ONLY its own section below (see scripts/lib/notice.ts) — the other section's
+attribution survives regardless of run order, including a first run of either
+script alone.
+
+<!-- NOTICE:SKILLS:BEGIN -->
+--------------------------------------------------------------------------------
+Skill content (scripts/harvest-skills.ts -> lib/skills/harvested.ts)
+--------------------------------------------------------------------------------
+
+No upstream source code is executed, imported, or distributed for these
+sources — only normalised markdown prompt modules.
 
 --------------------------------------------------------------------------------
 Apache License 2.0 attribution
@@ -33,11 +44,6 @@ Citedy/adclaw
   content (shell blocks, slash commands, plugin-manifest references) was
   removed.
 
-  Persona content from src/adclaw/agents/persona_templates.py (the 5 entries
-  of the TEMPLATES list) is used with only the `soul_md` field's structure
-  preserved verbatim as `instructions`; slugs were prefixed "adclaw-" to
-  avoid colliding with digital-marketing-pro's persona slugs.
-
 --------------------------------------------------------------------------------
 All sources
 --------------------------------------------------------------------------------
@@ -45,17 +51,13 @@ All sources
 Citedy/adclaw
   License:   Apache-2.0
   Commit:    25bf9601f30f069dc5c24f4845abc9ce120d809b
-  Used for:  118 normalised skill entries in lib/skills/harvested.ts, plus 5
-             normalised persona-template entries (slugs "adclaw-*") in
-             lib/agent/harvested-personas.ts
+  Used for:  118 normalised skill entries in lib/skills/harvested.ts
   Notes:     Apache-2.0 §4 attribution — see the copyright line in the section above.
 
 indranilbanerjee/digital-marketing-pro
   License:   MIT
   Commit:    fa4ccd0a4afc1b902ef8de8d297b180aa148d46a
-  Used for:  161 normalised skill entries in lib/skills/harvested.ts, plus 24
-             normalised persona-template entries in
-             lib/agent/harvested-personas.ts (one per agents/<slug>.md)
+  Used for:  161 normalised skill entries in lib/skills/harvested.ts
   Notes:     MIT — attribution retained here as a courtesy and audit trail.
 
 cgallic/kai-cmo-harness
@@ -147,3 +149,54 @@ Excluded on licence grounds
     site/, prod-static/ and the rest of scripts/.
   helio, Synapsr/fromHello — AGPL-3.0. Not used.
   inbharatai/SocialFlow — no licence. Not used.
+<!-- NOTICE:SKILLS:END -->
+
+<!-- NOTICE:PERSONAS:BEGIN -->
+--------------------------------------------------------------------------------
+Persona-template content (scripts/harvest-personas.ts -> lib/agent/harvested-personas.ts)
+--------------------------------------------------------------------------------
+
+No upstream source code is executed, imported, or distributed for these
+sources — only normalised persona-template text (`instructions`, verbatim).
+
+--------------------------------------------------------------------------------
+Apache License 2.0 attribution
+--------------------------------------------------------------------------------
+
+Citedy/adclaw
+
+  Copyright 2025 The CoPaw Authors
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+      http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+
+  Persona content from src/adclaw/agents/persona_templates.py (the 5 entries
+  of the TEMPLATES list) is used with only the `soul_md` field's structure
+  preserved verbatim as `instructions`; slugs were prefixed "adclaw-" to
+  avoid colliding with digital-marketing-pro's persona slugs.
+
+--------------------------------------------------------------------------------
+All sources
+--------------------------------------------------------------------------------
+
+indranilbanerjee/digital-marketing-pro
+  License:   MIT
+  Commit:    fa4ccd0a4afc1b902ef8de8d297b180aa148d46a
+  Used for:  24 normalised persona-template entries in lib/agent/harvested-personas.ts (one per agents/<slug>.md)
+  Notes:     MIT — attribution retained here as a courtesy and audit trail.
+
+Citedy/adclaw
+  License:   Apache-2.0
+  Commit:    25bf9601f30f069dc5c24f4845abc9ce120d809b
+  Used for:  5 normalised persona-template entries (slugs "adclaw-*") in lib/agent/harvested-personas.ts
+  Notes:     Apache-2.0 §4 attribution — see the copyright line in the section above.
+<!-- NOTICE:PERSONAS:END -->
