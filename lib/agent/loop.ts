@@ -48,6 +48,9 @@ import { renderObservation } from './observation-render';
 import { beginDelegationScope, endDelegationScope, setDelegationContext } from '@/lib/capabilities/delegation';
 import { hermesRoute } from '@/lib/ai/hermes';
 import { parseBatch, runBatch, batchSummary, MAX_BATCH, type BatchItemResult } from './batch';
+import {
+  createPlan, activePlanForConversation, MAX_PLAN_STEPS, MAX_STEP_OVER_ITEMS, type PlanStepInput,
+} from '@/lib/plans/store';
 
 // A multi-part request ("research these five agencies, then tailor outreach")
 // needs a list call, a web search per company, and then the answer — 10 steps
@@ -595,6 +598,33 @@ function salvageFinalMessage(raw: string): string | null {
  */
 export const TURN_DEADLINE_MS = Number(process.env.AGENT_TURN_DEADLINE_MS) || 270 * 1000;
 
+/**
+ * ESCALATION_RESERVE_MS — carved OUT of TURN_DEADLINE_MS's own budget, never
+ * added on top of it. The step loop (both variants) stops taking a NEW step
+ * once fewer than this remains before turnDeadline, and spends what's left
+ * escalating the remainder into a plan (attemptEscalation, below) instead of
+ * starting a step that cannot finish anyway.
+ *
+ * THE ARITHMETIC, so raising either number later stays honest: reserving 20s
+ * out of the existing 270s leaves 250s for ordinary step-loop work — barely
+ * different from today — while the reserve itself only has to cover ONE
+ * cheap, short JSON-shaped model call (the escalation prompt asks for a
+ * short plan-step list, not prose) plus one createPlan round trip. This does
+ * NOT touch TURN_DEADLINE_MS itself, so the invariant
+ * tests/turn-deadline-invariant.test.ts asserts (TURN_DEADLINE_MS <
+ * maxDuration * 1000) is unaffected by this constant existing at all.
+ *
+ * The thrown-DeadlineExceededError catch (a single slow model call blowing
+ * the WHOLE budget outright, not just the reserve) has no budget left inside
+ * turnDeadline to spend on this — it already ran the clock out. That path
+ * borrows from the SAME 30s margin the deadline-to-maxDuration comment above
+ * already accounts for (enough for salvage assembly to run after the
+ * deadline trips), which is why attemptEscalation gives its one model call
+ * its own short `Date.now() + ESCALATION_RESERVE_MS` deadline there rather
+ * than reusing the already-expired turnDeadline.
+ */
+export const ESCALATION_RESERVE_MS = Number(process.env.AGENT_ESCALATION_RESERVE_MS) || 20 * 1000;
+
 /** This turn's absolute deadline: its own full TURN_DEADLINE_MS budget from
  *  right now, clamped to the PARENT's deadline when this run is a delegate
  *  sub-run (input.deadlineAt). Never larger than either bound — a delegate
@@ -942,13 +972,21 @@ export function buildSalvageMessage(
 // is to tell the user how far the turn traveled, not to only count the good
 // parts (buildSalvageMessage's own listing already handles which OBSERVATIONS
 // are trustworthy to show).
-export function deadlineSalvageFraming(steps: AgentStep[]): { intro: string; outro: string } {
+/** Shared by deadlineSalvageFraming and the escalation framing below — how
+ *  far the turn traveled before its clock ran out, worded identically in
+ *  both places so the two message families read as one voice. Factored out
+ *  rather than duplicated when escalation was added. */
+function describeStepsProgress(steps: AgentStep[]): string {
   const toolSteps = steps.filter((s) => s.tool);
   const stepCount = toolSteps.length;
   const toolNames = [...new Set(toolSteps.map((s) => s.tool as string))];
-  const progress = stepCount > 0
+  return stepCount > 0
     ? `it got through ${stepCount} step${stepCount === 1 ? '' : 's'} (${toolNames.join(', ')}) `
     : 'it had not completed any steps '; // buildSalvageMessage returns null in this case anyway — see DEADLINE_EMPTY_MESSAGE below, kept in sync in wording.
+}
+
+export function deadlineSalvageFraming(steps: AgentStep[]): { intro: string; outro: string } {
+  const progress = describeStepsProgress(steps);
   return {
     intro:
       `This turn ran out of time before it could finish — ${progress}before the deadline hit. ` +
@@ -968,6 +1006,202 @@ export function deadlineSalvageFraming(steps: AgentStep[]): { intro: string; out
 export const DEADLINE_EMPTY_MESSAGE =
   "This turn ran out of time before it could produce an answer, and nothing had completed yet to salvage. " +
   'Retrying the exact same request will very likely hit the same limit — try a narrower one.';
+
+// ESCALATION — Phase 2. A turn that runs out of TIME is not a turn that ran
+// out of WORK: "try breaking this into a smaller request" asks the user to do
+// the system's own job. When the reserve (ESCALATION_RESERVE_MS) or the
+// thrown deadline itself is hit with steps still outstanding, the loop makes
+// ONE bounded model call asking for the remainder as plan steps, hands them
+// to createPlan, and tells the user honestly that the rest is now running in
+// the background — the plan runner (lib/plans/runner.ts) picks it up on the
+// next hermes tick. Both runAgentImpl and runAgentStreamImpl call the SAME
+// attemptEscalation (CLAUDE.md: the two loops stay identical) rather than
+// each growing their own copy.
+//
+// THE GUARD THAT MATTERS MOST. Escalation must never create a SECOND plan on
+// a conversation that already has one running: a user who asks for something
+// large, sees a partial answer, and rephrases would otherwise get two plans
+// doing overlapping work, and Phase 1's no-double-processing guarantee is
+// only WITHIN a plan, never ACROSS plans. sendEmail is external_send and
+// irreversible — a duplicate plan is a duplicate send to a real person, not a
+// cosmetic bug. So activePlanForConversation is checked FIRST, before any
+// model call, and a hit short-circuits straight to the guard framing below,
+// never touching createPlan.
+//
+// ESCALATION MUST NEVER BECOME A NEW WAY TO FAIL A TURN. Any failure inside
+// this function — no conversationId, the guard firing, the model call
+// throwing or timing out, an unparsable/empty response, createPlan itself
+// returning null — falls back to returning null, and every call site treats
+// null as "proceed exactly as if escalation did not exist": the ordinary
+// buildSalvageMessage/DEADLINE_EMPTY_MESSAGE path this shipped under is
+// completely unchanged when that happens.
+
+/** Escalation's own framing: replaces deadlineSalvageFraming's "try
+ *  breaking this into a smaller request" outro, which is actively wrong here
+ *  — the SYSTEM is picking the remainder back up, not asking the user to. */
+function escalationFraming(steps: AgentStep[], remainingSteps: number): { intro: string; outro: string } {
+  const progress = describeStepsProgress(steps);
+  return {
+    intro: `This turn ran out of time before it could finish — ${progress}before it had to stop. `,
+    outro:
+      `The rest is already running in the background as a plan (${remainingSteps} step${remainingSteps === 1 ? '' : 's'} left) — ` +
+      "you'll see it continue right here as it completes, with nothing more to ask.",
+  };
+}
+
+/** The guard's own framing — the duplicate-send guard (see the module
+ *  comment above): told plainly that nothing new was started, because a plan
+ *  already runs for this conversation. */
+function escalationGuardFraming(steps: AgentStep[]): { intro: string; outro: string } {
+  const progress = describeStepsProgress(steps);
+  return {
+    intro: `This turn ran out of time before it could finish — ${progress}before it had to stop. `,
+    outro:
+      'Work is already running in the background for this conversation, so nothing new was started here — ' +
+      "you'll see that job continue rather than being asked to repeat yourself.",
+  };
+}
+
+/** Combine a framing with buildSalvageMessage's listing when there is
+ *  something to list, and fall back to the bare intro+outro when there is
+ *  not (buildSalvageMessage returns null on zero qualifying steps — see its
+ *  own comment). Never duplicates the listing logic itself. */
+function frameWithOptionalListing(
+  steps: AgentStep[],
+  extraTools: Record<string, AgentTool> | undefined,
+  framing: { intro: string; outro: string },
+): string {
+  return buildSalvageMessage(steps, extraTools, framing) ?? `${framing.intro}${framing.outro}`;
+}
+
+/** The instruction appended to THIS turn's own transcript for the one
+ *  escalation model call — reusing `system`/`messages` (not a fresh prompt)
+ *  so the model answers with the SAME context it has been reasoning over,
+ *  exactly like the forced-final call does. */
+const ESCALATION_INSTRUCTION = [
+  'This turn is almost out of time and must stop now. Do NOT keep working and do NOT call any tool.',
+  'Instead, write what remains as a PLAN so it can continue automatically in the background, across as many future turns as it needs.',
+  'Respond with ONLY one JSON object and nothing else — no prose, no markdown fences:',
+  '{"objective":"<one line: the overall goal, unchanged by what has been done so far>","steps":[...]}',
+  'Each entry in "steps" is EITHER a plain string (one concrete outcome), OR {"title":"...","over":["item1","item2",...]}.',
+  'Use the {"title":...,"over":[...]} shape WHENEVER the remaining work is "for each of these N things, do X" (research/draft/send N leads, enrich N companies, etc.) — that is ONE batch step worked a few items at a time, not N separate steps. Never emit one plain-string step per item in a list; that is always wrong here.',
+  `At most ${MAX_PLAN_STEPS} steps total, and at most ${MAX_STEP_OVER_ITEMS} items in any one "over" list.`,
+  'Only describe work that has not already happened — do not re-list anything already completed.',
+].join('\n');
+
+/** Try to convert a turn's remainder into a durable plan.
+ *
+ * Returns null on ANY failure (see the module comment above) — the caller
+ * must then proceed exactly as it would if this function did not exist.
+ * Returns `{ message }` when it produced something to tell the user, which
+ * covers BOTH real outcomes: a plan was created, or the guard fired because
+ * one already existed. Both are told through frameWithOptionalListing so the
+ * "what got done this turn" listing is never re-implemented.
+ */
+async function attemptEscalation(args: {
+  accountId: string;
+  conversationId: string | undefined;
+  brandId: string | null | undefined;
+  requestedBy: string | null | undefined;
+  pinnedSkills: string[] | undefined;
+  personaId: string | null | undefined;
+  system: string;
+  messages: StoredMessage[];
+  steps: AgentStep[];
+  extraTools: Record<string, AgentTool>;
+  personaModelId?: string;
+}): Promise<{ message: string } | null> {
+  const { accountId, conversationId, steps, extraTools } = args;
+  // Nothing to attach a plan to, and no way to check for a duplicate — skip
+  // escalation entirely rather than write an orphaned plan no conversation
+  // will ever surface.
+  if (!conversationId) return null;
+
+  // THE GUARD, first, before any model call: never escalate into a SECOND
+  // plan on a conversation that already has one running. See the module
+  // comment above for why this specific mistake is the one that matters.
+  let activePlan;
+  try {
+    activePlan = await activePlanForConversation(accountId, conversationId);
+  } catch {
+    activePlan = null;
+  }
+  if (activePlan) {
+    log.warn('agent: escalation skipped — a plan is already running on this conversation', {
+      accountId, conversationId, planId: activePlan.id,
+    });
+    return { message: frameWithOptionalListing(steps, extraTools, escalationGuardFraming(steps)) };
+  }
+
+  // A separate local rather than an inline array literal in the generateChat
+  // call below, purely so the transcript this call sends is unmistakably a
+  // toWireMessages(...)-wrapped variable, same as every other call site in
+  // this file (see tests/attachment-provenance.test.ts's static check that
+  // no StoredMessage id can reach a provider payload).
+  const escalationMessages: StoredMessage[] = [
+    ...args.messages,
+    { role: 'user', content: ESCALATION_INSTRUCTION },
+  ];
+  let raw: string;
+  try {
+    raw = await generateChat({
+      system: args.system,
+      messages: toWireMessages(escalationMessages),
+      temperature: 0.2,
+      // A short JSON step list, not prose — the same ceiling shape as the
+      // step loop's own tool-routing calls, not the forced-final draft call.
+      maxOutputTokens: 1200,
+      accountId,
+      task: 'reason',
+      // Its OWN short deadline (see ESCALATION_RESERVE_MS's comment): when
+      // called from the graceful reserve check turnDeadline is still roughly
+      // this far away, and when called from the thrown-deadline catch
+      // turnDeadline has ALREADY passed, so reusing it would fail this call
+      // immediately. Either way this is the one call the reserve exists to
+      // pay for.
+      deadlineAt: Date.now() + ESCALATION_RESERVE_MS,
+      ...(args.personaModelId ? { modelId: args.personaModelId } : {}),
+    });
+  } catch (e) {
+    log.warn('agent: escalation model call failed', { accountId, conversationId, error: String((e as any)?.message || e) });
+    return null;
+  }
+
+  const parsed = extractJson(String(raw ?? ''));
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const objective = typeof (parsed as any).objective === 'string' ? (parsed as any).objective.trim() : '';
+  const rawSteps = Array.isArray((parsed as any).steps) ? (parsed as any).steps : null;
+  if (!objective || !rawSteps || !rawSteps.length) return null;
+
+  const planSteps: PlanStepInput[] = [];
+  for (const s of rawSteps.slice(0, MAX_PLAN_STEPS)) {
+    if (typeof s === 'string' && s.trim()) { planSteps.push(s.trim()); continue; }
+    if (s && typeof s === 'object' && typeof s.title === 'string' && s.title.trim()) {
+      const over = Array.isArray(s.over)
+        ? s.over.map((x: any) => String(x)).filter(Boolean).slice(0, MAX_STEP_OVER_ITEMS)
+        : undefined;
+      planSteps.push(over && over.length ? { title: s.title.trim(), over } : s.title.trim());
+    }
+  }
+  if (!planSteps.length) return null;
+
+  const plan = await createPlan({
+    accountId,
+    objective,
+    steps: planSteps,
+    conversationId,
+    brandId: args.brandId ?? null,
+    createdBy: args.requestedBy ?? null,
+    skills: args.pinnedSkills,
+    personaId: args.personaId ?? null,
+  }).catch(() => null);
+  if (!plan) return null;
+
+  log.info('agent: escalated turn remainder to a plan', {
+    accountId, conversationId, planId: plan.id, steps: plan.steps.length,
+  });
+  return { message: frameWithOptionalListing(steps, extraTools, escalationFraming(steps, plan.steps.length)) };
+}
 
 // PORTED (Packet 2.1 step 5): the per-tool deriveMetrics switch that used to
 // live here now lives with each capability (lib/capabilities/metrics-port.ts,
@@ -1403,10 +1637,23 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
     // Before the step, not after: the point is to bound the wait, not to
     // notice afterwards that it was exceeded. Breaking lands in the forced
     // final below, so the turn answers from what it has.
-    if (Date.now() > turnDeadline) {
-      log.warn('agent: turn deadline reached, answering with what it has', {
+    //
+    // Checked against turnDeadline - ESCALATION_RESERVE_MS, not turnDeadline
+    // itself (Phase 2): stopping a bit early leaves the reserve intact for
+    // attemptEscalation's one bounded call below, instead of starting a step
+    // that cannot finish and then having nothing left to escalate with.
+    if (Date.now() > turnDeadline - ESCALATION_RESERVE_MS) {
+      log.warn('agent: turn deadline reached (reserve), attempting to escalate the remainder', {
         accountId, step: i, deadlineMs: TURN_DEADLINE_MS, afterTool: lastToolName ?? null,
       });
+      const escalated = await attemptEscalation({
+        accountId, conversationId: input.conversationId, brandId: brandContext?.id,
+        requestedBy: input.requestedBy, pinnedSkills: input.pinnedSkills, personaId: input.personaId,
+        system, messages, steps, extraTools, personaModelId,
+      });
+      if (escalated) return { status: 'salvage', message: escalated.message, transcript: messages, steps };
+      // Escalation declined (no conversationId, a plan already runs, the
+      // model call failed) — fall through to EXACTLY today's behaviour.
       break;
     }
     let raw: string;
@@ -1449,6 +1696,17 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
       // (buildSalvageMessage), rather than inventing a second path: only the
       // framing differs (deadlineSalvageFraming), the listing logic is shared.
       if (e instanceof DeadlineExceededError) {
+        // A single slow model call blew the WHOLE budget outright, skipping
+        // the graceful reserve check above entirely — see
+        // ESCALATION_RESERVE_MS's comment on why this path still tries to
+        // escalate (borrowing the post-deadline margin) rather than jumping
+        // straight to the plain salvage message.
+        const escalated = await attemptEscalation({
+          accountId, conversationId: input.conversationId, brandId: brandContext?.id,
+          requestedBy: input.requestedBy, pinnedSkills: input.pinnedSkills, personaId: input.personaId,
+          system, messages, steps, extraTools, personaModelId,
+        });
+        if (escalated) return { status: 'salvage', message: escalated.message, transcript: messages, steps };
         const salvage = buildSalvageMessage(steps, extraTools, deadlineSalvageFraming(steps));
         if (salvage) return { status: 'salvage', message: salvage, transcript: messages, steps };
         return { status: 'error', message: DEADLINE_EMPTY_MESSAGE, transcript: messages, steps };
@@ -2050,10 +2308,26 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
     // Before the step, not after: the point is to bound the wait, not to
     // notice afterwards that it was exceeded. Breaking lands in the forced
     // final below, so the turn answers from what it has.
-    if (Date.now() > turnDeadline) {
-      log.warn('agent: turn deadline reached, answering with what it has', {
+    //
+    // Checked against turnDeadline - ESCALATION_RESERVE_MS, mirroring
+    // runAgentImpl exactly (CLAUDE.md: both loops stay identical) — see the
+    // matching comment there.
+    if (Date.now() > turnDeadline - ESCALATION_RESERVE_MS) {
+      log.warn('agent: turn deadline reached (reserve), attempting to escalate the remainder', {
         accountId, step: i, deadlineMs: TURN_DEADLINE_MS, afterTool: lastToolName ?? null,
       });
+      const escalated = await attemptEscalation({
+        accountId, conversationId: input.conversationId, brandId: brandContext?.id,
+        requestedBy: input.requestedBy, pinnedSkills: input.pinnedSkills, personaId: input.personaId,
+        system, messages, steps, extraTools, personaModelId,
+      });
+      if (escalated) {
+        messages.push({ role: 'assistant', content: escalated.message });
+        await streamTokens(escalated.message, emit);
+        emit({ type: 'final', message: escalated.message, transcript: messages, salvage: true });
+        return;
+      }
+      // Escalation declined — fall through to EXACTLY today's behaviour.
       break;
     }
     // Live "working" step BEFORE the blocking model call (from main): without
@@ -2101,6 +2375,20 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
       // with what was accomplished rather than a bare `error` event carrying
       // nothing.
       if (e instanceof DeadlineExceededError) {
+        // See the matching comment in runAgentImpl: this borrows the
+        // post-deadline margin for one bounded escalation attempt before
+        // falling back to the plain salvage message.
+        const escalated = await attemptEscalation({
+          accountId, conversationId: input.conversationId, brandId: brandContext?.id,
+          requestedBy: input.requestedBy, pinnedSkills: input.pinnedSkills, personaId: input.personaId,
+          system, messages, steps, extraTools, personaModelId,
+        });
+        if (escalated) {
+          messages.push({ role: 'assistant', content: escalated.message });
+          await streamTokens(escalated.message, emit);
+          emit({ type: 'final', message: escalated.message, transcript: messages, salvage: true });
+          return;
+        }
         const salvage = buildSalvageMessage(steps, extraTools, deadlineSalvageFraming(steps));
         if (salvage) {
           messages.push({ role: 'assistant', content: salvage });
