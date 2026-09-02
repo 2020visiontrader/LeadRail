@@ -350,6 +350,76 @@ export function clearSentAttachments(current: UploadedAttachment[], sent: Upload
 
 interface PersonaOption { id: string; name: string; avatar?: string | null }
 
+// ---------------------------------------------------------------------------
+// Message action bar — pure logic. Extracted for the same reason
+// attachmentsForTurn/clearSentAttachments are (see the comment above them):
+// this project has no DOM test environment, so the state transitions worth
+// pinning are pulled out into plain functions the real handlers below call,
+// rather than left inline where only a component-render test could reach
+// them.
+// ---------------------------------------------------------------------------
+
+/** "just now" / "N ago" for a per-message timestamp. Reuses formatDuration
+ *  for the actual number — including its negative/non-finite clamp — rather
+ *  than reimplementing duration formatting a second time in this file; this
+ *  only decides the "just now" cutoff and appends "ago". Returns '' for a
+ *  turn with no timestamp (a rehydrated turn never carries one — see
+ *  transcriptToTurns — and the bar simply omits the label in that case). */
+export function relativeTimeLabel(ts: number | undefined, now: number = Date.now()): string {
+  if (typeof ts !== 'number' || !Number.isFinite(ts)) return '';
+  const elapsed = now - ts;
+  if (elapsed < 5000) return 'just now';
+  return `${formatDuration(elapsed)} ago`;
+}
+
+/** Next vote state for a thumbs click. Clicking the direction that is
+ *  already selected clears the vote (toggle off); clicking the other
+ *  direction switches to it. `current` is whatever the vote map holds now —
+ *  undefined and null both mean "no vote yet". */
+export function nextVoteState(current: boolean | null | undefined, clicked: boolean): boolean | null {
+  return current === clicked ? null : clicked;
+}
+
+/** The optimistic vote map to show immediately, and what to roll back to if
+ *  the write fails — both pure, so handleVote's optimistic-update/revert
+ *  round trip is testable without mocking fetch. */
+export function planVoteUpdate(
+  current: Record<string, boolean | null>,
+  messageId: string,
+  clicked: boolean,
+): { optimistic: Record<string, boolean | null>; previous: boolean | null } {
+  const previous = current[messageId] ?? null;
+  return { optimistic: { ...current, [messageId]: nextVoteState(previous, clicked) }, previous };
+}
+
+/** What a Retry click on an assistant turn resends: the nearest PRECEDING
+ *  user turn's text, and that turn's real transcript messageId — the point
+ *  /api/agent/conversations/[id]/rerun truncates the conversation AT (see
+ *  that route's header for why: it also revokes standing approval grants
+ *  for the conversation before the truncate, so a retried turn cannot
+ *  silently re-execute a sensitive tool call under an old approval).
+ *
+ *  Returns null when there is no preceding user turn (should not happen for
+ *  a real assistant turn) or when that user turn has no messageId yet — a
+ *  turn the client never learned a server id for (see the 'conversation'
+ *  SSE event) — in which case retry has nothing safe to truncate at and is
+ *  simply unavailable, rather than guessing a position-based id. */
+export function findRetryTarget(
+  turns: Array<{ id: string; role: string; text?: string; messageId?: string }>,
+  assistantTurnId: string,
+): { userText: string; truncateAtMessageId: string } | null {
+  const idx = turns.findIndex((t) => t.id === assistantTurnId);
+  if (idx === -1) return null;
+  for (let i = idx - 1; i >= 0; i--) {
+    const t = turns[i];
+    if (t.role === 'user') {
+      if (!t.messageId || typeof t.text !== 'string') return null;
+      return { userText: t.text, truncateAtMessageId: t.messageId };
+    }
+  }
+  return null;
+}
+
 
 /**
  * Rebuild displayable turns from a stored transcript.
@@ -368,7 +438,7 @@ interface PersonaOption { id: string; name: string; avatar?: string | null }
  * Steps are deliberately not reconstructed: they are live-run telemetry and are
  * not persisted, so a rehydrated turn shows its answer without a trace.
  */
-function transcriptToTurns(transcript: Array<{ role: string; content: string }>): any[] {
+function transcriptToTurns(transcript: Array<{ role: string; content: string; id?: string }>): any[] {
   // Mirrors the nudges pushed in lib/agent/loop.ts — these are instructions to
   // the model, never anything the user typed.
   const NUDGES = ['Respond with ONLY', 'You already ran', 'You have enough', 'Stop calling tools'];
@@ -377,26 +447,96 @@ function transcriptToTurns(transcript: Array<{ role: string; content: string }>)
   for (const m of transcript || []) {
     const content = typeof m?.content === 'string' ? m.content : '';
     if (!content) continue;
+    // The REAL transcript-entry id (StoredMessage.id, migration 076) — kept
+    // separate from the React-key `id` below on purpose. `id` here is a
+    // synthetic, POSITION-derived key (`rh-u-0`, ...) that exists only to
+    // satisfy React's list-key requirement and is regenerated fresh on every
+    // rehydration; it is NEVER identity (076's whole point). `messageId` is
+    // the one thing that survives a reload and is what feedback/retry/edit
+    // key off — see lib/agent/feedback.ts and the /rerun route. Absent only
+    // for a transcript entry that predates 076's backfill.
+    const messageId = typeof m.id === 'string' && m.id ? m.id : undefined;
     if (m.role === 'user') {
       if (content.startsWith('OBSERVATION:')) continue;
       if (NUDGES.some((n) => content.startsWith(n))) continue;
-      out.push({ id: `rh-u-${seq++}`, role: 'user', text: content });
+      out.push({ id: `rh-u-${seq++}`, role: 'user', text: content, messageId });
     } else if (m.role === 'assistant') {
       try {
         const p = JSON.parse(content);
         if (p && p.action === 'final' && p.message) {
-          out.push({ id: `rh-a-${seq++}`, role: 'assistant', text: String(p.message), steps: [] });
+          out.push({ id: `rh-a-${seq++}`, role: 'assistant', text: String(p.message), steps: [], messageId });
         }
       } catch {
         // Non-JSON assistant content: a compose-pass answer that was stored as
         // plain prose. That IS displayable, unlike a half-written envelope.
         if (!content.trimStart().startsWith('{')) {
-          out.push({ id: `rh-a-${seq++}`, role: 'assistant', text: content, steps: [] });
+          out.push({ id: `rh-a-${seq++}`, role: 'assistant', text: content, steps: [], messageId });
         }
       }
     }
   }
   return out;
+}
+
+/** One icon-only action-bar button. Compact by design (the bar sits under
+ *  every message, so a full-size Button would dominate the transcript), but
+ *  keeps the same accessible-name + visible-focus-ring discipline Button.tsx
+ *  uses elsewhere: `label` is required and becomes both the tooltip and the
+ *  screen-reader name (never left to an icon alone), and focus-visible draws
+ *  the same brand ring so keyboard navigation is never invisible. */
+function BarButton({ label, active, onClick, children }: { label: string; active?: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      aria-pressed={active}
+      title={label}
+      onClick={onClick}
+      className={`rounded-md p-1 text-xs leading-none transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] ${
+        active ? 'text-[var(--brand)]' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+/** The action bar itself — copy/read-aloud/thumbs/retry/timestamp for an
+ *  assistant turn, copy/edit/timestamp for a user turn. A single component
+ *  for both roles because every action already receives the whole `turn` and
+ *  decides what applies to it; two near-identical components would drift. */
+function MessageActions({
+  turn, isUser, onCopy, copied, onReadAloud, speaking, speechSupported, vote, onVote, onEdit, onRetry, now,
+}: {
+  turn: any; isUser: boolean;
+  onCopy: () => void; copied: boolean;
+  onReadAloud?: () => void; speaking?: boolean; speechSupported?: boolean;
+  vote?: boolean | null; onVote?: (up: boolean) => void;
+  onEdit?: () => void; onRetry?: () => void;
+  now: number;
+}) {
+  const canVote = !isUser && Boolean(turn.messageId && onVote);
+  return (
+    <div className={`flex items-center gap-0.5 text-[var(--text-muted)] ${isUser ? 'justify-end' : 'justify-start'}`}>
+      <BarButton label={copied ? 'Copied' : 'Copy'} onClick={onCopy}>{copied ? '✓' : '⧉'}</BarButton>
+      {!isUser && speechSupported && (
+        <BarButton label={speaking ? 'Stop reading aloud' : 'Read aloud'} active={speaking} onClick={() => onReadAloud?.()}>
+          {speaking ? '◼' : '🔊'}
+        </BarButton>
+      )}
+      {!isUser && (
+        <BarButton label="Good response" active={vote === true} onClick={() => canVote && onVote?.(true)}>👍</BarButton>
+      )}
+      {!isUser && (
+        <BarButton label="Bad response" active={vote === false} onClick={() => canVote && onVote?.(false)}>👎</BarButton>
+      )}
+      {!isUser && onRetry && <BarButton label="Retry" onClick={onRetry}>↻</BarButton>}
+      {isUser && onEdit && <BarButton label="Edit message" onClick={onEdit}>✎</BarButton>}
+      {relativeTimeLabel(turn.createdAt, now) && (
+        <span className="ml-1 select-none text-[10px] text-[var(--text-muted)]">{relativeTimeLabel(turn.createdAt, now)}</span>
+      )}
+    </div>
+  );
 }
 
 export default function AgentConsole({ brandId, conversationId, onSteps, onConversationId, onFirstMessage }: { brandId?: string; conversationId?: string; onSteps?: (steps: Step[], busy: boolean, pendingApproval: boolean) => void; onConversationId?: (id: string | undefined) => void; onFirstMessage?: (text: string) => void }) {
@@ -475,6 +615,20 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     setActiveRuns(new Set());
     if (lastText) setInput((prev) => (prev.trim() ? prev : lastText));
   }
+  // Message action bar state (thumbs / copy / read-aloud / edit). Votes are
+  // keyed by the REAL transcript messageId (never the turn's local React-key
+  // id), so they survive a reload and line up with what the server stored.
+  const [votes, setVotes] = useState<Record<string, boolean | null>>({});
+  const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [speakingId, setSpeakingId] = useState<string | null>(null);
+  const [editingTurnId, setEditingTurnId] = useState<string | null>(null);
+  const [editDraft, setEditDraft] = useState('');
+  const [rerunningTurnId, setRerunningTurnId] = useState<string | null>(null);
+  // Computed once per render, not stored in state: `window` either has
+  // speechSynthesis or it doesn't, for the lifetime of the tab, and gating on
+  // a state value would just add a render with no behavioural difference.
+  const speechSupported = typeof window !== 'undefined' && 'speechSynthesis' in window;
+
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [compaction, setCompaction] = useState<{ level: 'soft' | 'hard'; tokenEstimate: number } | null>(null);
   // Set by the mount-time rehydration effect below when the conversation we
@@ -680,6 +834,25 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     return () => { cancelled = true; };
   }, []);
 
+  // Load this account's existing votes for the conversation being opened, so
+  // a reload shows the thumb already pressed rather than resetting it. Only
+  // meaningful once a conversation exists — a brand-new chat has nothing to
+  // fetch. Best-effort: a failed read leaves votes empty, which just means
+  // the bar starts unpressed (same as any other best-effort fetch here).
+  useEffect(() => {
+    if (!conversationId) return;
+    let cancelled = false;
+    apiGet<{ feedback: Record<string, { up: boolean }> }>(`/api/agent/feedback?conversationId=${encodeURIComponent(conversationId)}`)
+      .then((d) => {
+        if (cancelled) return;
+        const map: Record<string, boolean | null> = {};
+        for (const [messageId, f] of Object.entries(d.feedback || {})) map[messageId] = f.up;
+        setVotes(map);
+      })
+      .catch(() => { /* best-effort */ });
+    return () => { cancelled = true; };
+  }, [conversationId]);
+
   // Additive, non-breaking: surface the latest assistant turn's real steps to an
   // optional parent (the dock's context column). No effect on this component's UI.
   useEffect(() => {
@@ -781,15 +954,18 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     const turnAttachments = attachmentsForTurn(Boolean(payload.message), attachments);
     if (payload.message) {
       setTurns((p) => [...p, {
-        id: `${turnId}-u`, role: 'user', text: payload.message,
+        id: `${turnId}-u`, role: 'user', text: payload.message, createdAt: Date.now(),
         ...(turnAttachments.length ? { attachments: turnAttachments } : {}),
       }]);
     }
     // startedAt anchors the aggregate header's elapsed time for this run. It is
     // the turn's own timestamp, not the first step's — a run can spend real
     // time queued (see the "Queued —" placeholder below) before any step
-    // exists, and that wait is part of what "18s" should mean.
-    setTurns((p) => [...p, { id: turnId, role: 'assistant', text: '', steps: [], startedAt: Date.now() }]);
+    // exists, and that wait is part of what "18s" should mean. createdAt is
+    // the SAME instant under a different name, for the action bar's relative
+    // timestamp (relativeTimeLabel) — distinct purpose, no reason to make one
+    // field serve both and couple their futures.
+    setTurns((p) => [...p, { id: turnId, role: 'assistant', text: '', steps: [], startedAt: Date.now(), createdAt: Date.now() }]);
 
     // Consumed here, cleared once the request is actually on the wire (below) —
     // so `from` reaches the server at most once. A connection failure leaves it
@@ -917,6 +1093,19 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
         // put it in the URL or restore it — which is why a reload looked like the
         // chat had been wiped even though the transcript was safe on the server.
         onConversationId?.(e.conversationId);
+      }
+      // Message-action Packet: stamp the REAL transcript-entry ids onto this
+      // run's two turns the moment they exist server-side, so copy/thumbs/
+      // retry/edit work on a message that was just sent — not only after a
+      // reload through transcriptToTurns. userMessageId is minted by the
+      // route BEFORE the turn runs and is stable; lastMessageId is the
+      // trailing transcript entry (the assistant reply this run produced, or
+      // the approval-proposal message on a needs_approval turn).
+      if (typeof e.userMessageId === 'string' && e.userMessageId) {
+        setTurns((prev) => prev.map((t) => (t.id === `${turnId}-u` ? { ...t, messageId: e.userMessageId } : t)));
+      }
+      if (typeof e.lastMessageId === 'string' && e.lastMessageId) {
+        patchAssistant((t) => { t.messageId = e.lastMessageId; });
       }
       return;
     }
@@ -1141,6 +1330,140 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     setHandingOver(false);
   };
 
+  // --- Message action bar handlers -----------------------------------------
+
+  /** Copy the message's plain TEXT (t.text — the markdown source), never the
+   *  rendered HTML the <Markdown> component produces. A brief "Copied" state
+   *  confirms it; keyed by messageId (falling back to the turn's own id for
+   *  a rehydrated turn that predates 076 and has none) so only the clicked
+   *  message's button shows the confirmation. */
+  const handleCopy = async (turn: any) => {
+    const key = turn.messageId || turn.id;
+    try {
+      await navigator.clipboard.writeText(turn.text || '');
+      setCopiedId(key);
+      setTimeout(() => setCopiedId((cur) => (cur === key ? null : cur)), 1500);
+    } catch {
+      // Clipboard permission denied or unavailable — nothing to revert, the
+      // button simply never shows "Copied".
+    }
+  };
+
+  /** Read a message aloud with the browser's own speech synthesis — no key,
+   *  no per-call cost (see the Packet notes: lib/ai/transcribe.ts is speech-
+   *  TO-text, not the reverse, and there is no TTS provider in this repo).
+   *  Toggles: clicking the button that is currently speaking stops it;
+   *  clicking any other one cancels whatever was speaking and starts the new
+   *  one, since the browser can only speak one utterance at a time. */
+  const handleReadAloud = (turn: any) => {
+    if (!speechSupported) return;
+    const key = turn.messageId || turn.id;
+    if (speakingId === key) {
+      window.speechSynthesis.cancel();
+      setSpeakingId(null);
+      return;
+    }
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(turn.text || '');
+    utter.onend = () => setSpeakingId((cur) => (cur === key ? null : cur));
+    utter.onerror = () => setSpeakingId((cur) => (cur === key ? null : cur));
+    setSpeakingId(key);
+    window.speechSynthesis.speak(utter);
+  };
+
+  /** Record (or change) a thumbs vote. Optimistic: the UI updates from
+   *  planVoteUpdate immediately, then reconciles against the server response
+   *  — a failed write rolls the map back to `previous` rather than leaving a
+   *  vote on screen that was never stored. Requires a real messageId AND a
+   *  saved conversation; neither exists for a turn still mid-stream (before
+   *  its 'conversation' event lands), so the buttons are disabled until then
+   *  — see the JSX below. */
+  const handleVote = async (turn: any, up: boolean) => {
+    const messageId: string | undefined = turn.messageId;
+    const conversationId = conversationIdRef.current;
+    if (!messageId || !conversationId) return;
+    const { optimistic, previous } = planVoteUpdate(votes, messageId, up);
+    setVotes(optimistic);
+    const desired = optimistic[messageId];
+    if (desired === null) {
+      // Toggled off. There is no DELETE route (the schema is one live vote
+      // per message, "changeable", not "removable" — see migration 080) —
+      // treat "toggle off" as a client-only affordance and leave the last
+      // stored vote in place server-side rather than adding a second
+      // endpoint for a case the spec does not ask for. Revert locally if
+      // the user reconsiders before reloading; a reload repaints whatever
+      // the server actually has, which is the honest state either way.
+      return;
+    }
+    try {
+      const res: any = await apiSend('/api/agent/feedback', 'POST', {
+        conversationId, messageId, up: desired, personaId: selectedPersonaId,
+      });
+      const serverUp = res?.feedback?.up;
+      setVotes((cur) => ({ ...cur, [messageId]: typeof serverUp === 'boolean' ? serverUp : cur[messageId] }));
+    } catch {
+      setVotes((cur) => ({ ...cur, [messageId]: previous }));
+    }
+  };
+
+  const startEdit = (turn: any) => {
+    if (busy) stopAll(); // reuse the one cancellation path — see stopAll's own header
+    setEditingTurnId(turn.id);
+    setEditDraft(turn.text || '');
+  };
+  const cancelEdit = () => { setEditingTurnId(null); setEditDraft(''); };
+
+  /** Shared by Edit-submit and Retry: ask the server to drop `messageId` and
+   *  everything after it (and revoke this conversation's standing approval
+   *  grants — see that route's header for why), then send `text` as the next
+   *  turn. Returns without sending if the truncate is refused (unknown
+   *  conversation, unknown messageId, or the request fails) — the chat is
+   *  left exactly as it was rather than sending a new message onto history
+   *  the server never actually trimmed. */
+  const rerunFrom = async (truncateAtMessageId: string, text: string) => {
+    const conversationId = conversationIdRef.current;
+    if (!conversationId || !text.trim()) return;
+    setRerunningTurnId(truncateAtMessageId);
+    try {
+      await apiSend(`/api/agent/conversations/${encodeURIComponent(conversationId)}/rerun`, 'POST', {
+        messageId: truncateAtMessageId,
+      });
+    } catch {
+      setRerunningTurnId(null);
+      patchLatestAssistant((t) => t.steps.push({ kind: 'error', text: 'Could not prepare that — nothing was resent.' }));
+      return;
+    }
+    // Drop the client's own copy of the discarded turns so the UI matches
+    // what the server now holds, THEN send — mirroring the server's own
+    // "truncate, then append" order in the /rerun route.
+    setTurns((prev) => {
+      const idx = prev.findIndex((t) => t.messageId === truncateAtMessageId);
+      return idx === -1 ? prev : prev.slice(0, idx);
+    });
+    setRerunningTurnId(null);
+    onFirstMessage?.(text);
+    run({ message: text });
+  };
+
+  const submitEdit = (turn: any) => {
+    const text = editDraft.trim();
+    if (!text || !turn.messageId) { cancelEdit(); return; }
+    cancelEdit();
+    void rerunFrom(turn.messageId, text);
+  };
+
+  /** Retry: re-run from the user message that preceded this assistant reply,
+   *  resending its ORIGINAL text unchanged. See findRetryTarget's own header
+   *  for what "unavailable" looks like and why (a turn with no learned
+   *  messageId), and the /rerun route's header for the standing-grant safety
+   *  this shares with Edit. */
+  const handleRetry = (turn: any) => {
+    if (busy) stopAll();
+    const target = findRetryTarget(turns, turn.id);
+    if (!target) return;
+    void rerunFrom(target.truncateAtMessageId, target.userText);
+  };
+
   return (
     // h-full, not a hardcoded calc(100vh-9rem). The fixed height did not account
     // for the page heading or <main>'s padding, so the console overflowed the
@@ -1202,7 +1525,32 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
                   ))}
                 </div>
               )}
-              <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl bg-[var(--brand)] px-4 py-2 text-sm text-white">{t.text}</div>
+              {editingTurnId === t.id ? (
+                <div className="w-full max-w-[80%] space-y-1.5">
+                  <textarea
+                    autoFocus
+                    rows={3}
+                    value={editDraft}
+                    onChange={(e) => setEditDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submitEdit(t); }
+                      if (e.key === 'Escape') cancelEdit();
+                    }}
+                    className="w-full resize-none rounded-2xl border border-[var(--border-strong)] bg-[var(--bg-canvas)] px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
+                  />
+                  <div className="flex justify-end gap-2">
+                    <Button variant="secondary" onClick={cancelEdit}>Cancel</Button>
+                    <Button onClick={() => submitEdit(t)} loading={rerunningTurnId === t.messageId}>Save &amp; resend</Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="max-w-[80%] whitespace-pre-wrap rounded-2xl bg-[var(--brand)] px-4 py-2 text-sm text-white">{t.text}</div>
+              )}
+              <MessageActions
+                turn={t} isUser now={Date.now()}
+                onCopy={() => handleCopy(t)} copied={copiedId === (t.messageId || t.id)}
+                onEdit={() => startEdit(t)}
+              />
             </div>
           ) : (
             <div key={t.id || i} className="space-y-2">
@@ -1216,9 +1564,19 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
                 <FindingsPanel evidence={t.evidence || {}} claims={t.claims || []} findings={t.findings || []} verdict={t.verdict} />
               )}
               {t.text && (
-                <div className="max-w-[85%] animate-fade-in overflow-hidden rounded-2xl bg-[var(--bg-canvas)] px-4 py-2.5 text-sm text-[var(--text-primary)]">
-                  <Markdown>{t.text}</Markdown>
-                </div>
+                <>
+                  <div className="max-w-[85%] animate-fade-in overflow-hidden rounded-2xl bg-[var(--bg-canvas)] px-4 py-2.5 text-sm text-[var(--text-primary)]">
+                    <Markdown>{t.text}</Markdown>
+                  </div>
+                  <MessageActions
+                    turn={t} isUser={false} now={Date.now()}
+                    onCopy={() => handleCopy(t)} copied={copiedId === (t.messageId || t.id)}
+                    onReadAloud={() => handleReadAloud(t)} speaking={speakingId === (t.messageId || t.id)} speechSupported={speechSupported}
+                    vote={t.messageId ? votes[t.messageId] ?? null : null}
+                    onVote={(up) => handleVote(t, up)}
+                    onRetry={!busy ? () => handleRetry(t) : undefined}
+                  />
+                </>
               )}
             </div>
           ),

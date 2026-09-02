@@ -29,7 +29,14 @@ vi.mock('@/lib/documents/attachments', () => ({ bindAttachments: vi.fn(async () 
 vi.mock('@/lib/documents/attachment-bindings', () => ({ bindAttachmentToMessage: vi.fn(async () => {}) }));
 vi.mock('@/lib/agent/personas', () => ({ parseMentions: vi.fn(() => []) }));
 vi.mock('@/lib/agent/context', () => ({ loadAgentContext: vi.fn(async () => ({})) }));
-vi.mock('@/lib/agent/transcript-store', () => ({ mintMessageId: () => 'msg-1' }));
+vi.mock('@/lib/agent/transcript-store', () => ({
+  mintMessageId: () => 'msg-1',
+  // ensureMessageIds is exercised for real behaviour in
+  // tests/transcript-store.test.ts; this route test only needs the route to
+  // be able to call it without throwing, so a same-shape passthrough stub is
+  // enough here.
+  ensureMessageIds: (msgs: any[]) => (msgs || []).map((m) => (m?.id ? m : { ...m, id: 'stub-id' })),
+}));
 
 const saveConversation = vi.fn(async (args: any) => args.id || 'conv-new');
 const loadTranscriptResult = vi.fn(async (_id?: any, _acc?: any) => ({ messages: [] as any[], ok: true }));

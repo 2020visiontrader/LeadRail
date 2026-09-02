@@ -6,7 +6,7 @@ import { supabase } from '@/lib/db';
 import { runAgentStream, agentConfigured, generateCarryover, type AgentEvent } from '@/lib/agent/loop';
 import { loadAgentContext } from '@/lib/agent/context';
 import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts, markConversationRunning, clearConversationRunning } from '@/lib/agent/memory';
-import { mintMessageId, type StoredMessage } from '@/lib/agent/transcript-store';
+import { mintMessageId, ensureMessageIds, type StoredMessage } from '@/lib/agent/transcript-store';
 import { parseMentions } from '@/lib/agent/personas';
 import { createStreamGuard } from '@/lib/agent/stream-guard';
 import { providersLookDown, turnFailureMessage } from '@/lib/agent/failure-copy';
@@ -404,12 +404,34 @@ export async function POST(request: NextRequest) {
         // the user's message. The old code saved nothing in the second case.
         const toSave = finalTranscript ?? openingTranscript;
         if (toSave) {
+          // Message-action Packet: the console needs a REAL, stable id for
+          // the assistant reply it just streamed — to key a thumbs vote, or
+          // to name it as the truncation point for a retry — the moment the
+          // turn finishes, not only after a reload. saveConversation already
+          // calls ensureMessageIds internally (migration 076) but never
+          // returns the id-bearing copy it wrote; calling the same pure,
+          // idempotent helper here just to READ the ids back costs nothing
+          // extra (ensureMessageIds preserves whatever id is already present,
+          // so this can never re-mint the id saveConversation itself assigns
+          // for the same content) and lets this event carry them to the
+          // client.
+          const withIds = ensureMessageIds(toSave);
           const savedId = await saveConversation({
             id: conversationId, accountId: session.accountId, brandId: brandId ?? null,
             title: typeof message === 'string' ? message.slice(0, 80) : undefined,
-            transcript: toSave,
+            transcript: withIds,
           });
-          send({ type: 'conversation', conversationId: savedId ?? conversationId });
+          const lastMessageId = withIds.length ? withIds[withIds.length - 1].id : undefined;
+          send({
+            type: 'conversation',
+            conversationId: savedId ?? conversationId,
+            // The two ids the client's live turn needs: its own user message
+            // (minted above, before the turn ran) and the assistant reply
+            // that just finished (the transcript's trailing entry — the turn
+            // loop always appends the final answer last).
+            userMessageId,
+            lastMessageId,
+          });
 
           // Passive memory extraction (Packet 1.1) — mirrors /api/agent. Only
           // on a compaction event (once per long chat, not per message), and
