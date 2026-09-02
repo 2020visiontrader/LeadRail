@@ -1,4 +1,4 @@
-// OpenCode Go client — text + multi-turn chat via DeepSeek V4 Pro.
+// OpenCode Go client — text + multi-turn chat via DeepSeek V4.
 // OpenAI-compatible Chat Completions endpoint. Draws on the OpenCode Go
 // subscription (not Zen pay-per-use credits). Admin/account-scoped generation
 // only; a route handler invokes it on explicit request. Image generation stays
@@ -27,9 +27,13 @@ const KEY =
   process.env.OPENCODE_GO_API_KEY ||
   '';
 // Base + model are env-overridable so the model can be swapped without a code
-// change. Defaults track the OpenCode Go DeepSeek V4 Pro endpoint.
+// change. Defaults track the OpenCode Go DeepSeek V4 endpoint.
 const BASE = (process.env.OPENCODE_BASE_URL || 'https://opencode.ai/zen/go/v1').replace(/\/$/, '');
-const TEXT_MODEL = process.env.OPENCODE_MODEL || 'deepseek-v4-pro';
+// Default changed pro -> flash 2026-09-02 (owner's call): flash is the faster
+// model for the everyday text path. RELIABLE_FALLBACK below is a DIFFERENT
+// role and deliberately stays on pro — see its use at the empty-content
+// self-heal, which needs the sturdier backbone, not the quicker one.
+const TEXT_MODEL = process.env.OPENCODE_MODEL || 'deepseek-v4-flash';
 const RELIABLE_FALLBACK = 'deepseek-v4-pro';
 
 // Hard timeout so a stalled OpenCode call aborts and the router fails over to

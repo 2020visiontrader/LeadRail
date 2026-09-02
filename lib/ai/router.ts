@@ -19,11 +19,13 @@
 //      2. Ask Zo  (user's Claude subscription — Haiku when set as the Zo account
 //         default model; billed to the user's own Anthropic subscription) —
 //         proven but slow, p50 35.6s.
-//      3. OpenCode Go (deepseek-v4-pro) — genuinely the slowest measured
-//         path, not merely unproven: its registry route (DeepSeek V4 Flash,
-//         paid) has 152 successful calls at ~46.1s average; its hardcoded
-//         tier's own API key 401s (21/21 calls failed 2026-08-27 to
-//         2026-08-28, none since — a dead key, not an untested one).
+//      3. OpenCode Go (deepseek-v4-flash by default since 2026-09-02; was
+//         deepseek-v4-pro) — genuinely the slowest measured path, not merely
+//         unproven: its registry route (DeepSeek V4 Flash, paid) has 152
+//         successful calls at ~46.1s average. Its hardcoded tier's key, which
+//         401'd on all 21 calls from 2026-08-27 to 2026-08-28, has since been
+//         ROTATED and succeeds again (3 calls, ~10.5s avg, measured against
+//         production 2026-09-02) — see OPENCODE'S TRUE STATE below.
 //
 // NVIDIA NIM and HuggingFace were removed from the ladder entirely (production
 // incident, 2026-08-28: NIM timing out, HuggingFace returning 402 "depleted
@@ -108,15 +110,18 @@ import { isPastDeadline, deadlineExceededError } from './deadline';
 // openrouter, zoask, opencode.
 //
 // OPENCODE'S TRUE STATE (queried separately, full ai_usage history, since the
-// 48h window this file otherwise cites has zero opencode calls in it — the
-// hardcoded tier's key died 2026-08-28 and nothing has retried it since).
+// 48h window this file otherwise cites has zero opencode calls in it).
 // There are two distinct paths and they tell different stories:
 //   - The HARDCODED `opencode` tier used directly by this file (ai_usage rows
-//     with provider_id NULL, model_label 'opencode'): 21 calls, ALL FAILED
-//     "OpenCode failed (401)", avg 101ms, window 2026-08-27 to 2026-08-28
-//     13:45, nothing since. This is a DEAD key, not merely an untested one —
-//     health.ts's 'auth' classification parks it permanently until an
-//     operator rotates the credential.
+//     with provider_id NULL, model_label 'opencode'). THE KEY HAS SINCE BEEN
+//     ROTATED — re-queried against PRODUCTION 2026-09-02: 3 SUCCESSFUL calls,
+//     avg 10,454ms, window 2026-09-02 07:39:00 to 07:39:23. The 401 era is
+//     over and is now history, not state: 21 calls, ALL FAILED "OpenCode
+//     failed (401)", avg 101ms, window 2026-08-27 06:32 to 2026-08-28 13:45,
+//     then nothing until the rotation. So this tier is LIVE, and health.ts's
+//     'auth' parking (which held it out while the credential was dead) no
+//     longer applies. Its seeded-last position below now rests on measured
+//     speed alone — see the registry figures next — not on a dead key.
 //   - The REGISTRY path (an ai_models row reached via resolveChainForTask,
 //     only for accounts with ai_routing configured — a different code path
 //     than this file's hardcoded ladder, see the two-layer note at the top of
@@ -125,8 +130,10 @@ import { isPastDeadline, deadlineExceededError } from './deadline';
 //     46,112ms. OpenCode's DeepSeek genuinely works through the registry —
 //     it is simply the SLOWEST measured path of the three (46.1s vs zoask's
 //     ~43.7s all-time average and openrouter's 8.2s recent p50). So opencode
-//     is seeded last here on measured speed (and its hardcoded tier's key
-//     being dead), not on an assumption that nobody has tried it.
+//     is seeded last here on measured speed, not on an assumption that nobody
+//     has tried it. The 2026-09-02 hardcoded-tier samples above are only three
+//     calls — too few to reorder on, and the live HEALTH_REORDER described
+//     below will re-rank it from real latency anyway once a process warms up.
 //
 // zoask sat FIRST in the order this constant is replacing, at a 35.6s p50 —
 // four steps at its own p90 is 260s, inside the 270s turn deadline with zero

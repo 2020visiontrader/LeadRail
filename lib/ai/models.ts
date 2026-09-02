@@ -49,8 +49,12 @@ export const GO_MODELS: GoModel[] = [
 // The reliable fallback any generator drops to if a chosen model returns empty.
 export const RELIABLE_FALLBACK = 'deepseek-v4-pro';
 
-// Default when nothing else matches — matches lib/ai/opencode default so
-// behaviour is unchanged unless Hermes deliberately overrides.
+// Default when nothing else matches in pickModel. NOT the same thing as
+// lib/ai/opencode.ts's TEXT_MODEL, which moved to deepseek-v4-flash on
+// 2026-09-02; this one is the heavy-task backstop and stays on pro, matching
+// RELIABLE_FALLBACK above. (Every TaskKind is currently claimed by flash or
+// pro, so this backstop is unreachable via pickModel today — it only bites if
+// a future TaskKind is added with no `good` entry.)
 export const DEFAULT_MODEL = 'deepseek-v4-pro';
 
 const byId = new Map(GO_MODELS.map((m) => [m.id, m]));
