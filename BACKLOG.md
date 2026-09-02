@@ -5,7 +5,11 @@ trigger, because the failure mode this file exists to prevent is a real risk
 living only in a conversation nobody re-reads.
 
 Recurring pattern behind most of these: **something is written but never read,
-or configured in prose but never in a config file.** Thirteen instances found so far.
+or configured in prose but never in a config file.** Fourteen instances found
+so far. The fourteenth: `ai_usage.usage_status` / `usage_source` (migration
+075) were written on every insert from the day they shipped and read by
+nothing until 2026-09-02, when `getAiUsageSummary` started splitting
+estimated tokens out of the reported total on `usage_source`.
 When adding an entry, say what proves it is done — a passing test, a row in a
 table, a non-401 log line — not "wire it up".
 
@@ -513,3 +517,37 @@ reaches the provider payload, not that a call returned 200 — and the route is
 reimplemented on top of it; or (b) the button and the route are removed
 outright. Leaving a button whose only outcome is a refusal is the
 written-but-never-read pattern in UI form.
+
+## 10. Migration 082 is written but not applied — 2026-09-02
+
+`migrations/082_model_list_prices.sql` corrects
+`anthropic/claude-sonnet-5`'s `cost_per_mtok_in` from 3.00 to the published
+2.00 (Anthropic cancelled the September 1 increase to $3/$15; the catalogue
+was written 2026-08-29, three days before it would have taken effect). It has
+**not** been run against production — this was written and reviewed in a
+session that was told not to touch production data.
+
+**Done when:** `bun run migrations/push.ts` has been run and a direct query
+returns `cost_per_mtok_in = 2.00` for that row. `success: true` from the
+push script is not the proof; the query is.
+
+## 11. `AI_PROMPT_CACHE_MARKERS` is off and has never been exercised live — 2026-09-02
+
+`lib/ai/prompt-cache-markers.ts` adds an Anthropic-style `cache_control`
+breakpoint to the first system message on `anthropic/*` OpenRouter models,
+behind `AI_PROMPT_CACHE_MARKERS` (default OFF). The marked request shape was
+never sent to the real API: openrouter.ai is unreachable from the environment
+it was written in, so every test is against a stubbed `fetch`. The default is
+off for exactly that reason.
+
+The saving it targets is measured and large: the tool catalogue alone is
+41,542 chars (~10,386 tokens), byte-identical across all ~16 steps of a turn,
+~27% of an average 38,878-token call.
+
+**Done when:** the flag has been set to `1` on the running service and
+OpenRouter's own dashboard shows non-zero cache reads on an `anthropic/*`
+model — the provider's counter, not our log line saying we sent the field. If
+the counter stays at zero, the marker is not landing and the flag should go
+back off rather than be left on as decoration. Watch `app_logs` for
+`retrying once without it` while it is on: that warning firing means the
+gateway is rejecting the field and every marked call is costing a round trip.

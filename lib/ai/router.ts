@@ -51,7 +51,7 @@
 // Image generation is a separate ladder — see ./image-router.
 
 import type { ChatMessage } from './opencode';
-import { withUsageCapture, type TokenUsage, type UsageStatus, type UsageSource } from './usage';
+import { withUsageCaptureSettled, type CapturedUsage, type TokenUsage, type UsageStatus, type UsageSource } from './usage';
 import { orderByHealth, recordSuccess, recordFailure, healthSnapshot, classifyFailure } from './health';
 import { filterEligible, estimateTokens, type CallSize } from './eligibility';
 import * as opencode from './opencode';
@@ -351,6 +351,44 @@ interface UsageTrace {
   deadlineAt?: number;
 }
 
+/**
+ * What to record as tokens for an attempt that FAILED.
+ *
+ * A failed call still put a prompt on the wire, and providers bill for that
+ * whether or not a usable response came back. Recording NULL meant those
+ * tokens were counted nowhere — measured on this deployment, every one of the
+ * 13.4M recorded input tokens sat on an ok=true row while roughly a third of
+ * calls failed, transmitting full prompts that appeared in no total.
+ *
+ * Two rules, and both matter:
+ *
+ *  1. A provider that DID report before failing keeps its own numbers. A 402
+ *     or a mid-stream abort can still carry a real usage block, and a
+ *     measurement always beats an estimate.
+ *  2. Otherwise we record `size.promptTokens` — the SAME figure
+ *     eligibility.ts::estimateTokens produced to size this very call, so the
+ *     row and the routing decision behind it cannot disagree — and mark it
+ *     `usageSource: 'estimated'`. `usageStatus` is left at whatever the
+ *     capture scope actually observed about the PROVIDER, so an estimate can
+ *     never be read back as a provider-reported figure. See the ESTIMATES ON
+ *     FAILURE block in lib/ai/usage.ts.
+ *
+ * tokensOut stays null either way: nothing usable came back, and inventing a
+ * completion length would be a guess with no basis at all.
+ */
+function failureUsage(size: CallSize, captured: CapturedUsage): {
+  usage: TokenUsage | null; status: UsageStatus; source: UsageSource;
+} {
+  if (captured.status === 'reported' && captured.usage) {
+    return { usage: captured.usage, status: 'reported', source: 'provider' };
+  }
+  return {
+    usage: { tokensIn: size.promptTokens, tokensOut: null },
+    status: captured.status,
+    source: 'estimated',
+  };
+}
+
 async function runCandidates(
   fn: string,
   candidates: Candidate[],
@@ -397,27 +435,14 @@ async function runCandidates(
     }
     const start = Date.now();
     // One capture scope per attempt, so a failed model's usage block cannot be
-    // attributed to the model that answered after it.
-    try {
-      const {
-        result: text, usage, status: usageStatus, source: usageSource,
-        timingMs, timingStatus, timingSource,
-      } = await withUsageCapture(candidate.run);
-      const latencyMs = Date.now() - start;
-      // An empty answer is a failure of this candidate, not a result. The old
-      // registry path fell through on it silently; now it is recorded as the
-      // failure it is, so a model that always returns nothing shows up.
-      if (!text) {
-        // Name the model, not just the tier: "openrouter returned an empty
-        // response" is useless when the tier is a fallback chain of ~17
-        // models and nothing else says which one answered blank. Registry
-        // candidates (one Candidate per ai_models row) carry `resolved`, so
-        // this is populated for those; a hardcoded ladder tier (openrouter,
-        // zoask, opencode) has no `resolved` and degrades to the unqualified
-        // message rather than printing the literal string "undefined".
-        const model = candidate.resolved?.model.model_id;
-        throw new Error(`${candidate.label} returned an empty response${model ? ` (model=${model})` : ''}`);
-      }
+    // attributed to the model that answered after it. SETTLED, not throwing:
+    // the slot describes what happened inside the attempt whether or not the
+    // attempt succeeded, and discarding it on the failure path is what left
+    // every failed row at not_attempted/none — see lib/ai/usage.ts.
+    const outcome = await withUsageCaptureSettled(candidate.run);
+    const latencyMs = Date.now() - start;
+    if (outcome.ok && outcome.result) {
+      const text = outcome.result;
       recordSuccess(candidate.id, latencyMs);
       // Still ok:true — the transport DID succeed, and that is the only thing
       // this layer can honestly assert. Whether the text was USABLE is a
@@ -426,20 +451,40 @@ async function runCandidates(
       // prose was indistinguishable from a real success.
       if (accountId) {
         void logUsage({
-          accountId, candidate, kind, ok: true, latencyMs, usage, usageStatus, usageSource,
-          timingMs, timingStatus, timingSource, conversationId: trace?.conversationId,
+          accountId, candidate, kind, ok: true, latencyMs,
+          usage: outcome.usage, usageStatus: outcome.status, usageSource: outcome.source,
+          timingMs: outcome.timingMs, timingStatus: outcome.timingStatus, timingSource: outcome.timingSource,
+          conversationId: trace?.conversationId,
         })
           .then((id) => { if (id) trace?.onUsageRow?.(id); });
       }
       log.info('ai router: candidate answered', { fn, candidate: candidate.id, latencyMs });
       return text;
-    } catch (err: any) {
-      const latencyMs = Date.now() - start;
+    }
+    {
+      // An empty answer is a failure of this candidate, not a result. The old
+      // registry path fell through on it silently; now it is recorded as the
+      // failure it is, so a model that always returns nothing shows up.
+      //
+      // Name the model, not just the tier: "openrouter returned an empty
+      // response" is useless when the tier is a fallback chain of ~17
+      // models and nothing else says which one answered blank. Registry
+      // candidates (one Candidate per ai_models row) carry `resolved`, so
+      // this is populated for those; a hardcoded ladder tier (openrouter,
+      // zoask, opencode) has no `resolved` and degrades to the unqualified
+      // message rather than printing the literal string "undefined".
+      const emptyModel = candidate.resolved?.model.model_id;
+      const err: any = outcome.ok
+        ? new Error(`${candidate.label} returned an empty response${emptyModel ? ` (model=${emptyModel})` : ''}`)
+        : outcome.error;
       recordFailure(candidate.id, classifyFailure(err, providerHint(candidate)));
       if (accountId) {
+        const failed = failureUsage(size, outcome);
         void logUsage({
           accountId, candidate, kind, ok: false,
           error: String(err?.message || err).slice(0, 300), latencyMs,
+          usage: failed.usage, usageStatus: failed.status, usageSource: failed.source,
+          timingMs: outcome.timingMs, timingStatus: outcome.timingStatus, timingSource: outcome.timingSource,
           conversationId: trace?.conversationId,
         });
       }

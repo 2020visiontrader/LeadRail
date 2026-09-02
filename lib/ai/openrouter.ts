@@ -11,6 +11,10 @@ import { reportOpenAIUsage, reportOpenAITiming } from './usage';
 import { log } from '@/lib/logger';
 import { parseRetryAfterMs } from './health';
 import { boundedTimeoutMs, deadlineExceededError, isPastDeadline } from './deadline';
+import {
+  cacheMarkersEnabled, supportsCacheMarkers, markSystemPrefix, implicatesCacheMarkers,
+  type MarkableMessage,
+} from './prompt-cache-markers';
 
 // Default output budget when a caller does not specify one.
 //
@@ -219,7 +223,32 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
   throw lastErr;
 }
 
+/**
+ * One attempt, with the prompt-cache marker applied when this model accepts
+ * one and the operator has turned markers on — and a SINGLE retry without it
+ * if the failure implicates the field.
+ *
+ * The retry is the whole safety story: the marker is an optimisation, and an
+ * optimisation is never allowed to fail a turn that would otherwise have
+ * worked. `messages` (unmarked) is kept intact precisely so there is a clean
+ * body to resend. See lib/ai/prompt-cache-markers.ts for what is marked,
+ * which providers accept markers at all, and why the flag defaults off.
+ */
 async function completeWith(MODEL: string, messages: OpenAIMessage[], temperature: number, maxTokens: number, deadlineAt?: number): Promise<string> {
+  const marked = cacheMarkersEnabled() && supportsCacheMarkers(MODEL) ? markSystemPrefix(messages) : null;
+  if (!marked) return completeOnce(MODEL, messages, temperature, maxTokens, deadlineAt);
+  try {
+    return await completeOnce(MODEL, marked, temperature, maxTokens, deadlineAt);
+  } catch (err: any) {
+    if (!implicatesCacheMarkers(Number(err?.status) || 0, err?.detail)) throw err;
+    log.warn('openrouter: request failed in a way that implicates the prompt-cache marker, retrying once without it', {
+      model: MODEL, status: Number(err?.status) || 0, detail: String(err?.detail || '').slice(0, 200),
+    });
+    return completeOnce(MODEL, messages, temperature, maxTokens, deadlineAt);
+  }
+}
+
+async function completeOnce(MODEL: string, messages: MarkableMessage[], temperature: number, maxTokens: number, deadlineAt?: number): Promise<string> {
   const ctrl = new AbortController();
   // min(TIMEOUT_MS, time remaining) — never larger than today's constant,
   // only ever tighter, and unaffected when deadlineAt is undefined.
@@ -334,9 +363,43 @@ async function completeStream(
   throw lastErr;
 }
 
+/** Streaming twin of completeWith's marker handling — same gate, same single
+ *  retry without the marker. The two must stay identical: the streaming path
+ *  is what real chat turns run, and a safety net applied to only one of them
+ *  is not applied.
+ *
+ *  A retry here cannot double-emit deltas, and that is a property of the
+ *  error shapes rather than luck: every failure that can occur AFTER the
+ *  first onDelta (an empty stream, a truncated body) is thrown without a
+ *  `status`, and implicatesCacheMarkers only says yes to a 4xx or to a
+ *  detail that literally names cache_control. A rejected field is answered
+ *  by the `!res.ok` branch, which runs before the body is read at all. Any
+ *  future error shape added below the stream loop MUST stay status-less, or
+ *  it must be excluded here explicitly. */
 async function completeStreamWith(
   MODEL: string,
   messages: OpenAIMessage[],
+  temperature: number,
+  maxTokens: number,
+  onDelta: (chunk: string) => void,
+  deadlineAt?: number,
+): Promise<string> {
+  const marked = cacheMarkersEnabled() && supportsCacheMarkers(MODEL) ? markSystemPrefix(messages) : null;
+  if (!marked) return completeStreamOnce(MODEL, messages, temperature, maxTokens, onDelta, deadlineAt);
+  try {
+    return await completeStreamOnce(MODEL, marked, temperature, maxTokens, onDelta, deadlineAt);
+  } catch (err: any) {
+    if (!implicatesCacheMarkers(Number(err?.status) || 0, err?.detail)) throw err;
+    log.warn('openrouter: stream failed in a way that implicates the prompt-cache marker, retrying once without it', {
+      model: MODEL, status: Number(err?.status) || 0, detail: String(err?.detail || '').slice(0, 200),
+    });
+    return completeStreamOnce(MODEL, messages, temperature, maxTokens, onDelta, deadlineAt);
+  }
+}
+
+async function completeStreamOnce(
+  MODEL: string,
+  messages: MarkableMessage[],
   temperature: number,
   maxTokens: number,
   onDelta: (chunk: string) => void,

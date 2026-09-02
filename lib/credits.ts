@@ -130,16 +130,49 @@ export interface AiUsageSummaryRow {
   model_label: string | null;
   calls: number;
   ok_calls: number;
+  /** PROVIDER-REPORTED tokens only. Rows whose `usage_source` is 'estimated'
+   *  are excluded and counted separately below — see the header comment. */
   tokens_in: number;
   tokens_out: number;
+  /** Tokens this codebase estimated for calls the provider never costed —
+   *  today, failed calls (lib/ai/router.ts::failureUsage). Kept apart from
+   *  `tokens_in` so a caller can show it as an estimate or ignore it, but
+   *  never so a caller can add it in by accident. */
+  tokens_in_estimated: number;
+  /** How many of `calls` contributed a provider-reported token figure. The
+   *  gap between this and `calls` is the coverage the totals above do NOT
+   *  have. */
+  reported_calls: number;
+  /** Most recent successful / failed call for this model, ISO-8601, or null
+   *  when there has not been one in the window. */
+  last_ok_at: string | null;
+  last_failure_at: string | null;
 }
 
-/** Aggregate ai_usage for an account, most-used first. Used by the Settings→Models usage view. */
+/**
+ * Aggregate ai_usage for an account, most-used first. Used by the
+ * Settings→Models usage view (src/components/AiUsage.tsx).
+ *
+ * TOKEN TOTALS ARE A COVERED SUBSET, AND SAY SO. Several providers report no
+ * usage at all — Zo Ask's `{output}` body has never carried one, and it
+ * answered more production calls last week than any other tier — so summing
+ * `tokens_in` across every row and labelling it "tokens in" reported the sum
+ * of the providers that report as though it were the sum of everything. The
+ * numbers are now split by provenance (`usage_source`, migration 075, which
+ * until this change nothing in the codebase read) and `reported_calls` names
+ * the coverage, so the panel can state what the figure actually covers.
+ *
+ * FRESHNESS, NOT JUST RATE. A 7-day success rate averages a provider that
+ * broke and recovered into one number that describes neither state: OpenCode
+ * read as "13%" on a week where all 21 failures were five days old and all 3
+ * successes were the same morning. `last_ok_at`/`last_failure_at` are the two
+ * extra aggregates that tell those apart, from the same single query.
+ */
 export async function getAiUsageSummary(accountId: string, sinceDays = 30): Promise<AiUsageSummaryRow[]> {
   const since = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000).toISOString();
   const { data, error } = await supabase
     .from('ai_usage')
-    .select('provider_id, model_id, model_label, tokens_in, tokens_out, ok')
+    .select('provider_id, model_id, model_label, tokens_in, tokens_out, ok, usage_source, created_at')
     .eq('account_id', accountId)
     .gte('created_at', since);
   if (error) throw error;
@@ -150,11 +183,32 @@ export async function getAiUsageSummary(accountId: string, sinceDays = 30): Prom
     const row = byModel.get(key) || {
       provider_id: r.provider_id, model_id: r.model_id, model_label: r.model_label,
       calls: 0, ok_calls: 0, tokens_in: 0, tokens_out: 0,
+      tokens_in_estimated: 0, reported_calls: 0,
+      last_ok_at: null, last_failure_at: null,
     };
     row.calls += 1;
     if (r.ok) row.ok_calls += 1;
-    row.tokens_in += r.tokens_in || 0;
-    row.tokens_out += r.tokens_out || 0;
+    // 'estimated' is only ever written by us (lib/ai/router.ts::failureUsage);
+    // every other source with numbers attached is the provider's own figure,
+    // including pre-075 rows the migration backfilled to reported/provider.
+    if (r.usage_source === 'estimated') {
+      row.tokens_in_estimated += r.tokens_in || 0;
+    } else {
+      const hasTokens = r.tokens_in != null || r.tokens_out != null;
+      if (hasTokens) row.reported_calls += 1;
+      row.tokens_in += r.tokens_in || 0;
+      row.tokens_out += r.tokens_out || 0;
+    }
+    // Compared as instants, not strings: two rows can carry the same moment
+    // in different textual forms (offset vs Z, differing fractional digits),
+    // and a lexicographic max would pick the wrong one.
+    const at: string | null = r.created_at ?? null;
+    const t = at ? Date.parse(at) : NaN;
+    if (at && !Number.isNaN(t)) {
+      const field = r.ok ? 'last_ok_at' : 'last_failure_at';
+      const current = row[field];
+      if (!current || t > Date.parse(current)) row[field] = at;
+    }
     byModel.set(key, row);
   }
   return Array.from(byModel.values()).sort((a, b) => b.calls - a.calls);

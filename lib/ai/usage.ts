@@ -32,6 +32,30 @@
 // never consults the slot") this is meant to keep visible instead of letting
 // it read as a specific, checked provider behaviour nobody actually checked.
 //
+// ESTIMATES ON FAILURE. A call that failed still SENT a prompt, and the
+// tokens for it are billed by most providers whether or not a response came
+// back. Before this, every failed row recorded tokens_in NULL, so roughly a
+// third of production calls transmitted a full prompt that was counted
+// nowhere. The router now records an ESTIMATE of tokens_in on the failure
+// path (lib/ai/router.ts::runCandidates), from the same
+// eligibility.ts::estimateTokens the selector already used to size the call —
+// one estimator, so a row's number and the sizing decision behind it agree.
+//
+// The two columns keep their separate jobs and that is what makes this safe:
+//   usage_status stays a statement about the PROVIDER — reported when the
+//     provider's own numbers are what got written, and otherwise whatever the
+//     capture scope actually observed (not_attempted when the call died before
+//     a body existed, provider_not_reported when a body was parsed and had no
+//     usage, capture_failed when extraction threw). An estimate never
+//     upgrades it to 'reported'.
+//   usage_source says where the NUMBER in tokens_in came from — 'estimated'
+//     for ours, 'provider' for theirs.
+// So `usage_source = 'estimated'` is the discriminator any consumer that sums
+// tokens must split on, and lib/credits.ts::getAiUsageSummary does exactly
+// that: estimated tokens are returned in their own field and are never added
+// into the provider-reported total. Presenting an estimate as a measurement
+// is the failure this design exists to prevent.
+//
 // PROVIDER TIMING (migration 078). Same slot, same convention, one more fact:
 // how long the PROVIDER says it spent, as opposed to `latency_ms` (our own
 // wrapper's elapsed clock, recorded regardless of what happens in here). A
@@ -86,15 +110,54 @@ export async function withUsageCapture<T>(
   result: T; usage: TokenUsage | null; status: UsageStatus; source: UsageSource;
   timingMs: number | null; timingStatus: UsageStatus; timingSource: UsageSource;
 }> {
+  const settled = await withUsageCaptureSettled(fn);
+  if (!settled.ok) throw settled.error;
+  const { ok: _ok, ...rest } = settled;
+  return rest;
+}
+
+/** Whatever the slot held when `fn` finished, however it finished. */
+export interface CapturedUsage {
+  usage: TokenUsage | null; status: UsageStatus; source: UsageSource;
+  timingMs: number | null; timingStatus: UsageStatus; timingSource: UsageSource;
+}
+
+/**
+ * `withUsageCapture` that does not lose the slot when `fn` throws.
+ *
+ * WHY THIS EXISTS. The throwing form discards everything a provider managed
+ * to report before the call failed, because the rejection propagates past the
+ * point where the slot is read. That made a failed call's `ai_usage` row
+ * carry not_attempted/none — indistinguishable from a code path that never
+ * opened a capture scope at all — even when the provider had, say, returned a
+ * 402 body whose `usage` block named real prompt tokens it had already
+ * charged for.
+ *
+ * The slot is a fact about what happened inside `fn`, not about whether `fn`
+ * succeeded, so it is returned on both branches. `withUsageCapture` is now a
+ * thin rethrowing wrapper over this, so there is one implementation and the
+ * two cannot drift.
+ */
+export async function withUsageCaptureSettled<T>(
+  fn: () => Promise<T>,
+): Promise<
+  | ({ ok: true; result: T } & CapturedUsage)
+  | ({ ok: false; error: unknown } & CapturedUsage)
+> {
   const slot: Slot = {
     usage: null, status: 'not_attempted', source: 'none',
     timingMs: null, timingStatus: 'not_attempted', timingSource: 'none',
   };
-  const result = await store.run(slot, fn);
-  return {
-    result, usage: slot.usage, status: slot.status, source: slot.source,
+  const read = (): CapturedUsage => ({
+    usage: slot.usage, status: slot.status, source: slot.source,
     timingMs: slot.timingMs, timingStatus: slot.timingStatus, timingSource: slot.timingSource,
-  };
+  });
+  try {
+    const result = await store.run(slot, fn);
+    return { ok: true, result, ...read() };
+  } catch (error) {
+    return { ok: false, error, ...read() };
+  }
 }
 
 /** Report usage from inside a provider client. A no-op outside a capture
