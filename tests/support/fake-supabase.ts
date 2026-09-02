@@ -40,6 +40,13 @@ const TABLE_DEFAULTS: Record<string, () => Record<string, any>> = {
 
 type Filter = [string, any];
 
+/** Predicate a test can install to make one class of query fail.
+ *
+ *  Needed because "the query errored" and "the query returned zero rows" are
+ *  different facts that a caller must render differently, and a fake that can
+ *  only ever succeed cannot prove the difference is handled. */
+export type FailWhen = (info: { table: string; head: boolean }) => { message: string } | null;
+
 class Query implements PromiseLike<{ data: any; error: any }> {
   private filters: Filter[] = [];
   private op: 'select' | 'insert' | 'update' = 'select';
@@ -52,10 +59,28 @@ class Query implements PromiseLike<{ data: any; error: any }> {
   // scoping filter (lib/support/tickets.ts and its siblings) actually uses;
   // anything else is a bug in the caller, not something to silently accept.
   private orFilters: { col: string; op: string; val: string }[] | null = null;
+  // `select(cols, { count: 'exact', head: true })` — PostgREST's row count.
+  // head means "no rows, just the number", and the number is NOT capped by
+  // .limit(): that is the whole reason app/api/logs/route.ts counts this way.
+  private countMode = false;
+  private headOnly = false;
+  private rowLimit: number | null = null;
+  private ranges: { col: string; op: 'gte' | 'lte'; val: any }[] = [];
+  private likes: { col: string; needle: string }[] = [];
 
-  constructor(private table: FakeTable, private tableName: string, private onWrite?: () => void) {}
+  constructor(
+    private table: FakeTable,
+    private tableName: string,
+    private onWrite?: () => void,
+    private failWhen?: () => FailWhen | null,
+  ) {}
 
-  select(_cols?: string) { if (this.op === 'select') this.op = 'select'; return this; }
+  select(_cols?: string, opts?: { count?: 'exact'; head?: boolean }) {
+    if (this.op === 'select') this.op = 'select';
+    if (opts?.count) this.countMode = true;
+    if (opts?.head) this.headOnly = true;
+    return this;
+  }
   insert(rows: any) { this.op = 'insert'; this.payload = Array.isArray(rows) ? rows : [rows]; return this; }
   update(patch: any) { this.op = 'update'; this.payload = patch; return this; }
   eq(col: string, val: any) { this.filters.push([col, val]); return this; }
@@ -69,12 +94,22 @@ class Query implements PromiseLike<{ data: any; error: any }> {
   order(col: string, opts?: { ascending?: boolean }) {
     this.orderBy.push({ col, asc: opts?.ascending !== false }); return this;
   }
-  limit(_n: number) { return this; }
+  gte(col: string, val: any) { this.ranges.push({ col, op: 'gte', val }); return this; }
+  lte(col: string, val: any) { this.ranges.push({ col, op: 'lte', val }); return this; }
+  ilike(col: string, pattern: string) {
+    this.likes.push({ col, needle: pattern.replace(/^%|%$/g, '').toLowerCase() });
+    return this;
+  }
+  // Honours the limit for real. A no-op here would make a test that exists to
+  // prove a count ISN'T capped by the limit pass without the fix.
+  limit(n: number) { this.rowLimit = n; return this; }
   maybeSingle() { this.rowMode = 'maybe'; return this; }
   single() { this.rowMode = 'one'; return this; }
 
   private matches(row: any) {
     if (!this.filters.every(([c, v]) => row[c] === v)) return false;
+    if (!this.ranges.every(({ col, op, val }) => (op === 'gte' ? row[col] >= val : row[col] <= val))) return false;
+    if (!this.likes.every(({ col, needle }) => String(row[col] ?? '').toLowerCase().includes(needle))) return false;
     if (!this.orFilters) return true;
     return this.orFilters.some(({ col, op, val }) => {
       if (op === 'is') return val === 'null' ? row[col] === null || row[col] === undefined : row[col] === val;
@@ -82,7 +117,9 @@ class Query implements PromiseLike<{ data: any; error: any }> {
     });
   }
 
-  private run(): { data: any; error: any } {
+  private run(): { data: any; error: any; count?: number | null } {
+    const failure = this.failWhen?.()?.({ table: this.tableName, head: this.headOnly });
+    if (failure) return { data: null, error: failure, count: null };
     let out: any[];
     if (this.op === 'insert') {
       const now = new Date().toISOString();
@@ -108,6 +145,12 @@ class Query implements PromiseLike<{ data: any; error: any }> {
       for (const o of [...this.orderBy].reverse()) {
         out.sort((a, b) => (a[o.col] > b[o.col] ? 1 : a[o.col] < b[o.col] ? -1 : 0) * (o.asc ? 1 : -1));
       }
+      if (this.countMode) {
+        // The count is taken BEFORE the limit, exactly as PostgREST does.
+        const total = out.length;
+        return { data: this.headOnly ? null : out.slice(0, this.rowLimit ?? out.length), error: null, count: total };
+      }
+      if (this.rowLimit !== null) out = out.slice(0, this.rowLimit);
     }
     out = out.map((r) => ({ ...r })); // callers must not hold a live reference
     if (this.rowMode === 'one') {
@@ -118,7 +161,7 @@ class Query implements PromiseLike<{ data: any; error: any }> {
     return { data: out, error: null };
   }
 
-  then<A, B>(res?: ((v: { data: any; error: any }) => A | PromiseLike<A>) | null,
+  then<A, B>(res?: ((v: { data: any; error: any; count?: number | null }) => A | PromiseLike<A>) | null,
              rej?: ((r: any) => B | PromiseLike<B>) | null): PromiseLike<A | B> {
     return Promise.resolve(this.run()).then(res, rej);
   }
@@ -126,11 +169,14 @@ class Query implements PromiseLike<{ data: any; error: any }> {
 
 export function makeFakeSupabase() {
   const tables: Record<string, FakeTable> = {};
+  let failWhen: FailWhen | null = null;
   const table = (n: string) => (tables[n] ??= { rows: [] });
   return {
-    client: { from: (n: string) => new Query(table(n), n) },
+    client: { from: (n: string) => new Query(table(n), n, undefined, () => failWhen) },
     tableRows: (n: string) => table(n).rows,
-    reset: () => { for (const k of Object.keys(tables)) delete tables[k]; },
+    /** Install (or clear, with null) a per-query failure predicate. */
+    setFailWhen: (fn: FailWhen | null) => { failWhen = fn; },
+    reset: () => { for (const k of Object.keys(tables)) delete tables[k]; failWhen = null; },
   };
 }
 

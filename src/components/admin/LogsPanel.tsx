@@ -33,7 +33,9 @@ const LEVEL_STYLE: Record<string, string> = {
 
 export default function LogsPanel() {
   const [rows, setRows] = useState<LogRow[]>([]);
-  const [counts, setCounts] = useState<Record<string, number>>({});
+  // null = the rollup could not be read. NOT the same as zero, so the badges
+  // below render a dash rather than a confident 0.
+  const [counts, setCounts] = useState<Record<string, number> | null>(null);
   const [level, setLevel] = useState<(typeof LEVELS)[number]>('error');
   const [q, setQ] = useState('');
   const [sinceMinutes, setSinceMinutes] = useState(1440); // 24h
@@ -47,13 +49,14 @@ export default function LogsPanel() {
       const params = new URLSearchParams({ limit: '300', sinceMinutes: String(sinceMinutes) });
       if (level !== 'all') params.set('level', level);
       if (q.trim()) params.set('q', q.trim());
-      const data = await apiGet<{ logs: LogRow[]; counts: Record<string, number> }>(`/api/logs?${params}`);
+      const data = await apiGet<{ logs: LogRow[]; counts: Record<string, number> | null }>(`/api/logs?${params}`);
       setRows(data.logs || []);
-      setCounts(data.counts || {});
+      setCounts(data.counts ?? null);
       setForbidden(false);
     } catch (e: any) {
       if (String(e?.message || '').toLowerCase().includes('forbidden')) setForbidden(true);
       setRows([]);
+      setCounts(null);
     } finally {
       setLoading(false);
     }
@@ -82,8 +85,8 @@ export default function LogsPanel() {
           <p className="text-sm text-slate-500">Every API action, with errors and latency. Auto-refreshes every 15s.</p>
         </div>
         <div className="flex items-center gap-2 text-sm">
-          <span className="rounded-full bg-red-100 px-2.5 py-1 font-medium text-red-700">{counts.error || 0} errors</span>
-          <span className="rounded-full bg-amber-100 px-2.5 py-1 font-medium text-amber-700">{counts.warn || 0} warns</span>
+          <span className="rounded-full bg-red-100 px-2.5 py-1 font-medium text-red-700">{counts ? counts.error ?? 0 : '—'} errors</span>
+          <span className="rounded-full bg-amber-100 px-2.5 py-1 font-medium text-amber-700">{counts ? counts.warn ?? 0 : '—'} warns</span>
         </div>
       </div>
 
