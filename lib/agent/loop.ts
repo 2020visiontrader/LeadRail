@@ -19,6 +19,7 @@ import { BUDGET } from '@/lib/ai/context-budget';
 import { generateChat, textConfigured, type ChatMessage } from '@/lib/ai/router';
 import { DeadlineExceededError } from '@/lib/ai/deadline';
 import { type StoredMessage, toWireMessages } from './transcript-store';
+import { reduceObservationPayload } from './observation-reduce';
 import {
   comprehend, formatUnderstandingBlock, type Understanding,
 } from './comprehension';
@@ -849,6 +850,12 @@ function obsLimitFor(tool: string, extraCaps?: Record<string, Capability>): numb
 // A capability WITHOUT a digest produces `JSON.stringify(result)` exactly as
 // before — byte-identical, no separator, no wrapper.
 //
+// WHAT THE DIGEST DOES NOT DO, and why reduceObservationPayload() is called
+// below: the digest is PREPENDED to the raw JSON, it never replaces it. A
+// capability with a perfectly good digest still shipped its entire payload
+// into the transcript, and every later step of the turn re-sent it. See
+// lib/agent/observation-reduce.ts for the production measurements.
+//
 // A digest that throws is treated as absent. This is a best-effort presentation
 // hook, never a gate: a bad digest must degrade to today's raw-JSON behaviour,
 // not fail the tool call whose result the user is waiting on.
@@ -860,7 +867,15 @@ function successObservation(tool: string, args: any, result: any, extraCaps?: Re
   } catch {
     digest = '';
   }
-  return digest ? `${digest}\n${raw}` : raw;
+  // REDUCTION (lib/agent/observation-reduce.ts). Above a threshold, an
+  // array-of-rows payload is replaced by the same rows carrying their ids and
+  // a few short fields; below it, `body` IS `raw`, byte for byte. The note
+  // rides on the DIGEST LINE, not on the JSON, so the payload after the first
+  // newline stays parseable — that is the shape observation-render.ts and
+  // buildSalvageMessage() read, and the shape the model is used to.
+  const { raw: body, note } = reduceObservationPayload(result, raw, digest !== '');
+  const head = [digest, note].filter(Boolean).join(' ');
+  return head ? `${head}\n${body}` : body;
 }
 
 /** The single observation-building path shared by runAgent and runAgentStream.
