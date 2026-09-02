@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getIntegrationStatus } from '@/lib/integrations/env';
 import { dbReady, getConnections, upsertConnection } from '@/lib/db';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
+import { stripTokenKeys } from '@/lib/social/connection-token';
 
 export const dynamic = 'force-dynamic';
 
@@ -75,12 +76,18 @@ async function POST__impl(request: NextRequest) {
   try {
     const body = await request.json();
     if (!body?.provider) return badRequest('provider is required');
+    // This is the original vector (see lib/social/connection-token.ts header):
+    // `meta` is accepted verbatim from an authenticated client body. Strip any
+    // token key defensively — a client-supplied secret belongs in nobody's
+    // meta column, this route has no way to encrypt one on the caller's
+    // behalf, and silently accepting one would resurrect the exact bug this
+    // packet closes.
     const row = await upsertConnection({
       account_id: session.accountId,
       provider: String(body.provider),
       status: body.status,
       secret_ref: body.secret_ref ?? null,
-      meta: body.meta ?? {},
+      meta: stripTokenKeys(body.meta ?? {}),
     });
     return NextResponse.json(row, { status: 201 });
   } catch (error) {

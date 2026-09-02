@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyState, exchangeIgCode, getLongLivedIgToken, getIgProfile } from '@/lib/social/instagram-oauth';
 import { publicBase } from '@/lib/social/meta-oauth';
 import { upsertConnection, dbReady } from '@/lib/db';
+import { encryptTokenBundle } from '@/lib/social/connection-token';
 export const dynamic = 'force-dynamic';
 
 // Instagram Login callback. Whitelisted in middleware (identity comes from the
@@ -37,8 +38,9 @@ async function GET__impl(req: NextRequest) {
         display_name: profile.username || 'Instagram',
         username: profile.username || null,
         status: 'connected',
+        secret_ref: 'user-oauth:instagram',
+        secret_encrypted: encryptTokenBundle({ access_token: longToken }),
         meta: {
-          access_token: longToken,
           ig_user_id: profile.id,
           ig_username: profile.username,
           source: 'instagram_login',

@@ -8,6 +8,7 @@
 // account can actually authenticate.
 
 import { hasSocialCredential } from './credentials';
+import { resolveTokensForRow } from './connection-token';
 
 interface IntegrationStatus {
   provider: 'meta' | 'buffer' | 'ghl';
@@ -27,10 +28,15 @@ export async function getIntegrations(accountId?: string): Promise<IntegrationSt
     try {
       const { getConnections } = await import('@/lib/db');
       const conns = await getConnections(accountId);
-      const meta = conns.find(
-        (c: any) => ['facebook', 'instagram', 'meta'].includes(c.provider) && c.status === 'connected' && !!c.meta?.access_token,
+      const candidates = conns.filter(
+        (c: any) => ['facebook', 'instagram', 'meta'].includes(c.provider) && c.status === 'connected',
       );
-      metaConnected = !!meta;
+      let found = false;
+      for (const c of candidates) {
+        const { accessToken } = await resolveTokensForRow(c);
+        if (accessToken) { found = true; break; }
+      }
+      metaConnected = found;
     } catch {}
   }
   integrations.push({

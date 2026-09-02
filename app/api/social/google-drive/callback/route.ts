@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { upsertConnection } from '@/lib/db';
 import { publicBase } from '@/lib/social/meta-oauth';
 import { verifyState, exchangeGoogleCode, getGoogleEmail } from '@/lib/social/google-oauth';
+import { encryptTokenBundle } from '@/lib/social/connection-token';
 
 export const dynamic = 'force-dynamic';
 
@@ -34,9 +35,8 @@ async function GET__impl(req: NextRequest) {
       username: email,
       status: 'connected',
       secret_ref: 'user-oauth:google_drive',
+      secret_encrypted: encryptTokenBundle({ access_token: tokens.accessToken, refresh_token: tokens.refreshToken }),
       meta: {
-        access_token: tokens.accessToken,
-        refresh_token: tokens.refreshToken,
         expiry_ms: Date.now() + tokens.expiresIn * 1000,
         email,
       },

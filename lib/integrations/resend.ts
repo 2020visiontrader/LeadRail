@@ -1,6 +1,7 @@
 import { supabase, getConnections, findContactByEmailUnscoped } from '@/lib/db';
 import { withRetry } from '@/lib/integrations/retry';
 import { addSuppression } from '@/lib/suppressions';
+import { resolveTokensForRow } from '@/lib/social/connection-token';
 
 const RESEND_API_URL = 'https://api.resend.com';
 // LeadRail's OWN Resend account (domain leadrail.xyz). Deliberately NOT the
@@ -46,14 +47,15 @@ export async function ventureResendKey(accountId: string, brandId?: string | nul
   try {
     const { data } = await supabase
       .from('integration_connections')
-      .select('meta, status')
+      .select('id, account_id, provider, secret_ref, secret_encrypted, meta, status')
       .eq('account_id', accountId)
       .eq('brand_id', brandId)
       .eq('provider', 'resend')
       .eq('status', 'connected')
       .maybeSingle();
-    const token = (data as any)?.meta?.access_token;
-    return typeof token === 'string' && token ? token : undefined;
+    if (!data) return undefined;
+    const { accessToken } = await resolveTokensForRow(data as any);
+    return accessToken || undefined;
   } catch {
     // Never let a lookup failure block a send — fall through to the wider scopes.
     return undefined;
@@ -73,8 +75,8 @@ export interface ResendEmail {
 
 /**
  * Resolve the Resend key for an account: prefer the account-scoped key stored
- * in integration_connections (meta.access_token), then the brand's own
- * account (e.g. rentahub), then LeadRail's own env key.
+ * in integration_connections (secret_encrypted, via connection-token.ts),
+ * then the brand's own account (e.g. rentahub), then LeadRail's own env key.
  */
 export async function getResendApiKey(accountId?: string, brandId?: string | null): Promise<string> {
   // Resolution order, most specific first:
@@ -93,7 +95,10 @@ export async function getResendApiKey(accountId?: string, brandId?: string | nul
     try {
       const conns = await getConnections(accountId);
       const resendConn = conns.find((c) => c.provider === 'resend' && c.status === 'connected');
-      if (resendConn?.meta?.access_token) return String(resendConn.meta.access_token);
+      if (resendConn) {
+        const { accessToken } = await resolveTokensForRow(resendConn);
+        if (accessToken) return accessToken;
+      }
     } catch {
       // fall through to brand/env
     }

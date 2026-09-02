@@ -8,6 +8,7 @@
 import { createSign } from 'node:crypto';
 import { getConnection, upsertConnection } from '@/lib/db';
 import { refreshGoogleToken } from '@/lib/social/google-oauth';
+import { resolveTokensForRow, encryptTokenBundle, stripTokenKeys } from '@/lib/social/connection-token';
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
@@ -68,28 +69,31 @@ export async function resolveDriveToken(accountId?: string): Promise<string | nu
   if (accountId) {
     try {
       const conn = await getConnection(accountId, 'google_drive');
-      if (conn?.meta?.access_token) {
-        const expiry = Number(conn.meta.expiry_ms) || 0;
-        const refresh = conn.meta.refresh_token ? String(conn.meta.refresh_token) : null;
-        if (refresh && expiry && expiry - 60_000 < Date.now()) {
-          try {
-            const t = await refreshGoogleToken(refresh);
-            await upsertConnection({
-              account_id: conn.account_id,
-              provider: 'google_drive',
-              external_id: conn.external_id,
-              display_name: conn.display_name,
-              username: conn.username,
-              status: 'connected',
-              secret_ref: conn.secret_ref,
-              meta: { ...conn.meta, access_token: t.accessToken, expiry_ms: Date.now() + t.expiresIn * 1000 },
-            });
-            return t.accessToken;
-          } catch {
-            // refresh failed — fall through to the (possibly stale) stored token, then SA
+      if (conn) {
+        const { accessToken, refreshToken } = await resolveTokensForRow(conn);
+        if (accessToken) {
+          const expiry = Number(conn.meta?.expiry_ms) || 0;
+          if (refreshToken && expiry && expiry - 60_000 < Date.now()) {
+            try {
+              const t = await refreshGoogleToken(refreshToken);
+              await upsertConnection({
+                account_id: conn.account_id,
+                provider: 'google_drive',
+                external_id: conn.external_id,
+                display_name: conn.display_name,
+                username: conn.username,
+                status: 'connected',
+                secret_ref: conn.secret_ref || 'user-oauth:google_drive',
+                secret_encrypted: encryptTokenBundle({ access_token: t.accessToken, refresh_token: refreshToken }),
+                meta: { ...stripTokenKeys(conn.meta), expiry_ms: Date.now() + t.expiresIn * 1000 },
+              });
+              return t.accessToken;
+            } catch {
+              // refresh failed — fall through to the (possibly stale) stored token, then SA
+            }
           }
+          return accessToken;
         }
-        return String(conn.meta.access_token);
       }
     } catch { /* fall through */ }
   }
@@ -117,7 +121,10 @@ export async function verifyGoogleDrive(accountId?: string): Promise<DriveVerify
   try {
     if (accountId) {
       const conn = await getConnection(accountId, 'google_drive').catch(() => null);
-      if (conn?.meta?.access_token) via = 'oauth';
+      if (conn) {
+        const { accessToken } = await resolveTokensForRow(conn);
+        if (accessToken) via = 'oauth';
+      }
     }
     token = await resolveDriveToken(accountId);
   } catch (e: any) {

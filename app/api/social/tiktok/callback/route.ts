@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyState, exchangeTiktokCode, getTiktokProfile, PKCE_COOKIE } from '@/lib/social/tiktok-oauth';
 import { publicBase } from '@/lib/social/meta-oauth';
 import { upsertConnection, dbReady } from '@/lib/db';
+import { encryptTokenBundle } from '@/lib/social/connection-token';
 export const dynamic = 'force-dynamic';
 
 async function GET__impl(req: NextRequest) {
@@ -35,9 +36,9 @@ async function GET__impl(req: NextRequest) {
         display_name: profile.username || 'TikTok',
         username: profile.username || null,
         status: 'connected',
+        secret_ref: 'user-oauth:tiktok',
+        secret_encrypted: encryptTokenBundle({ access_token: token, refresh_token: refreshToken }),
         meta: {
-          access_token: token,
-          refresh_token: refreshToken,
           open_id: externalId,
           expires_at: expiresIn ? new Date(Date.now() + expiresIn * 1000).toISOString() : null,
           // Draft-only until this app passes TikTok's Content Posting API audit

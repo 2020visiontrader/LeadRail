@@ -4,12 +4,16 @@ const POSTIZ_API_URL = 'https://api.postiz.com/public/v1';
 let _POSTIZ_API_KEY = process.env.POSTIZ_API_KEY;
 
 import { getConnections } from '@/lib/db';
+import { resolveTokensForRow } from '@/lib/social/connection-token';
 
 async function getPostizApiKey(accountId?: string): Promise<string> {
   if (accountId) {
     const conns = await getConnections(accountId);
     const postizConn = conns.find(c => c.provider === 'postiz' && c.status === 'connected');
-    if (postizConn?.meta?.access_token) return String(postizConn.meta.access_token);
+    if (postizConn) {
+      const { accessToken } = await resolveTokensForRow(postizConn);
+      if (accessToken) return accessToken;
+    }
   }
   if (!_POSTIZ_API_KEY) throw new Error('POSTIZ_API_KEY not set — connect Postiz in Settings → Integrations');
   return _POSTIZ_API_KEY;

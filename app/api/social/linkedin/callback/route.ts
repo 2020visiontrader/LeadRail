@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyState, exchangeLinkedinCode, getLinkedinProfile } from '@/lib/social/linkedin-oauth';
 import { publicBase } from '@/lib/social/meta-oauth';
 import { upsertConnection, dbReady } from '@/lib/db';
+import { encryptTokenBundle } from '@/lib/social/connection-token';
 export const dynamic = 'force-dynamic';
 
 async function GET__impl(req: NextRequest) {
@@ -33,8 +34,9 @@ async function GET__impl(req: NextRequest) {
         display_name: profile.name || 'LinkedIn',
         username: profile.name || null,
         status: 'connected',
+        secret_ref: 'user-oauth:linkedin',
+        secret_encrypted: encryptTokenBundle({ access_token: token }),
         meta: {
-          access_token: token,
           member_id: profile.id,
           // 60-day, non-silently-refreshable — surfaced so a stale token fails
           // loudly ("reconnect LinkedIn") instead of a mysterious publish error.

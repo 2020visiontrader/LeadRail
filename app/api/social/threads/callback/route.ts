@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyState, exchangeThreadsCode, getLongLivedThreadsToken, getThreadsProfile } from '@/lib/social/threads-oauth';
 import { publicBase } from '@/lib/social/meta-oauth';
 import { upsertConnection, dbReady } from '@/lib/db';
+import { encryptTokenBundle } from '@/lib/social/connection-token';
 export const dynamic = 'force-dynamic';
 
 async function GET__impl(req: NextRequest) {
@@ -34,8 +35,9 @@ async function GET__impl(req: NextRequest) {
         display_name: profile.username || 'Threads',
         username: profile.username || null,
         status: 'connected',
+        secret_ref: 'user-oauth:threads',
+        secret_encrypted: encryptTokenBundle({ access_token: longToken }),
         meta: {
-          access_token: longToken,
           threads_user_id: profile.id,
           threads_username: profile.username,
           source: 'threads_login',

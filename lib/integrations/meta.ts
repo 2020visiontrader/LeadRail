@@ -1,5 +1,6 @@
 import { withRetry } from '@/lib/integrations/retry';
 import { getConnection, getConnectionByExternalId } from '@/lib/db';
+import { resolveTokensForRow } from '@/lib/social/connection-token';
 import { recordConversationMessage } from '@/lib/conversations';
 // Packet 7.3 — fires social_automations rules for inbound events. Dynamic
 // dependency shape: this IS a static import (safe — automation-runner.ts
@@ -40,10 +41,11 @@ export async function getMetaCreds(
       const candidates = opts?.provider ? [opts.provider] : (['facebook', 'instagram', 'meta'] as const);
       for (const prov of candidates) {
         const conn = await getConnection(accountId, prov, opts?.externalId);
-        const token = conn?.meta?.access_token;
+        if (!conn) continue;
+        const { accessToken: token } = await resolveTokensForRow(conn);
         if (token) {
           return {
-            token: String(token),
+            token,
             igUserId: conn.meta?.ig_user_id ? String(conn.meta.ig_user_id) : undefined,
             pageId: conn.meta?.page_id ? String(conn.meta.page_id) : undefined,
             externalId: conn.external_id ? String(conn.external_id) : undefined,
