@@ -6,6 +6,7 @@
 import { parseRetryAfterMs } from './health';
 import { reportProviderNotReported, reportTimingNotReported } from './usage';
 import { boundedTimeoutMs, deadlineExceededError, isPastDeadline } from './deadline';
+import { StoppedError } from './abort';
 
 const KEY =
   process.env.ZO_Api_Key ||
@@ -51,7 +52,7 @@ export function zoAskConfigured(): boolean {
 // wire value, so it also covers any future caller that forwards the sentinel.
 const DEFAULT_MODEL_SENTINELS = new Set(['__default__', 'default', 'auto', '']);
 
-async function ask(input: string, modelOverride?: string, deadlineAt?: number): Promise<string> {
+async function ask(input: string, modelOverride?: string, deadlineAt?: number, signal?: AbortSignal): Promise<string> {
   // Checked BEFORE starting the fetch, not just used to shrink the abort
   // timer: a deadline that has already passed means this attempt cannot
   // finish, so it must not be started at all (constraint 2's "do not start a
@@ -69,6 +70,13 @@ async function ask(input: string, modelOverride?: string, deadlineAt?: number): 
   // when deadlineAt is undefined.
   const effectiveTimeoutMs = boundedTimeoutMs(TIMEOUT_MS, deadlineAt);
   const timer = setTimeout(() => ctrl.abort(), effectiveTimeoutMs);
+  // `signal` is the CALLER's own AbortSignal (lib/agent/stop-watch.ts, an
+  // in-flight cooperative stop) — additive alongside the internal timeout
+  // controller above, never a replacement for it. AbortSignal.any lets BOTH
+  // fire the same fetch's abort without either controller needing to know
+  // about the other. Omitted (undefined), this is exactly `ctrl.signal` —
+  // byte-identical to before `signal` existed.
+  const fetchSignal = signal ? AbortSignal.any([ctrl.signal, signal]) : ctrl.signal;
   let res: Response;
   try {
     res = await fetch('https://api.zo.computer/zo/ask', {
@@ -79,9 +87,16 @@ async function ask(input: string, modelOverride?: string, deadlineAt?: number): 
         accept: 'application/json',
       },
       body: JSON.stringify(body),
-      signal: ctrl.signal,
+      signal: fetchSignal,
     });
   } catch (e: any) {
+    // The CALLER's signal firing is a stop, not a timeout — distinct error
+    // type (StoppedError, code 'stopped') so the router's candidate loop
+    // treats it as "end the whole call chain now", never as an ordinary
+    // provider failure eligible for fallback to the next tier. Checked
+    // first: an external abort can race the internal timer, and a stop must
+    // always win that race, never be misread as a timeout.
+    if (signal?.aborted) throw new StoppedError('Zo Ask call aborted: stop requested');
     const err: any = new Error(
       e?.name === 'AbortError' ? `Zo Ask timed out after ${effectiveTimeoutMs}ms` : `Zo Ask request failed`,
     );
@@ -137,9 +152,12 @@ export async function zoAskText(opts: {
   /** Absolute epoch-ms deadline for the whole turn this call belongs to.
    *  Optional/additive — omitted, behaviour is unchanged. See lib/ai/deadline.ts. */
   deadlineAt?: number;
+  /** External abort, e.g. an in-flight cooperative stop (lib/agent/
+   *  stop-watch.ts). Optional/additive — omitted, behaviour is unchanged. */
+  signal?: AbortSignal;
 }): Promise<string> {
   const input = opts.system ? `${opts.system}\n\n${opts.prompt}` : opts.prompt;
-  return ask(input, undefined, opts.deadlineAt);
+  return ask(input, undefined, opts.deadlineAt, opts.signal);
 }
 
 /**
@@ -155,6 +173,9 @@ export async function zoAskChat(opts: {
   /** Absolute epoch-ms deadline for the whole turn this call belongs to.
    *  Optional/additive — omitted, behaviour is unchanged. See lib/ai/deadline.ts. */
   deadlineAt?: number;
+  /** External abort, e.g. an in-flight cooperative stop (lib/agent/
+   *  stop-watch.ts). Optional/additive — omitted, behaviour is unchanged. */
+  signal?: AbortSignal;
 }): Promise<string> {
   const lines: string[] = [];
   if (opts.system) lines.push(opts.system);
@@ -163,5 +184,5 @@ export async function zoAskChat(opts: {
     lines.push(`${m.role === 'assistant' ? 'Assistant' : 'User'}: ${m.content}`);
   }
   lines.push('Assistant:');
-  return ask(lines.join('\n'), opts.model, opts.deadlineAt);
+  return ask(lines.join('\n'), opts.model, opts.deadlineAt, opts.signal);
 }

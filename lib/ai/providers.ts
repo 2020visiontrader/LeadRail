@@ -531,6 +531,13 @@ export interface CallModelOpts {
   /** Upper bound applied when maxOutputTokens is omitted — lets a caller say
    *  "use the model's capability, but not more than this" for cost/latency. */
   maxOutputCeiling?: number;
+  /** External abort for an in-flight cooperative stop (lib/agent/
+   *  stop-watch.ts). Optional/additive: omitted, behaviour is unchanged.
+   *  Forwarded to the zoask/opencode branches below, which support it; other
+   *  provider kinds (nim, gemini, anthropic, custom) do not yet accept it —
+   *  a call on one of those behaves exactly as before regardless of this
+   *  field, since those branches never read it. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -549,14 +556,14 @@ export async function callModel(resolved: ResolvedModel, opts: CallModelOpts): P
     case 'zoask': {
       if (!zoAskConfigured()) throw Object.assign(new Error('Zo Ask is not connected'), { code: 'not_configured' });
       return isChat
-        ? zoAskChat({ system: opts.system, messages: opts.messages!, maxOutputTokens: opts.maxOutputTokens, model: model.model_id })
-        : zoAskText({ system: opts.system, prompt: opts.prompt || '', maxOutputTokens: opts.maxOutputTokens });
+        ? zoAskChat({ system: opts.system, messages: opts.messages!, maxOutputTokens: opts.maxOutputTokens, model: model.model_id, signal: opts.signal })
+        : zoAskText({ system: opts.system, prompt: opts.prompt || '', maxOutputTokens: opts.maxOutputTokens, signal: opts.signal });
     }
     case 'opencode': {
       if (!opencode.opencodeConfigured()) throw Object.assign(new Error('OpenCode is not connected'), { code: 'not_configured' });
       return isChat
-        ? opencode.generateChat({ system: opts.system, messages: opts.messages as any, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, model: model.model_id })
-        : opencode.generateText({ system: opts.system, prompt: opts.prompt || '', temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, model: model.model_id });
+        ? opencode.generateChat({ system: opts.system, messages: opts.messages as any, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, model: model.model_id, signal: opts.signal })
+        : opencode.generateText({ system: opts.system, prompt: opts.prompt || '', temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, model: model.model_id, signal: opts.signal });
     }
     case 'nim': {
       if (!nimConfigured()) throw Object.assign(new Error('NIM is not connected'), { code: 'not_configured' });
@@ -737,7 +744,7 @@ export async function callModelStream(
       if (!opencode.opencodeConfigured()) throw Object.assign(new Error('OpenCode is not connected'), { code: 'not_configured' });
       if (!isChat) break; // text mode has no streaming variant; buffer below
       return opencode.streamChat(
-        { system: opts.system, messages: opts.messages as any, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, model: model.model_id },
+        { system: opts.system, messages: opts.messages as any, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, model: model.model_id, signal: opts.signal },
         onDelta,
       );
     }

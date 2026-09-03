@@ -60,6 +60,7 @@ import { openrouterConfigured, openrouterText, openrouterChat, openrouterStreamC
 import { log } from '@/lib/logger';
 import { registryConfigured, resolveChain, resolveChainForTask, callModel, callModelStream, type ResolvedModel } from './providers';
 import { isPastDeadline, deadlineExceededError } from './deadline';
+import { StoppedError } from './abort';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LADDER ORDER
@@ -349,6 +350,15 @@ interface UsageTrace {
    *  stops trying further candidates once it has passed, rather than
    *  starting an attempt that cannot finish in time. */
   deadlineAt?: number;
+  /** External abort for an in-flight cooperative stop (lib/agent/
+   *  stop-watch.ts). Optional/additive: omitted, this is a no-op —
+   *  runCandidates never checks it and every provider client behaves
+   *  byte-identically. When set, an abort caused by THIS signal firing ends
+   *  the whole candidate loop immediately (see the StoppedError handling in
+   *  runCandidates) rather than being treated as an ordinary candidate
+   *  failure eligible for fallback — a stop must never cause the router to
+   *  spend more by trying the next tier. */
+  signal?: AbortSignal;
 }
 
 /**
@@ -433,6 +443,16 @@ async function runCandidates(
       });
       throw deadlineExceededError(fn, lastErr);
     }
+    // Same shape as the deadline check above, for the same reason: a stop
+    // that lands BETWEEN two candidate attempts (candidate A just failed,
+    // candidate B is about to start) must stop the whole chain here rather
+    // than starting one more attempt after the user already asked to stop.
+    if (trace?.signal?.aborted) {
+      log.warn('ai router: stop requested, not starting another candidate attempt', {
+        fn, remainingCandidates: eligible.length,
+      });
+      throw new StoppedError(`${fn}: stop requested — not starting another candidate attempt`);
+    }
     const start = Date.now();
     // One capture scope per attempt, so a failed model's usage block cannot be
     // attributed to the model that answered after it. SETTLED, not throwing:
@@ -477,6 +497,21 @@ async function runCandidates(
       const err: any = outcome.ok
         ? new Error(`${candidate.label} returned an empty response${emptyModel ? ` (model=${emptyModel})` : ''}`)
         : outcome.error;
+      // CRITICAL: a stop-caused abort is not this candidate misbehaving —
+      // it is the whole call chain being told to stop. Recording it as a
+      // candidate failure would ding the candidate's health for no reason,
+      // and — the part that actually matters — falling through to
+      // `continue` below would try the NEXT candidate, spending more money
+      // after the user asked to stop. Rethrown immediately instead, never
+      // reaching recordFailure/logUsage/`continue`. A timeout abort (no
+      // `trace.signal` involved) is unaffected and keeps today's fallback
+      // behaviour exactly.
+      if (err instanceof StoppedError) {
+        log.warn('ai router: candidate aborted by stop request, not falling through to the next candidate', {
+          fn, candidate: candidate.id,
+        });
+        throw err;
+      }
       recordFailure(candidate.id, classifyFailure(err, providerHint(candidate)));
       if (accountId) {
         const failed = failureUsage(size, outcome);
@@ -529,12 +564,15 @@ export async function generateText(opts: {
    *  Optional/additive: a caller that omits it gets byte-identical
    *  (unbounded) behaviour. See lib/ai/deadline.ts. */
   deadlineAt?: number;
+  /** External abort for an in-flight cooperative stop (lib/agent/
+   *  stop-watch.ts). Optional/additive: omitted, behaviour is unchanged. */
+  signal?: AbortSignal;
 }): Promise<string> {
   const registry = await registryCandidates(opts.accountId, opts.modelId, undefined, undefined, (resolved) =>
-    callModel(resolved, { system: opts.system, prompt: opts.prompt, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens }),
+    callModel(resolved, { system: opts.system, prompt: opts.prompt, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, signal: opts.signal }),
   );
   const ladder = ladderCandidates({
-    zoask: { configured: zoAskConfigured(), run: () => zoAskText({ system: opts.system, prompt: opts.prompt, maxOutputTokens: opts.maxOutputTokens, deadlineAt: opts.deadlineAt }) },
+    zoask: { configured: zoAskConfigured(), run: () => zoAskText({ system: opts.system, prompt: opts.prompt, maxOutputTokens: opts.maxOutputTokens, deadlineAt: opts.deadlineAt, signal: opts.signal }) },
     opencode: { configured: opencode.opencodeConfigured(), run: () => opencode.generateText(opts) },
     openrouter: { configured: openrouterConfigured(), run: () => openrouterText(opts) },
   });
@@ -542,7 +580,7 @@ export async function generateText(opts: {
     promptTokens: estimateTokens((opts.system || '') + opts.prompt),
     wantOutputTokens: opts.maxOutputTokens,
   },
-    { conversationId: opts.conversationId, onUsageRow: opts.onUsageRow, deadlineAt: opts.deadlineAt },
+    { conversationId: opts.conversationId, onUsageRow: opts.onUsageRow, deadlineAt: opts.deadlineAt, signal: opts.signal },
   );
 }
 
@@ -577,12 +615,15 @@ export async function generateChat(opts: {
    *  Optional/additive: a caller that omits it gets byte-identical
    *  (unbounded) behaviour. See lib/ai/deadline.ts. */
   deadlineAt?: number;
+  /** External abort for an in-flight cooperative stop (lib/agent/
+   *  stop-watch.ts). Optional/additive: omitted, behaviour is unchanged. */
+  signal?: AbortSignal;
 }): Promise<string> {
   const registry = await registryCandidates(opts.accountId, opts.modelId, opts.task, opts.preferTier, (resolved) =>
-    callModel(resolved, { system: opts.system, messages: opts.messages, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, maxOutputCeiling: opts.maxOutputCeiling }),
+    callModel(resolved, { system: opts.system, messages: opts.messages, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, maxOutputCeiling: opts.maxOutputCeiling, signal: opts.signal }),
   );
   const ladder = ladderCandidates({
-    zoask: { configured: zoAskConfigured(), run: () => zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel, deadlineAt: opts.deadlineAt }) },
+    zoask: { configured: zoAskConfigured(), run: () => zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel, deadlineAt: opts.deadlineAt, signal: opts.signal }) },
     opencode: { configured: opencode.opencodeConfigured(), run: () => opencode.generateChat(opts) },
     openrouter: { configured: openrouterConfigured(), run: () => openrouterChat(opts) },
   }, opts.preferTier);
@@ -593,7 +634,7 @@ export async function generateChat(opts: {
     // satisfying the request rather than failing it.
     wantOutputTokens: opts.maxOutputTokens,
   },
-    { conversationId: opts.conversationId, onUsageRow: opts.onUsageRow, deadlineAt: opts.deadlineAt },
+    { conversationId: opts.conversationId, onUsageRow: opts.onUsageRow, deadlineAt: opts.deadlineAt, signal: opts.signal },
   );
 }
 
@@ -623,10 +664,10 @@ export async function streamChat(
   onDelta: (chunk: string) => void,
 ): Promise<string> {
   const registry = await registryCandidates(opts.accountId, opts.modelId, opts.task, opts.preferTier, (resolved) =>
-    callModelStream(resolved, { system: opts.system, messages: opts.messages, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, maxOutputCeiling: opts.maxOutputCeiling }, onDelta),
+    callModelStream(resolved, { system: opts.system, messages: opts.messages, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, maxOutputCeiling: opts.maxOutputCeiling, signal: opts.signal }, onDelta),
   );
   const ladder = ladderCandidates({
-    zoask: { configured: zoAskConfigured(), run: () => zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel, deadlineAt: opts.deadlineAt }) },
+    zoask: { configured: zoAskConfigured(), run: () => zoAskChat({ system: opts.system, messages: opts.messages, maxOutputTokens: opts.maxOutputTokens, model: opts.zoAskModel, deadlineAt: opts.deadlineAt, signal: opts.signal }) },
     opencode: { configured: opencode.opencodeConfigured(), run: () => opencode.streamChat(opts, onDelta) },
     openrouter: { configured: openrouterConfigured(), run: () => openrouterStreamChat(opts, onDelta) },
   }, opts.preferTier);
@@ -637,6 +678,6 @@ export async function streamChat(
     // satisfying the request rather than failing it.
     wantOutputTokens: opts.maxOutputTokens,
   },
-    { conversationId: opts.conversationId, onUsageRow: opts.onUsageRow, deadlineAt: opts.deadlineAt },
+    { conversationId: opts.conversationId, onUsageRow: opts.onUsageRow, deadlineAt: opts.deadlineAt, signal: opts.signal },
   );
 }
