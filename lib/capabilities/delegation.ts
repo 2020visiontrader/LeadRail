@@ -208,6 +208,26 @@ export const DELEGATION_CAPABILITIES: Capability[] = [
         // this bounds the sub-run itself. Without it a sub-run spawned with 10s
         // left on the parent turn would still run its own full budget.
         deadlineAt: ctx?.deadlineAt,
+        // GROUNDING, INHERITED — not rebuilt. ctx.agentContext is the PARENT
+        // turn's full grounding block (platform + venture + account + memory),
+        // already built once by loadAgentContext; ctx.brandContext is the
+        // venture it resolved. Passed straight through, in full, so the
+        // specialist knows what the caller already knows: which venture this
+        // is about, what the account holds, and what the platform-level
+        // context already says. Calling loadAgentContext again down here would
+        // pay for the same DB round trips a second time per delegate — the
+        // parent already paid them once.
+        //
+        // NEVER divided or truncated by how many delegates this turn spawns.
+        // Each askSpecialist call is an independent runAgent invocation with
+        // its own context window — it does not share one with the parent or
+        // with sibling delegates — so there is no shared pool to ration in the
+        // first place. CLAUDE.md records two shipped defects from exactly this
+        // mistake (a `/ delegateCount` division, then a `0.25` share of the
+        // window): three delegates get what one delegate gets, always the
+        // same ctx.agentContext string, unmodified.
+        agentContext: ctx?.agentContext,
+        brandContext: ctx?.brandContext,
       }), expired]).finally(() => clearTimeout(timer));
 
       if (result === 'timeout') {
