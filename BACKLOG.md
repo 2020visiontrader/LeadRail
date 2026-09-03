@@ -699,3 +699,42 @@ Related and untouched: `agent_memory` at 0 rows while every one of the 30
 conversations carries `memory_extracted_at`, so the extractor ran and wrote
 nothing, and `recallMemoryDigest` still pays for an embedding call on every
 turn to search an empty table.
+
+## 14. Migration 084 — APPLIED AND VERIFIED 2026-09-03
+
+`migrations/084_scheduled_tasks_claim.sql` adds `scheduled_tasks.run_state`
+and `claimed_at`, the columns the scheduled-task claim reads. Applied to
+production (project `kqimpzbphdogvchqmtos`) on 2026-09-03.
+
+**CLOSED.** Verified against `information_schema` and `pg_indexes` /
+`pg_constraint`, not the apply call's `success: true`:
+
+```
+column      data_type                  nullable  default
+claimed_at  timestamp with time zone   YES       null
+run_state   text                       NO        'idle'::text
+
+idx_scheduled_tasks_single_claim   present
+scheduled_tasks_run_state_check    present
+```
+
+**Named readers, per the rule about columns nothing reads:**
+`claimScheduledTask` / `runDueScheduledTasks` in `lib/scheduled/store.ts`.
+The defect it closes is real: `runDueScheduledTasks` is reachable from BOTH
+`/api/hermes/tick` and `/api/scheduled-tasks/run-due` with no claim, so the
+same due task could be run twice concurrently — and it runs up to 25 full
+agent turns. Revert-checked: a claim that always succeeds fails three tests,
+including a second concurrent claim returning true and a task running twice.
+
+**One honest note on the index.** `idx_scheduled_tasks_single_claim` is
+`UNIQUE ON scheduled_tasks(id) WHERE run_state = 'running'`. Because `id` is
+already the primary key, that index enforces nothing a unique `id` did not
+already enforce — it is not the analogue of `claimStep`'s partial index,
+which is on `(plan_id)` and genuinely enforces one active step PER PLAN. The
+actual protection here is the conditional UPDATE in `claimScheduledTask`,
+which is what the revert-check exercises. The index is harmless and left in
+place; it should not be cited as the guarantee.
+
+**Still unproven in production:** `scheduled_tasks` has 0 rows, so no task
+has ever been claimed. Done when a real task is claimed and released — the
+same standard as #12 and #13.
