@@ -760,6 +760,46 @@ export async function recordFact(accountId: string, f: MemoryFact, source: FactS
     predicate: f.predicate ?? null,
     object: f.object ?? null,
   };
+
+  // IDEMPOTENCY (production probe, see lib/memory/extract.ts): this used to be
+  // a bare INSERT, which is exactly why the extractor only called recordFact on
+  // a genuinely new graph edge — recording every repeat mention would have
+  // piled up duplicate rows for one fact restated many times. That gate turned
+  // out to make agent_memory unable to converge at all: a conversation already
+  // extracted once has all its edges already existing, so re-extracting it
+  // (the only path that can backfill agent_memory for existing knowledge)
+  // produces nothing but recurrences, which never called recordFact, which
+  // left the table permanently empty for anything the graph already knew.
+  // The fix moves the dedupe HERE, so the extractor can call this on every
+  // outcome and still converge instead of accumulating duplicates.
+  //
+  // Dedupe key: when subject, predicate AND object are all present, treat that
+  // triple (scoped to account_id) as the identity — this mirrors how the graph
+  // (memory_edges) keys an edge, so a fact restated in different words but
+  // resolving to the same triple still dedupes. When the triple isn't fully
+  // present — true for the 'capability' and 'carryover' sources, which often
+  // carry no subject/predicate/object at all — fall back to the exact,
+  // trimmed fact text scoped to account_id.
+  //
+  // This is select-then-insert, not a database constraint: a concurrent
+  // double-write for the same account can still race past both checks and
+  // produce two rows. That is accepted here, not closed — a unique index
+  // would be the airtight fix, but existing rows may already violate one
+  // (this table has never enforced uniqueness), and a migration that can fail
+  // against real production data is not worth adding to close a narrow race
+  // window. Best-effort, same posture as the rest of this function: a failed
+  // dedupe check falls through to the insert rather than blocking the write.
+  try {
+    let dupeQuery = supabase.from('agent_memory').select('id').eq('account_id', accountId).limit(1);
+    if (row.subject && row.predicate && row.object) {
+      dupeQuery = dupeQuery.eq('subject', row.subject).eq('predicate', row.predicate).eq('object', row.object);
+    } else {
+      dupeQuery = dupeQuery.eq('fact', fact);
+    }
+    const { data: existing } = await dupeQuery.maybeSingle();
+    if (existing) return;
+  } catch { /* best-effort — fall through to the insert on a failed dedupe check */ }
+
   try {
     const vec = await embedPassage(fact);
     if (vec) row.embedding = toPgVector(vec);
