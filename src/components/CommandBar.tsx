@@ -17,6 +17,21 @@ interface AgentResult {
 }
 interface Bubble { role: 'user' | 'ai'; text: string }
 
+// Must stay >= app/api/agent/route.ts's `export const maxDuration = 300`
+// (seconds) — that route is the platform's own hard ceiling on a turn, so a
+// client abort BELOW it reports a request as failed while the server is
+// still legitimately working and will complete. This used to be 90_000: a
+// turn that took, say, 150s looked like an error to the operator and then
+// answered anyway a few seconds later with nobody watching. 300_000 matches
+// the route's ceiling exactly — if the server hasn't responded by then, the
+// platform has already killed the route too, so there is nothing left to
+// wait for.
+const AGENT_REQUEST_TIMEOUT_MS = 300_000;
+// Below this, "Working…" reads as normal latency. Past it, plain "Working…"
+// starts to read like the UI is stuck — the copy below switches to say the
+// turn is still running rather than let the operator infer that on their own.
+const LONG_TURN_HINT_MS = 20_000;
+
 const EXAMPLES = [
   'How many leads do I have?',
   'Create a lead-ad campaign for this brand',
@@ -29,6 +44,7 @@ export default function CommandBar({ ventureName }: { ventureName?: string }) {
   const [log, setLog] = useState<Bubble[]>([]);
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [error, setError] = useState('');
+  const [longTurn, setLongTurn] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
   // The server owns conversation state (Packet 0.2). We hold only the opaque id
   // it issued in the JSON response and echo it back on the next request —
@@ -40,6 +56,14 @@ export default function CommandBar({ ventureName }: { ventureName?: string }) {
   const conversationIdRef = useRef<string | undefined>(undefined);
 
   useEffect(() => { logRef.current?.scrollTo({ top: logRef.current.scrollHeight }); }, [log, busy, proposal]);
+
+  // Flips the "still working" copy on once a turn has run long enough that
+  // plain "Working…" would read as stuck. Reset on every new request.
+  useEffect(() => {
+    if (!busy) { setLongTurn(false); return; }
+    const timer = setTimeout(() => setLongTurn(true), LONG_TURN_HINT_MS);
+    return () => clearTimeout(timer);
+  }, [busy]);
 
   const brandName = ventureName && ventureName !== 'All Brands' ? ventureName : undefined;
 
@@ -64,9 +88,14 @@ export default function CommandBar({ ventureName }: { ventureName?: string }) {
         message,
         brandName,
         ...(conversationIdRef.current ? { conversationId: conversationIdRef.current } : {}),
-      }, { timeoutMs: 90_000 });
+      }, { timeoutMs: AGENT_REQUEST_TIMEOUT_MS });
       handle(res);
     } catch (e: any) {
+      // apiSend's own AbortError message ("Request timed out — the AI
+      // service is slow right now. Try again.") already covers a genuine
+      // timeout honestly — AGENT_REQUEST_TIMEOUT_MS now matches the server's
+      // own maxDuration, so an abort here means the platform killed the
+      // route too, not that the client gave up early.
       setError(e?.message || "LeadRail AI couldn't handle that — try rephrasing.");
     } finally { setBusy(false); }
   };
@@ -88,7 +117,7 @@ export default function CommandBar({ ventureName }: { ventureName?: string }) {
         approve: { approvalId: p.approvalId, tool: p.tool, args: p.args },
         brandName,
         ...(conversationIdRef.current ? { conversationId: conversationIdRef.current } : {}),
-      }, { timeoutMs: 90_000 });
+      }, { timeoutMs: AGENT_REQUEST_TIMEOUT_MS });
       handle(res);
     } catch (e: any) {
       setError(e?.message || 'That action could not be completed.');
@@ -120,7 +149,7 @@ export default function CommandBar({ ventureName }: { ventureName?: string }) {
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') send(); }}
           disabled={busy}
-          placeholder={busy ? 'Working…' : 'Ask LeadRail AI — e.g. “create a lead-ad campaign for this brand”'}
+          placeholder={busy ? (longTurn ? 'Still working — complex requests can take a few minutes…' : 'Working…') : 'Ask LeadRail AI — e.g. “create a lead-ad campaign for this brand”'}
           className="min-w-0 flex-1 bg-transparent text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none disabled:opacity-60"
         />
         {log.length > 0 && !busy && (
@@ -171,7 +200,9 @@ export default function CommandBar({ ventureName }: { ventureName?: string }) {
             <div className="flex justify-start">
               <div className="flex items-center gap-2 rounded-2xl rounded-bl-sm border border-[var(--border-default)] bg-[var(--bg-raised)] px-3.5 py-2 text-sm text-[var(--text-muted)]">
                 <span className="h-3 w-3 animate-spin rounded-full border-2 border-[var(--brand)] border-t-transparent" />
-                LeadRail AI is working…
+                {longTurn
+                  ? 'Still working — this is a longer request, it can take a few minutes.'
+                  : 'LeadRail AI is working…'}
               </div>
             </div>
           )}

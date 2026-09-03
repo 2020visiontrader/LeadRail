@@ -9,6 +9,7 @@ import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverF
 import { mintMessageId, ensureMessageIds, type StoredMessage } from '@/lib/agent/transcript-store';
 import { stripPrivateReasoning } from '@/lib/agent/transcript-privacy';
 import { parseMentions } from '@/lib/agent/personas';
+import { assertSelectableModel } from '@/lib/ai/providers';
 import { createStreamGuard } from '@/lib/agent/stream-guard';
 import { providersLookDown, turnFailureMessage } from '@/lib/agent/failure-copy';
 import { reportStreamFailure } from '@/lib/agent/failure-report';
@@ -145,6 +146,12 @@ export async function POST(request: NextRequest) {
   // Optional persona routing (migration 024) — no-op unless the client opts in.
   const personaId: string | undefined = typeof body?.personaId === 'string' && body.personaId ? body.personaId : undefined;
   const personaMentions = parseMentions(message);
+
+  // Composer model dropdown (an ai_models row id) — twin of the JSON route's
+  // validation. Ignored (not passed through) unless it names one of THIS
+  // account's own enabled models. See RunAgentInput.modelId.
+  const requestedModelId: string | undefined = typeof body?.modelId === 'string' && body.modelId ? body.modelId : undefined;
+  const modelId = await assertSelectableModel(session.accountId, requestedModelId);
 
   // PLAN MODE. The turn writes a plan and stops instead of executing it, so
   // the operator sees the shape of the work before any of it runs. A request
@@ -313,17 +320,21 @@ export async function POST(request: NextRequest) {
         // take minutes. Cleared unconditionally in the `finally` below. Only
         // meaningful once an id exists: an approve-resume or an existing chat
         // has one already; a brand-new chat has one from the block above.
-        // Cleared at the SAME point as the running flag is set — the start of
-        // a turn — so a stop requested against a PRIOR turn on this
-        // conversation can never be misread as applying to the turn about to
-        // run (migration 083).
+        //
+        // DEFECT B (found in review of bd63b6d): this used to also call
+        // clearStopRequest here, at turn start — see the matching comment in
+        // app/api/agent/route.ts for the race that broke ("Stop, then
+        // immediately send the corrected message"). isStopRequested
+        // (lib/agent/memory.ts) now compares stop_requested_at against
+        // running_since instead, so a stale stop from a prior turn is
+        // harmless without clearing it here. Not called at turn start any
+        // more for that reason — see the `finally` below instead.
         if (conversationId) {
           await markConversationRunning(conversationId, session.accountId);
-          await clearStopRequest(conversationId, session.accountId);
         }
 
         await runAgentStream(
-          { accountId: session.accountId, message, approve, transcript, agentContext, carryover, brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined, personaId, personaMentions, requestedBy: session.email, conversationId, planOnly, userMessageId },
+          { accountId: session.accountId, message, approve, transcript, agentContext, carryover, brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined, personaId, personaMentions, requestedBy: session.email, conversationId, planOnly, userMessageId, modelId },
           (e: AgentEvent) => {
             // Only `final`/`needs_approval` carry a transcript. Everything else,
             // including `final_delta` (a progressive preview of the answer being
@@ -387,6 +398,12 @@ export async function POST(request: NextRequest) {
         // of waiting out that cutoff for no reason.
         if (conversationId) {
           await clearConversationRunning(conversationId, session.accountId);
+          // Turn END is the unambiguously-correct place to clear a stop
+          // request (see clearStopRequest's doc comment, lib/agent/memory.ts)
+          // — whatever turn this stop applied to has already finished, and a
+          // next turn hasn't started yet, so there is nothing here for the
+          // clear to race against.
+          await clearStopRequest(conversationId, session.accountId);
         }
         // THE GUARANTEE: this stream never closes silently.
         //

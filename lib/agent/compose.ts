@@ -16,6 +16,7 @@
 import { BUDGET } from '@/lib/ai/context-budget';
 import { generateChat, streamChat, type ChatMessage } from '@/lib/ai/router';
 import { stripAiMarkers, HUMANIZE_RULES } from '@/lib/ai/humanizer';
+import { StoppedError } from '@/lib/ai/abort';
 
 // Upper bound on the compose budget. The model's own ceiling is used when it is
 // lower; this only stops an enormous-output model from being asked for far more
@@ -48,6 +49,11 @@ export interface ComposeInput {
    *  A call made while a user is waiting on this turn must carry ITS
    *  deadline — never a separately invented one. */
   deadlineAt?: number;
+  /** External abort for an in-flight cooperative stop (lib/agent/
+   *  stop-watch.ts). Optional/additive: omitted, behaviour is unchanged. See
+   *  the note on the catch block below for why a stop-caused abort is the
+   *  ONE failure this function does not swallow into the draft. */
+  signal?: AbortSignal;
 }
 
 /** Rewrite the route pass's draft into the answer the user actually reads.
@@ -83,6 +89,7 @@ export async function composeAnswer(
       task: 'draft',
       preferTier: 'heavy' as const,
       deadlineAt: input.deadlineAt,
+      signal: input.signal,
     };
 
     const response = onDelta && AGENT_COMPOSE_STREAM
@@ -95,7 +102,15 @@ export async function composeAnswer(
     // instead of only ever being described in the tone rules below.
     if (!response || !response.trim()) return stripAiMarkers(input.draft);
     return stripAiMarkers(response.trim());
-  } catch {
+  } catch (e) {
+    // Every other failure here degrades silently to the draft — that is the
+    // whole point of this function, and it is correct for a real outage or a
+    // deadline. A STOP is the one exception: rethrown so the caller
+    // (lib/agent/loop.ts) can end the turn through the SAME stop-salvage
+    // path (stopResult/emitStopFinal) the between-steps check already uses,
+    // instead of silently completing with the pre-compose draft as if
+    // nothing had happened — see CLAUDE.md: no second termination path.
+    if (e instanceof StoppedError) throw e;
     return stripAiMarkers(input.draft);
   }
 }

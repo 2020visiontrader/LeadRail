@@ -11,6 +11,7 @@ import { reportOpenAIUsage, reportOpenAITiming } from './usage';
 import { log } from '@/lib/logger';
 import { parseRetryAfterMs } from './health';
 import { boundedTimeoutMs, deadlineExceededError, isPastDeadline } from './deadline';
+import { StoppedError } from './abort';
 import {
   cacheMarkersEnabled, supportsCacheMarkers, markSystemPrefix, implicatesCacheMarkers,
   type MarkableMessage,
@@ -170,7 +171,7 @@ interface OpenAIMessage {
  *  different model cannot fix. Logs every skipped model so a rate-limited or
  *  retired id shows up in /logs as a warning instead of silently degrading
  *  the last tier. */
-async function complete(messages: OpenAIMessage[], temperature: number, maxTokens: number, deadlineAt?: number): Promise<string> {
+async function complete(messages: OpenAIMessage[], temperature: number, maxTokens: number, deadlineAt?: number, signal?: AbortSignal): Promise<string> {
   let lastErr: any = null;
   for (let i = 0; i < MODEL_CHAIN.length; i++) {
     // THE fix this file exists for: without this check, each of MODEL_CHAIN's
@@ -186,9 +187,16 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
     }
     const model = MODEL_CHAIN[i];
     try {
-      return await completeWith(model, messages, temperature, maxTokens, deadlineAt);
+      return await completeWith(model, messages, temperature, maxTokens, deadlineAt, signal);
     } catch (err: any) {
       lastErr = err;
+      // A stop must end the WHOLE chain, never try the next model in it —
+      // same rule as the router's own candidate loop, applied here because
+      // this chain is itself a private retry loop the router never sees
+      // into. `err.status` is unset on StoppedError, so shouldTryNextModel
+      // below already returns false for it and this throws immediately —
+      // this check only makes that intent explicit rather than incidental.
+      if (err instanceof StoppedError) throw err;
       const status = Number(err?.status) || 0;
       // See parseAffordableTokens' header comment. Retry the SAME model once
       // with the smaller cap OpenRouter itself named, before falling through
@@ -202,7 +210,7 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
             model, requestedMaxTokens: maxTokens, affordable,
           });
           try {
-            return await completeWith(model, messages, temperature, affordable, deadlineAt);
+            return await completeWith(model, messages, temperature, affordable, deadlineAt, signal);
           } catch (err2: any) {
             lastErr = err2;
             const status2 = Number(err2?.status) || 0;
@@ -234,26 +242,32 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
  * body to resend. See lib/ai/prompt-cache-markers.ts for what is marked,
  * which providers accept markers at all, and why the flag defaults off.
  */
-async function completeWith(MODEL: string, messages: OpenAIMessage[], temperature: number, maxTokens: number, deadlineAt?: number): Promise<string> {
+async function completeWith(MODEL: string, messages: OpenAIMessage[], temperature: number, maxTokens: number, deadlineAt?: number, signal?: AbortSignal): Promise<string> {
   const marked = cacheMarkersEnabled() && supportsCacheMarkers(MODEL) ? markSystemPrefix(messages) : null;
-  if (!marked) return completeOnce(MODEL, messages, temperature, maxTokens, deadlineAt);
+  if (!marked) return completeOnce(MODEL, messages, temperature, maxTokens, deadlineAt, signal);
   try {
-    return await completeOnce(MODEL, marked, temperature, maxTokens, deadlineAt);
+    return await completeOnce(MODEL, marked, temperature, maxTokens, deadlineAt, signal);
   } catch (err: any) {
+    if (err instanceof StoppedError) throw err; // never retry a stop
     if (!implicatesCacheMarkers(Number(err?.status) || 0, err?.detail)) throw err;
     log.warn('openrouter: request failed in a way that implicates the prompt-cache marker, retrying once without it', {
       model: MODEL, status: Number(err?.status) || 0, detail: String(err?.detail || '').slice(0, 200),
     });
-    return completeOnce(MODEL, messages, temperature, maxTokens, deadlineAt);
+    return completeOnce(MODEL, messages, temperature, maxTokens, deadlineAt, signal);
   }
 }
 
-async function completeOnce(MODEL: string, messages: MarkableMessage[], temperature: number, maxTokens: number, deadlineAt?: number): Promise<string> {
+async function completeOnce(MODEL: string, messages: MarkableMessage[], temperature: number, maxTokens: number, deadlineAt?: number, signal?: AbortSignal): Promise<string> {
   const ctrl = new AbortController();
   // min(TIMEOUT_MS, time remaining) — never larger than today's constant,
   // only ever tighter, and unaffected when deadlineAt is undefined.
   const effectiveTimeoutMs = boundedTimeoutMs(TIMEOUT_MS, deadlineAt);
   const timer = setTimeout(() => ctrl.abort(), effectiveTimeoutMs);
+  // `signal` is the CALLER's own AbortSignal (an in-flight cooperative stop —
+  // see lib/agent/stop-watch.ts), additive alongside the timeout controller
+  // above. Omitted, `fetchSignal` is exactly `ctrl.signal` — byte-identical
+  // to before `signal` existed.
+  const fetchSignal = signal ? AbortSignal.any([ctrl.signal, signal]) : ctrl.signal;
   let res: Response;
   try {
     res = await fetch(`${BASE}/chat/completions`, {
@@ -267,9 +281,13 @@ async function completeOnce(MODEL: string, messages: MarkableMessage[], temperat
         'X-Title': 'LeadRail',
       },
       body: JSON.stringify({ model: MODEL, messages, temperature, max_tokens: maxTokens }),
-      signal: ctrl.signal,
+      signal: fetchSignal,
     });
   } catch (e: any) {
+    // The caller's own signal firing is a stop, not a timeout — see the
+    // matching comment in lib/ai/opencode.ts's complete(). Checked first: it
+    // can race the internal timer, and a stop must always win that race.
+    if (signal?.aborted) throw new StoppedError('OpenRouter call aborted: stop requested');
     const err: any = new Error(
       e?.name === 'AbortError' ? `OpenRouter timed out after ${effectiveTimeoutMs}ms` : `OpenRouter request failed`,
     );
@@ -311,6 +329,7 @@ async function completeStream(
   maxTokens: number,
   onDelta: (chunk: string) => void,
   deadlineAt?: number,
+  signal?: AbortSignal,
 ): Promise<string> {
   // Same chain as complete(). Safe to fall back here because a 402/404/429
   // arrives on the response STATUS, before any delta has been emitted — so no
@@ -326,9 +345,12 @@ async function completeStream(
     }
     const model = MODEL_CHAIN[i];
     try {
-      return await completeStreamWith(model, messages, temperature, maxTokens, onDelta, deadlineAt);
+      return await completeStreamWith(model, messages, temperature, maxTokens, onDelta, deadlineAt, signal);
     } catch (err: any) {
       lastErr = err;
+      // See the matching check in complete()'s chain loop: a stop ends the
+      // whole chain, it never tries the next model.
+      if (err instanceof StoppedError) throw err;
       const status = Number(err?.status) || 0;
       // Same affordable-ceiling retry as complete()'s chain loop — see its
       // comment. A 402 here arrives on the response status before any delta
@@ -342,7 +364,7 @@ async function completeStream(
             model, requestedMaxTokens: maxTokens, affordable,
           });
           try {
-            return await completeStreamWith(model, messages, temperature, affordable, onDelta, deadlineAt);
+            return await completeStreamWith(model, messages, temperature, affordable, onDelta, deadlineAt, signal);
           } catch (err2: any) {
             lastErr = err2;
             const status2 = Number(err2?.status) || 0;
@@ -383,17 +405,19 @@ async function completeStreamWith(
   maxTokens: number,
   onDelta: (chunk: string) => void,
   deadlineAt?: number,
+  signal?: AbortSignal,
 ): Promise<string> {
   const marked = cacheMarkersEnabled() && supportsCacheMarkers(MODEL) ? markSystemPrefix(messages) : null;
-  if (!marked) return completeStreamOnce(MODEL, messages, temperature, maxTokens, onDelta, deadlineAt);
+  if (!marked) return completeStreamOnce(MODEL, messages, temperature, maxTokens, onDelta, deadlineAt, signal);
   try {
-    return await completeStreamOnce(MODEL, marked, temperature, maxTokens, onDelta, deadlineAt);
+    return await completeStreamOnce(MODEL, marked, temperature, maxTokens, onDelta, deadlineAt, signal);
   } catch (err: any) {
+    if (err instanceof StoppedError) throw err; // never retry a stop
     if (!implicatesCacheMarkers(Number(err?.status) || 0, err?.detail)) throw err;
     log.warn('openrouter: stream failed in a way that implicates the prompt-cache marker, retrying once without it', {
       model: MODEL, status: Number(err?.status) || 0, detail: String(err?.detail || '').slice(0, 200),
     });
-    return completeStreamOnce(MODEL, messages, temperature, maxTokens, onDelta, deadlineAt);
+    return completeStreamOnce(MODEL, messages, temperature, maxTokens, onDelta, deadlineAt, signal);
   }
 }
 
@@ -404,10 +428,12 @@ async function completeStreamOnce(
   maxTokens: number,
   onDelta: (chunk: string) => void,
   deadlineAt?: number,
+  signal?: AbortSignal,
 ): Promise<string> {
   const ctrl = new AbortController();
   const effectiveTimeoutMs = boundedTimeoutMs(TIMEOUT_MS, deadlineAt);
   const timer = setTimeout(() => ctrl.abort(), effectiveTimeoutMs);
+  const fetchSignal = signal ? AbortSignal.any([ctrl.signal, signal]) : ctrl.signal;
   let res: Response;
   try {
     res = await fetch(`${BASE}/chat/completions`, {
@@ -424,9 +450,10 @@ async function completeStreamOnce(
         // usage, which is why streamed calls never recorded tokens.
         stream_options: { include_usage: true },
       }),
-      signal: ctrl.signal,
+      signal: fetchSignal,
     });
   } catch (e: any) {
+    if (signal?.aborted) throw new StoppedError('OpenRouter call aborted: stop requested');
     const err: any = new Error(
       e?.name === 'AbortError' ? `OpenRouter timed out after ${effectiveTimeoutMs}ms` : `OpenRouter request failed`,
     );
@@ -452,13 +479,21 @@ async function completeStreamOnce(
   }
 
   let text = '';
-  await readSseDeltas(res.body, (evt) => {
-    const chunk = evt?.choices?.[0]?.delta?.content;
-    if (typeof chunk === 'string' && chunk) {
-      text += chunk;
-      onDelta(chunk);
-    }
-  });
+  try {
+    await readSseDeltas(res.body, (evt) => {
+      const chunk = evt?.choices?.[0]?.delta?.content;
+      if (typeof chunk === 'string' && chunk) {
+        text += chunk;
+        onDelta(chunk);
+      }
+    });
+  } catch (e: any) {
+    // Same stop-vs-timeout distinction as the initial fetch, applied where
+    // an abort mid-body-read actually surfaces. Unreachable when `signal` is
+    // undefined/never aborted, so behaviour without it is unchanged.
+    if (signal?.aborted) throw new StoppedError('OpenRouter stream aborted: stop requested');
+    throw e;
+  }
 
   const out = text.trim();
   if (!out) {
@@ -480,6 +515,9 @@ export async function openrouterStreamChat(
     /** Absolute epoch-ms deadline for the whole turn this call belongs to.
      *  Optional/additive — omitted, behaviour is unchanged. See lib/ai/deadline.ts. */
     deadlineAt?: number;
+    /** External abort, e.g. an in-flight cooperative stop (lib/agent/
+     *  stop-watch.ts). Optional/additive — omitted, behaviour is unchanged. */
+    signal?: AbortSignal;
   },
   onDelta: (chunk: string) => void,
 ): Promise<string> {
@@ -488,7 +526,7 @@ export async function openrouterStreamChat(
   for (const m of opts.messages) {
     if (m.content?.trim()) messages.push({ role: m.role, content: m.content });
   }
-  return completeStream(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, onDelta, opts.deadlineAt);
+  return completeStream(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, onDelta, opts.deadlineAt, opts.signal);
 }
 
 /** Generate text. Returns the model's plain-text completion. */
@@ -500,11 +538,14 @@ export async function openrouterText(opts: {
   /** Absolute epoch-ms deadline for the whole turn this call belongs to.
    *  Optional/additive — omitted, behaviour is unchanged. See lib/ai/deadline.ts. */
   deadlineAt?: number;
+  /** External abort, e.g. an in-flight cooperative stop (lib/agent/
+   *  stop-watch.ts). Optional/additive — omitted, behaviour is unchanged. */
+  signal?: AbortSignal;
 }): Promise<string> {
   const messages: OpenAIMessage[] = [];
   if (opts.system) messages.push({ role: 'system', content: opts.system });
   messages.push({ role: 'user', content: opts.prompt });
-  return complete(messages, opts.temperature ?? 0.7, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.deadlineAt);
+  return complete(messages, opts.temperature ?? 0.7, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.deadlineAt, opts.signal);
 }
 
 /** Multi-turn chat completion. Passes the whole conversation through. */
@@ -516,13 +557,16 @@ export async function openrouterChat(opts: {
   /** Absolute epoch-ms deadline for the whole turn this call belongs to.
    *  Optional/additive — omitted, behaviour is unchanged. See lib/ai/deadline.ts. */
   deadlineAt?: number;
+  /** External abort, e.g. an in-flight cooperative stop (lib/agent/
+   *  stop-watch.ts). Optional/additive — omitted, behaviour is unchanged. */
+  signal?: AbortSignal;
 }): Promise<string> {
   const messages: OpenAIMessage[] = [];
   if (opts.system) messages.push({ role: 'system', content: opts.system });
   for (const m of opts.messages) {
     if (m.content?.trim()) messages.push({ role: m.role, content: m.content });
   }
-  return complete(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.deadlineAt);
+  return complete(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.deadlineAt, opts.signal);
 }
 
 // ---------------------------------------------------------------------------

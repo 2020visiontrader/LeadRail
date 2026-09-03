@@ -52,7 +52,10 @@ vi.mock('@/lib/agent/personas', () => ({
   parseMentions: () => [],
 }));
 vi.mock('@/lib/skills/store', () => ({ loadEnabledSkillsForAgent: async () => [] }));
-vi.mock('@/lib/agent/compose', () => ({ composeAnswer: async (a: any) => a?.draft ?? '' }));
+const composeAnswerMock = vi.fn(async (a: any, _onDelta?: (chunk: string) => void) => a?.draft ?? '');
+vi.mock('@/lib/agent/compose', () => ({
+  composeAnswer: (a: any, onDelta?: (chunk: string) => void) => composeAnswerMock(a, onDelta),
+}));
 vi.mock('@/lib/approvals/store', () => ({
   createApproval: async () => null,
   consumeApprovalForExecution: vi.fn(),
@@ -80,6 +83,7 @@ beforeEach(() => {
   generateChat.mockReset();
   runToolMock.mockReset();
   isStopRequestedMock.mockReset();
+  composeAnswerMock.mockClear();
 });
 
 describe('runAgent (JSON, non-streaming) — cooperative stop', () => {
@@ -133,6 +137,31 @@ describe('runAgent (JSON, non-streaming) — cooperative stop', () => {
     expect(generateChat).not.toHaveBeenCalled();
   });
 
+  // DEFECT A — the blind spot this closes: the common turn shape is ONE model
+  // call that returns action:'final', immediately followed by a ~40s
+  // composeAnswer call and a return. Before this fix, the stop was only ever
+  // checked at the TOP of a step (before the model call), never again before
+  // compose — so a stop clicked seconds into exactly this turn shape was
+  // never observed at all.
+  it('checks the stop again immediately before composeAnswer on the action:"final" path, and never calls composeAnswer if stopped', async () => {
+    generateChat.mockResolvedValueOnce(JSON.stringify({ action: 'final', message: 'should never be composed' }));
+    // Not stopped at the top of step 0 (before the model call), stopped
+    // immediately after — i.e. right where the compose check now sits.
+    isStopRequestedMock.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+    const { runAgent } = await import('@/lib/agent/loop');
+    const res = await runAgent({ accountId: 'acct-1', message: 'summarize my pipeline', conversationId: 'conv-1' });
+
+    // No tool ever ran, so there is nothing to salvage — the stop-specific
+    // empty message, not a generic error and not the composed draft.
+    expect(res.status).toBe('error');
+    expect(res.message).toMatch(/stopped/i);
+    expect(res.message).not.toContain('should never be composed');
+    expect(composeAnswerMock).not.toHaveBeenCalled();
+    expect(generateChat).toHaveBeenCalledTimes(1);
+    expect(isStopRequestedMock).toHaveBeenCalledTimes(2);
+  });
+
   it('never checks (and can never be killed by) a stop request when the turn has no conversationId', async () => {
     // No conversationId at all — e.g. a delegate sub-run. isStopRequested
     // must not even be called, since there is nothing to scope it to.
@@ -173,6 +202,29 @@ describe('runAgentStream (streaming) — cooperative stop (must match runAgentIm
     const transcriptText = JSON.stringify(finalEvents[0].transcript);
     expect(transcriptText).toContain('draftOutreach');
     expect(transcriptText).toContain('hi Markus');
+  });
+
+  // Twin of the non-streaming compose-blind-spot test above (CLAUDE.md: both
+  // loops stay identical).
+  it('checks the stop again immediately before composeAnswer on the action:"final" path, and never calls composeAnswer if stopped', async () => {
+    generateChat.mockResolvedValueOnce(JSON.stringify({ action: 'final', message: 'should never be composed' }));
+    isStopRequestedMock.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+
+    const { runAgentStream } = await import('@/lib/agent/loop');
+    const events: any[] = [];
+    await runAgentStream(
+      { accountId: 'acct-1', message: 'summarize my pipeline', conversationId: 'conv-1' },
+      (e) => events.push(e),
+    );
+
+    const errorEvent = events.find((e) => e.type === 'error');
+    expect(errorEvent).toBeTruthy();
+    expect(errorEvent.message).toMatch(/stopped/i);
+    expect(events.some((e) => e.type === 'final')).toBe(false);
+    expect(JSON.stringify(events)).not.toContain('should never be composed');
+    expect(composeAnswerMock).not.toHaveBeenCalled();
+    expect(generateChat).toHaveBeenCalledTimes(1);
+    expect(isStopRequestedMock).toHaveBeenCalledTimes(2);
   });
 
   it('emits the stop-specific error event (not the generic outage message) when nothing was salvageable', async () => {

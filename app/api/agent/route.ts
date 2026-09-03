@@ -10,6 +10,7 @@ import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverF
 import { mintMessageId, ensureMessageIds } from '@/lib/agent/transcript-store';
 import { stripPrivateReasoning } from '@/lib/agent/transcript-privacy';
 import { parseMentions } from '@/lib/agent/personas';
+import { assertSelectableModel } from '@/lib/ai/providers';
 import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
@@ -128,12 +129,18 @@ async function runPost(request: NextRequest, session: Session) {
   // — see the CRITICAL PROCESS RULE note above) shows the saved transcript
   // with no answer, no spinner, and no polling, because GET .../conversations
   // /[id] reports running: false the whole time the turn is actually running.
-  // Cleared at the SAME point as the running flag is set — the start of a
-  // turn — so a stop requested against a PRIOR turn on this conversation can
-  // never be misread as applying to the turn about to run (migration 083).
+  //
+  // DEFECT B (found in review of bd63b6d): this used to also call
+  // clearStopRequest here, at turn start — which raced a user's own
+  // "Stop, then immediately send the corrected message" workflow: the NEW
+  // turn's route would clear stop_requested_at out from under the OLD turn
+  // that was still running, so the old turn's next check saw nothing and ran
+  // to completion. isStopRequested (lib/agent/memory.ts) now compares
+  // stop_requested_at against running_since instead, which makes a stale stop
+  // from a prior turn harmless without needing to clear it here — see that
+  // function's doc comment. Not called at turn start any more for that reason.
   if (conversationId) {
     await markConversationRunning(conversationId, session.accountId);
-    await clearStopRequest(conversationId, session.accountId);
   }
 
   try {
@@ -146,6 +153,11 @@ async function runPost(request: NextRequest, session: Session) {
     // clearing this on every normal exit).
     if (conversationId) {
       await clearConversationRunning(conversationId, session.accountId);
+      // Turn END is the unambiguously-correct place to clear a stop request
+      // (see clearStopRequest's doc comment): whatever turn this stop applied
+      // to has already finished, and a next turn hasn't started yet, so there
+      // is nothing here for the clear to race against.
+      await clearStopRequest(conversationId, session.accountId);
     }
   }
 }
@@ -198,6 +210,13 @@ async function runTurn(
   // for every existing caller, so this is a no-op unless the client opts in.
   const personaId: string | undefined = typeof body?.personaId === 'string' && body.personaId ? body.personaId : undefined;
   const personaMentions = parseMentions(message);
+
+  // Composer model dropdown (an ai_models row id). Validated against THIS
+  // account's own enabled models before it goes anywhere near the router —
+  // a client-supplied id that isn't one of the account's enabled models is
+  // silently ignored, never trusted straight through. See RunAgentInput.modelId.
+  const requestedModelId: string | undefined = typeof body?.modelId === 'string' && body.modelId ? body.modelId : undefined;
+  const modelId = await assertSelectableModel(session.accountId, requestedModelId);
 
   // PLAN MODE. The turn writes a plan and stops instead of executing it, so
   // the operator sees the shape of the work before any of it runs. A request
@@ -252,12 +271,8 @@ async function runTurn(
   // never had a chance to mark because it didn't exist yet when runPost ran.
   if (wasNewConversation && conversationId) {
     await markConversationRunning(conversationId, session.accountId);
-    // A brand-new chat cannot have a stop requested against it yet — nothing
-    // could have named this id before this line minted it — so this call is
-    // a no-op today. Kept alongside markConversationRunning anyway so both
-    // paths stay structurally identical and neither can silently drift if a
-    // future caller starts reusing conversation ids.
-    await clearStopRequest(conversationId, session.accountId);
+    // No matching clearStopRequest here — see the DEFECT B comment on the
+    // mark in runPost above. clearStopRequest is only called at turn END now.
   }
 
   let result;
@@ -276,14 +291,16 @@ async function runTurn(
       conversationId,
       planOnly,
       userMessageId,
+      modelId,
     });
   } finally {
     // Twin of the clear in runPost's own finally, for the id minted above —
     // runPost's clear only ever knew about a conversationId that was already
     // in the request body, so a brand-new chat's freshly-minted id would
-    // otherwise never have its running flag cleared here.
+    // otherwise never have its running flag (or stop flag) cleared here.
     if (wasNewConversation && conversationId) {
       await clearConversationRunning(conversationId, session.accountId);
+      await clearStopRequest(conversationId, session.accountId);
     }
   }
   // Message-action Packet — see the twin comment in

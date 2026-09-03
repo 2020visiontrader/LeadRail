@@ -537,10 +537,48 @@ export async function isConversationRunning(id: string, accountId: string): Prom
 // running_since says a turn IS in progress; stop_requested_at says a turn
 // SHOULD stop. Set by POST /api/agent/stop (account-scoped from the session,
 // never the body), read by the agent loop between steps (lib/agent/loop.ts,
-// alongside the existing turnDeadline check), and cleared unconditionally the
-// moment a fresh turn starts on a conversation — the same call site as
-// markConversationRunning — so a stale stop from a PRIOR turn can never kill
-// one that hasn't started yet.
+// alongside the existing turnDeadline check).
+//
+// DEFECT B (found in review of bd63b6d): clearStopRequest used to run
+// unconditionally at the START of every turn, before the loop. That is
+// exactly the workflow this feature exists to support — click Stop, then
+// immediately send a corrected message — and it broke it: the OLD turn is
+// still running when the NEW turn's route clears stop_requested_at out from
+// under it, so the old turn's next between-steps check finds nothing and
+// runs to completion anyway.
+//
+// FIX — a stop belongs to the CURRENTLY RUNNING turn iff
+// `stop_requested_at > running_since`. Both are ISO strings from `new
+// Date().toISOString()` — the Next.js APPLICATION clock, not Postgres'; see
+// markConversationRunning and requestStop below. The comparison relies on
+// stop_requested_at genuinely being written LATER, in wall-clock terms, than
+// running_since — which holds whenever the two writes land on clocks close
+// enough together, but is not a database-enforced guarantee. Two HTTP
+// requests (POST /api/agent/stop and the turn that called
+// markConversationRunning) can be served by different instances, so there IS
+// an app-vs-app clock-skew term, not zero. In practice it is very unlikely to
+// matter: a user clicks Stop seconds into a turn, and NTP-synced instances
+// differ by milliseconds, not seconds. But the honest failure mode is real
+// and worth naming: if the instance serving the stop has a clock behind the
+// instance that stamped running_since by more than the gap between turn
+// start and the click, stop_requested_at is NOT read as newer, the stop
+// reads as stale, and it is silently ignored — the turn runs to completion
+// as if Stop had never been clicked. Not closed here (see BACKLOG.md §12);
+// closing it for real means moving one or both timestamps onto Postgres'
+// own clock (e.g. a `now()` column default), which is a separate decision
+// from this comment, not something to slip in alongside it.
+//
+// isStopRequested applies the comparison directly: a stop set before the
+// current turn started (stale, from a turn that already ended) is not newer
+// than running_since and reads as false automatically — no unconditional
+// clear needed to achieve that, and no clear-on-start race left to close it
+// wrongly against the wrong turn. clearStopRequest is no longer called at
+// turn start for this reason; it is still exported and still called, but
+// only where clearing is unambiguously correct — at turn END (see the
+// `finally` blocks in app/api/agent/route.ts and
+// app/api/agent/stream/route.ts, alongside clearConversationRunning) — as
+// routine hygiene once nothing is listening for the flag any more, not as
+// part of the correctness argument above.
 //
 // Deliberately distinct from a client disconnect: stream-guard.ts's guard
 // keeps a turn running when the browser goes away, on purpose (a disconnected
@@ -566,13 +604,16 @@ export async function requestStop(id: string, accountId: string): Promise<boolea
   }
 }
 
-/** Clear a conversation's stop request. Called unconditionally at the start
- *  of every turn (same call sites as markConversationRunning) — BEFORE the
- *  loop runs — so a stop left over from a turn that already ended can never
- *  be misread as applying to the turn about to start. Best-effort: a failure
- *  here must not fail the turn — worst case a stale stop from a previous turn
- *  (already-ended, so nothing was listening for it anyway) lingers until the
- *  next between-steps check clears it. */
+/** Clear a conversation's stop request. NOT called at turn start any more
+ *  (see the module comment above — that was DEFECT B: it raced a still-
+ *  running old turn against a freshly sent new message). Call this only at
+ *  turn END, where clearing is unambiguously correct — the turn that owned
+ *  this stop (if any) has already finished being interrupted by it, and
+ *  nothing about a NEXT turn's stop can be mistakenly erased since a next
+ *  turn hasn't started yet. Best-effort: a failure here must not fail the
+ *  turn — worst case a stop flag lingers on an already-ended turn, and
+ *  isStopRequested's running_since comparison keeps it from being
+ *  misapplied to whatever turn runs next. */
 export async function clearStopRequest(id: string, accountId: string): Promise<void> {
   try {
     await supabase.from('agent_conversations')
@@ -581,18 +622,44 @@ export async function clearStopRequest(id: string, accountId: string): Promise<v
   } catch { /* best-effort */ }
 }
 
-/** Whether a stop has been requested for this conversation. Called from
- *  inside the agent loop, between steps — see the turnDeadline check it sits
- *  alongside in lib/agent/loop.ts. Never throws: a failed read degrades to
- *  "not stopped", the same fail-open posture as isConversationRunning, so a
- *  transient DB error cannot itself interrupt a turn that was never asked to
- *  stop. */
+/** Whether a stop applies to the turn CURRENTLY RUNNING on this conversation.
+ *  Called from inside the agent loop, between steps — see the turnDeadline
+ *  check it sits alongside in lib/agent/loop.ts.
+ *
+ *  DEFECT B FIX: true iff `stop_requested_at > running_since`. Both are
+ *  app-clock ISO strings (`new Date().toISOString()`, written by the Next.js
+ *  process — see markConversationRunning and requestStop), NOT Postgres
+ *  timestamps, so this relies on stop_requested_at genuinely being written
+ *  later in wall-clock terms, not on a database-enforced ordering. This is
+ *  what makes a stale stop from a PRIOR turn harmless without needing to
+ *  clear it on the next turn's start: a stop set before the current turn
+ *  began is not newer than running_since, so it reads as false here
+ *  regardless of whether anyone ever cleared it.
+ *
+ *  KNOWN LIMIT: if the instance serving POST /api/agent/stop has a clock
+ *  behind the instance that stamped running_since — by more than the gap
+ *  between turn start and the click — stop_requested_at is not read as
+ *  newer, and the stop is silently ignored (the turn runs to completion as
+ *  if Stop had never been clicked). Unlikely in practice (seconds of gap,
+ *  NTP-synced instances typically within milliseconds of each other), but
+ *  not impossible — see the module comment above and BACKLOG.md §12.
+ *
+ *  FAIL-OPEN when running_since is null (a plan-runner turn, or a delegate
+ *  sub-run that never called markConversationRunning): such a turn must NOT
+ *  be stoppable by a stale flag, so this returns false rather than treating
+ *  "no running_since" as "any stop counts" — same posture as a missing
+ *  stop_requested_at. Never throws: a failed read degrades to "not stopped",
+ *  the same fail-open posture as isConversationRunning, so a transient DB
+ *  error cannot itself interrupt a turn that was never asked to stop. */
 export async function isStopRequested(id: string, accountId: string): Promise<boolean> {
   try {
     const { data } = await supabase.from('agent_conversations')
-      .select('stop_requested_at').eq('id', id).eq('account_id', accountId)
+      .select('stop_requested_at, running_since').eq('id', id).eq('account_id', accountId)
       .is('deleted_at', null).maybeSingle();
-    return Boolean((data as any)?.stop_requested_at);
+    const stopAt = (data as any)?.stop_requested_at;
+    const runningSince = (data as any)?.running_since;
+    if (!stopAt || !runningSince) return false;
+    return new Date(stopAt).getTime() > new Date(runningSince).getTime();
   } catch {
     return false;
   }

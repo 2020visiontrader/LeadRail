@@ -18,6 +18,8 @@
 import { BUDGET } from '@/lib/ai/context-budget';
 import { generateChat, textConfigured, type ChatMessage } from '@/lib/ai/router';
 import { DeadlineExceededError } from '@/lib/ai/deadline';
+import { StoppedError } from '@/lib/ai/abort';
+import { withStopWatch } from './stop-watch';
 import { type StoredMessage, toWireMessages } from './transcript-store';
 import {
   comprehend, formatUnderstandingBlock, type Understanding,
@@ -275,6 +277,20 @@ export interface RunAgentInput {
    *  min(its own default turnDeadline, this value): a delegate must never be
    *  able to legally outlive the parent that spawned it (see lib/ai/deadline.ts). */
   deadlineAt?: number;
+  /** User-picked model (composer model dropdown) — an ai_models row id,
+   *  already validated by the calling route against THIS account's own
+   *  enabled models (see assertSelectableModel in lib/ai/providers.ts).
+   *  PRECEDENCE: an explicit user pick wins over a persona's pinned model,
+   *  which wins over Auto (the router's own ladder). A user who picked a
+   *  model means it — see where this is merged with personaModelId in both
+   *  runAgentImpl and runAgentStreamImpl.
+   *  NOT A HARD PIN: this only reaches resolveChain(accountId, { modelId })
+   *  (lib/ai/providers.ts ~line 299), which places it FIRST in the fallback
+   *  chain and keeps every other configured tier behind it. Never wire this
+   *  into a bare `model:`/`modelId:` override that skips the chain — that is
+   *  the exact single-point-of-failure shape commit 8d41f2b caused (see the
+   *  comment above AGENT_SYNTHESIS_TIER). */
+  modelId?: string;
 }
 
 export function agentConfigured(): boolean {
@@ -435,6 +451,12 @@ function systemPrompt(brandName?: string, agentContext?: string, carryover?: Car
     '- RESEARCH MEANS RESEARCH. When the user asks you to research, look into, learn about, or dig into people or companies, listing what is already in the CRM is NOT an answer. Pull the records, then call webSearch once per company (and again per person when it matters) to find what they do, how they operate, and what they have shipped — then answer from what you found. Say which ones you could not find anything on rather than padding them out.',
     '- Filter to what was actually asked for. If the user asks about agencies and the records include a producer and an investor, say the list does not contain what they are after instead of answering with the wrong rows.',
     '- Multi-part requests get every part addressed. If you run out of steps, finish with what you have and say plainly which parts are still outstanding.',
+    // The failure this fixes: createPlan existed, was wired into the runner,
+    // and was called ZERO times across 274 real turns — the only instruction
+    // to use it lived inside the plan-mode-only block below, so on an
+    // ordinary turn nothing ever told the model it was an option. Work that
+    // needed to span turns just ran out of steps instead of persisting.
+    '- WRITE A PLAN FIRST for work that will take more than a handful of tool calls, that spans more subjects than fit in one turn ("research and draft outreach for these 13 companies"), or that you expect to still be going after this turn ends. Call createPlan with ordered steps, THEN start working the first step in the SAME turn — plan and do, not plan instead of doing. (Exception: if PLAN MODE is on for this turn, stop after createPlan as that section instructs — do not start the first step.) Do NOT plan for a question, a single lookup, a one-tool job, or anything you can just finish now — a plan for "how many leads do I have" is wrong. "For each of these N things, do X" is ONE batch step, not N steps — see createPlan\'s own description for the { title, over: [...] } shape.',
     '- Reads and safe internal writes run immediately. Tools marked [needs approval] spend money, send to real people, or are destructive — just call them; the platform pauses and asks the user to confirm before anything real happens. Do NOT ask for confirmation yourself in text; the call itself is the ask.',
     '- If a request is genuinely ambiguous in a way that changes the outcome, ask ONE focused clarifying question with action:"final". Otherwise make the reasonable call and proceed.',
     // Read for INTENT, not for literal tokens. People dictate, they typo, they
@@ -741,7 +763,7 @@ async function answerFromObservations(
   );
   if (!hasEvidence) return null;
   try {
-    const composed = await composeAnswer({
+    const composed = await withStopWatch(input.conversationId, input.accountId, (signal) => composeAnswer({
       accountId: input.accountId,
       userMessage: input.message,
       draft: 'Answer the user from the observations below. Cover what was actually found, and state plainly which parts of their request are not answered by it.',
@@ -749,10 +771,16 @@ async function answerFromObservations(
       agentContext: input.agentContext,
       personaBlock,
       deadlineAt,
-    });
+      signal,
+    }));
     const trimmed = stripAiMarkers(composed).trim();
     return trimmed || null;
-  } catch {
+  } catch (e) {
+    // composeAnswer rethrows StoppedError instead of swallowing it into the
+    // draft (see its own comment) — the caller (lib/agent/loop.ts's own
+    // call sites, both loops) needs that distinction to end the turn through
+    // stopResult/emitStopFinal instead of reporting "couldn't rescue".
+    if (e instanceof StoppedError) throw e;
     return null;
   }
 }
@@ -1050,6 +1078,85 @@ export function stopSalvageFraming(steps: AgentStep[]): { intro: string; outro: 
 export const STOP_EMPTY_MESSAGE =
   'This turn was stopped before it produced an answer, and nothing had completed yet to salvage.';
 
+// DEFECT A FIX — the stop was only ever checked at the TOP of a step, before
+// the model call that decides what to do next. The common turn shape is one
+// model call that returns action:'final' followed immediately by a ~40s
+// composeAnswer call and a return — no second iteration, so no second
+// top-of-step check, so a stop clicked seconds into that turn was never
+// observed at all. The same gap exists at the END of the loop: if the last
+// tool call of a maxed-out turn (or a break out of the for-loop entirely —
+// dupNudges exhausted, escalation declined) is the final thing that runs,
+// the loop falls straight into the forced-final call below with no
+// intervening top-of-step check either.
+//
+// Fix: check at every point about to spend meaningful time, not only at the
+// top of a step — immediately before composeAnswer on the action:'final'
+// path, and immediately after each tool execution completes, before looping
+// (which also covers the forced-final gap above, since the check runs right
+// before the loop would otherwise fall through to it). Still never checked
+// MID-tool-execution — a half-executed send is worse than a late one; that
+// rule is unchanged.
+//
+// ONE helper (CLAUDE.md: extract for the path, not the parts) so this isn't
+// copied at four-plus call sites in EACH loop and left to drift between them
+// — and between runAgentImpl and runAgentStreamImpl, which CLAUDE.md requires
+// to stay identical. The predicate and the salvage-framing are shared here;
+// only the two terminators below differ, because the two loops terminate
+// differently (return an AgentResult vs emit a terminal SSE event).
+//
+// KNOWN REMAINING LIMIT (not fixed here, and not fixable without a larger
+// change): a stop that arrives WHILE a model call is in flight still waits
+// for that call to return — nothing here threads an AbortSignal into the
+// fetch. Closing that needs AbortSignal plumbed from the route through
+// generateChat/streamChat (lib/ai/router.ts and below), which is a separate
+// piece of work.
+
+/** Whether a stop applies to the turn currently running on this conversation.
+ *  Delegates to isStopRequested (lib/agent/memory.ts), which compares
+ *  stop_requested_at against running_since so a stop left over from a PRIOR
+ *  turn can never be misread as applying to this one — see that function's
+ *  doc comment. Fail-open: a missing conversationId, or isStopRequested's own
+ *  fail-open on a read error, both read as "not stopped". */
+async function stopRequested(conversationId: string | undefined, accountId: string): Promise<boolean> {
+  if (!conversationId) return false;
+  return isStopRequested(conversationId, accountId);
+}
+
+/** Non-streaming terminator for a stop caught by stopRequested(). Builds the
+ *  same salvage-from-steps message the deadline path builds, framed for a
+ *  stop (stopSalvageFraming) instead of a timeout. */
+function stopResult(
+  messages: StoredMessage[],
+  steps: AgentStep[],
+  skillSlugs: string[],
+  extraTools: Record<string, AgentTool>,
+): AgentResult {
+  const salvage = buildSalvageMessage(steps, extraTools, stopSalvageFraming(steps));
+  if (salvage) return { status: 'salvage', message: salvage, transcript: messages, steps, skillSlugs };
+  return { status: 'error', message: STOP_EMPTY_MESSAGE, transcript: messages, steps, skillSlugs };
+}
+
+/** Streaming terminator for a stop caught by stopRequested(). Mirrors
+ *  stopResult's salvage logic exactly (same buildSalvageMessage call, same
+ *  framing) — emitted as a terminal `final` event (salvage: true) instead of
+ *  returned, same pattern the deadline/escalation paths already use. */
+async function emitStopFinal(
+  emit: (e: AgentEvent) => void,
+  messages: StoredMessage[],
+  steps: AgentStep[],
+  skillSlugs: string[],
+  extraTools: Record<string, AgentTool>,
+): Promise<void> {
+  const salvage = buildSalvageMessage(steps, extraTools, stopSalvageFraming(steps));
+  if (salvage) {
+    messages.push({ role: 'assistant', content: salvage });
+    await streamTokens(salvage, emit);
+    emit({ type: 'final', message: salvage, transcript: messages, salvage: true, skillSlugs });
+    return;
+  }
+  emit({ type: 'error', message: STOP_EMPTY_MESSAGE });
+}
+
 // ESCALATION — Phase 2. A turn that runs out of TIME is not a turn that ran
 // out of WORK: "try breaking this into a smaller request" asks the user to do
 // the system's own job. When the reserve (ESCALATION_RESERVE_MS) or the
@@ -1187,7 +1294,7 @@ async function attemptEscalation(args: {
   ];
   let raw: string;
   try {
-    raw = await generateChat({
+    raw = await withStopWatch(conversationId, accountId, (signal) => generateChat({
       system: args.system,
       messages: toWireMessages(escalationMessages),
       temperature: 0.2,
@@ -1203,9 +1310,18 @@ async function attemptEscalation(args: {
       // immediately. Either way this is the one call the reserve exists to
       // pay for.
       deadlineAt: Date.now() + ESCALATION_RESERVE_MS,
+      signal,
       ...(args.personaModelId ? { modelId: args.personaModelId } : {}),
-    });
+    }));
   } catch (e) {
+    // A stop caught mid-escalation must not be swallowed into "escalation
+    // declined" — that would fall through to the ordinary post-deadline
+    // salvage message instead of ending the turn honestly through
+    // stopResult/emitStopFinal. Every call site below already handles a
+    // StoppedError thrown from attemptEscalation the same way it handles one
+    // thrown from the route/compose calls, so this rethrows rather than
+    // returning null like every other failure here does.
+    if (e instanceof StoppedError) throw e;
     log.warn('agent: escalation model call failed', { accountId, conversationId, error: String((e as any)?.message || e) });
     return null;
   }
@@ -1556,14 +1672,35 @@ async function withMaterialUnderstanding(
   message: string | undefined,
   accountId: string,
   deadlineAt: number,
+  conversationId: string | undefined,
 ): Promise<string | undefined> {
   const material = attachmentMaterial(agentContext);
   if (!material) return agentContext;
-  const understanding = await comprehend({ message: message || '', material, accountId, deadlineAt });
+  // withStopWatch, same as every other in-flight model call in this file —
+  // comprehend() rethrows StoppedError (see its own comment) rather than
+  // swallowing it, so a stop here propagates to the caller (runAgentImpl /
+  // runAgentStreamImpl), which ends the turn through stopResult/
+  // emitStopFinal rather than this function catching it and proceeding as
+  // if nothing was attached.
+  const understanding = await withStopWatch(conversationId, accountId, (signal) =>
+    comprehend({ message: message || '', material, accountId, deadlineAt, signal }));
   if (!understanding) return agentContext;
   const idx = agentContext!.indexOf(ATTACHMENT_MARKER);
   if (idx === -1) return agentContext; // defensive — attachmentMaterial already found it above
   return agentContext!.slice(0, idx) + formatUnderstandingBlock(understanding) + '\n\n' + agentContext!.slice(idx);
+}
+
+/** The transcript a stop mid-comprehension (before `messages`/`steps` exist
+ *  yet — see withMaterialUnderstanding's call sites, both loops, which run
+ *  before the transcript is built) needs to hand to stopResult/emitStopFinal.
+ *  Mirrors exactly what the loop body itself does moments later
+ *  (capTranscript + push the user turn) — kept as a single helper, called
+ *  identically from both loops, rather than duplicated at each stop catch
+ *  site (CLAUDE.md: the two loops stay identical). */
+function initialTranscriptForStop(rawInput: RunAgentInput): StoredMessage[] {
+  const messages: StoredMessage[] = capTranscript(rawInput.transcript || []);
+  if (rawInput.message) messages.push({ role: 'user', content: rawInput.message, ...(rawInput.userMessageId ? { id: rawInput.userMessageId } : {}) });
+  return messages;
 }
 
 
@@ -1593,9 +1730,23 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
   // material attached — see withMaterialUnderstanding's comment above. A no-op
   // (returns rawInput.agentContext untouched) on every turn with nothing
   // attached, which is the common case.
+  let materialAgentContext: string | undefined;
+  try {
+    materialAgentContext = await withMaterialUnderstanding(rawInput.agentContext, rawInput.message, accountId, turnDeadline, rawInput.conversationId);
+  } catch (e: unknown) {
+    // A stop caught while the comprehension pass itself was in flight — this
+    // runs BEFORE `messages`/`steps` exist (see initialTranscriptForStop),
+    // so there is nothing yet to salvage from; the turn still ends through
+    // the SAME stopResult path every other in-flight stop in this loop uses.
+    if (e instanceof StoppedError) {
+      log.warn('agent: stop requested during attachment comprehension, ending turn', { accountId });
+      return stopResult(initialTranscriptForStop(rawInput), [], [], {});
+    }
+    throw e;
+  }
   const input: RunAgentInput = {
     ...rawInput,
-    agentContext: await withMaterialUnderstanding(rawInput.agentContext, rawInput.message, accountId, turnDeadline),
+    agentContext: materialAgentContext,
   };
   const pinnedPersona = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
   const allEnabledSkills = await loadEnabledSkillsForAgent(accountId);
@@ -1616,9 +1767,16 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
   // An explicit pin/@mention always wins and skill-derived routing does not
   // run at all (BACKLOG 5b) — only fill the voice when the turn has none of
   // its own.
-  const { systemBlock: personaBlock, modelId: personaModelId } = pinnedPersona.systemBlock
+  const { systemBlock: personaBlock, modelId: personaPinnedModelId } = pinnedPersona.systemBlock
     ? pinnedPersona
     : await resolveSkillPersonaForTurn(accountId, enabledSkills);
+  // PRECEDENCE: an explicit user pick (input.modelId) wins over a persona's
+  // pinned model, which wins over Auto — see the comment on
+  // RunAgentInput.modelId. Shadowing `personaModelId` here means every call
+  // site below that already reads it (generateChat's `...(personaModelId ?
+  // { modelId: personaModelId } : {})`) picks up the effective value with no
+  // further changes.
+  const personaModelId = input.modelId || personaPinnedModelId;
   // Packet 4: this account's connected, enabled external-MCP-client tools for
   // THIS turn only — a pure cached DB read (see lib/capabilities/external-mcp.ts),
   // never a network call, so it cannot add hot-path latency or hang the turn.
@@ -1726,11 +1884,26 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
       log.warn('agent: turn deadline reached (reserve), attempting to escalate the remainder', {
         accountId, step: i, deadlineMs: TURN_DEADLINE_MS, afterTool: lastToolName ?? null,
       });
-      const escalated = await attemptEscalation({
-        accountId, conversationId: input.conversationId, brandId: brandContext?.id,
-        requestedBy: input.requestedBy, pinnedSkills: input.pinnedSkills, personaId: input.personaId,
-        system, messages, steps, extraTools, personaModelId,
-      });
+      let escalated: { message: string } | null;
+      try {
+        escalated = await attemptEscalation({
+          accountId, conversationId: input.conversationId, brandId: brandContext?.id,
+          requestedBy: input.requestedBy, pinnedSkills: input.pinnedSkills, personaId: input.personaId,
+          system, messages, steps, extraTools, personaModelId,
+        });
+      } catch (e: unknown) {
+        // A stop that flipped while the escalation call itself was in
+        // flight — attemptEscalation rethrows StoppedError rather than
+        // swallowing it, so this ends the turn through the same salvage
+        // path every other in-flight stop in this loop uses.
+        if (e instanceof StoppedError) {
+          log.warn('agent: stop requested during escalation, ending turn', {
+            accountId, step: i, afterTool: lastToolName ?? null,
+          });
+          return stopResult(messages, steps, skillSlugs, extraTools);
+        }
+        throw e;
+      }
       if (escalated) return { status: 'salvage', message: escalated.message, transcript: messages, steps, skillSlugs };
       // Escalation declined (no conversationId, a plan already runs, the
       // model call failed) — fall through to EXACTLY today's behaviour.
@@ -1743,13 +1916,11 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
     // nothing yet for POST /api/agent/stop to target). Fail-open:
     // isStopRequested never throws, so a transient DB read failure cannot
     // itself interrupt a turn nobody asked to stop.
-    if (input.conversationId && await isStopRequested(input.conversationId, accountId)) {
+    if (await stopRequested(input.conversationId, accountId)) {
       log.warn('agent: stop requested, ending turn early', {
         accountId, step: i, afterTool: lastToolName ?? null,
       });
-      const salvage = buildSalvageMessage(steps, extraTools, stopSalvageFraming(steps));
-      if (salvage) return { status: 'salvage', message: salvage, transcript: messages, steps, skillSlugs };
-      return { status: 'error', message: STOP_EMPTY_MESSAGE, transcript: messages, steps, skillSlugs };
+      return stopResult(messages, steps, skillSlugs, extraTools);
     }
     let raw: string;
     // Set by the router once the ai_usage row for the attempt that ANSWERED has
@@ -1758,7 +1929,7 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
     // the usage write is fire-and-forget — which undercounts, never miscounts.
     let usageRowId: string | null = null;
     try {
-      raw = await generateChat({
+      raw = await withStopWatch(input.conversationId, accountId, (signal) => generateChat({
         // toWireMessages strips the storage-only `id` field (migration 076)
         // before this transcript is serialised into the provider request —
         // see lib/agent/transcript-store.ts. This is the ONLY place these
@@ -1773,17 +1944,30 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
         preferTier: AGENT_ROUTE_TIER,
         zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
         deadlineAt: turnDeadline,
+        signal,
         // Only threaded through when a persona with a model override is active,
         // so the no-persona path calls generateChat with EXACTLY the same
         // options object shape as before this change.
         ...(personaModelId ? { accountId, modelId: personaModelId } : {}),
-      });
+      }));
     } catch (e: unknown) {
       // Mirrors the streaming twin below — `e` was bound but never read here,
       // so this path was equally silent. Same fields, same reasoning.
       log.error('agent: model call failed', e, {
         accountId, step: i, afterTool: lastToolName ?? null, messageCount: messages.length,
       });
+      // A stop that flipped WHILE this model call was in flight — the
+      // in-flight half of cooperative stop (lib/agent/stop-watch.ts). Ends
+      // the turn through the SAME salvage path the between-steps check uses
+      // (stopResult), never the generic outage message below: checked
+      // before DeadlineExceededError since both are "the call didn't return
+      // text", and a stop is the more specific, more honest fact.
+      if (e instanceof StoppedError) {
+        log.warn('agent: stop requested during in-flight model call, ending turn', {
+          accountId, step: i, afterTool: lastToolName ?? null,
+        });
+        return stopResult(messages, steps, skillSlugs, extraTools);
+      }
       // A deadline expiry is not an outage — checked with `instanceof` against
       // the exported type (lib/ai/deadline.ts), never by string-matching the
       // message, which is free to change. Route it through the SAME salvage
@@ -1796,11 +1980,22 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
         // ESCALATION_RESERVE_MS's comment on why this path still tries to
         // escalate (borrowing the post-deadline margin) rather than jumping
         // straight to the plain salvage message.
-        const escalated = await attemptEscalation({
-          accountId, conversationId: input.conversationId, brandId: brandContext?.id,
-          requestedBy: input.requestedBy, pinnedSkills: input.pinnedSkills, personaId: input.personaId,
-          system, messages, steps, extraTools, personaModelId,
-        });
+        let escalated: { message: string } | null;
+        try {
+          escalated = await attemptEscalation({
+            accountId, conversationId: input.conversationId, brandId: brandContext?.id,
+            requestedBy: input.requestedBy, pinnedSkills: input.pinnedSkills, personaId: input.personaId,
+            system, messages, steps, extraTools, personaModelId,
+          });
+        } catch (e2: unknown) {
+          if (e2 instanceof StoppedError) {
+            log.warn('agent: stop requested during escalation, ending turn', {
+              accountId, step: i, afterTool: lastToolName ?? null,
+            });
+            return stopResult(messages, steps, skillSlugs, extraTools);
+          }
+          throw e2;
+        }
         if (escalated) return { status: 'salvage', message: escalated.message, transcript: messages, steps, skillSlugs };
         const salvage = buildSalvageMessage(steps, extraTools, deadlineSalvageFraming(steps));
         if (salvage) return { status: 'salvage', message: salvage, transcript: messages, steps, skillSlugs };
@@ -1840,7 +2035,21 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
       });
       // Salvage the turn from the evidence already gathered before declaring it
       // a failure — see answerFromObservations.
-      const rescued = await answerFromObservations(input, messages, personaBlock, turnDeadline);
+      let rescued: string | null;
+      try {
+        rescued = await answerFromObservations(input, messages, personaBlock, turnDeadline);
+      } catch (e: unknown) {
+        // answerFromObservations rethrows StoppedError instead of returning
+        // null (see its own comment) — a stop mid-rescue must end the turn
+        // through stopResult, not report a generic "couldn't complete" error.
+        if (e instanceof StoppedError) {
+          log.warn('agent: stop requested during observation rescue, ending turn', {
+            accountId, step: i, afterTool: lastToolName ?? null,
+          });
+          return stopResult(messages, steps, skillSlugs, extraTools);
+        }
+        throw e;
+      }
       if (rescued) {
         messages.push({ role: 'assistant', content: rescued });
         return { status: 'done', message: rescued, transcript: messages, steps, skillSlugs };
@@ -1854,12 +2063,37 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
 
     if (parsed.action === 'final') {
       const draft = String(parsed.message || '').trim() || 'Done.';
-      const message = stripAiMarkers(AGENT_COMPOSE
-        ? await composeAnswer({
-            accountId, userMessage: input.message, draft, transcript: messages,
-            agentContext: input.agentContext, personaBlock, deadlineAt: turnDeadline,
-          })
-        : draft);
+      // DEFECT A FIX — composeAnswer is its own ~40s model call, and this is
+      // the most common turn shape (one model call, action:'final', compose,
+      // return) — the one the top-of-step check never gets a second chance to
+      // catch. See stopRequested's doc comment above.
+      if (await stopRequested(input.conversationId, accountId)) {
+        log.warn('agent: stop requested, ending turn before compose', {
+          accountId, step: i, afterTool: lastToolName ?? null,
+        });
+        return stopResult(messages, steps, skillSlugs, extraTools);
+      }
+      let message: string;
+      try {
+        message = stripAiMarkers(AGENT_COMPOSE
+          ? await withStopWatch(input.conversationId, accountId, (signal) => composeAnswer({
+              accountId, userMessage: input.message, draft, transcript: messages,
+              agentContext: input.agentContext, personaBlock, deadlineAt: turnDeadline, signal,
+            }))
+          : draft);
+      } catch (e: unknown) {
+        // composeAnswer swallows every other failure into the draft — see its
+        // own comment — so a StoppedError is the only thing that can reach
+        // here, but the check is `instanceof`, not an assumption. Same
+        // salvage path as the in-flight route-call stop above.
+        if (e instanceof StoppedError) {
+          log.warn('agent: stop requested during compose, ending turn', {
+            accountId, step: i, afterTool: lastToolName ?? null,
+          });
+          return stopResult(messages, steps, skillSlugs, extraTools);
+        }
+        throw e;
+      }
       // Overwrite the raw JSON envelope just pushed above with the actual
       // composed answer the user sees. Without this, the persisted transcript
       // carries the pre-compose draft (or nothing readable), so a later turn
@@ -1910,6 +2144,15 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
       const readsLimit = readsObsLimit(rd.reads, extraCapsByName);
       steps.push({ thought: narrationFor(parsed), tool: readsLabel, args: { reads: rd.reads }, observation: truncate(readsObs, readsLimit) });
       messages.push(observation(readsObs, readsLimit));
+      // DEFECT A FIX — checked immediately after the tool execution completes,
+      // before looping back for another (possibly long) model call. See
+      // stopRequested's doc comment above.
+      if (await stopRequested(input.conversationId, accountId)) {
+        log.warn('agent: stop requested, ending turn after tool execution', {
+          accountId, step: i, afterTool: lastToolName ?? null,
+        });
+        return stopResult(messages, steps, skillSlugs, extraTools);
+      }
       continue;
     }
 
@@ -1984,6 +2227,13 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
       const obsLimit = perCall === undefined ? undefined : perCall * Math.min(calls.length, 4);
       steps.push({ thought: narrationFor(parsed), tool, args: { calls: calls.map((c) => c.args) }, observation: truncate(obs, obsLimit) });
       messages.push(observation(obs, obsLimit));
+      // DEFECT A FIX — see stopRequested's doc comment above.
+      if (await stopRequested(input.conversationId, accountId)) {
+        log.warn('agent: stop requested, ending turn after tool execution', {
+          accountId, step: i, afterTool: lastToolName ?? null,
+        });
+        return stopResult(messages, steps, skillSlugs, extraTools);
+      }
       continue;
     }
 
@@ -2031,6 +2281,13 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
           const obs = observationFor(tool, args, res, extraCapsByName);
           steps.push({ thought: narrationFor(parsed), tool, args, observation: obs });
           messages.push(observation(obs, obsLimitFor(tool, extraCapsByName)));
+          // DEFECT A FIX — see stopRequested's doc comment above.
+          if (await stopRequested(input.conversationId, accountId)) {
+            log.warn('agent: stop requested, ending turn after tool execution', {
+              accountId, step: i, afterTool: lastToolName ?? null,
+            });
+            return stopResult(messages, steps, skillSlugs, extraTools);
+          }
           continue;
         }
       }
@@ -2116,13 +2373,23 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
     const obsLimit = obsLimitFor(tool, extraCapsByName);
     steps.push({ thought: narrationFor(parsed), tool, args, observation: truncate(obs, obsLimit) });
     messages.push(observation(obs, obsLimit));
+    // DEFECT A FIX — see stopRequested's doc comment above. Also closes the
+    // gap where this is the LAST iteration (stepCap reached): without this,
+    // the loop would fall straight into the forced-final call below with no
+    // further stop check at all.
+    if (await stopRequested(input.conversationId, accountId)) {
+      log.warn('agent: stop requested, ending turn after tool execution', {
+        accountId, step: i, afterTool: lastToolName ?? null,
+      });
+      return stopResult(messages, steps, skillSlugs, extraTools);
+    }
   }
 
   // Forced final: rather than surface a "too many steps" error, make one last
   // call that must answer in plain language from what was already gathered.
   try {
     messages.push({ role: 'user', content: 'Stop calling tools. Using the information above, answer the user now. Respond with ONLY {"action":"final","message":"..."}.' });
-    const raw = await generateChat({
+    const raw = await withStopWatch(input.conversationId, accountId, (signal) => generateChat({
       // toWireMessages strips the storage-only `id` field (migration 076) —
       // see the comment on the other generateChat call sites in this file.
       system, messages: toWireMessages(messages), temperature: 0.2,
@@ -2164,8 +2431,9 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
       // avoids hard-pinning this call to one specific model on the tier that
       // is tried last.
       deadlineAt: turnDeadline,
+      signal,
       ...(personaModelId ? { modelId: personaModelId } : {}),
-    });
+    }));
     const p = extractJson(raw);
     if (p?.action === 'final' && p.message) return { status: 'done', message: String(p.message), transcript: messages, steps, skillSlugs };
     // The call succeeded but did not yield a usable {"action":"final",...}
@@ -2191,6 +2459,14 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
       accountId, raw: String(raw ?? '').slice(0, 500), path: 'salvage',
     });
   } catch (err: any) {
+    // A stop that flipped while THIS call was in flight — end the turn the
+    // same way the between-steps check does (stopResult), not the generic
+    // "forced-final failed" salvage below, which frames this as a model
+    // failure rather than what actually happened.
+    if (err instanceof StoppedError) {
+      log.warn('agent: stop requested during forced-final call, ending turn', { accountId });
+      return stopResult(messages, steps, skillSlugs, extraTools);
+    }
     // Ladder exhausted, timeout, etc. — the candidate/tier is not reliably
     // reachable from here (runCandidates throws the LAST candidate's error,
     // not which one), so we log the error message itself, which is where
@@ -2334,9 +2610,24 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
   // (returns rawInput.agentContext untouched, no model call) on every turn
   // with nothing attached, which is the common case — so this is not folded
   // into the Promise.all above; it would only add a branch for no benefit.
+  let materialAgentContext: string | undefined;
+  try {
+    materialAgentContext = await withMaterialUnderstanding(rawInput.agentContext, rawInput.message, accountId, turnDeadline, rawInput.conversationId);
+  } catch (e: unknown) {
+    // Mirrors runAgentImpl above verbatim (CLAUDE.md: both loops stay
+    // identical) — a stop caught mid-comprehension, before `messages`/
+    // `steps` exist yet, ends the turn through emitStopFinal the same way
+    // every other in-flight stop in this loop does.
+    if (e instanceof StoppedError) {
+      log.warn('agent stream: stop requested during attachment comprehension, ending turn', { accountId });
+      await emitStopFinal(emit, initialTranscriptForStop(rawInput), [], [], {});
+      return;
+    }
+    throw e;
+  }
   const input: RunAgentInput = {
     ...rawInput,
-    agentContext: await withMaterialUnderstanding(rawInput.agentContext, rawInput.message, accountId, turnDeadline),
+    agentContext: materialAgentContext,
   };
   // Hermes picks the 1-4 that apply to THIS request instead of injecting all.
   // This is the one hop that must stay sequential — it genuinely depends on
@@ -2354,9 +2645,12 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
   // An explicit pin/@mention always wins and skill-derived routing does not
   // run at all (BACKLOG 5b) — only fill the voice when the turn has none of
   // its own.
-  const { systemBlock: personaBlock, modelId: personaModelId } = personaResult.systemBlock
+  const { systemBlock: personaBlock, modelId: personaPinnedModelId } = personaResult.systemBlock
     ? personaResult
     : await resolveSkillPersonaForTurn(accountId, enabledSkills);
+  // PRECEDENCE — mirrors runAgentImpl above verbatim (CLAUDE.md: both loops
+  // must stay identical). See the comment on RunAgentInput.modelId.
+  const personaModelId = input.modelId || personaPinnedModelId;
   const extraTools = toolsFromCapabilities(externalCaps);
   const extraCapsByName: Record<string, Capability> = Object.fromEntries(externalCaps.map((c) => [c.name, c]));
   const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId, input.planOnly);
@@ -2458,11 +2752,26 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
       log.warn('agent: turn deadline reached (reserve), attempting to escalate the remainder', {
         accountId, step: i, deadlineMs: TURN_DEADLINE_MS, afterTool: lastToolName ?? null,
       });
-      const escalated = await attemptEscalation({
-        accountId, conversationId: input.conversationId, brandId: brandContext?.id,
-        requestedBy: input.requestedBy, pinnedSkills: input.pinnedSkills, personaId: input.personaId,
-        system, messages, steps, extraTools, personaModelId,
-      });
+      let escalated: { message: string } | null;
+      try {
+        escalated = await attemptEscalation({
+          accountId, conversationId: input.conversationId, brandId: brandContext?.id,
+          requestedBy: input.requestedBy, pinnedSkills: input.pinnedSkills, personaId: input.personaId,
+          system, messages, steps, extraTools, personaModelId,
+        });
+      } catch (e: unknown) {
+        // Mirrors runAgentImpl above verbatim (CLAUDE.md: both loops stay
+        // identical) — a stop that flipped while the escalation call itself
+        // was in flight ends the turn through the same salvage path.
+        if (e instanceof StoppedError) {
+          log.warn('agent stream: stop requested during escalation, ending turn', {
+            accountId, step: i, afterTool: lastToolName ?? null,
+          });
+          await emitStopFinal(emit, messages, steps, skillSlugs, extraTools);
+          return;
+        }
+        throw e;
+      }
       if (escalated) {
         messages.push({ role: 'assistant', content: escalated.message });
         await streamTokens(escalated.message, emit);
@@ -2478,19 +2787,12 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
     // terminal `final` event (salvage: true) instead of returned, same
     // pattern as the deadline branch below, so the streaming turn ends with
     // what was accomplished rather than a bare `error` event carrying
-    // nothing.
-    if (input.conversationId && await isStopRequested(input.conversationId, accountId)) {
+    // nothing. See stopRequested/emitStopFinal's doc comments above.
+    if (await stopRequested(input.conversationId, accountId)) {
       log.warn('agent stream: stop requested, ending turn early', {
         accountId, step: i, afterTool: lastToolName ?? null,
       });
-      const salvage = buildSalvageMessage(steps, extraTools, stopSalvageFraming(steps));
-      if (salvage) {
-        messages.push({ role: 'assistant', content: salvage });
-        await streamTokens(salvage, emit);
-        emit({ type: 'final', message: salvage, transcript: messages, salvage: true, skillSlugs });
-        return;
-      }
-      emit({ type: 'error', message: STOP_EMPTY_MESSAGE });
+      await emitStopFinal(emit, messages, steps, skillSlugs, extraTools);
       return;
     }
     // Live "working" step BEFORE the blocking model call (from main): without
@@ -2504,7 +2806,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
     // the usage write is fire-and-forget — which undercounts, never miscounts.
     let usageRowId: string | null = null;
     try {
-      raw = await generateChat({
+      raw = await withStopWatch(input.conversationId, accountId, (signal) => generateChat({
         // toWireMessages strips the storage-only `id` field (migration 076)
         // before this transcript is serialised into the provider request —
         // see lib/agent/transcript-store.ts. This is the ONLY place these
@@ -2519,8 +2821,9 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
         preferTier: AGENT_ROUTE_TIER,
         zoAskModel: AGENT_ZOASK_MODEL || undefined, model: AGENT_OPENCODE_MODEL,
         deadlineAt: turnDeadline,
+        signal,
         ...(personaModelId ? { accountId, modelId: personaModelId } : {}),
-      });
+      }));
     } catch (e: unknown) {
       // Never swallow this. It is the single most common way a run dies, and an
       // unbound `catch {}` here made every such failure undiagnosable: the SSE
@@ -2530,6 +2833,19 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
       log.error('agent stream: model call failed', e, {
         accountId, step: i, afterTool: lastToolName ?? null, messageCount: messages.length,
       });
+      // Mirrors runAgentImpl above verbatim (CLAUDE.md: both loops stay
+      // identical) — a stop that flipped while THIS call was in flight ends
+      // the turn through the SAME salvage path the between-steps check uses
+      // (emitStopFinal), checked before DeadlineExceededError since both
+      // mean "the call didn't return text" and a stop is the more specific,
+      // more honest fact.
+      if (e instanceof StoppedError) {
+        log.warn('agent stream: stop requested during in-flight model call, ending turn', {
+          accountId, step: i, afterTool: lastToolName ?? null,
+        });
+        await emitStopFinal(emit, messages, steps, skillSlugs, extraTools);
+        return;
+      }
       // Mirrors runAgentImpl above verbatim (CLAUDE.md: both loops stay
       // identical) — a deadline expiry is detected the same way (instanceof
       // DeadlineExceededError, never a string match) and routed through the
@@ -2541,11 +2857,23 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
         // See the matching comment in runAgentImpl: this borrows the
         // post-deadline margin for one bounded escalation attempt before
         // falling back to the plain salvage message.
-        const escalated = await attemptEscalation({
-          accountId, conversationId: input.conversationId, brandId: brandContext?.id,
-          requestedBy: input.requestedBy, pinnedSkills: input.pinnedSkills, personaId: input.personaId,
-          system, messages, steps, extraTools, personaModelId,
-        });
+        let escalated: { message: string } | null;
+        try {
+          escalated = await attemptEscalation({
+            accountId, conversationId: input.conversationId, brandId: brandContext?.id,
+            requestedBy: input.requestedBy, pinnedSkills: input.pinnedSkills, personaId: input.personaId,
+            system, messages, steps, extraTools, personaModelId,
+          });
+        } catch (e2: unknown) {
+          if (e2 instanceof StoppedError) {
+            log.warn('agent stream: stop requested during escalation, ending turn', {
+              accountId, step: i, afterTool: lastToolName ?? null,
+            });
+            await emitStopFinal(emit, messages, steps, skillSlugs, extraTools);
+            return;
+          }
+          throw e2;
+        }
         if (escalated) {
           messages.push({ role: 'assistant', content: escalated.message });
           await streamTokens(escalated.message, emit);
@@ -2594,7 +2922,23 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
         accountId, step: i, afterTool: lastToolName ?? null, rawPreview: raw.slice(0, 500),
       });
       // Salvage from the evidence already gathered — see answerFromObservations.
-      const rescued = await answerFromObservations(input, messages, personaBlock, turnDeadline);
+      let rescued: string | null;
+      try {
+        rescued = await answerFromObservations(input, messages, personaBlock, turnDeadline);
+      } catch (e: unknown) {
+        // Mirrors runAgentImpl above verbatim (CLAUDE.md: both loops stay
+        // identical) — answerFromObservations rethrows StoppedError instead
+        // of returning null, so a stop mid-rescue ends the turn through
+        // emitStopFinal rather than the generic error event.
+        if (e instanceof StoppedError) {
+          log.warn('agent stream: stop requested during observation rescue, ending turn', {
+            accountId, step: i, afterTool: lastToolName ?? null,
+          });
+          await emitStopFinal(emit, messages, steps, skillSlugs, extraTools);
+          return;
+        }
+        throw e;
+      }
       if (rescued) {
         messages.push({ role: 'assistant', content: rescued });
         await streamTokens(rescued, emit);
@@ -2615,18 +2959,43 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
 
     if (parsed.action === 'final') {
       const draft = String(parsed.message || '').trim() || 'Done.';
+      // DEFECT A FIX — mirrors runAgentImpl's check before composeAnswer
+      // above EXACTLY (CLAUDE.md: both loops stay identical). See
+      // stopRequested's doc comment above.
+      if (await stopRequested(input.conversationId, accountId)) {
+        log.warn('agent stream: stop requested, ending turn before compose', {
+          accountId, step: i, afterTool: lastToolName ?? null,
+        });
+        await emitStopFinal(emit, messages, steps, skillSlugs, extraTools);
+        return;
+      }
       let message = draft;
       if (AGENT_COMPOSE) {
         emit({ type: 'thought', text: 'Writing up the answer…' });
-        message = await composeAnswer(
-          {
-            accountId, userMessage: input.message, draft, transcript: messages,
-            agentContext: input.agentContext, personaBlock, deadlineAt: turnDeadline,
-          },
-          // Stream the answer to the UI as it is written. The `final` event
-          // below still carries the complete, authoritative message.
-          (chunk) => emit({ type: 'final_delta', text: chunk }),
-        );
+        try {
+          message = await withStopWatch(input.conversationId, accountId, (signal) => composeAnswer(
+            {
+              accountId, userMessage: input.message, draft, transcript: messages,
+              agentContext: input.agentContext, personaBlock, deadlineAt: turnDeadline, signal,
+            },
+            // Stream the answer to the UI as it is written. The `final` event
+            // below still carries the complete, authoritative message.
+            (chunk) => emit({ type: 'final_delta', text: chunk }),
+          ));
+        } catch (e: unknown) {
+          // See the matching comment in runAgentImpl: composeAnswer swallows
+          // every other failure into the draft, so a StoppedError is the
+          // only thing that reaches here — same salvage path as the
+          // in-flight route-call stop above.
+          if (e instanceof StoppedError) {
+            log.warn('agent stream: stop requested during compose, ending turn', {
+              accountId, step: i, afterTool: lastToolName ?? null,
+            });
+            await emitStopFinal(emit, messages, steps, skillSlugs, extraTools);
+            return;
+          }
+          throw e;
+        }
       }
       message = stripAiMarkers(message);
       // See the matching comment in runAgent: overwrite the raw JSON envelope
@@ -2686,6 +3055,15 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
       });
       steps.push({ thought: narrationFor(parsed), tool: readsLabel, args: { reads: rd.reads }, observation: truncate(readsObs, readsLimit) });
       messages.push(observation(readsObs, readsLimit));
+      // DEFECT A FIX — mirrors runAgentImpl exactly. See stopRequested's doc
+      // comment above.
+      if (await stopRequested(input.conversationId, accountId)) {
+        log.warn('agent stream: stop requested, ending turn after tool execution', {
+          accountId, step: i, afterTool: lastToolName ?? null,
+        });
+        await emitStopFinal(emit, messages, steps, skillSlugs, extraTools);
+        return;
+      }
       continue;
     }
 
@@ -2757,6 +3135,15 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
       });
       steps.push({ thought: narrationFor(parsed), tool, args: { calls: calls.map((c) => c.args) }, observation: truncate(obs, obsLimit) });
       messages.push(observation(obs, obsLimit));
+      // DEFECT A FIX — mirrors runAgentImpl exactly. See stopRequested's doc
+      // comment above.
+      if (await stopRequested(input.conversationId, accountId)) {
+        log.warn('agent stream: stop requested, ending turn after tool execution', {
+          accountId, step: i, afterTool: lastToolName ?? null,
+        });
+        await emitStopFinal(emit, messages, steps, skillSlugs, extraTools);
+        return;
+      }
       continue;
     }
 
@@ -2807,6 +3194,15 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
           emitAnalysis(emit, analysisFor(tool, args, res, extraCapsByName));
           steps.push({ thought: narrationFor(parsed), tool, args, observation: obs });
           messages.push(observation(obs, obsLimit));
+          // DEFECT A FIX — mirrors runAgentImpl exactly. See stopRequested's
+          // doc comment above.
+          if (await stopRequested(input.conversationId, accountId)) {
+            log.warn('agent stream: stop requested, ending turn after tool execution', {
+              accountId, step: i, afterTool: lastToolName ?? null,
+            });
+            await emitStopFinal(emit, messages, steps, skillSlugs, extraTools);
+            return;
+          }
           continue;
         }
       }
@@ -2893,13 +3289,24 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
     emitAnalysis(emit, analysisFor(tool, args, res, extraCapsByName));
     steps.push({ thought: narrationFor(parsed), tool, args, observation: truncate(obs, obsLimit) });
     messages.push(observation(obs, obsLimit));
+    // DEFECT A FIX — mirrors runAgentImpl exactly. Also closes the gap where
+    // this is the LAST iteration (stepCap reached): without this, the loop
+    // would fall straight into the forced-final call below with no further
+    // stop check at all. See stopRequested's doc comment above.
+    if (await stopRequested(input.conversationId, accountId)) {
+      log.warn('agent stream: stop requested, ending turn after tool execution', {
+        accountId, step: i, afterTool: lastToolName ?? null,
+      });
+      await emitStopFinal(emit, messages, steps, skillSlugs, extraTools);
+      return;
+    }
   }
 
   // Forced final rather than a "too many steps" error.
   try {
     messages.push({ role: 'user', content: 'Stop calling tools. Using the information above, answer the user now. Respond with ONLY {"action":"final","message":"..."}.' });
     emit({ type: 'step_start', text: 'Putting the answer together…' });
-    const raw = await generateChat({
+    const raw = await withStopWatch(input.conversationId, accountId, (signal) => generateChat({
       // toWireMessages strips the storage-only `id` field (migration 076) —
       // see the comment on the other generateChat call sites in this file.
       system, messages: toWireMessages(messages), temperature: 0.2,
@@ -2933,8 +3340,9 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
       // fall all the way to OpenCode, let it use its own default model
       // rather than pinning one specific model on the tier tried last.
       deadlineAt: turnDeadline,
+      signal,
       ...(personaModelId ? { modelId: personaModelId } : {}),
-    });
+    }));
     const p = extractJson(raw);
     if (p?.action === 'final' && p.message) {
       const finalMessage = stripAiMarkers(String(p.message));
@@ -2967,6 +3375,14 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
       accountId, raw: String(raw ?? '').slice(0, 500), path: 'salvage',
     });
   } catch (err: any) {
+    // A stop that flipped while THIS call was in flight — twin of the fix in
+    // runAgentImpl's forced-final catch (CLAUDE.md: both loops stay
+    // identical).
+    if (err instanceof StoppedError) {
+      log.warn('agent stream: stop requested during forced-final call, ending turn', { accountId });
+      await emitStopFinal(emit, messages, steps, skillSlugs, extraTools);
+      return;
+    }
     log.warn('agent loop: forced-final call failed', { accountId, error: String(err?.message || err) });
   }
   // Do not throw away work that succeeded — the twin of the fix in

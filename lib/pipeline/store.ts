@@ -55,6 +55,20 @@ export interface ContentPipelineRunRow {
 const RESULT_TRUNCATE_LEN = 8000;
 const CONTEXT_TRUNCATE_LEN = 6000;
 
+/** One shared deadline for the WHOLE run, not one fresh allowance per stage.
+ *  Before this, each of the 6 stages got its own full runAgent turn budget
+ *  (TURN_DEADLINE_MS, 270s in lib/agent/loop.ts) with nothing bounding the
+ *  run overall — a worst case of ~6 x 270s = 27 minutes with no ceiling on
+ *  it. 600s (10 minutes) is a little over 2x a single stage's own worst-case
+ *  turn: generous enough that a normal run (stages routinely finish well
+ *  under their per-turn cap) completes without ever hitting it, while
+ *  bounding the pathological case to a fraction of the old unbounded total.
+ *  Passed as `deadlineAt` into every runAgent call below — computeTurnDeadline
+ *  (lib/agent/loop.ts) takes min(that stage's own fresh 270s, this shared
+ *  deadline), so a later stage gets what's LEFT of this budget, not a fresh
+ *  270s of its own. */
+export const PIPELINE_TOTAL_BUDGET_MS = Number(process.env.CONTENT_PIPELINE_BUDGET_MS) || 10 * 60 * 1000;
+
 /** Fixed stage order + human labels, shared with the UI (rendering) and the
  *  orchestrator (iteration). This is the single source of truth for order. */
 export const PIPELINE_STAGES: { key: PipelineStageKey; label: string }[] = [
@@ -244,8 +258,41 @@ export async function runPipeline(accountId: string, topic: string): Promise<Con
   let prior = '';
   let failed = false;
 
+  // ONE deadline for the whole run, computed once, shared by every stage's
+  // runAgent call below (see PIPELINE_TOTAL_BUDGET_MS's comment) — never
+  // recomputed per stage, which is exactly what would silently hand a later
+  // stage a fresh allowance instead of what's actually left.
+  const deadlineAt = Date.now() + PIPELINE_TOTAL_BUDGET_MS;
+
   for (let i = 0; i < STAGE_DEFS.length; i++) {
     const def = STAGE_DEFS[i];
+
+    // Checked BEFORE starting a new stage, never used to interrupt one
+    // already running — a stage that's mid-turn keeps whatever deadline it
+    // was already given. Every stage from here on is reported as genuinely
+    // not run, not silently dropped from `stages`.
+    if (Date.now() >= deadlineAt) {
+      const unrun = STAGE_DEFS.slice(i).map((s) => s.key);
+      for (let j = i; j < STAGE_DEFS.length; j++) {
+        stages[j] = {
+          ...stages[j],
+          status: 'failed',
+          error: 'Not run: the pipeline\'s shared time budget was exhausted before this stage could start.',
+        };
+      }
+      await persistRun(accountId, run.id, {
+        status: 'failed',
+        current_stage: def.key,
+        stages,
+        output: {
+          error: 'Pipeline time budget exhausted before every stage could run.',
+          stage: def.key,
+          unrunStages: unrun,
+        },
+      });
+      failed = true;
+      break;
+    }
 
     stages[i] = { ...stages[i], status: 'running', startedAt: new Date().toISOString() };
     await persistRun(accountId, run.id, { current_stage: def.key, stages });
@@ -257,6 +304,9 @@ export async function runPipeline(accountId: string, topic: string): Promise<Con
         message: instruction,
         agentContext,
         brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined,
+        // Shared across every stage — a later stage gets what's LEFT of this
+        // run's budget, never a fresh full turn allowance of its own.
+        deadlineAt,
       });
 
       // A stage that proposed a sensitive action has NOT run it. Halt here:

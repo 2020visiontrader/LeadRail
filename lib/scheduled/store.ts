@@ -56,6 +56,51 @@ export interface ScheduledTaskRow {
 
 const RESULT_TRUNCATE_LEN = 2000;
 
+/** How long a 'running' claim (migration 084) is honored before it is treated
+ *  as abandoned and reclaimable. Must comfortably exceed one task's worst-case
+ *  run — a single runAgent turn is bounded by TURN_DEADLINE_MS (270s,
+ *  lib/agent/loop.ts) — so a claim only goes stale after the process that
+ *  made it has actually died, never while a legitimate run is still working.
+ *  Same staleness-escape-hatch shape as agent_conversations.running_since
+ *  (migration 072). */
+export const SCHEDULED_CLAIM_STALE_MS = Number(process.env.SCHEDULED_CLAIM_STALE_MS) || 10 * 60 * 1000;
+
+/**
+ * Conditional claim, same discipline as claimStep (lib/plans/store.ts): an
+ * UPDATE guarded on the row's own current state, so only one of two
+ * concurrent callers (the hermes tick and the standalone
+ * /api/scheduled-tasks/run-due route) can ever see it return a row. A claim
+ * older than SCHEDULED_CLAIM_STALE_MS is treated as abandoned and reclaimable
+ * — see the migration's comment for why a crash must not leave a task stuck.
+ */
+export async function claimScheduledTask(id: string): Promise<boolean> {
+  const staleBefore = new Date(Date.now() - SCHEDULED_CLAIM_STALE_MS).toISOString();
+  const nowIso = new Date().toISOString();
+  try {
+    const { data, error } = await supabase
+      .from('scheduled_tasks')
+      .update({ run_state: 'running', claimed_at: nowIso })
+      .eq('id', id)
+      .or(`run_state.eq.idle,claimed_at.lt.${staleBefore}`)
+      .select('id');
+    if (error || !Array.isArray(data) || !data.length) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Release a claim taken by claimScheduledTask, unconditionally — called once
+ *  a task's run has finished, succeeded or not, so the next due firing can
+ *  claim it again. */
+async function releaseScheduledTaskClaim(id: string): Promise<void> {
+  await supabase
+    .from('scheduled_tasks')
+    .update({ run_state: 'idle' })
+    .eq('id', id)
+    .then(() => {}, () => {});
+}
+
 /** Trivial named-interval math. NOT a cron parser — hourly/daily/weekly only. */
 export function computeNextRun(interval: ScheduledInterval, from: Date = new Date()): Date {
   const next = new Date(from);
@@ -200,25 +245,58 @@ async function groundingFor(task: ScheduledTaskRow): Promise<{
  * throw-vs-return existed, so a `needs_approval` return recorded 'ok' with the
  * proposal text as its result: a task that hit a sensitive tool did nothing and
  * reported success, with nobody watching to notice.
+ *
+ * Each task is claimed (claimScheduledTask, migration 084) before it runs, so
+ * the same due task cannot be picked up twice by two concurrent callers — this
+ * function is reachable both from the hermes tick and from the standalone
+ * /api/scheduled-tasks/run-due route.
+ *
+ * `deadlineAt`, when given, is checked before claiming EACH task — not just
+ * once at the top — so this loop stops STARTING new tasks once it is spent,
+ * without killing a task already in flight. A task with an unclaimed row and
+ * next_run_at unchanged simply waits for the loop's next invocation; it is
+ * reported here (skipped, not run) rather than silently dropped.
  */
-export async function runDueScheduledTasks(): Promise<{
+export async function runDueScheduledTasks(deadlineAt?: number): Promise<{
   processed: number;
   results: { id: string; ok: boolean; status?: string; error?: string }[];
+  skipped: string[];
 }> {
   const nowIso = new Date().toISOString();
+  const staleBefore = new Date(Date.now() - SCHEDULED_CLAIM_STALE_MS).toISOString();
   const { data: due, error } = await supabase
     .from('scheduled_tasks')
     .select('*')
     .eq('enabled', true)
     .lte('next_run_at', nowIso)
+    // Already-claimed, non-stale rows are someone else's work in progress —
+    // filtered out here as an optimization; claimScheduledTask's own
+    // conditional UPDATE below is what actually makes double-running
+    // impossible, not this filter.
+    .or(`run_state.eq.idle,claimed_at.lt.${staleBefore}`)
     .limit(25);
   if (error) throw error;
 
   const results: { id: string; ok: boolean; status?: string; error?: string }[] = [];
+  const skippedIds: string[] = [];
 
   const { runAgent } = await import('@/lib/agent/loop');
 
   for (const task of (due || []) as ScheduledTaskRow[]) {
+    // Budget check BEFORE claiming — a caller with a shared deadline (the
+    // hermes tick, app/api/hermes/tick/route.ts) stops starting new tasks
+    // once it's spent. Nothing in flight is interrupted; this task and every
+    // remaining due task just wait for the next tick.
+    if (deadlineAt != null && Date.now() >= deadlineAt) {
+      skippedIds.push(task.id);
+      continue;
+    }
+    // Claim before doing any work. A lost race means another caller (the
+    // hermes tick or the standalone run-due route, running concurrently) is
+    // already on this task — skip it silently rather than counting it as a
+    // failure or running it a second time.
+    const claimed = await claimScheduledTask(task.id);
+    if (!claimed) continue;
     try {
       const { agentContext, brandName, brandId } = await groundingFor(task);
       // Continue this task's own conversation rather than starting cold. The
@@ -333,8 +411,13 @@ export async function runDueScheduledTasks(): Promise<{
         .eq('account_id', task.account_id)
         .then(() => {}, () => {});
       results.push({ id: task.id, ok: false, status: 'error', error: errMsg });
+    } finally {
+      // Release the claim regardless of outcome — success, error, or
+      // needs_approval — so the task's next due firing can claim it again.
+      // `finally` runs on every `continue` above too, not just the fall-through.
+      await releaseScheduledTaskClaim(task.id);
     }
   }
 
-  return { processed: results.length, results };
+  return { processed: results.length, results, skipped: skippedIds };
 }

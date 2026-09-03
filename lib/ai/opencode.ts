@@ -18,6 +18,7 @@
 import { reportOpenAIUsage, reportUsage, reportProviderNotReported, reportOpenAITiming, reportTimingNotReported, reportProviderTiming } from './usage';
 import { parseRetryAfterMs } from './health';
 import { boundedTimeoutMs, deadlineExceededError, isPastDeadline } from './deadline';
+import { StoppedError } from './abort';
 
 const DEFAULT_MAX_OUT = Number(process.env.AI_MAX_OUTPUT_TOKENS) || 16000;
 
@@ -60,7 +61,7 @@ interface OpenAIMessage {
   content: string;
 }
 
-async function complete(messages: OpenAIMessage[], temperature: number, maxTokens: number, model?: string, deadlineAt?: number): Promise<string> {
+async function complete(messages: OpenAIMessage[], temperature: number, maxTokens: number, model?: string, deadlineAt?: number, signal?: AbortSignal): Promise<string> {
   requireKey();
   // Checked before starting the fetch, not just used to shrink the abort
   // timer below — a deadline already past means this attempt cannot finish,
@@ -85,15 +86,25 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
   // only ever tighter, and unaffected when deadlineAt is undefined.
   const effectiveTimeoutMs = boundedTimeoutMs(TIMEOUT_MS, deadlineAt);
   const timer = setTimeout(() => ctrl.abort(), effectiveTimeoutMs);
+  // `signal` is the CALLER's own AbortSignal (an in-flight cooperative stop —
+  // see lib/agent/stop-watch.ts), additive alongside the timeout controller
+  // above. Omitted, `fetchSignal` is exactly `ctrl.signal` — byte-identical
+  // to before `signal` existed.
+  const fetchSignal = signal ? AbortSignal.any([ctrl.signal, signal]) : ctrl.signal;
   let res: Response;
   try {
     res = await fetch(`${BASE}/chat/completions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      signal: ctrl.signal,
+      signal: fetchSignal,
     });
   } catch (e: any) {
+    // The caller's own signal firing is a stop, not a timeout — a distinct
+    // error the router's candidate loop must never treat as an ordinary
+    // provider failure eligible for fallback. Checked first: it can race the
+    // internal timer, and a stop must always win that race.
+    if (signal?.aborted) throw new StoppedError('OpenCode call aborted: stop requested');
     const err: any = new Error(
       e?.name === 'AbortError' ? `OpenCode timed out after ${effectiveTimeoutMs}ms` : `OpenCode request failed`,
     );
@@ -131,7 +142,7 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
   // once the deadline has passed rather than starting a call that cannot
   // finish, and return the (empty) text as-is.
   if (!text && !/deepseek/i.test(useModel) && !isPastDeadline(deadlineAt)) {
-    return complete(messages, temperature, maxTokens, RELIABLE_FALLBACK, deadlineAt);
+    return complete(messages, temperature, maxTokens, RELIABLE_FALLBACK, deadlineAt, signal);
   }
   return text;
 }
@@ -252,6 +263,7 @@ async function completeStream(
   model: string | undefined,
   onDelta: (chunk: string) => void,
   deadlineAt?: number,
+  signal?: AbortSignal,
 ): Promise<string> {
   requireKey();
   if (isPastDeadline(deadlineAt)) throw deadlineExceededError('opencode');
@@ -276,15 +288,17 @@ async function completeStream(
   const ctrl = new AbortController();
   const effectiveTimeoutMs = boundedTimeoutMs(TIMEOUT_MS, deadlineAt);
   const timer = setTimeout(() => ctrl.abort(), effectiveTimeoutMs);
+  const fetchSignal = signal ? AbortSignal.any([ctrl.signal, signal]) : ctrl.signal;
   let res: Response;
   try {
     res = await fetch(`${BASE}/chat/completions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-      signal: ctrl.signal,
+      signal: fetchSignal,
     });
   } catch (e: any) {
+    if (signal?.aborted) throw new StoppedError('OpenCode call aborted: stop requested');
     const err: any = new Error(
       e?.name === 'AbortError' ? `OpenCode timed out after ${effectiveTimeoutMs}ms` : `OpenCode request failed`,
     );
@@ -310,13 +324,23 @@ async function completeStream(
   }
 
   let text = '';
-  await readSseDeltas(res.body, (evt) => {
-    const chunk = evt?.choices?.[0]?.delta?.content;
-    if (typeof chunk === 'string' && chunk) {
-      text += chunk;
-      onDelta(chunk);
-    }
-  });
+  try {
+    await readSseDeltas(res.body, (evt) => {
+      const chunk = evt?.choices?.[0]?.delta?.content;
+      if (typeof chunk === 'string' && chunk) {
+        text += chunk;
+        onDelta(chunk);
+      }
+    });
+  } catch (e: any) {
+    // The abort can land mid-body-read (after headers, before the stream
+    // finishes) rather than on the initial fetch — same stop-vs-timeout
+    // distinction as above, applied where the abort actually surfaces.
+    // `signal` undefined/never-aborted leaves this branch unreachable, so a
+    // caller with no external signal sees the original error, unchanged.
+    if (signal?.aborted) throw new StoppedError('OpenCode stream aborted: stop requested');
+    throw e;
+  }
 
   const out = text.trim();
   if (!out) {
@@ -339,6 +363,9 @@ export async function streamChat(
     /** Absolute epoch-ms deadline for the whole turn this call belongs to.
      *  Optional/additive — omitted, behaviour is unchanged. See lib/ai/deadline.ts. */
     deadlineAt?: number;
+    /** External abort, e.g. an in-flight cooperative stop (lib/agent/
+     *  stop-watch.ts). Optional/additive — omitted, behaviour is unchanged. */
+    signal?: AbortSignal;
   },
   onDelta: (chunk: string) => void,
 ): Promise<string> {
@@ -347,7 +374,7 @@ export async function streamChat(
   for (const m of opts.messages) {
     if (m.content?.trim()) messages.push({ role: m.role, content: m.content });
   }
-  return completeStream(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.model, onDelta, opts.deadlineAt);
+  return completeStream(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.model, onDelta, opts.deadlineAt, opts.signal);
 }
 
 /** Generate text. Returns the model's plain-text completion. Pass `model` to
@@ -361,11 +388,14 @@ export async function generateText(opts: {
   /** Absolute epoch-ms deadline for the whole turn this call belongs to.
    *  Optional/additive — omitted, behaviour is unchanged. See lib/ai/deadline.ts. */
   deadlineAt?: number;
+  /** External abort, e.g. an in-flight cooperative stop (lib/agent/
+   *  stop-watch.ts). Optional/additive — omitted, behaviour is unchanged. */
+  signal?: AbortSignal;
 }): Promise<string> {
   const messages: OpenAIMessage[] = [];
   if (opts.system) messages.push({ role: 'system', content: opts.system });
   messages.push({ role: 'user', content: opts.prompt });
-  return complete(messages, opts.temperature ?? 0.7, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.model, opts.deadlineAt);
+  return complete(messages, opts.temperature ?? 0.7, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.model, opts.deadlineAt, opts.signal);
 }
 
 /**
@@ -381,13 +411,16 @@ export async function generateChat(opts: {
   /** Absolute epoch-ms deadline for the whole turn this call belongs to.
    *  Optional/additive — omitted, behaviour is unchanged. See lib/ai/deadline.ts. */
   deadlineAt?: number;
+  /** External abort, e.g. an in-flight cooperative stop (lib/agent/
+   *  stop-watch.ts). Optional/additive — omitted, behaviour is unchanged. */
+  signal?: AbortSignal;
 }): Promise<string> {
   const messages: OpenAIMessage[] = [];
   if (opts.system) messages.push({ role: 'system', content: opts.system });
   for (const m of opts.messages) {
     if (m.content?.trim()) messages.push({ role: m.role, content: m.content });
   }
-  return complete(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.model, opts.deadlineAt);
+  return complete(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.model, opts.deadlineAt, opts.signal);
 }
 
 export const opencodeModel = TEXT_MODEL;

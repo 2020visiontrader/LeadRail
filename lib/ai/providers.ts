@@ -24,6 +24,7 @@ import { zoAskConfigured, zoAskText, zoAskChat } from './zoask';
 import { nimConfigured, nimText, nimChat, nimStreamChat } from './nim';
 import * as gemini from './gemini';
 import { reportOpenAIUsage } from './usage';
+import { StoppedError } from './abort';
 
 export type ProviderKind = 'anthropic' | 'zoask' | 'opencode' | 'nim' | 'gemini' | 'custom';
 export type ModelTier = 'fast' | 'balanced' | 'heavy';
@@ -198,6 +199,58 @@ export async function listModels(accountId: string, providerId?: string): Promis
   const { data, error } = await q.order('created_at', { ascending: true });
   if (error) throw error;
   return data || [];
+}
+
+export interface SelectableModel {
+  /** ai_models row id — what a caller sends back as RunAgentInput.modelId /
+   *  resolveChain's `modelId` option, NOT ai_models.model_id. */
+  id: string;
+  model_id: string;
+  label: string | null;
+  tier: ModelTier;
+  provider: string;
+}
+
+/** Enabled models for the account's composer model picker: enabled ai_models
+ * rows joined to their enabled ai_providers row, account-scoped through the
+ * provider (same scoping as listModels above — a client can never see or
+ * select another tenant's models). Disabled models/providers are excluded so
+ * the dropdown never offers something the account turned off. */
+export async function listSelectableModels(accountId: string): Promise<SelectableModel[]> {
+  const { data: providers, error: provErr } = await supabase
+    .from('ai_providers')
+    .select('id, name')
+    .eq('account_id', accountId)
+    .eq('enabled', true);
+  if (provErr) throw provErr;
+  const providerById = new Map((providers || []).map((p: { id: string; name: string }) => [p.id, p.name]));
+  const ownedIds = Array.from(providerById.keys());
+  if (!ownedIds.length) return [];
+  const { data: models, error } = await supabase
+    .from('ai_models')
+    .select('id, provider_id, model_id, label, tier')
+    .in('provider_id', ownedIds)
+    .eq('enabled', true)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (models || []).map((m: any) => ({
+    id: m.id,
+    model_id: m.model_id,
+    label: m.label,
+    tier: m.tier,
+    provider: providerById.get(m.provider_id) || 'Unknown',
+  }));
+}
+
+/** Validate a client-supplied model id against THIS account's own enabled
+ * ai_models rows before it is allowed anywhere near the router. Returns the
+ * id back only when it belongs to this account and is currently enabled
+ * (through an enabled provider); otherwise returns undefined so the caller
+ * ignores it — NEVER trust a client-supplied model id straight through. */
+export async function assertSelectableModel(accountId: string, modelId: string | undefined): Promise<string | undefined> {
+  if (!modelId) return undefined;
+  const selectable = await listSelectableModels(accountId);
+  return selectable.some((m) => m.id === modelId) ? modelId : undefined;
 }
 
 export async function addModel(accountId: string, providerId: string, input: {
@@ -479,6 +532,11 @@ export interface CallModelOpts {
   /** Upper bound applied when maxOutputTokens is omitted — lets a caller say
    *  "use the model's capability, but not more than this" for cost/latency. */
   maxOutputCeiling?: number;
+  /** External abort for an in-flight cooperative stop (lib/agent/
+   *  stop-watch.ts). Optional/additive: omitted, behaviour is unchanged.
+   *  Forwarded to every branch below (zoask, opencode, nim, gemini,
+   *  anthropic, custom). */
+  signal?: AbortSignal;
 }
 
 /**
@@ -497,26 +555,26 @@ export async function callModel(resolved: ResolvedModel, opts: CallModelOpts): P
     case 'zoask': {
       if (!zoAskConfigured()) throw Object.assign(new Error('Zo Ask is not connected'), { code: 'not_configured' });
       return isChat
-        ? zoAskChat({ system: opts.system, messages: opts.messages!, maxOutputTokens: opts.maxOutputTokens, model: model.model_id })
-        : zoAskText({ system: opts.system, prompt: opts.prompt || '', maxOutputTokens: opts.maxOutputTokens });
+        ? zoAskChat({ system: opts.system, messages: opts.messages!, maxOutputTokens: opts.maxOutputTokens, model: model.model_id, signal: opts.signal })
+        : zoAskText({ system: opts.system, prompt: opts.prompt || '', maxOutputTokens: opts.maxOutputTokens, signal: opts.signal });
     }
     case 'opencode': {
       if (!opencode.opencodeConfigured()) throw Object.assign(new Error('OpenCode is not connected'), { code: 'not_configured' });
       return isChat
-        ? opencode.generateChat({ system: opts.system, messages: opts.messages as any, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, model: model.model_id })
-        : opencode.generateText({ system: opts.system, prompt: opts.prompt || '', temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, model: model.model_id });
+        ? opencode.generateChat({ system: opts.system, messages: opts.messages as any, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, model: model.model_id, signal: opts.signal })
+        : opencode.generateText({ system: opts.system, prompt: opts.prompt || '', temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, model: model.model_id, signal: opts.signal });
     }
     case 'nim': {
       if (!nimConfigured()) throw Object.assign(new Error('NIM is not connected'), { code: 'not_configured' });
       return isChat
-        ? nimChat({ system: opts.system, messages: opts.messages!, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens })
-        : nimText({ system: opts.system, prompt: opts.prompt || '', temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens });
+        ? nimChat({ system: opts.system, messages: opts.messages!, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, signal: opts.signal })
+        : nimText({ system: opts.system, prompt: opts.prompt || '', temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, signal: opts.signal });
     }
     case 'gemini': {
       if (!gemini.geminiConfigured()) throw Object.assign(new Error('Gemini is not connected'), { code: 'not_configured' });
       return isChat
-        ? gemini.generateChat({ system: opts.system, messages: opts.messages as any, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens })
-        : gemini.generateText({ system: opts.system, prompt: opts.prompt || '', temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens });
+        ? gemini.generateChat({ system: opts.system, messages: opts.messages as any, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, signal: opts.signal })
+        : gemini.generateText({ system: opts.system, prompt: opts.prompt || '', temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, signal: opts.signal });
     }
     case 'anthropic':
       return callAnthropic(provider, model, opts, isChat);
@@ -587,16 +645,28 @@ async function callOpenAiCompatible(provider: AiProviderRow, model: AiModelRow, 
   } else {
     messages.push({ role: 'user', content: opts.prompt || '' });
   }
-  const res = await fetch(`${base}/chat/completions`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: model.model_id,
-      messages,
-      temperature: opts.temperature ?? 0.7,
-      max_tokens: opts.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
-    }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${base}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: model.model_id,
+        messages,
+        temperature: opts.temperature ?? 0.7,
+        max_tokens: opts.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+      }),
+      // No existing timeout/AbortController here to combine with (unlike
+      // zoask/opencode/nim) — passed straight through as the fetch's own
+      // signal, the least invasive addition consistent with those clients.
+      signal: opts.signal,
+    });
+  } catch (e: any) {
+    // The CALLER's signal firing is a stop, not an ordinary transport
+    // failure — see zoask.ts's matching comment.
+    if (opts.signal?.aborted) throw new StoppedError(`${provider.name} call aborted: stop requested`);
+    throw e;
+  }
   if (!res.ok) {
     const detail = (await res.text().catch(() => '')).slice(0, 300);
     const err: any = new Error(`${provider.name} failed (${res.status})`);
@@ -632,15 +702,26 @@ async function callAnthropic(provider: AiProviderRow, model: AiModelRow, opts: C
   if (opts.system) body.system = opts.system;
   if (opts.temperature != null) body.temperature = opts.temperature;
 
-  const res = await fetch(`${base}/messages`, {
-    method: 'POST',
-    headers: {
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${base}/messages`, {
+      method: 'POST',
+      headers: {
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      // Same as callOpenAiCompatible above: no existing internal timeout to
+      // combine with, so the caller's signal is passed straight through —
+      // the least invasive addition consistent with zoask/opencode/nim's
+      // AbortSignal.any pattern.
+      signal: opts.signal,
+    });
+  } catch (e: any) {
+    if (opts.signal?.aborted) throw new StoppedError(`${provider.name} call aborted: stop requested`);
+    throw e;
+  }
   if (!res.ok) {
     const detail = (await res.text().catch(() => '')).slice(0, 300);
     const err: any = new Error(`${provider.name} failed (${res.status})`);
@@ -685,7 +766,7 @@ export async function callModelStream(
       if (!opencode.opencodeConfigured()) throw Object.assign(new Error('OpenCode is not connected'), { code: 'not_configured' });
       if (!isChat) break; // text mode has no streaming variant; buffer below
       return opencode.streamChat(
-        { system: opts.system, messages: opts.messages as any, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, model: model.model_id },
+        { system: opts.system, messages: opts.messages as any, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, model: model.model_id, signal: opts.signal },
         onDelta,
       );
     }

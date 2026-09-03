@@ -593,6 +593,51 @@ yet. The column has never been non-null. Done when a production turn is
 stopped and `app_logs` carries `agent stream: stop requested, ending turn
 early` with the turn ending in salvage rather than running to completion.
 
+**Two defects found in review, fixed 2026-09-03 (branch
+`claude/leadrail-assistant-audit-8ki6ws`):**
+
+1. The stop was only ever checked at the TOP of a step, before the model
+   call — but the common turn shape is one model call returning
+   `action:'final'` followed immediately by a ~40s `composeAnswer` call and a
+   return, with no second iteration to re-check. A stop clicked seconds into
+   that turn was never observed. Fixed by checking again immediately before
+   `composeAnswer`, and immediately after every tool execution completes
+   (which also closes the case where the loop falls straight from its last
+   tool call into the forced-final call with no further check at all) — one
+   shared `stopRequested`/`stopResult`/`emitStopFinal` helper set in
+   `lib/agent/loop.ts`, used at every call site in both loops so they cannot
+   drift from each other.
+2. `clearStopRequest` ran unconditionally at the START of every turn, which
+   raced the exact workflow the feature exists to support: click Stop, then
+   immediately send the corrected message — the NEW turn's route cleared
+   `stop_requested_at` out from under the OLD turn still running server-side,
+   so the old turn's next check saw nothing and ran to completion.
+   `isStopRequested` now requires `stop_requested_at > running_since`, which
+   makes a stale stop from a prior turn harmless without an unconditional
+   clear at turn start. `clearStopRequest` is no longer called there; it now
+   runs only at turn END, alongside `clearConversationRunning`.
+
+**Known remaining limits, not fixed here:**
+
+- A stop that arrives WHILE a model call is in flight still waits for that
+  call to return — nothing threads an `AbortSignal` into the fetch. Closing
+  that needs `AbortSignal` plumbed from the route through
+  `generateChat`/`streamChat` (`lib/ai/router.ts` and below), a separate
+  piece of work.
+- `stop_requested_at` and `running_since` are both APPLICATION-clock ISO
+  strings (`new Date().toISOString()`, written by the Next.js process), not
+  Postgres timestamps — the comparison above relies on the stop being
+  written later in wall-clock terms, not on a database-enforced ordering. If
+  the instance serving `POST /api/agent/stop` has a clock behind the
+  instance that stamped `running_since` by more than the gap between turn
+  start and the click, the stop reads as stale and is silently ignored. In
+  practice this is unlikely — a user clicks Stop seconds into a turn, and
+  NTP-synced instances typically differ by milliseconds — but it is a real,
+  narrow failure mode, not "no skew to reason about". Closing it for real
+  means moving one or both timestamps onto Postgres' own clock (e.g. a
+  `now()` column default); that is a separate decision from the fix above,
+  not attempted here.
+
 ## 13. The background layer has still never executed — 2026-09-03
 
 Four tables remain at zero rows in production: `agent_plans`,
@@ -602,9 +647,51 @@ re-proposed instead of executing, steps that ran with no grounding, and a
 plan-mode draft that could never leave `draft` because `approvePlan` had zero
 callers. That makes the layer *able* to run. It is not evidence that it *has*.
 
+**CROSSCHECKED 2026-09-03, and the runner was not the binding constraint.**
+The layer below is healthy; the queue above it is empty. Measured against
+production:
+
+```
+cron.job 1 'hermes-tick-every-5-min'  */5 * * * *  active
+net._http_response                    72 rows, ALL 200, latest 07:30 today
+app_logs POST /api/hermes/tick -> 200 861 calls in 3 days
+runPlanTick                           wired, called by the tick every run
+PLAN_CAPABILITIES                     registered in the catalog
+```
+
+So the runner has fired ~861 times in three days against an empty table.
+`agent_plans` is 0 because NOTHING EVER CREATED A PLAN, not because a plan
+failed to run. Across all 274 logged turns (2026-08-25 to 2026-09-02):
+
+```
+createPlan called                     0
+any plan tool called                  1  (getPlan, 2026-08-29, returned null)
+outcome 'escalated'                   0
+turns recording planOnly              0
+```
+
+**All three entry points to createPlan are dead:**
+
+1. *The model choosing it.* The ONLY prompt text instructing createPlan sits
+   inside `planOnly ? ... : ''` (lib/agent/loop.ts ~line 477), so it exists
+   only when plan mode is toggled on. In an ordinary turn nothing tells the
+   model to plan — createPlan is discoverable only as one line inside the
+   183-tool, 48k-char catalog. 0 calls in 274 turns is the result.
+2. *Plan mode.* Never recorded in production.
+3. *Deadline escalation* (shipped 2026-09-02, converts a timed-out turn into
+   a plan). `outcome='escalated'` is 0; 31 turns ended in error and 8 in
+   salvage without ever escalating.
+
+Commit 2ed611a fixed three defects that would each have broken the FIRST plan
+to run — an approval that re-proposed instead of executing, steps with no
+grounding, a draft that could never start. Those were real and necessary.
+They do not make a plan exist, and this entry previously implied the only
+missing thing was running one. That was wrong.
+
 **Done when:** one real plan runs end to end in production and this entry
 carries its `agent_plans.id` and the ids of its completed
 `agent_plan_steps` — row ids, not a passing test and not `success: true`.
+That now requires fixing the entry point first, not just the runner.
 Until then treat every "it runs in the background as a plan" claim in the
 assistant's own copy as unverified.
 
@@ -612,3 +699,42 @@ Related and untouched: `agent_memory` at 0 rows while every one of the 30
 conversations carries `memory_extracted_at`, so the extractor ran and wrote
 nothing, and `recallMemoryDigest` still pays for an embedding call on every
 turn to search an empty table.
+
+## 14. Migration 084 — APPLIED AND VERIFIED 2026-09-03
+
+`migrations/084_scheduled_tasks_claim.sql` adds `scheduled_tasks.run_state`
+and `claimed_at`, the columns the scheduled-task claim reads. Applied to
+production (project `kqimpzbphdogvchqmtos`) on 2026-09-03.
+
+**CLOSED.** Verified against `information_schema` and `pg_indexes` /
+`pg_constraint`, not the apply call's `success: true`:
+
+```
+column      data_type                  nullable  default
+claimed_at  timestamp with time zone   YES       null
+run_state   text                       NO        'idle'::text
+
+idx_scheduled_tasks_single_claim   present
+scheduled_tasks_run_state_check    present
+```
+
+**Named readers, per the rule about columns nothing reads:**
+`claimScheduledTask` / `runDueScheduledTasks` in `lib/scheduled/store.ts`.
+The defect it closes is real: `runDueScheduledTasks` is reachable from BOTH
+`/api/hermes/tick` and `/api/scheduled-tasks/run-due` with no claim, so the
+same due task could be run twice concurrently — and it runs up to 25 full
+agent turns. Revert-checked: a claim that always succeeds fails three tests,
+including a second concurrent claim returning true and a task running twice.
+
+**One honest note on the index.** `idx_scheduled_tasks_single_claim` is
+`UNIQUE ON scheduled_tasks(id) WHERE run_state = 'running'`. Because `id` is
+already the primary key, that index enforces nothing a unique `id` did not
+already enforce — it is not the analogue of `claimStep`'s partial index,
+which is on `(plan_id)` and genuinely enforces one active step PER PLAN. The
+actual protection here is the conditional UPDATE in `claimScheduledTask`,
+which is what the revert-check exercises. The index is harmless and left in
+place; it should not be cited as the guarantee.
+
+**Still unproven in production:** `scheduled_tasks` has 0 rows, so no task
+has ever been claimed. Done when a real task is claimed and released — the
+same standard as #12 and #13.

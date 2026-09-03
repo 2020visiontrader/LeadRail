@@ -2,6 +2,8 @@
 // Admin/account-scoped generation only. Never called automatically; a route
 // handler invokes it on explicit request. Reads the key from Zo secrets.
 
+import { StoppedError } from './abort';
+
 const KEY = process.env.Gemini_api_key || process.env.GEMINI_API_KEY || '';
 // Model ids are env-overridable so the exact Flash / Nano-Banana version can be
 // tuned without a code change. Defaults track the current GA ids.
@@ -27,6 +29,13 @@ export async function generateText(opts: {
   prompt: string;
   temperature?: number;
   maxOutputTokens?: number;
+  /** External abort, e.g. an in-flight cooperative stop (lib/agent/
+   *  stop-watch.ts). Optional/additive — omitted, behaviour is unchanged.
+   *  Unlike zoask/opencode/nim there is no existing internal timeout
+   *  AbortController here to combine it with, so it is passed straight
+   *  through as the fetch's own signal — the least invasive addition
+   *  consistent with those clients' pattern. */
+  signal?: AbortSignal;
 }): Promise<string> {
   requireKey();
   const body: Record<string, any> = {
@@ -38,11 +47,18 @@ export async function generateText(opts: {
   };
   if (opts.system) body.systemInstruction = { parts: [{ text: opts.system }] };
 
-  const res = await fetch(`${BASE}/models/${TEXT_MODEL}:generateContent?key=${KEY}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/models/${TEXT_MODEL}:generateContent?key=${KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: opts.signal,
+    });
+  } catch (e: any) {
+    if (opts.signal?.aborted) throw new StoppedError('Gemini call aborted: stop requested');
+    throw e;
+  }
   if (!res.ok) {
     const detail = (await res.text().catch(() => '')).slice(0, 300);
     const err: any = new Error(`Gemini text failed (${res.status})`);
@@ -70,6 +86,8 @@ export async function generateChat(opts: {
   messages: ChatMessage[];
   temperature?: number;
   maxOutputTokens?: number;
+  /** External abort — see generateText's matching comment above. */
+  signal?: AbortSignal;
 }): Promise<string> {
   requireKey();
   const contents = opts.messages
@@ -84,11 +102,18 @@ export async function generateChat(opts: {
   };
   if (opts.system) body.systemInstruction = { parts: [{ text: opts.system }] };
 
-  const res = await fetch(`${BASE}/models/${TEXT_MODEL}:generateContent?key=${KEY}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}/models/${TEXT_MODEL}:generateContent?key=${KEY}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal: opts.signal,
+    });
+  } catch (e: any) {
+    if (opts.signal?.aborted) throw new StoppedError('Gemini call aborted: stop requested');
+    throw e;
+  }
   if (!res.ok) {
     const detail = (await res.text().catch(() => '')).slice(0, 300);
     const err: any = new Error(`Gemini chat failed (${res.status})`);

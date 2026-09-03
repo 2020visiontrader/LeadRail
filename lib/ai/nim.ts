@@ -10,6 +10,7 @@
 import { readSseDeltas } from './opencode';
 import { reportOpenAIUsage } from './usage';
 import { parseRetryAfterMs } from './health';
+import { StoppedError } from './abort';
 
 const KEY = process.env.NVIDIA_API_KEY || process.env.NIM_API_KEY || '';
 import { log } from '@/lib/logger';
@@ -145,13 +146,16 @@ interface OpenAIMessage {
 /** Try each model in the chain until one answers, or the failure is one that a
  *  different model cannot fix. Logs every skipped model so a retired id shows up
  *  in /logs as a warning instead of silently degrading the last tier. */
-async function complete(messages: OpenAIMessage[], temperature: number, maxTokens: number): Promise<string> {
+async function complete(messages: OpenAIMessage[], temperature: number, maxTokens: number, signal?: AbortSignal): Promise<string> {
   let lastErr: any = null;
   for (let i = 0; i < MODEL_CHAIN.length; i++) {
     const model = MODEL_CHAIN[i];
     try {
-      return await completeWith(model, messages, temperature, maxTokens);
+      return await completeWith(model, messages, temperature, maxTokens, signal);
     } catch (err: any) {
+      // A StoppedError has no `status`, so shouldTryNextModel(0) is false and
+      // this throws immediately below regardless of `i` — a stop ends the
+      // whole chain right there, it never tries the next model in it.
       lastErr = err;
       const status = Number(err?.status) || 0;
       if (!shouldTryNextModel(status) || i === MODEL_CHAIN.length - 1) throw err;
@@ -163,18 +167,28 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
   throw lastErr;
 }
 
-async function completeWith(MODEL: string, messages: OpenAIMessage[], temperature: number, maxTokens: number): Promise<string> {
+async function completeWith(MODEL: string, messages: OpenAIMessage[], temperature: number, maxTokens: number, signal?: AbortSignal): Promise<string> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  // `signal` is the CALLER's own AbortSignal (lib/agent/stop-watch.ts, an
+  // in-flight cooperative stop) — additive alongside the internal timeout
+  // controller above, never a replacement for it, same pattern as
+  // lib/ai/zoask.ts. Omitted, this is exactly `ctrl.signal` — byte-identical
+  // to before `signal` existed.
+  const fetchSignal = signal ? AbortSignal.any([ctrl.signal, signal]) : ctrl.signal;
   let res: Response;
   try {
     res = await fetch(`${BASE}/chat/completions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: MODEL, messages, temperature, max_tokens: maxTokens }),
-      signal: ctrl.signal,
+      signal: fetchSignal,
     });
   } catch (e: any) {
+    // The CALLER's signal firing is a stop, not a timeout — see zoask.ts's
+    // matching comment. Checked first: an external abort can race the
+    // internal timer, and a stop must always win that race.
+    if (signal?.aborted) throw new StoppedError('NIM call aborted: stop requested');
     const err: any = new Error(
       e?.name === 'AbortError' ? `NIM timed out after ${TIMEOUT_MS}ms` : `NIM request failed`,
     );
@@ -337,11 +351,14 @@ export async function nimText(opts: {
   prompt: string;
   temperature?: number;
   maxOutputTokens?: number;
+  /** External abort, e.g. an in-flight cooperative stop (lib/agent/
+   *  stop-watch.ts). Optional/additive — omitted, behaviour is unchanged. */
+  signal?: AbortSignal;
 }): Promise<string> {
   const messages: OpenAIMessage[] = [];
   if (opts.system) messages.push({ role: 'system', content: opts.system });
   messages.push({ role: 'user', content: opts.prompt });
-  return complete(messages, opts.temperature ?? 0.7, opts.maxOutputTokens ?? DEFAULT_MAX_OUT);
+  return complete(messages, opts.temperature ?? 0.7, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.signal);
 }
 
 /** Multi-turn chat completion. Passes the whole conversation through. */
@@ -350,13 +367,16 @@ export async function nimChat(opts: {
   messages: { role: 'user' | 'assistant'; content: string }[];
   temperature?: number;
   maxOutputTokens?: number;
+  /** External abort, e.g. an in-flight cooperative stop (lib/agent/
+   *  stop-watch.ts). Optional/additive — omitted, behaviour is unchanged. */
+  signal?: AbortSignal;
 }): Promise<string> {
   const messages: OpenAIMessage[] = [];
   if (opts.system) messages.push({ role: 'system', content: opts.system });
   for (const m of opts.messages) {
     if (m.content?.trim()) messages.push({ role: m.role, content: m.content });
   }
-  return complete(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT);
+  return complete(messages, opts.temperature ?? 0.6, opts.maxOutputTokens ?? DEFAULT_MAX_OUT, opts.signal);
 }
 
 // ---------------------------------------------------------------------------
