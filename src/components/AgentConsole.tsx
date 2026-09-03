@@ -275,6 +275,14 @@ const TOOL_VERB: Record<string, string> = {
   forgetFact: 'Forgetting that',
   listFacts: 'Checking what I remember',
   describeTools: 'Working out what I can do here',
+  // --- added: C7 skill-injection cap (skillsBlock clips instructions past a
+  // per-skill budget; this is how the model pulls the untrimmed text back).
+  describeSkill: 'Reading the full skill guidance',
+  // --- added: C14 aggregate counts. These answer "how many" in SQL instead
+  // of listing whole tables, so the verb says counting, not fetching.
+  countLeads: 'Counting your leads',
+  countDeals: 'Counting your deals',
+  countCompanies: 'Counting your companies',
   // --- added by Packet 2.2 (domain backfill) ---
   listDeals: 'Pulling up your deals',
   getDeal: 'Opening that deal',

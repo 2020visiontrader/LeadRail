@@ -281,28 +281,93 @@ export function agentConfigured(): boolean {
   return textConfigured();
 }
 
+// C7: caps on how much skill guidance can flood the system prompt.
+//
+// Measured in production: account_skills holds 353 enabled rows for one
+// account (harvested skills average 11,269 chars, largest 94,247), and
+// selectSkillsForTurn's own routing is not always a backstop — below
+// SKILL_ROUTING_THRESHOLD it returns EVERY enabled skill unfiltered, so up to
+// eight uncapped skills could reach skillsBlock in the low-count path, not
+// just the four MAX_ROUTED_SKILLS caps in the routed path. Without a ceiling
+// here, either path could inject hundreds of thousands of characters into
+// every turn's system prompt.
+//
+// Two caps: SKILL_TOTAL_CHAR_BUDGET bounds what THIS function ever emits in
+// total, regardless of how many skills are passed in; SKILL_PER_SKILL_CHAR_CAP
+// additionally stops one long skill from eating the whole budget by itself, so
+// a turn with several enabled skills still gets a slice of each rather than
+// only the first one intact.
+export const SKILL_TOTAL_CHAR_BUDGET = 8000;
+export const SKILL_PER_SKILL_CHAR_CAP = 2000;
+
+/** Truncation marker appended to a clipped skill's instructions, naming the
+ *  describeSkill capability (lib/capabilities/skill-lookup.ts) and the exact
+ *  slug to pass it — so a clip is never a silent cut, and the model has a
+ *  concrete way to read the rest if it turns out to matter for this turn. */
+function skillTruncationMarker(slug: string): string {
+  return ` [...truncated — call describeSkill("${slug}") for the full text]`;
+}
+
+/** Clip `text` to at most `maxChars`, preferring to cut at a paragraph or
+ *  sentence boundary within the budget rather than mid-word or mid-clause.
+ *
+ *  This matters because skills are GUIDANCE, not data: a rule like "always do
+ *  X, unless Y" cut right before "unless Y" doesn't just lose information, it
+ *  reads as the OPPOSITE instruction — an unconditional "always do X". A hard
+ *  character cut can silently invert a skill's meaning; cutting at a sentence
+ *  or paragraph boundary at least keeps every retained sentence intact and
+ *  self-contained, so what's dropped is missing guidance, not inverted
+ *  guidance. Falls back to a hard cut only when no such boundary exists
+ *  within the budget (e.g. one very long unbroken paragraph).
+ */
+function clipSkillTextAtBoundary(text: string, maxChars: number): string {
+  if (maxChars <= 0) return '';
+  if (text.length <= maxChars) return text;
+  const window = text.slice(0, maxChars);
+  const paraBreak = window.lastIndexOf('\n\n');
+  if (paraBreak >= maxChars * 0.5) return window.slice(0, paraBreak);
+  const sentenceEnd = Math.max(window.lastIndexOf('. '), window.lastIndexOf('.\n'));
+  if (sentenceEnd >= maxChars * 0.5) return window.slice(0, sentenceEnd + 1);
+  return window;
+}
+
 // Build the enabled-skills system-prompt block (migration 025_skills.sql).
 // Same shape/spirit as composeSkillGuidance (lib/skills/registry.ts) used by
 // outreach generation: a short bullet list of "name: instructions". Returns
 // '' when nothing is enabled, so callers can splice it in unconditionally.
-function skillsBlock(skills: { name: string; instructions: string; capabilities?: string[] }[]): string {
+export function skillsBlock(skills: { slug: string; name: string; instructions: string; capabilities?: string[] }[]): string {
   if (!skills.length) return '';
-  return [
-    'ENABLED SKILLS — apply this guidance when relevant to the current task:',
-    ...skills.map((s) => {
-      // A skill may name the capabilities its guidance is about (migration
-      // 051). This is the bridge from prose to action: previously a skill
-      // could describe a competitor teardown but had no way to say the work
-      // needs a web search, so the model had to infer it. Naming them is NOT a
-      // grant — every one is the same tool, behind the same approval gate,
-      // that the assistant could already call. Names are filtered against the
-      // live registry so a stale one is ignored rather than sending the model
-      // after a tool that does not exist.
-      const tools = (s.capabilities || []).filter((c) => Boolean(TOOLS[c]));
-      const uses = tools.length ? ` [this work uses: ${tools.join(', ')}]` : '';
-      return `• ${s.name}${uses}: ${s.instructions}`;
-    }),
-  ].join('\n');
+  let budget = SKILL_TOTAL_CHAR_BUDGET;
+  const lines: string[] = [];
+  for (const s of skills) {
+    if (budget <= 0) break;
+    const perSkillMax = Math.min(SKILL_PER_SKILL_CHAR_CAP, budget);
+    let instructions = s.instructions;
+    if (instructions.length > perSkillMax) {
+      const marker = skillTruncationMarker(s.slug);
+      // If even the marker alone can't fit in what's left of the budget,
+      // there's no honest way to include this skill this turn — skip it
+      // rather than inject a fragment that busts the total budget or a
+      // marker with no guidance attached to it.
+      if (marker.length >= perSkillMax) continue;
+      instructions = clipSkillTextAtBoundary(instructions, perSkillMax - marker.length) + marker;
+    }
+    budget -= instructions.length;
+
+    // A skill may name the capabilities its guidance is about (migration
+    // 051). This is the bridge from prose to action: previously a skill
+    // could describe a competitor teardown but had no way to say the work
+    // needs a web search, so the model had to infer it. Naming them is NOT a
+    // grant — every one is the same tool, behind the same approval gate,
+    // that the assistant could already call. Names are filtered against the
+    // live registry so a stale one is ignored rather than sending the model
+    // after a tool that does not exist.
+    const tools = (s.capabilities || []).filter((c) => Boolean(TOOLS[c]));
+    const uses = tools.length ? ` [this work uses: ${tools.join(', ')}]` : '';
+    lines.push(`• ${s.name}${uses}: ${instructions}`);
+  }
+  if (!lines.length) return '';
+  return ['ENABLED SKILLS — apply this guidance when relevant to the current task:', ...lines].join('\n');
 }
 
 // Above how many enabled skills it stops being safe to inject them all. The
@@ -449,10 +514,11 @@ function systemPrompt(brandName?: string, agentContext?: string, carryover?: Car
     '- NEVER call the same tool with the same arguments twice; if you already have the result, answer.',
     '- Speak only in plain language. NEVER mention internal tool names, vendors, model names, or third-party services (Apollo, Meta API internals, etc.) — everything is "LeadRail".',
     '',
-    // Two-stage tool catalog (Packet 10.3). Default (flag unset) is the full
-    // catalog, byte-identical to what shipped before this packet. With
-    // AGENT_STAGED_CATALOG=1 the route pass sees a compact per-domain index
-    // instead and expands one domain at a time with describeTools.
+    // Two-stage tool catalog (Packet 10.3, flipped 2026-09-03 — C6). Default
+    // is now the staged catalog: a compact per-domain index the route pass
+    // expands one domain at a time with describeTools. Set AGENT_FULL_CATALOG=1
+    // to restore the pre-flip full catalog (byte-identical to what shipped
+    // before this packet) as a rollback path.
     ...(AGENT_STAGED_CATALOG
       ? [
           'AVAILABLE TOOLS — grouped by domain, names only. Before calling a tool whose arguments you have not been shown, call describeTools with that domain to get its full signatures. Tools marked [needs approval] still pause for the user to confirm.',

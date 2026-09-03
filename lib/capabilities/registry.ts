@@ -43,15 +43,26 @@ import { DELEGATION_CAPABILITIES } from './delegation';
 import { SUPPRESSION_CAPABILITIES } from './suppressions';
 import { INBOX_CAPABILITIES } from './inbox';
 import { DIAGNOSTICS_CAPABILITIES } from './diagnostics';
+import { SKILL_LOOKUP_CAPABILITIES } from './skill-lookup';
 import { METRICS_BY_NAME } from './metrics-port';
 
-// Two-stage tool catalog (Packet 10.3). Opt-IN, never opt-out: staging changes
-// what the routing pass sees, and routing regressions are expensive. With the
-// flag unset the registry holds EXACTLY the capabilities that shipped before
-// this packet, so toolCatalogForPrompt() and the assembled system prompt are
-// byte-identical to today. Flip the default only after measuring routing
-// quality flag-on vs flag-off.
-export const AGENT_STAGED_CATALOG = process.env.AGENT_STAGED_CATALOG === '1';
+// Two-stage tool catalog (Packet 10.3, flipped 2026-09-03 — C6). The full,
+// unstaged catalog (toolCatalogForPrompt) cost ~12K tokens on EVERY model
+// call: 183 tools, one line each, unconditional, every step. The staged form
+// (toolCatalogStaged — one line per domain, names only, ~3.8K chars vs
+// ~48K) is now what ships by default; the model expands exactly one domain
+// at a time on demand with the describeTools capability (verified reachable:
+// describeDomain() in this file returns full signatures for every tool in a
+// domain, and it's registered — see STAGED_ONLY below — whenever staging is
+// on, which is now always unless overridden).
+//
+// AGENT_FULL_CATALOG=1 is the escape hatch that restores the exact
+// pre-2026-09-03 behaviour (full catalog, no describeTools) — set it to roll
+// back without a deploy if staged routing quality regresses. The flag is
+// inverted, not deleted or renamed, so a rollback is a one-line env change,
+// not a revert.
+export const AGENT_FULL_CATALOG = process.env.AGENT_FULL_CATALOG === '1';
+export const AGENT_STAGED_CATALOG = !AGENT_FULL_CATALOG;
 
 // Capabilities that exist only to drive the staged catalog. They are registered
 // (and therefore reach the prompt, MCP tools/list and runTool) only when staging
@@ -97,6 +108,7 @@ const ALL: Capability[] = [
   ...SUPPRESSION_CAPABILITIES,
   ...INBOX_CAPABILITIES,
   ...DIAGNOSTICS_CAPABILITIES,
+  ...SKILL_LOOKUP_CAPABILITIES,
 ].filter((c) => AGENT_STAGED_CATALOG || !STAGED_ONLY.includes(c.name));
 
 // CATALOG ORDER — the exact key order of the original TOOLS object literal in
@@ -213,6 +225,17 @@ const CATALOG_ORDER: string[] = [
   // someone else's published video goes to Higgsfield rather than being
   // downloaded by us. Appended, never sorted, same reason as every entry above.
   'watchVideoUrl', 'checkVideoAnalysis', 'analyseUploadedVideo',
+  // --- appended 2026-09-03: C7 (skill-injection cap). skillsBlock
+  // (lib/agent/loop.ts) now clips a skill's instructions past a per-skill
+  // budget and points the model at this tool by slug to read the rest.
+  // Appended, never sorted, same reason as every entry above.
+  'describeSkill',
+  // --- appended 2026-09-03: C14 (aggregate counts). A count was previously
+  // answered by listing whole tables — 282K chars of rows to produce a number
+  // Postgres returns in one line, and three delegates counting the same table
+  // disagreed (54/56/61). These count in SQL and return a total plus optional
+  // per-group counts. Appended, never sorted, same reason as every entry above.
+  'countLeads', 'countDeals', 'countCompanies',
 ];
 
 const byName = new Map(ALL.map((c) => [c.name, c]));

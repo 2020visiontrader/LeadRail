@@ -82,15 +82,17 @@ export function toolCatalogForPrompt(extraTools?: Record<string, AgentTool>): st
   return [...base, ...extra].join('\n');
 }
 
-/** Two-stage catalog flag (Packet 10.3). Re-exported from the registry so the
- *  loop and the registry can never disagree about which mode is active. */
-export { AGENT_STAGED_CATALOG } from '@/lib/capabilities/registry';
+/** Two-stage catalog flags (Packet 10.3, flipped 2026-09-03 — C6). Re-exported
+ *  from the registry so the loop and the registry can never disagree about
+ *  which mode is active. AGENT_STAGED_CATALOG is now the default (true) unless
+ *  AGENT_FULL_CATALOG=1 restores the pre-flip full-catalog behaviour. */
+export { AGENT_STAGED_CATALOG, AGENT_FULL_CATALOG } from '@/lib/capabilities/registry';
 
 /** Staged catalog (Packet 10.3) — stage 1: one line per domain, names only,
  *  approval markers preserved. Roughly an order of magnitude smaller than
- *  toolCatalogForPrompt(), which it does NOT replace: the full form stays the
- *  default and this is used only when AGENT_STAGED_CATALOG=1. The model expands
- *  a domain on demand with the describeTools capability.
+ *  toolCatalogForPrompt(), which it does NOT replace — the full form still
+ *  exists for AGENT_FULL_CATALOG=1 rollback. This is now the DEFAULT (C6):
+ *  the model expands a domain on demand with the describeTools capability.
  *
  *  `extraTools` (Packet 4) appends one more "external" domain line, names
  *  only, same approval-marker convention as every other domain — so a
