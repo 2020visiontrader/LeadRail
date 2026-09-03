@@ -200,6 +200,58 @@ export async function listModels(accountId: string, providerId?: string): Promis
   return data || [];
 }
 
+export interface SelectableModel {
+  /** ai_models row id — what a caller sends back as RunAgentInput.modelId /
+   *  resolveChain's `modelId` option, NOT ai_models.model_id. */
+  id: string;
+  model_id: string;
+  label: string | null;
+  tier: ModelTier;
+  provider: string;
+}
+
+/** Enabled models for the account's composer model picker: enabled ai_models
+ * rows joined to their enabled ai_providers row, account-scoped through the
+ * provider (same scoping as listModels above — a client can never see or
+ * select another tenant's models). Disabled models/providers are excluded so
+ * the dropdown never offers something the account turned off. */
+export async function listSelectableModels(accountId: string): Promise<SelectableModel[]> {
+  const { data: providers, error: provErr } = await supabase
+    .from('ai_providers')
+    .select('id, name')
+    .eq('account_id', accountId)
+    .eq('enabled', true);
+  if (provErr) throw provErr;
+  const providerById = new Map((providers || []).map((p: { id: string; name: string }) => [p.id, p.name]));
+  const ownedIds = Array.from(providerById.keys());
+  if (!ownedIds.length) return [];
+  const { data: models, error } = await supabase
+    .from('ai_models')
+    .select('id, provider_id, model_id, label, tier')
+    .in('provider_id', ownedIds)
+    .eq('enabled', true)
+    .order('created_at', { ascending: true });
+  if (error) throw error;
+  return (models || []).map((m: any) => ({
+    id: m.id,
+    model_id: m.model_id,
+    label: m.label,
+    tier: m.tier,
+    provider: providerById.get(m.provider_id) || 'Unknown',
+  }));
+}
+
+/** Validate a client-supplied model id against THIS account's own enabled
+ * ai_models rows before it is allowed anywhere near the router. Returns the
+ * id back only when it belongs to this account and is currently enabled
+ * (through an enabled provider); otherwise returns undefined so the caller
+ * ignores it — NEVER trust a client-supplied model id straight through. */
+export async function assertSelectableModel(accountId: string, modelId: string | undefined): Promise<string | undefined> {
+  if (!modelId) return undefined;
+  const selectable = await listSelectableModels(accountId);
+  return selectable.some((m) => m.id === modelId) ? modelId : undefined;
+}
+
 export async function addModel(accountId: string, providerId: string, input: {
   max_output_tokens?: number | null;
   model_id: string; label?: string | null; tier?: ModelTier; good?: string[]; reliable?: boolean; enabled?: boolean;

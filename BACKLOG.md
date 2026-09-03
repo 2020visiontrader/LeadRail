@@ -593,6 +593,51 @@ yet. The column has never been non-null. Done when a production turn is
 stopped and `app_logs` carries `agent stream: stop requested, ending turn
 early` with the turn ending in salvage rather than running to completion.
 
+**Two defects found in review, fixed 2026-09-03 (branch
+`claude/leadrail-assistant-audit-8ki6ws`):**
+
+1. The stop was only ever checked at the TOP of a step, before the model
+   call — but the common turn shape is one model call returning
+   `action:'final'` followed immediately by a ~40s `composeAnswer` call and a
+   return, with no second iteration to re-check. A stop clicked seconds into
+   that turn was never observed. Fixed by checking again immediately before
+   `composeAnswer`, and immediately after every tool execution completes
+   (which also closes the case where the loop falls straight from its last
+   tool call into the forced-final call with no further check at all) — one
+   shared `stopRequested`/`stopResult`/`emitStopFinal` helper set in
+   `lib/agent/loop.ts`, used at every call site in both loops so they cannot
+   drift from each other.
+2. `clearStopRequest` ran unconditionally at the START of every turn, which
+   raced the exact workflow the feature exists to support: click Stop, then
+   immediately send the corrected message — the NEW turn's route cleared
+   `stop_requested_at` out from under the OLD turn still running server-side,
+   so the old turn's next check saw nothing and ran to completion.
+   `isStopRequested` now requires `stop_requested_at > running_since`, which
+   makes a stale stop from a prior turn harmless without an unconditional
+   clear at turn start. `clearStopRequest` is no longer called there; it now
+   runs only at turn END, alongside `clearConversationRunning`.
+
+**Known remaining limits, not fixed here:**
+
+- A stop that arrives WHILE a model call is in flight still waits for that
+  call to return — nothing threads an `AbortSignal` into the fetch. Closing
+  that needs `AbortSignal` plumbed from the route through
+  `generateChat`/`streamChat` (`lib/ai/router.ts` and below), a separate
+  piece of work.
+- `stop_requested_at` and `running_since` are both APPLICATION-clock ISO
+  strings (`new Date().toISOString()`, written by the Next.js process), not
+  Postgres timestamps — the comparison above relies on the stop being
+  written later in wall-clock terms, not on a database-enforced ordering. If
+  the instance serving `POST /api/agent/stop` has a clock behind the
+  instance that stamped `running_since` by more than the gap between turn
+  start and the click, the stop reads as stale and is silently ignored. In
+  practice this is unlikely — a user clicks Stop seconds into a turn, and
+  NTP-synced instances typically differ by milliseconds — but it is a real,
+  narrow failure mode, not "no skew to reason about". Closing it for real
+  means moving one or both timestamps onto Postgres' own clock (e.g. a
+  `now()` column default); that is a separate decision from the fix above,
+  not attempted here.
+
 ## 13. The background layer has still never executed — 2026-09-03
 
 Four tables remain at zero rows in production: `agent_plans`,

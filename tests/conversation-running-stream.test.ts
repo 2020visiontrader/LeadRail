@@ -31,6 +31,11 @@ const loadCarryover = vi.fn(async (_id?: any, _acc?: any) => null as any);
 const ingestCarryoverFacts = vi.fn(async (_acc?: any, _memo?: any) => {});
 const markConversationRunning = vi.fn(async (_id: string, _acc: string) => {});
 const clearConversationRunning = vi.fn(async (_id: string, _acc: string) => {});
+// Cooperative stop (migration 083, DEFECT B fix) — the stream route now
+// clears a stop request in its `finally` block, at turn END, alongside
+// clearConversationRunning (no longer at turn start — see the route's own
+// comment) — so this mock needs a stand-in or that call throws.
+const clearStopRequest = vi.fn(async (_id: string, _acc: string) => {});
 vi.mock('@/lib/agent/memory', () => ({
   saveConversation: (args: any) => saveConversation(args),
   loadTranscriptResult: (id: any, acc: any) => loadTranscriptResult(id, acc),
@@ -38,6 +43,7 @@ vi.mock('@/lib/agent/memory', () => ({
   ingestCarryoverFacts: (acc: any, memo: any) => ingestCarryoverFacts(acc, memo),
   markConversationRunning: (id: any, acc: any) => markConversationRunning(id, acc),
   clearConversationRunning: (id: any, acc: any) => clearConversationRunning(id, acc),
+  clearStopRequest: (id: any, acc: any) => clearStopRequest(id, acc),
 }));
 
 let runBehavior: 'succeed' | 'throw' = 'succeed';

@@ -352,6 +352,11 @@ export function clearSentAttachments(current: UploadedAttachment[], sent: Upload
 
 interface PersonaOption { id: string; name: string; avatar?: string | null }
 
+// One row of GET /api/agent/models — an account's enabled ai_models joined
+// to their provider. `id` is the ai_models row id (what gets sent back as
+// modelId), never ai_models.model_id.
+interface ModelOption { id: string; model_id: string; label: string | null; tier: string; provider: string }
+
 // ---------------------------------------------------------------------------
 // Message action bar — pure logic. Extracted for the same reason
 // attachmentsForTurn/clearSentAttachments are (see the comment above them):
@@ -574,11 +579,11 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     return () => window.removeEventListener('beforeunload', warn);
   }, [activeRuns.size]);
   const busy = activeRuns.size > 0;
-  // PLAN MODE. Off by default: most turns are small, and making every request
-  // wait for a go-ahead would be friction rather than safety. It turns itself
-  // off after one turn — a mode you have to remember to leave is a mode people
-  // leave on by accident.
-  const [planMode, setPlanMode] = useState(false);
+  // MODE DROPDOWN (replaces the old standalone Plan button — `mode` state is
+  // declared with the model picker above). Off/'auto' by default: most turns
+  // are small, and making every request wait for a go-ahead would be friction
+  // rather than safety. 'plan' turns itself back to 'auto' after one turn — a
+  // mode you have to remember to leave is a mode people leave on by accident.
   const endRun = (id: string) => {
     abortersRef.current.delete(id);
     inFlightTextRef.current.delete(id);
@@ -656,6 +661,19 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
   const [handingOver, setHandingOver] = useState(false);
   const [personas, setPersonas] = useState<PersonaOption[]>([]);
   const [selectedPersonaId, setSelectedPersonaId] = useState<string | undefined>(undefined);
+  // Composer model picker (mirrors the Claude Code UI). 'auto' = today's
+  // default behaviour: no modelId sent, the router ladder (and any persona
+  // pin) decides exactly as before. Persisted per browser so the choice
+  // survives a reload; NOT account-synced state — this is a client
+  // convenience, not configuration.
+  const [models, setModels] = useState<ModelOption[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState<string>('auto');
+  // Composer mode dropdown, replacing the old standalone Plan button.
+  // ONLY two modes ship today — 'auto' (unchanged behaviour) and 'plan'
+  // (sends planOnly:true, exactly what the old button did). A third mode
+  // ("Accept edits") was deliberately left out — see the PR description —
+  // so this stays a plain union rather than an enum with a disabled entry.
+  const [mode, setMode] = useState<'auto' | 'plan'>('auto');
   // The server owns conversation state (Packet 0.2). We hold only the opaque id
   // it issued in the trailing `conversation` SSE event and echo it back on the
   // next turn — including the approve-resume, which reloads its context server-
@@ -848,6 +866,28 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     return () => { cancelled = true; };
   }, []);
 
+  // Restore the composer's remembered model choice for THIS browser. Best
+  // effort — private windows / blocked storage just leave it at 'auto'.
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem('leadrail:composer:modelId');
+      if (saved) setSelectedModelId(saved);
+    } catch { /* storage unavailable — stay on 'auto' */ }
+  }, []);
+  useEffect(() => {
+    try { window.localStorage.setItem('leadrail:composer:modelId', selectedModelId); } catch { /* best-effort */ }
+  }, [selectedModelId]);
+
+  // Fetch the account's selectable models on mount. Additive: an account
+  // with none configured just sees "Auto", exactly like today.
+  useEffect(() => {
+    let cancelled = false;
+    apiGet<{ models: ModelOption[] }>('/api/agent/models')
+      .then((d) => { if (!cancelled) setModels(Array.isArray(d.models) ? d.models : []); })
+      .catch(() => { /* best-effort: a missing model list still leaves "Auto" usable */ });
+    return () => { cancelled = true; };
+  }, []);
+
   // Load this account's existing votes for the conversation being opened, so
   // a reload shows the thumb already pressed rather than resetting it. Only
   // meaningful once a conversation exists — a brand-new chat has nothing to
@@ -942,7 +982,7 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
   async function run(payload: { message?: string; approve?: any }) {
     // One turn only. Cleared here rather than on completion so a failed run
     // does not silently leave the next message in plan mode.
-    if (planMode && payload.message) setPlanMode(false);
+    if (mode === 'plan' && payload.message) setMode('auto');
     // Id for THIS run's assistant turn. Every patch below is scoped to it, so a
     // second prompt started mid-flight cannot overwrite this one's output.
     const turnId = `turn-${Date.now()}-${turnSeq.current++}`;
@@ -1008,7 +1048,12 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
           ...(selectedPersonaId ? { personaId: selectedPersonaId } : {}),
           // Only sent when a message is being sent — resuming an approval must
           // never be re-interpreted as a planning turn.
-          ...(planMode && payload.message ? { planOnly: true } : {}),
+          ...(mode === 'plan' && payload.message ? { planOnly: true } : {}),
+          // Composer model picker. 'auto' sends nothing — today's default
+          // router-ladder behaviour, unchanged. A real pick is a PREFERENCE,
+          // validated server-side against the account's own enabled models
+          // (see RunAgentInput.modelId) — never trusted through as-is.
+          ...(selectedModelId !== 'auto' ? { modelId: selectedModelId } : {}),
           // The ids the message MEANS. A file dropped into a new chat was
           // uploaded before that chat had an id, so it landed unbound and no
           // prompt could ever see it. Naming them here is what binds them.
@@ -1717,23 +1762,46 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
                   setInput(base ? `${base.trim()} ${text}` : text);
                 }}
               />
-              <Button
-                variant={planMode ? 'primary' : 'secondary'}
-                onClick={() => setPlanMode((v) => !v)}
-                aria-pressed={planMode}
-                title={planMode
+              <select
+                aria-label="Model"
+                value={selectedModelId}
+                onChange={(e) => setSelectedModelId(e.target.value)}
+                title="Preferred model — falls back if unavailable"
+                className="h-8 rounded-md border border-[var(--border-strong)] bg-[var(--bg-canvas)] px-2 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]"
+              >
+                <option value="auto">Auto</option>
+                {Object.entries(
+                  models.reduce<Record<string, ModelOption[]>>((acc, m) => {
+                    (acc[m.provider] ||= []).push(m);
+                    return acc;
+                  }, {}),
+                ).map(([provider, group]) => (
+                  <optgroup key={provider} label={provider}>
+                    {group.map((m) => (
+                      <option key={m.id} value={m.id}>{m.label || m.model_id}</option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+              <select
+                aria-label="Mode"
+                value={mode}
+                onChange={(e) => setMode(e.target.value as 'auto' | 'plan')}
+                title={mode === 'plan'
                   ? 'Plan mode is on — the next message will be planned, not carried out'
                   : 'Plan first: get the steps before anything runs'}
+                className="h-8 rounded-md border border-[var(--border-strong)] bg-[var(--bg-canvas)] px-2 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]"
               >
-                {planMode ? 'Planning' : 'Plan first'}
-              </Button>
+                <option value="auto">Auto</option>
+                <option value="plan">Plan</option>
+              </select>
               {busy && (
                 <Button variant="secondary" onClick={stopAll} title="Stop the running request">
                   Stop
                 </Button>
               )}
               <Button loading={false} disabled={!canSend} onClick={send}>
-                {planMode
+                {mode === 'plan'
                   ? 'Plan it'
                   : activeRuns.size > 1 ? `Send (${activeRuns.size} running)` : activeRuns.size === 1 ? 'Send (1 running)' : 'Send'}
               </Button>
