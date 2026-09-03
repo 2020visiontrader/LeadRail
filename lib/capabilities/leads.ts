@@ -1,11 +1,22 @@
 import { z } from 'zod';
-import { supabase, getContacts, updateContact, createContact } from '@/lib/db';
+import { supabase, getContacts, updateContact, createContact, assertBrandOwned } from '@/lib/db';
 import { searchPeople, matchPerson } from '@/lib/integrations/apollo';
 import { listTags, addTagToContact } from '@/lib/tags';
 import {
   obj, S, type Capability,
-  present, rowsOf, firstField, plural, tally, samples, clip, digestLine,
+  present, rowsOf, firstField, plural, tally, samples, clip, digestLine, projectRows,
 } from './types';
+
+/** Fields listLeads returns per row — a summary, not the full record. In
+ *  particular this excludes `enriched`/raw Apollo blobs: a contact row
+ *  averages ~4.9K chars, ~4.1K of it that raw enrichment payload (largest
+ *  observed 66.5K), and a page of 50+ rows put ~280K chars of it into a
+ *  single tool observation that then rode along on every later model call in
+ *  the conversation. Call getLead for the full record when one lead matters. */
+const LEAD_LIST_FIELDS = [
+  'id', 'name', 'title', 'company', 'email', 'status', 'score', 'segment',
+  'brand_id', 'enrichment_status', 'created_at',
+];
 
 /** A field the API takes as one string, but that the model often supplies as a
  *  list. Accepts either and normalises to a comma-separated string. */
@@ -26,11 +37,21 @@ export const LEAD_CAPABILITIES: Capability[] = [
     name: 'listLeads',
     domain: 'leads',
     title: 'List leads',
-    description: 'List leads/contacts across the account.',
+    description: "List leads/contacts across the account, optionally scoped to one venture with brandId. Returns a summary of each lead; call getLead for the full record including enrichment data.",
     gate: 'read',
-    inputSchema: obj({ limit: S.number, offset: S.number }),
-    zod: z.object({ limit: z.number().optional(), offset: z.number().optional() }),
-    run: (accountId, { limit = 50, offset = 0 }) => getContacts(accountId, 'all', limit, offset),
+    inputSchema: obj({ brandId: S.string, limit: S.number, offset: S.number }),
+    zod: z.object({ brandId: z.string().optional(), limit: z.number().optional(), offset: z.number().optional() }),
+    run: async (accountId, { brandId, limit = 25, offset = 0 }) => {
+      const clamped = Math.min(Math.max(Math.floor(limit), 1), 100);
+      let scope = 'all';
+      if (brandId) {
+        const owned = await assertBrandOwned(brandId, accountId);
+        if (!owned) throw new Error('Brand not found');
+        scope = brandId;
+      }
+      const rows = await getContacts(accountId, scope, clamped, offset);
+      return projectRows(rows, LEAD_LIST_FIELDS);
+    },
     // Truthful: counts only the rows returned, and states a status breakdown
     // only over rows that actually carry a status. Says nothing about totals
     // beyond this page — the result does not contain one.

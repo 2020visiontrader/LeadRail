@@ -7,8 +7,16 @@ import { z } from 'zod';
 import { getDeals, getDeal, updateDeal, deleteDeal, getActivities, createActivity } from '@/lib/crm';
 import {
   obj, S, type Capability,
-  rowsOf, plural, tally, samples, digestLine,
+  rowsOf, plural, tally, samples, digestLine, projectRows,
 } from './types';
+
+/** Fields listDeals returns per row — only those actually present on a given
+ *  deal row survive; that's the point of projectRows. See the same note on
+ *  listLeads in lib/capabilities/leads.ts. */
+const DEAL_LIST_FIELDS = [
+  'id', 'title', 'name', 'value', 'amount', 'stage', 'stage_id', 'status',
+  'company', 'contact_id', 'brand_id', 'created_at',
+];
 
 export const DEAL_CAPABILITIES: Capability[] = [
   {
@@ -19,7 +27,11 @@ export const DEAL_CAPABILITIES: Capability[] = [
     gate: 'read',
     inputSchema: obj({ brandId: S.string, limit: S.number, offset: S.number }),
     zod: z.object({ brandId: z.string().optional(), limit: z.number().optional(), offset: z.number().optional() }),
-    run: (accountId, { brandId, limit = 100, offset = 0 }) => getDeals(accountId, brandId, limit, offset),
+    run: async (accountId, { brandId, limit = 50, offset = 0 }) => {
+      const clamped = Math.min(Math.max(Math.floor(limit), 1), 200);
+      const rows = await getDeals(accountId, brandId, clamped, offset);
+      return projectRows(rows, DEAL_LIST_FIELDS);
+    },
     // Truthful over the returned page only: status/stage breakdowns count only
     // rows that carry the field, and never infer a total beyond this page.
     digest: (_args, result) => {

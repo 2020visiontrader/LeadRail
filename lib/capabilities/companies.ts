@@ -4,8 +4,14 @@ import { z } from 'zod';
 import { getCompanies, getCompany, createCompany, linkContactCompany } from '@/lib/crm';
 import {
   obj, S, type Capability,
-  rowsOf, plural, samples, digestLine,
+  rowsOf, plural, samples, digestLine, projectRows,
 } from './types';
+
+/** Fields listCompanies returns per row — see the same note on listLeads in
+ *  lib/capabilities/leads.ts. */
+const COMPANY_LIST_FIELDS = [
+  'id', 'name', 'domain', 'industry', 'size', 'employee_count', 'brand_id', 'created_at',
+];
 
 export const COMPANY_CAPABILITIES: Capability[] = [
   {
@@ -16,7 +22,11 @@ export const COMPANY_CAPABILITIES: Capability[] = [
     gate: 'read',
     inputSchema: obj({ brandId: S.string, limit: S.number, offset: S.number }),
     zod: z.object({ brandId: z.string().optional(), limit: z.number().optional(), offset: z.number().optional() }),
-    run: (accountId, { brandId, limit = 50, offset = 0 }) => getCompanies(accountId, brandId, limit, offset),
+    run: async (accountId, { brandId, limit = 25, offset = 0 }) => {
+      const clamped = Math.min(Math.max(Math.floor(limit), 1), 100);
+      const rows = await getCompanies(accountId, brandId, clamped, offset);
+      return projectRows(rows, COMPANY_LIST_FIELDS);
+    },
     digest: (_args, result) => {
       const rows = rowsOf(result);
       if (!rows) return '';
