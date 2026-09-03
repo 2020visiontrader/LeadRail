@@ -689,7 +689,13 @@ const OPAQUE_TOKEN_PATTERN = /[A-Za-z0-9_\-]{32,}/;
  *  mid-turn, that this was worth remembering (rememberFact). 'carryover' =
  *  promoted passively from an LLM-generated conversation summary, with no
  *  human or tool-result confirmation in the loop. */
-export type FactSource = 'capability' | 'carryover';
+// 'extraction' = the async extraction job (lib/memory/extract.ts) recording a
+// fact it already ran through its own tier/exclusion rules against a finished
+// transcript, OBSERVATION lines (real tool results) included. Held to the same
+// bar as 'capability' — not the stricter 'carryover' bar — because unlike a
+// carryover memo, this reads the actual transcript rather than the model's own
+// prior prose, so a metric-shaped fact here can be a genuinely measured one.
+export type FactSource = 'capability' | 'carryover' | 'extraction';
 
 // Matches things like "64% open rate" or "12% reply rate". A carryover memo is
 // the model summarizing its OWN prior turn — it has no access to a real
@@ -809,6 +815,39 @@ export async function ingestCarryoverFacts(accountId: string, carryover: Carryov
 }
 
 /**
+ * Cheap existence check: does this account have ANY durable-memory row at all.
+ *
+ * Exists to guard the embedding call in `semanticRecall` below. Every account
+ * currently reaching that call pays an ~8s-timeout NVIDIA round trip to
+ * semantically search a table that, in production, has zero rows for every
+ * account — a network dependency paid on every turn to search nothing. This
+ * check trades that for one indexed `id` lookup capped at one row, which costs
+ * low-single-digit milliseconds against Postgres — nowhere near the network
+ * call it exists to skip. Deliberately NOT cached: caching "this account has
+ * no memory" would mean the account's first-ever fact stays unrecallable by
+ * meaning until whatever invalidated the cache got around to it, which is the
+ * same class of silent staleness this codebase keeps finding and fixing
+ * elsewhere. Re-checked on every call instead.
+ *
+ * Fails OPEN (true) on a read error: this is an optimization, not a gate — a
+ * transient DB error here must fall through to the embedding call rather than
+ * silently suppressing recall.
+ */
+async function accountHasMemory(accountId: string): Promise<boolean> {
+  try {
+    const { data, error } = await supabase
+      .from('agent_memory')
+      .select('id')
+      .eq('account_id', accountId)
+      .limit(1);
+    if (error) return true;
+    return Array.isArray(data) && data.length > 0;
+  } catch {
+    return true;
+  }
+}
+
+/**
  * Semantic recall: facts closest in MEANING to `query` for this account.
  * Returns `[]` when embeddings are unavailable, the table lacks the vector
  * column (migration 036 not applied), or nothing clears `minSimilarity`. Never
@@ -832,6 +871,9 @@ export async function semanticRecall(
   const q = (query || '').trim();
   if (!q) return [];
   try {
+    // SKIP THE EMBEDDING CALL WHEN IT CANNOT PAY FOR ITSELF. No point paying
+    // the round trip to search a table that holds nothing for this account.
+    if (!(await accountHasMemory(accountId))) return [];
     const vec = await embedQuery(q);
     if (!vec) return [];
     const { data, error } = await supabase.rpc('match_agent_memory', {
