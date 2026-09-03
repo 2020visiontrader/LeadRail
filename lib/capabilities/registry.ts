@@ -43,6 +43,7 @@ import { DELEGATION_CAPABILITIES } from './delegation';
 import { SUPPRESSION_CAPABILITIES } from './suppressions';
 import { INBOX_CAPABILITIES } from './inbox';
 import { DIAGNOSTICS_CAPABILITIES } from './diagnostics';
+import { GMAIL_CAPABILITIES } from './gmail';
 import { METRICS_BY_NAME } from './metrics-port';
 
 // Two-stage tool catalog (Packet 10.3). Opt-IN, never opt-out: staging changes
@@ -97,6 +98,7 @@ const ALL: Capability[] = [
   ...SUPPRESSION_CAPABILITIES,
   ...INBOX_CAPABILITIES,
   ...DIAGNOSTICS_CAPABILITIES,
+  ...GMAIL_CAPABILITIES,
 ].filter((c) => AGENT_STAGED_CATALOG || !STAGED_ONLY.includes(c.name));
 
 // CATALOG ORDER — the exact key order of the original TOOLS object literal in
@@ -213,6 +215,11 @@ const CATALOG_ORDER: string[] = [
   // someone else's published video goes to Higgsfield rather than being
   // downloaded by us. Appended, never sorted, same reason as every entry above.
   'watchVideoUrl', 'checkVideoAnalysis', 'analyseUploadedVideo',
+  // --- appended 2026-09-03: Gmail domain. A complete Gmail integration
+  // (lib/email/gmail.ts) shipped with OAuth wired and zero call sites — the
+  // assistant denied it could reach a connected mailbox because no tool
+  // existed to try. Appended, never sorted, same reason as every entry above.
+  'listGmailMessages', 'getGmailMessage', 'sendGmailEmail', 'markGmailMessageRead', 'archiveGmailMessage',
 ];
 
 const byName = new Map(ALL.map((c) => [c.name, c]));
