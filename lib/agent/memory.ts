@@ -740,7 +740,19 @@ export function factRejectionReason(fact: string | undefined | null, source: Fac
  * backfill re-embeds it. */
 export async function recordFact(accountId: string, f: MemoryFact, source: FactSource = 'capability'): Promise<void> {
   const fact = (f.fact || '').trim();
-  if (factRejectionReason(fact, source)) return;
+  const rejection = factRejectionReason(fact, source);
+  if (rejection) {
+    // PRODUCTION DEFECT (observability half): a fact rejected here from the
+    // 'extraction' source used to vanish with no trace — a skipped write here
+    // looks identical, from every counter upstream, to one that was never a
+    // candidate at all. The fact TEXT is deliberately not logged (this branch
+    // exists partly to keep secrets out of durable storage; logging the text
+    // would just move the leak into app_logs).
+    if (source === 'extraction') {
+      log.warn('memory: recordFact rejected extraction fact', { accountId, reason: rejection });
+    }
+    return;
+  }
   const row: Record<string, any> = {
     account_id: accountId,
     fact,
@@ -753,8 +765,19 @@ export async function recordFact(accountId: string, f: MemoryFact, source: FactS
     if (vec) row.embedding = toPgVector(vec);
   } catch { /* embedding optional — write the fact anyway */ }
   try {
-    await supabase.from('agent_memory').insert(row);
-  } catch { /* best-effort */ }
+    // THE OTHER HALF OF THE DEFECT. supabase-js does NOT throw on a failed
+    // insert — it resolves with `{ error }` — so this used to sit inside a
+    // try/catch that could never catch it. A migration not yet applied, a
+    // constraint violation, a bad embedding dimension: every one of them
+    // silently dropped the fact while every counter upstream (writeEdge
+    // succeeding, decideAndWrite reporting 'written') looked exactly like
+    // success. Reading `error` explicitly, the way saveConversation already
+    // does above, is what makes that failure visible instead of swallowed.
+    const { error } = await supabase.from('agent_memory').insert(row);
+    if (error) {
+      log.warn('memory: recordFact insert failed', { accountId, error: error.message, code: (error as any).code });
+    }
+  } catch { /* best-effort — recordFact must never throw into the caller's turn */ }
 }
 
 export interface StoredFact {

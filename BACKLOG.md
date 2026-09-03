@@ -899,3 +899,45 @@ and provider caching (G1), persisted candidate health (G4), page fetch for
 research (G10), approvals decided from the Approvals page resuming the chat
 (G19), calling (G20), harvested skills default (§16), and the two dead chat
 UIs (sequences, inbox).
+
+## 20. Production probe after the 4da2d5e deploy: the tick is not running the merged code — 2026-09-03
+
+Deploy of `4da2d5e` was reported live at 13:5x UTC (`GIT_SHA=4da2d5e`,
+new PID, "Ready"). To verify §13/§19 the memory watermarks on three
+conversations were cleared at 13:57 and again on one conversation at 14:06.
+
+What production did (all from `ai_usage`, `memory_edges`, `agent_memory`,
+`app_logs`, not from any return value):
+
+| tick | conversation | prompt tokens | outcome |
+|---|---|---:|---|
+| 14:00 | 3b08d196 (457K-char transcript) | 110,375 | 146 s on gpt-oss-120b; edges written; `agent_memory` unchanged |
+| 14:00 | 28ac9366 (324K chars) | 79,239 | 47 s; edges written; unchanged |
+| 14:00 | 2ad98991 (438K chars) | 101,542 | 65 s; edges written; unchanged |
+| 14:10 | 28ac9366 again (probe) | 79,237 | identical prompt size; `agent_memory` still 0; edges 46 → 46 |
+
+Two facts contradict the merged code: (1) `renderTranscript` at `4da2d5e`
+caps the extraction prompt at `BUDGET.extractionChars` = 120,000 chars
+(~30K tokens; verified by evaluating the module at HEAD), yet every prompt
+was the WHOLE transcript at 4.1 chars/token; (2) `decideAndWrite` at
+`4da2d5e` calls `recordFact` on every 'written' edge, yet 23 edges were
+written and 0 facts. Both match the pre-#22 code exactly. A direct
+`INSERT INTO agent_memory` with the same columns succeeds (probed inside a
+rolled-back transaction), so the table is not the problem.
+
+**Conclusion: the process answering `/api/hermes/tick` is executing
+lib/memory/extract.ts and lib/ai/context-budget.ts from before PR #22/#23**,
+whatever `GIT_SHA` says. Most likely a stale `.next` server bundle or a
+second instance. Not fixable from the repo.
+
+**Done when:** a tick after a confirmed rebuild produces an `ai_usage` row
+for an extraction call with `tokens_in` under ~40,000 on one of these
+conversations, and `agent_memory` count > 0. Clear one watermark
+(`update agent_conversations set memory_extracted_at = null where id =
+'28ac9366-65e5-42eb-94f2-108ad0acbf8f'`), wait one tick, read both.
+
+Side finding from the same logs: OpenRouter credit is nearly gone. The
+"affordable" ceilings in the 402 bodies fell from 13,801 to 11,219 tokens
+(haiku) and 62,735 to 50,996 (luna) in ten minutes; only gpt-oss-120b still
+serves. The four extraction calls above cost about 370K input tokens on it.
+Top up or expect the OpenRouter tier to go dark.
