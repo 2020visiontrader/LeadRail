@@ -110,12 +110,22 @@ describe('POST /api/agent (JSON) — in-flight run bookkeeping (migration 072)',
     expect(clearConversationRunning).toHaveBeenCalledWith('conv-existing', ACC);
   });
 
-  it('does not touch the running flag for a brand-new chat with no conversationId yet', async () => {
+  it('marks and clears a BRAND-NEW chat too, using the id minted by the opening save — mirrors the stream route', async () => {
+    // Previously this route only marked a conversation running when the
+    // REQUEST already carried a conversationId, so a brand-new chat (no id
+    // until the opening save below mints one) was never marked at all. Now
+    // that the user's message is saved BEFORE runAgent runs (so it survives
+    // a turn that errors or times out — see app/api/agent/route.ts), the
+    // freshly-minted id is marked running before runAgent, and cleared after
+    // — the same guarantee an existing conversation already had.
     const { POST } = await import('@/app/api/agent/route');
     const res = await POST(makeRequest({ message: 'hello there' }));
     expect(res.status).toBe(200);
 
-    expect(markConversationRunning).not.toHaveBeenCalled();
-    expect(clearConversationRunning).not.toHaveBeenCalled();
+    expect(markConversationRunning).toHaveBeenCalledWith('conv-new', ACC);
+    expect(clearConversationRunning).toHaveBeenCalledWith('conv-new', ACC);
+    const markOrder = markConversationRunning.mock.invocationCallOrder[0];
+    const clearOrder = clearConversationRunning.mock.invocationCallOrder[0];
+    expect(markOrder).toBeLessThan(clearOrder);
   });
 });

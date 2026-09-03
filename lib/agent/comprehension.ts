@@ -123,6 +123,11 @@ export async function comprehend(input: {
   message: string;
   material?: string;
   accountId?: string;
+  /** Absolute epoch-ms deadline for the turn this pass runs in. Optional/
+   *  additive: a caller that omits it gets byte-identical (unbounded)
+   *  behaviour. This pass runs while a user is waiting on a turn, so it must
+   *  carry THAT turn's deadline — never an invented one. */
+  deadlineAt?: number;
 }): Promise<Understanding | null> {
   if (!input.message?.trim() && !input.material?.trim()) return null;
   try {
@@ -162,6 +167,7 @@ export async function comprehend(input: {
       preferTier: 'fast',
       model: COMPREHENSION_MODEL,
       accountId: input.accountId,
+      deadlineAt: input.deadlineAt,
     });
     return parseUnderstanding(raw);
   } catch {

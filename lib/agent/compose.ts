@@ -42,6 +42,12 @@ export interface ComposeInput {
   agentContext?: string;
   /** Persona system block, when one is active. */
   personaBlock?: string;
+  /** Absolute epoch-ms deadline for the turn this call belongs to. Optional/
+   *  additive: a caller that omits it gets byte-identical (unbounded)
+   *  behaviour, matching generateChat/streamChat. See lib/ai/deadline.ts.
+   *  A call made while a user is waiting on this turn must carry ITS
+   *  deadline — never a separately invented one. */
+  deadlineAt?: number;
 }
 
 /** Rewrite the route pass's draft into the answer the user actually reads.
@@ -76,6 +82,7 @@ export async function composeAnswer(
       accountId: input.accountId,
       task: 'draft',
       preferTier: 'heavy' as const,
+      deadlineAt: input.deadlineAt,
     };
 
     const response = onDelta && AGENT_COMPOSE_STREAM

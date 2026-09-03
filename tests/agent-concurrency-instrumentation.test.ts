@@ -265,6 +265,12 @@ describe('POST /api/agent — openRequests counter (JSON path)', () => {
       loadTranscriptResult: vi.fn(async () => ({ messages: [] as any[], ok: true })),
       loadCarryover: vi.fn(async () => null),
       ingestCarryoverFacts: vi.fn(async () => {}),
+      // The route marks/clears the in-flight flag for a brand-new chat too
+      // (migration 072 — see tests/agent-json-running.test.ts), using the id
+      // the opening save mints. This suite doesn't assert on those calls, but
+      // the route now makes them unconditionally, so the mock must have them.
+      markConversationRunning: vi.fn(async () => {}),
+      clearConversationRunning: vi.fn(async () => {}),
     }));
     vi.doMock('@/lib/agent/loop', () => ({
       runAgent: vi.fn(async (args: any) => {
