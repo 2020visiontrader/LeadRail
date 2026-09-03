@@ -10,8 +10,10 @@
 // 2. `recordFact` awaited a Supabase insert inside try/catch, but supabase-js
 //    resolves `{ error }` on failure rather than throwing — a failing insert
 //    was silently ignored. Fixed: the result's `error` is read and logged via
-//    `log.warn`. A rejected 'extraction' fact (secret, too long, etc.) is also
-//    now warned about (reason only, never the fact text).
+//    `log.warn`. A rejected fact, from ANY source (extraction, capability,
+//    carryover), is also now logged — via `log.request` with route
+//    'memory:record' at 'warn', reason only, never the fact text — see
+//    tests/memory-record-fact-composition.test.ts for that behaviour in full.
 //
 // This file asserts the OBSERVABILITY behaviour only — what gets logged and
 // at what level — not what gets extracted or written (that is covered by
@@ -262,29 +264,36 @@ describe('recordFact — insert failures and rejections are logged', () => {
     expect(detail.accountId).toBe('acct-1');
   });
 
-  it('(d) a rejected extraction fact warns with the reason, not the fact text, and never inserts', async () => {
+  it('(d) a rejected extraction fact is logged via log.request(route: memory:record) with the reason, not the fact text, and never inserts', async () => {
     await seedConversation('conv-1');
-    logMock.warn.mockClear();
+    logMock.request.mockClear();
     const { recordFact } = await import('@/lib/agent/memory');
 
     const secret = 'The API key is sk-live-abcdefghijklmnopqrstuvwxyz0123456789.';
     await recordFact(ACC, { fact: secret }, 'extraction');
 
-    expect(logMock.warn).toHaveBeenCalledTimes(1);
-    const [msg, detail] = logMock.warn.mock.calls[0];
-    expect(msg).toBe('memory: recordFact rejected extraction fact');
-    expect(detail.accountId).toBe(ACC);
-    expect(typeof detail.reason).toBe('string');
-    expect(detail.reason).toMatch(/secret/i);
-    // The fact text itself must never appear in the log detail.
-    expect(JSON.stringify(detail)).not.toContain('sk-live-abcdefghijklmnopqrstuvwxyz0123456789');
+    expect(logMock.request).toHaveBeenCalledTimes(1);
+    const [fields, level] = logMock.request.mock.calls[0];
+    expect(level).toBe('warn');
+    expect(fields.route).toBe('memory:record');
+    expect(fields.accountId).toBe(ACC);
+    expect(fields.detail.source).toBe('extraction');
+    expect(typeof fields.detail.reason).toBe('string');
+    expect(fields.detail.reason).toMatch(/secret/i);
+    // The fact text itself must never appear anywhere in the logged fields.
+    expect(JSON.stringify(fields)).not.toContain('sk-live-abcdefghijklmnopqrstuvwxyz0123456789');
     expect(db.agent_memory?.length ?? 0).toBe(0);
   });
 
-  it('a rejected fact from a non-extraction source does not warn (only extraction is held to this trace)', async () => {
-    logMock.warn.mockClear();
+  it('a rejected fact from a non-extraction source is also logged now (every source, not just extraction)', async () => {
+    logMock.request.mockClear();
     const { recordFact } = await import('@/lib/agent/memory');
     await recordFact(ACC, { fact: 'x'.repeat(600) }, 'capability');
-    expect(logMock.warn).not.toHaveBeenCalled();
+    expect(logMock.request).toHaveBeenCalledTimes(1);
+    const [fields, level] = logMock.request.mock.calls[0];
+    expect(level).toBe('warn');
+    expect(fields.route).toBe('memory:record');
+    expect(fields.detail.source).toBe('capability');
+    expect(fields.detail.reason).toMatch(/too long/i);
   });
 });
