@@ -69,6 +69,14 @@ vi.mock('@/lib/capabilities/delegation', () => ({
 }));
 vi.mock('@/lib/ai/hermes', () => ({ hermesRoute: async () => ({ skillIds: [] }) }));
 vi.mock('@/lib/db', () => ({ supabase: { from: () => ({}) }, dbReady: () => false }));
+// GAP 1 (leadrail assistant audit): attemptEscalation's own guard call —
+// never a real DB round-trip in these tests.
+vi.mock('@/lib/plans/store', () => ({
+  activePlanForConversation: async () => null,
+  createPlan: vi.fn(async () => ({ id: 'plan-1', steps: [{}] })),
+  MAX_PLAN_STEPS: 20,
+  MAX_STEP_OVER_ITEMS: 10,
+}));
 // Only isStopRequested is faked — everything else (including the running_since
 // comparison the in-flight watcher itself relies on) stays real.
 vi.mock('@/lib/agent/memory', async (importOriginal) => {
@@ -332,5 +340,228 @@ describe('runAgentStream (streaming) — in-flight stop (must match runAgentImpl
     resolveCall(JSON.stringify({ action: 'final', message: 'done' }));
     await promise;
     expect(events.some((e) => e.type === 'final')).toBe(true);
+  });
+});
+
+// GAP 1 (leadrail assistant audit): the three call sites 4cc7262 left
+// unwrapped — attemptEscalation, answerFromObservations, and the attachment
+// comprehension pass (comprehend, lib/agent/comprehension.ts). Same in-flight
+// watcher, same salvage path, same "both loops stay identical" requirement as
+// the describe blocks above.
+
+describe('attemptEscalation — in-flight stop (both loops)', () => {
+  it('runAgent: aborts an in-flight escalation model call and ends the turn via stopResult', async () => {
+    vi.useFakeTimers();
+    const { StoppedError } = await import('@/lib/ai/abort');
+    generateChat.mockImplementation(hangingGenerateChat(StoppedError));
+    // Escalation trips at the TOP of step 0 (deadlineAt is already inside the
+    // reserve margin), before the between-steps stopRequested() check ever
+    // runs — so every isStopRequested call here comes from the escalation
+    // call's OWN watcher, not a between-steps check.
+    isStopRequestedMock
+      .mockResolvedValueOnce(false) // watcher poll #1
+      .mockResolvedValueOnce(true); // watcher poll #2: stop
+
+    const { runAgent } = await import('@/lib/agent/loop');
+    const promise = runAgent({
+      accountId: 'acct-1', message: 'do a lot of things', conversationId: 'conv-1',
+      deadlineAt: Date.now() + 1, // already inside ESCALATION_RESERVE_MS's margin
+    });
+    promise.catch(() => {});
+
+    await vi.advanceTimersByTimeAsync(STOP_POLL_MS);
+    await vi.advanceTimersByTimeAsync(STOP_POLL_MS);
+    const res = await promise;
+
+    expect(res.status).toBe('error');
+    expect(res.message).toMatch(/stopped/i);
+    // Never fell through to "escalation declined" and the ordinary deadline
+    // salvage message — a stop is a more specific, more honest fact.
+    expect(res.message).not.toMatch(/ran out of time/i);
+    expect(generateChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('runAgentStream: aborts an in-flight escalation model call and ends the turn via emitStopFinal, mirroring runAgentImpl', async () => {
+    vi.useFakeTimers();
+    const { StoppedError } = await import('@/lib/ai/abort');
+    generateChat.mockImplementation(hangingGenerateChat(StoppedError));
+    isStopRequestedMock
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+
+    const { runAgentStream } = await import('@/lib/agent/loop');
+    const events: any[] = [];
+    const promise = runAgentStream(
+      { accountId: 'acct-1', message: 'do a lot of things', conversationId: 'conv-1', deadlineAt: Date.now() + 1 },
+      (e) => events.push(e),
+    );
+    promise.catch(() => {});
+
+    await vi.advanceTimersByTimeAsync(STOP_POLL_MS);
+    await vi.advanceTimersByTimeAsync(STOP_POLL_MS);
+    await promise;
+
+    const errorEvent = events.find((e) => e.type === 'error');
+    expect(errorEvent).toBeTruthy();
+    expect(errorEvent.message).toMatch(/stopped/i);
+    expect(events.some((e) => e.type === 'final')).toBe(false);
+    expect(generateChat).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('answerFromObservations — in-flight stop (both loops)', () => {
+  // Reaches the rescue call by exhausting the JSON-contract retries after a
+  // tool step (so there is an OBSERVATION for answerFromObservations'
+  // hasEvidence guard to find), then lets the final rescue call hang until
+  // the watcher aborts it. A stateful flag — not a fixed mockResolvedValueOnce
+  // count — drives isStopRequestedMock, so this does not depend on exactly
+  // how many between-steps/retry-loop checks the JSON-retry path makes.
+  function setupRescueScenario(StoppedError: typeof import('@/lib/ai/abort').StoppedError) {
+    runToolMock.mockResolvedValue({ ok: true, result: { subject: 'hi Markus', body: 'quick note' } });
+    generateChat.mockImplementationOnce(async () => JSON.stringify({ action: 'tool', tool: 'draftOutreach', args: { contactId: 'c1' } }));
+    // Every subsequent route-pass attempt is unparsable prose that
+    // salvageFinalMessage also rejects (starts with "{", no "message" field)
+    // — exhausts MAX_JSON_RETRIES and falls into answerFromObservations.
+    generateChat.mockImplementation(async (opts: any) => {
+      // Distinguish composeAnswer's own call (answerFromObservations) from
+      // the route pass's retries — both system prompts mention "operator
+      // copilot", but only compose.ts's buildUserTurn emits this heading
+      // (see compose.ts's buildUserTurn: '## Observations\n...').
+      const isComposeCall = Array.isArray(opts.messages)
+        && opts.messages.some((m: any) => typeof m.content === 'string' && m.content.includes('## Observations'));
+      if (isComposeCall) {
+        // This is composeAnswer's own call (answerFromObservations) — hang
+        // until the watcher aborts it.
+        return new Promise((_resolve, reject) => {
+          opts.signal?.addEventListener('abort', () => reject(new StoppedError('router: stop requested')));
+        });
+      }
+      return '{not valid json and no message field';
+    });
+  }
+
+  it('runAgent: aborts an in-flight rescue-from-observations call and ends via stopResult, not the generic "couldn\'t complete" error', async () => {
+    vi.useFakeTimers();
+    const { StoppedError } = await import('@/lib/ai/abort');
+    setupRescueScenario(StoppedError);
+    let stopped = false;
+    isStopRequestedMock.mockImplementation(async () => stopped);
+
+    const { runAgent } = await import('@/lib/agent/loop');
+    const promise = runAgent({ accountId: 'acct-1', message: 'draft outreach', conversationId: 'conv-1' });
+    promise.catch(() => {});
+
+    // Drain the tool step + JSON-retry-exhaustion, none of which hang, before
+    // the rescue call actually starts hanging.
+    for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(0);
+    stopped = true;
+    // See the streaming twin below for why several polls' worth are advanced
+    // rather than exactly one.
+    for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(STOP_POLL_MS);
+
+    const res = await promise;
+    // The tool step (step 0) already completed and left an OBSERVATION, so
+    // buildSalvageMessage has something to report — 'salvage', not the empty
+    // 'error' shape (see the earlier "salvages already-completed tool work"
+    // test above for the same distinction).
+    expect(res.status).toBe('salvage');
+    expect(res.message).toMatch(/stopped/i);
+    expect(res.message).not.toBe("I couldn't complete that request. Please rephrase and try again.");
+  });
+
+  it('runAgentStream: aborts an in-flight rescue-from-observations call and ends via emitStopFinal, mirroring runAgentImpl', async () => {
+    vi.useFakeTimers();
+    const { StoppedError } = await import('@/lib/ai/abort');
+    setupRescueScenario(StoppedError);
+    let stopped = false;
+    isStopRequestedMock.mockImplementation(async () => stopped);
+
+    const { runAgentStream } = await import('@/lib/agent/loop');
+    const events: any[] = [];
+    const promise = runAgentStream(
+      { accountId: 'acct-1', message: 'draft outreach', conversationId: 'conv-1' },
+      (e) => events.push(e),
+    );
+    promise.catch(() => {});
+
+    for (let i = 0; i < 10; i++) await vi.advanceTimersByTimeAsync(0);
+    stopped = true;
+    // The compose call's own watcher timer is created partway through the
+    // drain above, so its exact next-fire offset from "now" is not pinned to
+    // exactly one STOP_POLL_MS — advance several polls' worth to be safe
+    // rather than relying on hitting the exact first one.
+    for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(STOP_POLL_MS);
+    await promise;
+
+    // Same distinction as the runAgent twin above: the completed tool step
+    // (step 0) gives buildSalvageMessage something to report, so this ends
+    // as a terminal 'final' event (salvage: true), not a bare 'error' event
+    // — see emitStopFinal's own doc comment.
+    const finalEvents = events.filter((e) => e.type === 'final');
+    expect(finalEvents.length).toBe(1);
+    expect(finalEvents[0].salvage).toBe(true);
+    expect(finalEvents[0].message).toMatch(/stopped/i);
+    expect(finalEvents[0].message).toContain('Draft outreach email');
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+  });
+});
+
+describe('attachment comprehension pass (comprehend) — in-flight stop (both loops)', () => {
+  // withMaterialUnderstanding (lib/agent/loop.ts) runs BEFORE `messages`/
+  // `steps` exist — see initialTranscriptForStop — so this proves the turn
+  // still ends through stopResult/emitStopFinal even that early, built from
+  // the raw input rather than the loop's own transcript.
+  const ATTACHMENT_MARKER = 'ATTACHED DOCUMENTS — the user attached these to this conversation.';
+  const agentContext = `${ATTACHMENT_MARKER}\n\nsome long attached document text`;
+
+  it('runAgent: aborts an in-flight comprehension call and ends via stopResult', async () => {
+    vi.useFakeTimers();
+    const { StoppedError } = await import('@/lib/ai/abort');
+    generateChat.mockImplementation(hangingGenerateChat(StoppedError));
+    isStopRequestedMock
+      .mockResolvedValueOnce(false) // watcher poll #1
+      .mockResolvedValueOnce(true); // watcher poll #2: stop
+
+    const { runAgent } = await import('@/lib/agent/loop');
+    const promise = runAgent({
+      accountId: 'acct-1', message: 'analyse this', conversationId: 'conv-1', agentContext,
+    });
+    promise.catch(() => {});
+
+    await vi.advanceTimersByTimeAsync(STOP_POLL_MS);
+    await vi.advanceTimersByTimeAsync(STOP_POLL_MS);
+    const res = await promise;
+
+    expect(res.status).toBe('error');
+    expect(res.message).toMatch(/stopped/i);
+    // Never reached the route pass — comprehension is the very first model
+    // call in the turn.
+    expect(generateChat).toHaveBeenCalledTimes(1);
+  });
+
+  it('runAgentStream: aborts an in-flight comprehension call and ends via emitStopFinal, mirroring runAgentImpl', async () => {
+    vi.useFakeTimers();
+    const { StoppedError } = await import('@/lib/ai/abort');
+    generateChat.mockImplementation(hangingGenerateChat(StoppedError));
+    isStopRequestedMock
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true);
+
+    const { runAgentStream } = await import('@/lib/agent/loop');
+    const events: any[] = [];
+    const promise = runAgentStream(
+      { accountId: 'acct-1', message: 'analyse this', conversationId: 'conv-1', agentContext },
+      (e) => events.push(e),
+    );
+    promise.catch(() => {});
+
+    await vi.advanceTimersByTimeAsync(STOP_POLL_MS);
+    await vi.advanceTimersByTimeAsync(STOP_POLL_MS);
+    await promise;
+
+    const errorEvent = events.find((e) => e.type === 'error');
+    expect(errorEvent).toBeTruthy();
+    expect(errorEvent.message).toMatch(/stopped/i);
+    expect(generateChat).toHaveBeenCalledTimes(1);
   });
 });

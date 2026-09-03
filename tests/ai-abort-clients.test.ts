@@ -208,3 +208,194 @@ describe('openrouter — external stop signal', () => {
     await expect(openrouterChat({ messages: [{ role: 'user', content: 'hi' }] })).resolves.toBe('hi there');
   });
 });
+
+// GAP 2 (leadrail assistant audit): nim, gemini, and providers.ts's
+// anthropic/custom branches did not accept `signal` at all until now. nim
+// gets the same internal-timeout + AbortSignal.any pattern as zoask/opencode/
+// openrouter above; gemini and providers.ts's fetch-based branches had NO
+// existing timeout/AbortController to combine with, so `signal` is passed
+// straight through as the fetch's own signal instead — see each client's own
+// comment for why that is the least invasive addition, not a gap in parity.
+describe('nim — external stop signal', () => {
+  it('an external signal aborting mid-call throws StoppedError, not a timeout error', async () => {
+    process.env.NVIDIA_API_KEY = 'k';
+    fetchMock.mockImplementation(hangingFetch());
+    const { nimText } = await import('@/lib/ai/nim');
+    const ext = new AbortController();
+
+    const promise = nimText({ prompt: 'hi', signal: ext.signal });
+    ext.abort();
+
+    const err: any = await promise.catch((e) => e);
+    expect(err).toBeInstanceOf(StoppedError);
+    expect(err.code).toBe('stopped');
+    expect(String(err.message)).not.toMatch(/timed out/i);
+  });
+
+  it('a stop-caused abort does NOT try the next model in the chain', async () => {
+    process.env.NVIDIA_API_KEY = 'k';
+    fetchMock.mockImplementation(hangingFetch());
+    const { nimChat } = await import('@/lib/ai/nim');
+    const ext = new AbortController();
+
+    const promise = nimChat({ messages: [{ role: 'user', content: 'hi' }], signal: ext.signal });
+    ext.abort();
+
+    const err: any = await promise.catch((e) => e);
+    expect(err).toBeInstanceOf(StoppedError);
+    // Exactly ONE fetch — the multi-model MODEL_CHAIN never tried a second
+    // model after the stop (a StoppedError carries no `status`, so
+    // shouldTryNextModel(0) is false — see nim.ts's complete()).
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('the internal timeout still fires and reports an ordinary timeout when no external signal is given (additive guarantee)', async () => {
+    process.env.NVIDIA_API_KEY = 'k';
+    process.env.NIM_TIMEOUT_MS = '5';
+    process.env.NIM_MODEL = 'test/model'; // pin a single model so retries can't mask the timeout
+    fetchMock.mockImplementation(hangingFetch());
+    const { nimText } = await import('@/lib/ai/nim');
+
+    const err: any = await nimText({ prompt: 'hi' }).catch((e) => e);
+    expect(err).not.toBeInstanceOf(StoppedError);
+    expect(err.code).toBe('upstream');
+    expect(String(err.message)).toMatch(/timed out/i);
+    delete process.env.NIM_TIMEOUT_MS;
+    delete process.env.NIM_MODEL;
+  });
+
+  it('with no signal, a normal successful call is completely unaffected', async () => {
+    process.env.NVIDIA_API_KEY = 'k';
+    process.env.NIM_MODEL = 'test/model';
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: 'hi there' } }] }),
+    });
+    const { nimText } = await import('@/lib/ai/nim');
+
+    await expect(nimText({ prompt: 'hi' })).resolves.toBe('hi there');
+    delete process.env.NIM_MODEL;
+  });
+});
+
+describe('gemini — external stop signal', () => {
+  it('an external signal aborting mid-call throws StoppedError, not a plain abort error', async () => {
+    process.env.Gemini_api_key = 'k';
+    fetchMock.mockImplementation(hangingFetch());
+    const { generateText } = await import('@/lib/ai/gemini');
+    const ext = new AbortController();
+
+    const promise = generateText({ prompt: 'hi', signal: ext.signal });
+    ext.abort();
+
+    const err: any = await promise.catch((e) => e);
+    expect(err).toBeInstanceOf(StoppedError);
+    expect(err.code).toBe('stopped');
+  });
+
+  it('an external signal aborting a chat call throws StoppedError', async () => {
+    process.env.Gemini_api_key = 'k';
+    fetchMock.mockImplementation(hangingFetch());
+    const { generateChat } = await import('@/lib/ai/gemini');
+    const ext = new AbortController();
+
+    const promise = generateChat({ messages: [{ role: 'user', content: 'hi' }], signal: ext.signal });
+    ext.abort();
+
+    await expect(promise).rejects.toBeInstanceOf(StoppedError);
+  });
+
+  it('with no signal, a normal successful call is completely unaffected (additive guarantee)', async () => {
+    process.env.Gemini_api_key = 'k';
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ candidates: [{ content: { parts: [{ text: 'hi there' }] } }] }),
+    });
+    const { generateText } = await import('@/lib/ai/gemini');
+
+    await expect(generateText({ prompt: 'hi' })).resolves.toBe('hi there');
+  });
+});
+
+describe('providers.ts callModel (anthropic/custom kinds) — external stop signal', () => {
+  function providerRow(kind: 'anthropic' | 'custom', baseUrl: string | null): any {
+    return {
+      id: 'p1', account_id: 'a1', name: 'Test Provider', kind,
+      base_url: baseUrl, api_key_encrypted: null, enabled: true,
+      created_at: '', updated_at: '',
+    };
+  }
+  function modelRow(): any {
+    return {
+      id: 'm1', provider_id: 'p1', model_id: 'test-model', label: null,
+      tier: 'balanced', good: [], reliable: true, enabled: true,
+      max_output_tokens: null, context_window: null,
+    };
+  }
+
+  it('anthropic: an external signal aborting mid-call throws StoppedError', async () => {
+    process.env.ANTHROPIC_API_KEY = 'k';
+    fetchMock.mockImplementation(hangingFetch());
+    const { callModel } = await import('@/lib/ai/providers');
+    const ext = new AbortController();
+
+    const promise = callModel(
+      { provider: providerRow('anthropic', null), model: modelRow() },
+      { prompt: 'hi', signal: ext.signal },
+    );
+    ext.abort();
+
+    const err: any = await promise.catch((e) => e);
+    expect(err).toBeInstanceOf(StoppedError);
+    expect(err.code).toBe('stopped');
+  });
+
+  it('anthropic: with no signal, a normal successful call is completely unaffected (additive guarantee)', async () => {
+    process.env.ANTHROPIC_API_KEY = 'k';
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ content: [{ text: 'hi there' }] }),
+    });
+    const { callModel } = await import('@/lib/ai/providers');
+
+    await expect(callModel(
+      { provider: providerRow('anthropic', null), model: modelRow() },
+      { prompt: 'hi' },
+    )).resolves.toBe('hi there');
+  });
+
+  it('custom (openai-compatible): an external signal aborting mid-call throws StoppedError', async () => {
+    // 'custom' kind has no dedicated KIND_ENV_KEY entry — decryptProviderKey
+    // resolves it by base_url host instead (see providers.ts), so an
+    // openrouter.ai base_url picks up OPENROUTER_API_KEY without needing the
+    // vault/crypto path.
+    process.env.OPENROUTER_API_KEY = 'k';
+    fetchMock.mockImplementation(hangingFetch());
+    const { callModel } = await import('@/lib/ai/providers');
+    const ext = new AbortController();
+
+    const promise = callModel(
+      { provider: providerRow('custom', 'https://openrouter.ai/api/v1'), model: modelRow() },
+      { prompt: 'hi', signal: ext.signal },
+    );
+    ext.abort();
+
+    const err: any = await promise.catch((e) => e);
+    expect(err).toBeInstanceOf(StoppedError);
+    expect(err.code).toBe('stopped');
+  });
+
+  it('custom (openai-compatible): with no signal, a normal successful call is completely unaffected (additive guarantee)', async () => {
+    process.env.OPENROUTER_API_KEY = 'k';
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ choices: [{ message: { content: 'hi there' } }] }),
+    });
+    const { callModel } = await import('@/lib/ai/providers');
+
+    await expect(callModel(
+      { provider: providerRow('custom', 'https://openrouter.ai/api/v1'), model: modelRow() },
+      { prompt: 'hi' },
+    )).resolves.toBe('hi there');
+  });
+});

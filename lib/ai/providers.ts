@@ -24,6 +24,7 @@ import { zoAskConfigured, zoAskText, zoAskChat } from './zoask';
 import { nimConfigured, nimText, nimChat, nimStreamChat } from './nim';
 import * as gemini from './gemini';
 import { reportOpenAIUsage } from './usage';
+import { StoppedError } from './abort';
 
 export type ProviderKind = 'anthropic' | 'zoask' | 'opencode' | 'nim' | 'gemini' | 'custom';
 export type ModelTier = 'fast' | 'balanced' | 'heavy';
@@ -533,10 +534,8 @@ export interface CallModelOpts {
   maxOutputCeiling?: number;
   /** External abort for an in-flight cooperative stop (lib/agent/
    *  stop-watch.ts). Optional/additive: omitted, behaviour is unchanged.
-   *  Forwarded to the zoask/opencode branches below, which support it; other
-   *  provider kinds (nim, gemini, anthropic, custom) do not yet accept it —
-   *  a call on one of those behaves exactly as before regardless of this
-   *  field, since those branches never read it. */
+   *  Forwarded to every branch below (zoask, opencode, nim, gemini,
+   *  anthropic, custom). */
   signal?: AbortSignal;
 }
 
@@ -568,14 +567,14 @@ export async function callModel(resolved: ResolvedModel, opts: CallModelOpts): P
     case 'nim': {
       if (!nimConfigured()) throw Object.assign(new Error('NIM is not connected'), { code: 'not_configured' });
       return isChat
-        ? nimChat({ system: opts.system, messages: opts.messages!, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens })
-        : nimText({ system: opts.system, prompt: opts.prompt || '', temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens });
+        ? nimChat({ system: opts.system, messages: opts.messages!, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, signal: opts.signal })
+        : nimText({ system: opts.system, prompt: opts.prompt || '', temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, signal: opts.signal });
     }
     case 'gemini': {
       if (!gemini.geminiConfigured()) throw Object.assign(new Error('Gemini is not connected'), { code: 'not_configured' });
       return isChat
-        ? gemini.generateChat({ system: opts.system, messages: opts.messages as any, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens })
-        : gemini.generateText({ system: opts.system, prompt: opts.prompt || '', temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens });
+        ? gemini.generateChat({ system: opts.system, messages: opts.messages as any, temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, signal: opts.signal })
+        : gemini.generateText({ system: opts.system, prompt: opts.prompt || '', temperature: opts.temperature, maxOutputTokens: opts.maxOutputTokens, signal: opts.signal });
     }
     case 'anthropic':
       return callAnthropic(provider, model, opts, isChat);
@@ -646,16 +645,28 @@ async function callOpenAiCompatible(provider: AiProviderRow, model: AiModelRow, 
   } else {
     messages.push({ role: 'user', content: opts.prompt || '' });
   }
-  const res = await fetch(`${base}/chat/completions`, {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      model: model.model_id,
-      messages,
-      temperature: opts.temperature ?? 0.7,
-      max_tokens: opts.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
-    }),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${base}/chat/completions`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: model.model_id,
+        messages,
+        temperature: opts.temperature ?? 0.7,
+        max_tokens: opts.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
+      }),
+      // No existing timeout/AbortController here to combine with (unlike
+      // zoask/opencode/nim) — passed straight through as the fetch's own
+      // signal, the least invasive addition consistent with those clients.
+      signal: opts.signal,
+    });
+  } catch (e: any) {
+    // The CALLER's signal firing is a stop, not an ordinary transport
+    // failure — see zoask.ts's matching comment.
+    if (opts.signal?.aborted) throw new StoppedError(`${provider.name} call aborted: stop requested`);
+    throw e;
+  }
   if (!res.ok) {
     const detail = (await res.text().catch(() => '')).slice(0, 300);
     const err: any = new Error(`${provider.name} failed (${res.status})`);
@@ -691,15 +702,26 @@ async function callAnthropic(provider: AiProviderRow, model: AiModelRow, opts: C
   if (opts.system) body.system = opts.system;
   if (opts.temperature != null) body.temperature = opts.temperature;
 
-  const res = await fetch(`${base}/messages`, {
-    method: 'POST',
-    headers: {
-      'x-api-key': key,
-      'anthropic-version': '2023-06-01',
-      'content-type': 'application/json',
-    },
-    body: JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${base}/messages`, {
+      method: 'POST',
+      headers: {
+        'x-api-key': key,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+      // Same as callOpenAiCompatible above: no existing internal timeout to
+      // combine with, so the caller's signal is passed straight through —
+      // the least invasive addition consistent with zoask/opencode/nim's
+      // AbortSignal.any pattern.
+      signal: opts.signal,
+    });
+  } catch (e: any) {
+    if (opts.signal?.aborted) throw new StoppedError(`${provider.name} call aborted: stop requested`);
+    throw e;
+  }
   if (!res.ok) {
     const detail = (await res.text().catch(() => '')).slice(0, 300);
     const err: any = new Error(`${provider.name} failed (${res.status})`);

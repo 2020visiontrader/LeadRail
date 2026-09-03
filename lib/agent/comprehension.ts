@@ -31,6 +31,7 @@
 
 import { generateChat } from '@/lib/ai/router';
 import { extractJson } from './json-envelope';
+import { StoppedError } from '@/lib/ai/abort';
 
 export interface Understanding {
   /** What the user actually wants, restated in the comprehension pass's own
@@ -128,6 +129,12 @@ export async function comprehend(input: {
    *  behaviour. This pass runs while a user is waiting on a turn, so it must
    *  carry THAT turn's deadline — never an invented one. */
   deadlineAt?: number;
+  /** External abort signal — see lib/agent/stop-watch.ts's withStopWatch,
+   *  which the caller wraps this call in so a user Stop can interrupt this
+   *  pass the same way it interrupts every other in-flight model call.
+   *  Optional/additive: omitted, behaviour is byte-identical to before this
+   *  existed (no signal ever threaded to generateChat). */
+  signal?: AbortSignal;
 }): Promise<Understanding | null> {
   if (!input.message?.trim() && !input.material?.trim()) return null;
   try {
@@ -168,9 +175,18 @@ export async function comprehend(input: {
       model: COMPREHENSION_MODEL,
       accountId: input.accountId,
       deadlineAt: input.deadlineAt,
+      signal: input.signal,
     });
     return parseUnderstanding(raw);
-  } catch {
+  } catch (e) {
+    // Every other failure here degrades to null (see this function's doc
+    // comment — comprehension must never be a new way for a turn to fail).
+    // A STOP is the one exception, mirroring composeAnswer's own comment:
+    // rethrown so the caller (lib/agent/loop.ts's withMaterialUnderstanding)
+    // can end the turn through the same stop-salvage path every other
+    // in-flight stop uses, instead of silently proceeding as if nothing was
+    // attached.
+    if (e instanceof StoppedError) throw e;
     return null;
   }
 }
