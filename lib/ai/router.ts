@@ -462,6 +462,52 @@ function failureUsage(size: CallSize, captured: CapturedUsage): {
   };
 }
 
+/**
+ * What to record as tokens for an attempt that SUCCEEDED (context audit C11).
+ *
+ * Zo Ask — the primary tier — never returns a usage block at all, so before
+ * this every one of its successful calls logged tokens_in NULL: 299 of 299 in
+ * the 14 days that prompted this audit, roughly 60% of spend invisible to
+ * ai_usage. The failure path already had an estimate to fall back on
+ * (`failureUsage` above); the success path had none, because a candidate that
+ * ANSWERED felt like it should have real numbers — but "answered" and
+ * "reported usage" are independent facts, and Zo Ask satisfies the first
+ * while never satisfying the second.
+ *
+ * Same two rules as `failureUsage`, extended to the output side because here,
+ * unlike a failed call, we actually have the completion text to estimate from:
+ *
+ *  1. A provider that reported real tokensIn keeps its own numbers untouched —
+ *     a measurement always beats an estimate, including for whatever it said
+ *     about tokensOut (which might itself be null; that is the provider's own
+ *     honest gap, not ours to fill).
+ *  2. Otherwise both tokensIn (`size.promptTokens`, the same estimate
+ *     eligibility.ts::estimateTokens produced to size this very call) and
+ *     tokensOut (`estimateTokens(text)`, the actual returned completion) are
+ *     recorded as `usageSource: 'estimated'`. `usageStatus` is left at
+ *     whatever the capture scope actually observed about the PROVIDER — an
+ *     estimate can never be read back as a provider-reported figure. See the
+ *     ESTIMATES ON FAILURE block in lib/ai/usage.ts, which this mirrors.
+ *
+ * Checked on `tokensIn` specifically, not just `status === 'reported'`: a
+ * provider could in principle report a usage block that omits tokensIn (some
+ * dialect that only ever fills tokensOut) — that is still "the provider told
+ * us nothing about the input side", so it falls to the estimate branch rather
+ * than being read as a measurement that isn't there.
+ */
+export function successUsage(size: CallSize, captured: CapturedUsage, text: string): {
+  usage: TokenUsage; status: UsageStatus; source: UsageSource;
+} {
+  if (captured.status === 'reported' && captured.usage && captured.usage.tokensIn != null) {
+    return { usage: captured.usage, status: 'reported', source: 'provider' };
+  }
+  return {
+    usage: { tokensIn: size.promptTokens, tokensOut: estimateTokens(text) },
+    status: captured.status,
+    source: 'estimated',
+  };
+}
+
 async function runCandidates(
   fn: string,
   candidates: Candidate[],
@@ -533,9 +579,10 @@ async function runCandidates(
       // migration 060 the two were the same column, so a model answering in
       // prose was indistinguishable from a real success.
       if (accountId) {
+        const usage = successUsage(size, outcome, text);
         void logUsage({
           accountId, candidate, kind, ok: true, latencyMs,
-          usage: outcome.usage, usageStatus: outcome.status, usageSource: outcome.source,
+          usage: usage.usage, usageStatus: usage.status, usageSource: usage.source,
           timingMs: outcome.timingMs, timingStatus: outcome.timingStatus, timingSource: outcome.timingSource,
           conversationId: trace?.conversationId,
         })
