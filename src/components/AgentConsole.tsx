@@ -325,6 +325,12 @@ const TOOL_VERB: Record<string, string> = {
   getCampaignAnalytics: 'Rolling up campaign spend',
   // --- added by the diagnostics domain (2026-08-23) ---
   diagnosePipeline: 'Checking the pipeline for stalled deals',
+  // --- added by the Gmail domain (2026-09-03) ---
+  listGmailMessages: 'Checking your Gmail inbox',
+  getGmailMessage: 'Reading that email',
+  sendGmailEmail: 'Preparing to send that email',
+  markGmailMessageRead: 'Marking that email',
+  archiveGmailMessage: 'Archiving that email',
 };
 const verbFor = (tool: string, title: string) => TOOL_VERB[tool] || title || 'Working';
 

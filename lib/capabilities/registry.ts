@@ -44,6 +44,7 @@ import { SUPPRESSION_CAPABILITIES } from './suppressions';
 import { INBOX_CAPABILITIES } from './inbox';
 import { DIAGNOSTICS_CAPABILITIES } from './diagnostics';
 import { SKILL_LOOKUP_CAPABILITIES } from './skill-lookup';
+import { GMAIL_CAPABILITIES } from './gmail';
 import { METRICS_BY_NAME } from './metrics-port';
 
 // Two-stage tool catalog (Packet 10.3, flipped 2026-09-03 — C6). The full,
@@ -109,6 +110,7 @@ const ALL: Capability[] = [
   ...INBOX_CAPABILITIES,
   ...DIAGNOSTICS_CAPABILITIES,
   ...SKILL_LOOKUP_CAPABILITIES,
+  ...GMAIL_CAPABILITIES,
 ].filter((c) => AGENT_STAGED_CATALOG || !STAGED_ONLY.includes(c.name));
 
 // CATALOG ORDER — the exact key order of the original TOOLS object literal in
@@ -236,6 +238,11 @@ const CATALOG_ORDER: string[] = [
   // disagreed (54/56/61). These count in SQL and return a total plus optional
   // per-group counts. Appended, never sorted, same reason as every entry above.
   'countLeads', 'countDeals', 'countCompanies',
+  // --- appended 2026-09-03: Gmail domain. A complete Gmail integration
+  // (lib/email/gmail.ts) shipped with OAuth wired and zero call sites — the
+  // assistant denied it could reach a connected mailbox because no tool
+  // existed to try. Appended, never sorted, same reason as every entry above.
+  'listGmailMessages', 'getGmailMessage', 'sendGmailEmail', 'markGmailMessageRead', 'archiveGmailMessage',
 ];
 
 const byName = new Map(ALL.map((c) => [c.name, c]));

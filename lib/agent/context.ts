@@ -193,6 +193,35 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
     } catch { return null; /* social section omitted */ }
   })();
 
+  // --- Connected email accounts ---------------------------------------------
+  // THE DEFECT THIS CLOSES. Asked whether it could reach the owner's Gmail,
+  // the model answered "no" — with ZERO tool calls — because nothing in its
+  // context said a mailbox was connected. A working Gmail integration existed
+  // (lib/email/gmail.ts) with real tool wrappers now in lib/capabilities/gmail.ts,
+  // but a model that doesn't know a connection exists has no reason to try
+  // calling any of them. This block is the fix: state the connection as fact,
+  // the same way the social section above does for social accounts.
+  //
+  // Identity + health only — provider, address, whether it's usable right now.
+  // NEVER secret_encrypted or secret_ref, which carry the refresh token.
+  // Omitted entirely when nothing is connected, same discipline as the social
+  // section: an empty header would invite the model to claim a connection it
+  // doesn't have.
+  const emailSection = (async () => {
+    try {
+      const { getGmailAccount } = await import('@/lib/email/gmail-account');
+      const account = await getGmailAccount(accountId);
+      if (!account || account.status === 'disconnected') return null;
+      const lines = ['CONNECTED EMAIL ACCOUNTS (source: live database):'];
+      const healthy = account.status === 'connected';
+      lines.push(
+        `- Gmail: ${account.address} (${healthy ? 'connected' : `needs reconnecting — ${account.last_error || 'last action failed'}`}). ` +
+        'Use listGmailMessages / getGmailMessage to read it, sendGmailEmail to send from it.',
+      );
+      return lines.join('\n');
+    } catch { return null; /* email section omitted */ }
+  })();
+
   // --- Durable memory: facts learned across sessions -----------------------
   // Deliberately the LOWEST-authority section and placed LAST: everything
   // above is read live from the database on this exact turn; this is recalled
@@ -292,8 +321,8 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
     } catch { return null; /* a failed read must not blank the whole context */ }
   })();
 
-  const [venture, snapshot, outbox, social, memory, subjectMemory, plan, attachments] = await Promise.all([
-    ventureSection, snapshotSection, outboxSection, socialSection, memorySection, subjectMemorySection, planSection, attachmentSection,
+  const [venture, snapshot, outbox, social, email, memory, subjectMemory, plan, attachments] = await Promise.all([
+    ventureSection, snapshotSection, outboxSection, socialSection, emailSection, memorySection, subjectMemorySection, planSection, attachmentSection,
   ]);
 
   const sections: string[] = [PLATFORM_BRIEF];
@@ -304,7 +333,9 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
   // The outbox sits right after the account snapshot: both are live counts, and
   // the one thing the model must not do is reason about outreach before it has
   // read what actually went out.
-  for (const s of [venture, snapshot, outbox, social, memory, subjectMemory, plan]) if (s) sections.push(s);
+  // email sits right after social — both are "what's connected" identity
+  // blocks, and grouping them keeps the connections story in one place.
+  for (const s of [venture, snapshot, outbox, social, email, memory, subjectMemory, plan]) if (s) sections.push(s);
   // LAST, deliberately. Untrusted document text goes closest to the user's own
   // message so the boundary between "what the platform knows" and "what a file
   // claims" is unambiguous — and so no trusted instruction follows it, which is

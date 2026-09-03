@@ -215,16 +215,29 @@ export async function decideAndWrite(
   // because writeEdge succeeding looked identical to success from every log
   // line and every counter this job emits.
   //
-  // Only on a genuinely NEW edge (`written`, not `recurrence`): agent_memory has
-  // no occurrence-counting or supersession model, so recording every repeat
-  // mention would just accumulate duplicate rows for one fact restated many
-  // times — the same failure mode `writeEdge`'s recurrence branch exists to
-  // avoid, one layer up. `recordFact` re-applies its own secret/length guard
-  // independently (defense in depth: two call sites must NOT drift into only
-  // one of them enforcing it), and is itself best-effort — a failure here must
-  // not undo the edge already written, so it is swallowed, not surfaced as a
-  // skip the caller would misread as "this fact was rejected".
-  if (res.outcome === 'written') {
+  // PRODUCTION PROBE DISPROVED THE FIRST VERSION OF THIS FIX. It originally
+  // called recordFact only `on 'written' (a genuinely new edge)`, reasoning
+  // that recordFact's bare INSERT had no dedupe and would otherwise pile up
+  // duplicate rows for one fact restated many times. That reasoning was
+  // backwards for the backfill case: a conversation already extracted once has
+  // ALL of its edges already existing, so re-extracting it — the exact path
+  // that has to repopulate agent_memory for every account's existing
+  // knowledge — produces only `recurrence` outcomes, never `written`. Gating
+  // on novelty meant agent_memory could NEVER converge to non-empty for
+  // anything already known to the graph: a real conversation re-extracted in
+  // production came back with 46/46 edges as recurrences and 0 agent_memory
+  // rows written. So `recordFact` is now called on BOTH `written` and
+  // `recurrence` — the dedupe that novelty-gating existed to approximate now
+  // lives inside `recordFact` itself (see lib/agent/memory.ts: it checks for
+  // an existing equivalent fact for this account before inserting), so a
+  // repeat mention converges to the same row instead of accumulating
+  // duplicates, and the table can actually fill from what the graph already
+  // knows. `recordFact` re-applies its own secret/length guard independently
+  // (defense in depth: two call sites must NOT drift into only one of them
+  // enforcing it), and is itself best-effort — a failure here must not undo
+  // the edge already written, so it is swallowed, not surfaced as a skip the
+  // caller would misread as "this fact was rejected".
+  {
     try {
       await recordFact(accountId, {
         fact,

@@ -154,6 +154,10 @@ describe('Regression Guard 1: Sensitive Baseline', () => {
     'resumeAllSocialAutomations',
     'scheduleSocialPost',
     'sendEmail',
+    // Gmail domain (2026-09-03): sends a real email from the connected Gmail
+    // mailbox to a real person, gated exactly like sendEmail above — same
+    // risk class, same approval flow.
+    'sendGmailEmail',
     'sendSocialMessage',
     'setAdStatus',
     'sourceLeads',
