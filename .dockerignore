@@ -1,0 +1,14 @@
+node_modules
+.next
+.git
+.env*
+!.env.example
+!.env.local.example
+outreach
+scripts/_watch_memory_convergence.sh
+*.md
+Testing
+playwright-report
+test-results
+.vercel
+npm-debug.log*
