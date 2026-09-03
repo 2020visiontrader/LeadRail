@@ -39,6 +39,7 @@ import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
 import { composeAnswer } from './compose';
 import { stripAiMarkers } from '@/lib/ai/humanizer';
 import { createApproval, consumeApprovalForExecution, markApprovedByToolAndArgs, recordExecutedApproval, ApprovalExecutionError } from '@/lib/approvals/store';
+import { checkPendingApprovalShortCircuit } from './continuation-shortcircuit';
 import { consumeGrant, isGrantable } from '@/lib/approvals/grants';
 import { markParseOutcome } from '@/lib/credits';
 import { log } from '@/lib/logger';
@@ -1645,6 +1646,25 @@ async function withMaterialUnderstanding(
 
 async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
   const { accountId, brandContext } = rawInput;
+
+  // PENDING-APPROVAL CONTINUATION SHORT-CIRCUIT — see
+  // lib/agent/continuation-shortcircuit.ts for the full rationale and the
+  // exact-match allow-list. Checked first, before any other work in the
+  // turn, so a contentless "continue" while an approval is pending makes NO
+  // model call at all. Excluded from the two cases that are never a plain
+  // "keep going": input.approve (this call IS the resume, executing an
+  // already-approved call) and isDelegate (a sub-run's message is the
+  // parent's synthesized sub-task, not something a person typed).
+  if (!rawInput.approve && !rawInput.isDelegate) {
+    const shortCircuit = await checkPendingApprovalShortCircuit(accountId, rawInput.conversationId, rawInput.message);
+    if (shortCircuit) {
+      const messages: StoredMessage[] = capTranscript(rawInput.transcript || []);
+      if (rawInput.message) messages.push({ role: 'user', content: rawInput.message, ...(rawInput.userMessageId ? { id: rawInput.userMessageId } : {}) });
+      messages.push({ role: 'assistant', content: shortCircuit.reply });
+      return { status: 'done', message: shortCircuit.reply, transcript: messages, steps: [], skillSlugs: [] };
+    }
+  }
+
   // Computed BEFORE anything else in the turn — see computeTurnDeadline's
   // comment — so every model call further down (step loop, forced-final)
   // measures against the same start-of-turn instant.
@@ -2378,6 +2398,24 @@ function emitAnalysis(emit: (e: AgentEvent) => void, analysis: Analysis | null):
 // "harmonize" the streaming/compose paths.
 async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent) => void): Promise<void> {
   const { accountId, brandContext } = rawInput;
+
+  // PENDING-APPROVAL CONTINUATION SHORT-CIRCUIT — identical to runAgentImpl's
+  // (CLAUDE.md: the two loops must stay identical). Emits the same shape a
+  // normal final answer emits — `final_delta` tokens then `final` — so the
+  // UI renders this exactly like any other assistant message, with no model
+  // call anywhere in the turn. See lib/agent/continuation-shortcircuit.ts.
+  if (!rawInput.approve && !rawInput.isDelegate) {
+    const shortCircuit = await checkPendingApprovalShortCircuit(accountId, rawInput.conversationId, rawInput.message);
+    if (shortCircuit) {
+      const messages: StoredMessage[] = capTranscript(rawInput.transcript || []);
+      if (rawInput.message) messages.push({ role: 'user', content: rawInput.message, ...(rawInput.userMessageId ? { id: rawInput.userMessageId } : {}) });
+      messages.push({ role: 'assistant', content: shortCircuit.reply });
+      await streamTokens(shortCircuit.reply, emit);
+      emit({ type: 'final', message: shortCircuit.reply, transcript: messages, skillSlugs: [] });
+      return;
+    }
+  }
+
   // Computed BEFORE anything else in the turn — see computeTurnDeadline's
   // comment and the identical placement in runAgentImpl above (CLAUDE.md:
   // the two loops must stay identical).
