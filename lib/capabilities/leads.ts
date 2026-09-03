@@ -1,5 +1,8 @@
 import { z } from 'zod';
-import { supabase, getContacts, updateContact, createContact, assertBrandOwned } from '@/lib/db';
+import {
+  supabase, getContacts, updateContact, createContact, assertBrandOwned,
+  countContacts, countContactsGrouped,
+} from '@/lib/db';
 import { searchPeople, matchPerson } from '@/lib/integrations/apollo';
 import { listTags, addTagToContact } from '@/lib/tags';
 import {
@@ -64,6 +67,52 @@ export const LEAD_CAPABILITIES: Capability[] = [
         `${plural(rows.length, 'lead')} returned.`,
         by ? `By status: ${by}.` : null,
         names.length ? `Includes: ${names.join(', ')}.` : null,
+      );
+    },
+  },
+  {
+    name: 'countLeads',
+    domain: 'leads',
+    title: 'Count leads',
+    description: "Count leads/contacts across the account WITHOUT fetching any rows — use this instead of listLeads whenever the question is 'how many', not 'which ones'. Optionally scope to one venture with brandId, filter by status/segment/tag, and/or break the total down with groupBy (brand, status, or segment). The result is a total plus, if groupBy is set, a small list of per-group counts — never the underlying rows.",
+    gate: 'read',
+    inputSchema: obj({ brandId: S.string, status: S.string, segment: S.string, tag: S.string, groupBy: S.string }),
+    zod: z.object({
+      brandId: z.string().optional(),
+      status: z.string().optional(),
+      segment: z.string().optional(),
+      tag: z.string().optional(),
+      groupBy: z.enum(['brand', 'status', 'segment']).optional(),
+    }),
+    run: async (accountId, { brandId, status, segment, tag, groupBy }) => {
+      if (brandId) {
+        const owned = await assertBrandOwned(brandId, accountId);
+        if (!owned) throw new Error('Brand not found');
+      }
+      const filters = { brandId, status, segment, tag };
+      const total = await countContacts(accountId, filters);
+      if (!groupBy) return { total };
+      // Capped, not silently truncated into something misleading: `total`
+      // above is always the real full count; this is just the largest groups
+      // (countContactsGrouped orders by count desc). Bounds the result size
+      // regardless of how many distinct values a freeform field happens to
+      // have on a given account — measured to matter at 60 groups, well
+      // inside what a real account could have on a high-cardinality field.
+      const groups = (await countContactsGrouped(accountId, groupBy, filters)).slice(0, 25);
+      return { total, groupBy, groups };
+    },
+    // Truthful: `total` and `groups` are exactly what the aggregate query
+    // computed — never a count of rows the model happened to see elsewhere.
+    digest: (_args, result) => {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) return '';
+      if (!present(result, 'total')) return '';
+      const groups = Array.isArray((result as any).groups) ? (result as any).groups : null;
+      const byGroup = groups && groups.length
+        ? groups.slice(0, 8).map((g: any) => `${g.value}: ${g.count}`).join(', ')
+        : null;
+      return digestLine(
+        `${plural(Number((result as any).total), 'lead')} total.`,
+        byGroup ? `By ${(result as any).groupBy}: ${byGroup}.` : null,
       );
     },
   },

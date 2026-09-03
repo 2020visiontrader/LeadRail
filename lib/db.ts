@@ -66,6 +66,55 @@ export async function getContacts(
   return data;
 }
 
+/**
+ * Count contacts/leads without fetching rows — the aggregate PostgREST
+ * already gives us (`count: 'exact', head: true`), never a JS tally over
+ * fetched rows. Same tenancy/soft-delete scoping as getContacts. `tag`
+ * filters via an inner join to contact_tags/tags (still head:true — no rows
+ * come back, only the count of matching rows).
+ */
+export async function countContacts(
+  accountId: string,
+  filters: { brandId?: string; status?: string; segment?: string; tag?: string } = {},
+): Promise<number> {
+  const { brandId, status, segment, tag } = filters;
+  let q = tag
+    ? supabase.from('contacts').select('id, contact_tags!inner(tags!inner(name))', { count: 'exact', head: true })
+    : supabase.from('contacts').select('id', { count: 'exact', head: true });
+  q = q.eq('account_id', accountId).is('deleted_at', null);
+  if (brandId) q = q.eq('brand_id', brandId);
+  if (status) q = q.eq('status', status);
+  if (segment) q = q.eq('segment', segment);
+  if (tag) q = q.eq('contact_tags.tags.name', tag);
+  const { count, error } = await q;
+  if (error) throw error;
+  return count ?? 0;
+}
+
+/**
+ * Grouped contact counts — one row per group value, computed entirely in
+ * Postgres by count_leads_grouped (migration 084). PostgREST cannot express
+ * a GROUP BY aggregate portably here, so the grouping lives in a SQL
+ * function rather than being tallied over fetched rows in JS.
+ */
+export async function countContactsGrouped(
+  accountId: string,
+  groupBy: 'brand' | 'status' | 'segment',
+  filters: { brandId?: string; status?: string; segment?: string; tag?: string } = {},
+): Promise<{ value: string; count: number }[]> {
+  const { brandId, status, segment, tag } = filters;
+  const { data, error } = await supabase.rpc('count_leads_grouped', {
+    p_account_id: accountId,
+    p_group_by: groupBy,
+    p_brand_id: brandId ?? null,
+    p_status: status ?? null,
+    p_segment: segment ?? null,
+    p_tag: tag ?? null,
+  });
+  if (error) throw error;
+  return (data ?? []).map((r: any) => ({ value: r.group_value, count: Number(r.n) }));
+}
+
 export async function getContact(id: string, accountId: string) {
   const { data, error } = await supabase
     .from('contacts')

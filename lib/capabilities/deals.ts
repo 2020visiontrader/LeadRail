@@ -4,10 +4,14 @@
 // this file fills the read/update/delete/activity surface the plan flagged
 // as missing.
 import { z } from 'zod';
-import { getDeals, getDeal, updateDeal, deleteDeal, getActivities, createActivity } from '@/lib/crm';
+import { assertBrandOwned } from '@/lib/db';
+import {
+  getDeals, getDeal, updateDeal, deleteDeal, getActivities, createActivity,
+  countDeals, countDealsGrouped,
+} from '@/lib/crm';
 import {
   obj, S, type Capability,
-  rowsOf, plural, tally, samples, digestLine, projectRows,
+  present, rowsOf, plural, tally, samples, digestLine, projectRows,
 } from './types';
 
 /** Fields listDeals returns per row — only those actually present on a given
@@ -43,6 +47,46 @@ export const DEAL_CAPABILITIES: Capability[] = [
         `${plural(rows.length, 'deal')} returned.`,
         byStatus ? `By status: ${byStatus}.` : null,
         names.length ? `Includes: ${names.join(', ')}.` : null,
+      );
+    },
+  },
+  {
+    name: 'countDeals',
+    domain: 'deals',
+    title: 'Count deals',
+    description: "Count deals in the pipeline WITHOUT fetching any rows — use this instead of listDeals whenever the question is 'how many', not 'which ones'. Optionally scope to one venture with brandId, filter by stage (the pipeline stage's name), and/or break the total down with groupBy (brand or stage). The result is a total plus, if groupBy is set, a small list of per-group counts — never the underlying rows.",
+    gate: 'read',
+    inputSchema: obj({ brandId: S.string, stage: S.string, groupBy: S.string }),
+    zod: z.object({
+      brandId: z.string().optional(),
+      stage: z.string().optional(),
+      groupBy: z.enum(['brand', 'stage']).optional(),
+    }),
+    run: async (accountId, { brandId, stage, groupBy }) => {
+      if (brandId) {
+        const owned = await assertBrandOwned(brandId, accountId);
+        if (!owned) throw new Error('Brand not found');
+      }
+      const filters = { brandId, stage };
+      const total = await countDeals(accountId, filters);
+      if (!groupBy) return { total };
+      // Capped, not silently truncated into something misleading — see the
+      // matching note on countLeads in lib/capabilities/leads.ts.
+      const groups = (await countDealsGrouped(accountId, groupBy, filters)).slice(0, 25);
+      return { total, groupBy, groups };
+    },
+    // Truthful: `total` and `groups` are exactly what the aggregate query
+    // computed — never a count of rows the model happened to see elsewhere.
+    digest: (_args, result) => {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) return '';
+      if (!present(result, 'total')) return '';
+      const groups = Array.isArray((result as any).groups) ? (result as any).groups : null;
+      const byGroup = groups && groups.length
+        ? groups.slice(0, 8).map((g: any) => `${g.value}: ${g.count}`).join(', ')
+        : null;
+      return digestLine(
+        `${plural(Number((result as any).total), 'deal')} total.`,
+        byGroup ? `By ${(result as any).groupBy}: ${byGroup}.` : null,
       );
     },
   },
