@@ -137,6 +137,129 @@ function videoNote(): string {
 }
 
 /**
+ * Look for an existing successfully-extracted attachment with byte-identical
+ * text (C5 residual — see `attachmentContextBlock`'s header, which dedupes
+ * the same content at RENDER time but never stopped it being CREATED nine
+ * times over in production: a 34,456-char voice transcript, three unbound
+ * rows plus two copies each in two conversations, each with its own storage
+ * object). This is the CREATE-time half of that fix.
+ *
+ * A cheap column pre-filter (same account, same `chars`, same `bytes`) keeps
+ * this to a handful of candidate rows; `extracted_text` equality is then
+ * checked in code with the same SHA-256 the render path already uses, so two
+ * files that happen to share a length by coincidence are never conflated.
+ *
+ * LIBRARY ROWS ARE EXCLUDED. A `scope='library'` row is account-wide by
+ * design and has `conversation_id = NULL` for that reason, not because it is
+ * an ordinary unbound upload waiting to be claimed. Treating it as a normal
+ * dedupe candidate would let `reuseDuplicateAttachment` "bind" the account's
+ * library document to whichever chat happened to re-upload the same text —
+ * silently turning an account-wide document into a conversation-scoped one.
+ * `scope` is `NOT NULL DEFAULT 'conversation'` (migration 067), so `.neq`
+ * here never has to worry about excluding a NULL scope by accident.
+ *
+ * Never throws — any DB error here must fall through to the ordinary
+ * upload+insert path exactly as if no duplicate existed, never block an
+ * upload that would otherwise succeed.
+ */
+async function findDuplicateAttachment(
+  accountId: string,
+  text: string,
+  bytes: number,
+): Promise<Attachment | null> {
+  try {
+    const { data, error } = await supabase
+      .from('assistant_attachments')
+      .select('*')
+      .eq('account_id', accountId)
+      .eq('status', 'ready')
+      .eq('chars', text.length)
+      .eq('bytes', bytes)
+      .neq('scope', 'library')
+      .limit(10);
+    if (error || !Array.isArray(data)) return null;
+    const wanted = contentHash(text);
+    for (const row of data as Attachment[]) {
+      if (row.extracted_text && contentHash(row.extracted_text) === wanted) return row;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Turn a found duplicate into the row `ingestAttachment` should hand back,
+ * without ever uploading the bytes a second time.
+ *
+ *   - Unbound, or already bound to the SAME conversation the caller named
+ *     (or the caller named none at all): return the existing row. If it was
+ *     unbound and this call DOES name a conversation, bind it first — this
+ *     is what makes a retried upload land in the chat instead of resurfacing
+ *     as invisible-and-unbound the way the original C5 defect did.
+ *   - Bound to a DIFFERENT conversation: insert a new row that reuses the
+ *     existing `storage_path` and `extracted_text` (no second upload), so
+ *     the file is visible in the new conversation without a second copy in
+ *     the bucket.
+ *
+ * `conversationId === undefined` (the caller did not name a conversation at
+ * all, as opposed to explicitly passing `null` for "no conversation yet")
+ * is treated as "go with whatever the existing row already is" — a bare
+ * `null` conversation is left to fall into the "different conversation"
+ * branch below when the existing row is already bound elsewhere, because
+ * that unbound copy is exactly what a normal upload+bind retry needs to
+ * find and claim next; conflating it with the already-bound row would
+ * reproduce the very orphaned-attachment defect this file exists to avoid.
+ *
+ * Returns null (never throws) on any DB error, so the caller falls back to
+ * the ordinary upload+insert path.
+ */
+async function reuseDuplicateAttachment(
+  dupe: Attachment,
+  input: { accountId: string; conversationId?: string | null; filename: string; bytes: Buffer; mimeType?: string },
+): Promise<Attachment | null> {
+  try {
+    const incoming = input.conversationId;
+    const sameOrUnnamed = dupe.conversation_id === null || dupe.conversation_id === incoming || incoming === undefined;
+
+    if (sameOrUnnamed) {
+      if (dupe.conversation_id === null && incoming) {
+        const { data, error } = await supabase
+          .from('assistant_attachments')
+          .update({ conversation_id: incoming })
+          .eq('id', dupe.id)
+          .eq('account_id', input.accountId)
+          .select('*')
+          .maybeSingle();
+        if (!error && data) return data as Attachment;
+        return dupe; // bind failed — still a legitimate dedupe hit, hand back what we had
+      }
+      return dupe;
+    }
+
+    // Bound to a different conversation: a new row, same storage object and
+    // text, no second upload.
+    const { data, error } = await supabase.from('assistant_attachments').insert([{
+      account_id: input.accountId,
+      conversation_id: incoming ?? null,
+      filename: input.filename.slice(0, 300),
+      mime_type: input.mimeType ?? dupe.mime_type ?? null,
+      bytes: dupe.bytes,
+      storage_path: dupe.storage_path,
+      kind: dupe.kind,
+      extracted_text: dupe.extracted_text,
+      chars: dupe.chars,
+      status: 'ready',
+      note: null,
+    }]).select('*').single();
+    if (error) return null;
+    return data as Attachment;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Take an uploaded file: store the bytes privately, extract what text there is,
  * and record both.
  *
@@ -165,6 +288,41 @@ export async function ingestAttachment(input: {
     throw new Error(`.${kind || '?'} files cannot be read. Supported: PDF, DOCX, PPTX, XLSX, CSV, TXT, MD, JSON, images, and video.`);
   }
 
+  // Extract BEFORE touching storage. Doing it first is what makes create-time
+  // dedupe possible at all: an identical upload can be detected and handed
+  // back without ever writing a second copy of the bytes to the bucket.
+  let text = '';
+  let note: string | null = null;
+  let status = 'ready';
+
+  if (isImage) {
+    note = imageNote();
+    status = 'image';
+  } else if (isVideo) {
+    note = videoNote();
+    status = 'video';
+  } else {
+    const res = await extractDeckText(input.filename, input.bytes, 200_000);
+    if (res.ok) {
+      text = res.text;
+    } else {
+      note = res.note || 'Nothing could be read from this file.';
+      status = 'unreadable';
+    }
+  }
+
+  // CREATE-TIME DEDUPE (C5 residual). Only for rows that actually extracted
+  // text — an image, a video, or a file that failed to parse has nothing to
+  // compare and is never a dedupe candidate, so this block is a no-op for
+  // all three and they fall straight through to the ordinary upload below.
+  if (status === 'ready' && text) {
+    const dupe = await findDuplicateAttachment(input.accountId, text, input.bytes.length);
+    if (dupe) {
+      const reused = await reuseDuplicateAttachment(dupe, input);
+      if (reused) return reused;
+    }
+  }
+
   // Prepare the bucket and say so if it cannot be. ensurePrivateBucket never
   // throws by design, so a permissions problem used to surface one line later
   // as an opaque upload failure — the storage key lacking bucket-create rights
@@ -187,26 +345,6 @@ export async function ingestAttachment(input: {
         ? `The "${ASSISTANT_BUCKET}" storage bucket does not exist and could not be created automatically. Create it as a PRIVATE bucket in Supabase → Storage, or give the service key permission to create buckets.`
         : `Could not store that file: ${put.error}`,
     );
-  }
-
-  let text = '';
-  let note: string | null = null;
-  let status = 'ready';
-
-  if (isImage) {
-    note = imageNote();
-    status = 'image';
-  } else if (isVideo) {
-    note = videoNote();
-    status = 'video';
-  } else {
-    const res = await extractDeckText(input.filename, input.bytes, 200_000);
-    if (res.ok) {
-      text = res.text;
-    } else {
-      note = res.note || 'Nothing could be read from this file.';
-      status = 'unreadable';
-    }
   }
 
   const { data, error } = await supabase.from('assistant_attachments').insert([{
@@ -344,7 +482,34 @@ export async function deleteAttachment(accountId: string, id: string): Promise<v
     .from('assistant_attachments').select('storage_path')
     .eq('id', id).eq('account_id', accountId).maybeSingle();
   if (data?.storage_path) {
-    await supabase.storage.from(ASSISTANT_BUCKET).remove([data.storage_path]).catch(() => {});
+    // A storage object can now be SHARED by more than one row — see
+    // reuseDuplicateAttachment above, which points a second row at the same
+    // `storage_path` instead of uploading a second copy when an identical
+    // document reaches a different conversation. Removing the object
+    // unconditionally here would delete it out from under that other row the
+    // moment either copy is deleted. Only remove it once nothing else on the
+    // account still references it.
+    //
+    // On any error checking that, default to NOT removing the object: a
+    // leaked storage object is a cheap, later-cleanable mistake; deleting one
+    // still referenced by another row is a dangling reference nothing here
+    // can repair afterwards.
+    let stillReferenced = true;
+    try {
+      const { data: others, error } = await supabase
+        .from('assistant_attachments')
+        .select('id')
+        .eq('account_id', accountId)
+        .eq('storage_path', data.storage_path)
+        .neq('id', id)
+        .limit(1);
+      stillReferenced = !!error || (Array.isArray(others) && others.length > 0);
+    } catch {
+      stillReferenced = true;
+    }
+    if (!stillReferenced) {
+      await supabase.storage.from(ASSISTANT_BUCKET).remove([data.storage_path]).catch(() => {});
+    }
   }
   await supabase.from('assistant_attachments').delete().eq('id', id).eq('account_id', accountId);
 }
