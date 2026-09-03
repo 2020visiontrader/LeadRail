@@ -30,6 +30,19 @@
 // every tier still reaches a provider and fails with that provider's message,
 // which is more actionable than a router error. An operator on a smaller model
 // sets AGENT_CONTEXT_WINDOW_TOKENS and every budget below follows.
+//
+// UPDATE 2026-09-03: a fraction of a declared window is not a ceiling if the
+// fraction can exceed every real model. CONTEXT_WINDOW_TOKENS defaults to 1M
+// (Opus 5 / Sonnet 5), which produced a 400,000-char observation budget, a
+// 1,600,000-char compose block, and 2,000,000-char attachments — none of
+// which any model actually reachable in production (128K-200K on the chains
+// in lib/ai/openrouter.ts and lib/ai/opencode.ts) can hold. On 2026-09-02 an
+// OpenRouter call was paid for and rejected with "maximum context length is
+// 131072" because nothing bounded the prompt built for it. The direction of
+// this file's reasoning above — budget for the LARGEST candidate window and
+// degrade via eligibility — is still correct; the defect was narrower: each
+// SHARE had a floor but no ceiling. `chars`/`tokens` below now clamp between
+// a floor and an absolute ceiling, declared per consumer next to its SHARE.
 
 /** The context window of the tier that answers, in tokens.
  *
@@ -71,26 +84,48 @@ const SHARE = {
   memoryBody: 0.02,
 } as const;
 
-function chars(share: number, floor: number): number {
-  return Math.max(floor, Math.floor(CONTEXT_WINDOW_CHARS * share));
-}
-function tokens(share: number, floor: number): number {
-  return Math.max(floor, Math.floor(CONTEXT_WINDOW_TOKENS * share));
-}
-
-const ATTACHMENT_CHARS = chars(SHARE.attachments, 12_000);
+/** Absolute ceilings, one per consumer, declared next to why that number and
+ *  not another. A share alone is not a budget — at CONTEXT_WINDOW_TOKENS'
+ *  1M default every one of these used to exceed what any model actually
+ *  reachable in production (128K-200K, see lib/ai/openrouter.ts's and
+ *  lib/ai/opencode.ts's chains) can hold. `chars`/`tokens` below clamp each
+ *  computed value into [floor, ceiling]. */
+const CEILING = {
+  /** A tool result is evidence, not the transcript itself. 24K is already the
+   *  floor below (the old hardcoded value) — anything past that is not a
+   *  budget, it's the absence of one. Capability.observationLimit is a
+   *  separate, per-tool opt-in (lib/capabilities/*.ts) and is untouched by
+   *  this ceiling. */
+  observationChars: 24_000,
+  /** The compose pass reads this back out on every turn; 160K chars (~40K
+   *  tokens) is generous room for a long transcript without being sized for
+   *  a model nothing in the ladder actually has. */
+  composeBlockChars: 160_000,
+  /** Deliberately generous: this is the budget that exists so a long
+   *  dictated brief (the 34,000-char case the header comment cites) arrives
+   *  whole. ~400K chars is ~100K tokens — comfortably under every chain
+   *  model's window while staying far above anything a real attachment has
+   *  measured at. */
+  attachmentChars: 400_000,
+  /** Transcript size at which a fresh chat is nudged/urged. 120K/160K tokens
+   *  sit under the smallest chain model (128K) and its neighbor respectively,
+   *  so the nudge fires before a real model would actually refuse the call. */
+  softTokens: 120_000,
+  hardTokens: 160_000,
+  /** What the memory extractor reads from a finished conversation. 120K chars
+   *  (~30K tokens) is well past what a single conversation needs summarized. */
+  extractionChars: 120_000,
+  /** A projected memory block competes with everything else on every turn
+   *  about its subject; 8K chars keeps it small on purpose even at the
+   *  largest declared window. */
+  memoryBodyChars: 8_000,
+} as const;
 
 /** Floors are the OLD hardcoded values. A misconfigured window can shrink a
- *  budget back to what it used to be; it can never make it worse than that. */
-export const BUDGET = {
-  attachmentChars: ATTACHMENT_CHARS,
-  observationChars: chars(SHARE.observation, 24_000),
-  composeBlockChars: chars(SHARE.composeBlock, 160_000),
-  softTokens: tokens(SHARE.soft, 120_000),
-  hardTokens: tokens(SHARE.hard, 160_000),
-  extractionChars: chars(SHARE.extraction, 12_000),
-  memoryBodyChars: chars(SHARE.memoryBody, 4_000),
-} as const;
+ *  budget back to what it used to be; it can never make it worse than that —
+ *  and, since the ceiling fix above, it can never make it larger than a real
+ *  model either. */
+export const BUDGET = budgetsFor(CONTEXT_WINDOW_TOKENS);
 
 // ---------------------------------------------------------------------------
 // PER-MODEL RESOLUTION
@@ -171,17 +206,17 @@ export async function resolveContextWindowTokens(accountId?: string): Promise<nu
   }
 }
 
-/** The full budget set for a given window. `BUDGET` is this at the default. */
-export function budgetsFor(windowTokens: number): typeof BUDGET {
+/** The full budget set for a given window. `BUDGET` is this at the default —
+ *  the ONE implementation; nothing else recomputes this arithmetic. */
+export function budgetsFor(windowTokens: number) {
   const c = windowTokens * CHARS_PER_TOKEN;
-  const attachmentChars = Math.max(12_000, Math.floor(c * SHARE.attachments));
   return {
-    attachmentChars,
-    observationChars: Math.max(24_000, Math.floor(c * SHARE.observation)),
-    composeBlockChars: Math.max(160_000, Math.floor(c * SHARE.composeBlock)),
-    softTokens: Math.max(120_000, Math.floor(windowTokens * SHARE.soft)),
-    hardTokens: Math.max(160_000, Math.floor(windowTokens * SHARE.hard)),
-    extractionChars: Math.max(12_000, Math.floor(c * SHARE.extraction)),
-    memoryBodyChars: Math.max(4_000, Math.floor(c * SHARE.memoryBody)),
+    attachmentChars: Math.min(CEILING.attachmentChars, Math.max(12_000, Math.floor(c * SHARE.attachments))),
+    observationChars: Math.min(CEILING.observationChars, Math.max(24_000, Math.floor(c * SHARE.observation))),
+    composeBlockChars: Math.min(CEILING.composeBlockChars, Math.max(160_000, Math.floor(c * SHARE.composeBlock))),
+    softTokens: Math.min(CEILING.softTokens, Math.max(120_000, Math.floor(windowTokens * SHARE.soft))),
+    hardTokens: Math.min(CEILING.hardTokens, Math.max(160_000, Math.floor(windowTokens * SHARE.hard))),
+    extractionChars: Math.min(CEILING.extractionChars, Math.max(12_000, Math.floor(c * SHARE.extraction))),
+    memoryBodyChars: Math.min(CEILING.memoryBodyChars, Math.max(4_000, Math.floor(c * SHARE.memoryBody))),
   };
 }

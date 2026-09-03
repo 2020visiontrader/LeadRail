@@ -15,6 +15,8 @@ import {
   cacheMarkersEnabled, supportsCacheMarkers, markSystemPrefix, implicatesCacheMarkers,
   type MarkableMessage,
 } from './prompt-cache-markers';
+import { estimateTokens, HEADROOM } from './eligibility';
+import { windowForModelId } from './context-budget';
 
 // Default output budget when a caller does not specify one.
 //
@@ -123,6 +125,67 @@ function shouldTryNextModel(status: number): boolean {
   return status === 402 || status === 404 || status === 429;
 }
 
+// CONTEXT-LENGTH 400s (fix 2 in this change's task spec).
+//
+// PRODUCTION EVIDENCE, 2026-09-02: an OpenRouter call was paid for and
+// rejected with "maximum context length is 131072" — a 400, which
+// shouldTryNextModel() does not cover, so the whole chain aborted on the
+// first model that could not hold the prompt instead of skipping it for one
+// that could.
+//
+// Detected on the error DETAIL TEXT, defensively — same approach as
+// parseAffordableTokens above: OpenRouter's wording is not a contract this
+// codebase controls, so this matches loosely and returns false on anything
+// that doesn't confidently look like a context-length rejection.
+//
+// Deliberately NOT "retry next model on every 400": a 400 also covers a
+// malformed request body, an invalid parameter, or content the model
+// refused — none of which get fixed by trying a different model, and
+// treating them as "try the next one" would burn the rest of the chain (and
+// pay for however many of them are paid models) on a request that was wrong
+// in a way no model in MODEL_CHAIN can route around.
+function isContextLengthError(detail: string | undefined): boolean {
+  if (!detail) return false;
+  return /maximum context length|context.?length.{0,20}(exceed|too (long|large))|context_length_exceeded|prompt is too long/i.test(detail);
+}
+
+/** Filter MODEL_CHAIN down to models whose known context window can plausibly
+ *  hold this request, before spending money finding out the hard way (see
+ *  isContextLengthError's header comment for the production incident this
+ *  fixes). Estimated the same way lib/ai/eligibility.ts estimates every other
+ *  call, with the same HEADROOM margin, so this agrees with the router's own
+ *  sizing rather than inventing a second opinion.
+ *
+ *  A model with no KNOWN_WINDOWS match (windowForModelId returns null) is
+ *  KEPT, not excluded — same "unknown is not a verdict" rule eligibility.ts
+ *  applies to a model with no recorded context_window.
+ *
+ *  NEVER EMPTY: mirrors filterEligible's guarantee. If every model would be
+ *  filtered out, the chain is attempted UNFILTERED exactly as before this
+ *  fix, so an oversized prompt still reaches a provider and fails with that
+ *  provider's own message rather than a router-invented one. */
+function eligibleChainFor(messages: OpenAIMessage[], maxTokens: number): string[] {
+  const promptTokens = messages.reduce((sum, m) => sum + estimateTokens(m.content || ''), 0);
+  const needed = Math.ceil(promptTokens * HEADROOM) + maxTokens;
+  const kept = MODEL_CHAIN.filter((model) => {
+    const window = windowForModelId(model);
+    return window == null || needed <= window;
+  });
+  if (!kept.length) {
+    log.warn('openrouter: every chain model estimated too small for this prompt, attempting chain unfiltered', {
+      promptTokens, needed, maxTokens, chain: MODEL_CHAIN,
+    });
+    return MODEL_CHAIN;
+  }
+  for (const model of MODEL_CHAIN) {
+    if (kept.includes(model)) continue;
+    log.warn('openrouter: skipping model, prompt estimate exceeds its context window', {
+      model, promptTokens, needed, maxTokens, window: windowForModelId(model),
+    });
+  }
+  return kept;
+}
+
 // AFFORDABLE-CEILING RETRY (fix 3 in this change's task spec).
 //
 // PRODUCTION EVIDENCE, 2026-08-31: OpenRouter refused every chain model with
@@ -171,20 +234,24 @@ interface OpenAIMessage {
  *  retired id shows up in /logs as a warning instead of silently degrading
  *  the last tier. */
 async function complete(messages: OpenAIMessage[], temperature: number, maxTokens: number, deadlineAt?: number): Promise<string> {
+  // See eligibleChainFor's header comment: models whose context window the
+  // estimated prompt cannot fit are skipped up front, rather than discovered
+  // (and paid for) as a 400 "maximum context length" from the provider.
+  const chain = eligibleChainFor(messages, maxTokens);
   let lastErr: any = null;
-  for (let i = 0; i < MODEL_CHAIN.length; i++) {
-    // THE fix this file exists for: without this check, each of MODEL_CHAIN's
+  for (let i = 0; i < chain.length; i++) {
+    // THE fix this file exists for: without this check, each of the chain's
     // entries gets its own fresh TIMEOUT_MS attempt with no regard for how
     // much of the turn's overall budget already went to the ones before it.
     // Checked before EVERY attempt, including the first, so a deadline that
     // arrives already past never starts a call that cannot finish.
     if (isPastDeadline(deadlineAt)) {
       log.warn('openrouter: turn deadline exceeded, stopping model chain', {
-        triedCount: i, remaining: MODEL_CHAIN.length - i,
+        triedCount: i, remaining: chain.length - i,
       });
       throw deadlineExceededError('openrouter', lastErr);
     }
-    const model = MODEL_CHAIN[i];
+    const model = chain[i];
     try {
       return await completeWith(model, messages, temperature, maxTokens, deadlineAt);
     } catch (err: any) {
@@ -206,17 +273,23 @@ async function complete(messages: OpenAIMessage[], temperature: number, maxToken
           } catch (err2: any) {
             lastErr = err2;
             const status2 = Number(err2?.status) || 0;
-            if (!shouldTryNextModel(status2) || i === MODEL_CHAIN.length - 1) throw err2;
+            // See isContextLengthError's header comment: a 400 only advances
+            // the chain when it is confidently a context-length rejection —
+            // any other 400 keeps aborting exactly as before this fix.
+            if ((!shouldTryNextModel(status2) && !(status2 === 400 && isContextLengthError(err2?.detail))) || i === chain.length - 1) throw err2;
             log.warn('openrouter: model unavailable, falling back', {
-              model, status: status2, next: MODEL_CHAIN[i + 1], detail: String(err2?.detail || '').slice(0, 200),
+              model, status: status2, next: chain[i + 1], detail: String(err2?.detail || '').slice(0, 200),
             });
             continue;
           }
         }
       }
-      if (!shouldTryNextModel(status) || i === MODEL_CHAIN.length - 1) throw err;
+      // See isContextLengthError's header comment: a 400 only advances the
+      // chain when it is confidently a context-length rejection — any other
+      // 400 keeps aborting exactly as before this fix.
+      if ((!shouldTryNextModel(status) && !(status === 400 && isContextLengthError(err?.detail))) || i === chain.length - 1) throw err;
       log.warn('openrouter: model unavailable, falling back', {
-        model, status, next: MODEL_CHAIN[i + 1], detail: String(err?.detail || '').slice(0, 200),
+        model, status, next: chain[i + 1], detail: String(err?.detail || '').slice(0, 200),
       });
     }
   }
@@ -312,19 +385,22 @@ async function completeStream(
   onDelta: (chunk: string) => void,
   deadlineAt?: number,
 ): Promise<string> {
-  // Same chain as complete(). Safe to fall back here because a 402/404/429
-  // arrives on the response STATUS, before any delta has been emitted — so no
-  // partial answer has reached the client when we switch models.
+  // Same chain as complete(), same up-front context-window filter — see
+  // eligibleChainFor's header comment. Safe to fall back here because a
+  // 402/404/429 arrives on the response STATUS, before any delta has been
+  // emitted — so no partial answer has reached the client when we switch
+  // models.
+  const chain = eligibleChainFor(messages, maxTokens);
   let lastErr: any = null;
-  for (let i = 0; i < MODEL_CHAIN.length; i++) {
+  for (let i = 0; i < chain.length; i++) {
     // Same deadline check as complete()'s chain loop — see its comment.
     if (isPastDeadline(deadlineAt)) {
       log.warn('openrouter: turn deadline exceeded, stopping model chain (stream)', {
-        triedCount: i, remaining: MODEL_CHAIN.length - i,
+        triedCount: i, remaining: chain.length - i,
       });
       throw deadlineExceededError('openrouter', lastErr);
     }
-    const model = MODEL_CHAIN[i];
+    const model = chain[i];
     try {
       return await completeStreamWith(model, messages, temperature, maxTokens, onDelta, deadlineAt);
     } catch (err: any) {
@@ -346,17 +422,23 @@ async function completeStream(
           } catch (err2: any) {
             lastErr = err2;
             const status2 = Number(err2?.status) || 0;
-            if (!shouldTryNextModel(status2) || i === MODEL_CHAIN.length - 1) throw err2;
+            // See isContextLengthError's header comment (complete()'s chain
+            // loop) — a 400 only advances the chain when it confidently
+            // names a context-length rejection.
+            if ((!shouldTryNextModel(status2) && !(status2 === 400 && isContextLengthError(err2?.detail))) || i === chain.length - 1) throw err2;
             log.warn('openrouter: model unavailable (stream), falling back', {
-              model, status: status2, next: MODEL_CHAIN[i + 1],
+              model, status: status2, next: chain[i + 1],
             });
             continue;
           }
         }
       }
-      if (!shouldTryNextModel(status) || i === MODEL_CHAIN.length - 1) throw err;
+      // See isContextLengthError's header comment (complete()'s chain loop) —
+      // a 400 only advances the chain when it confidently names a
+      // context-length rejection.
+      if ((!shouldTryNextModel(status) && !(status === 400 && isContextLengthError(err?.detail))) || i === chain.length - 1) throw err;
       log.warn('openrouter: model unavailable (stream), falling back', {
-        model, status, next: MODEL_CHAIN[i + 1],
+        model, status, next: chain[i + 1],
       });
     }
   }
