@@ -53,14 +53,22 @@
 import type { ChatMessage } from './opencode';
 import { withUsageCaptureSettled, type CapturedUsage, type TokenUsage, type UsageStatus, type UsageSource } from './usage';
 import { orderByHealth, recordSuccess, recordFailure, healthSnapshot, classifyFailure } from './health';
-import { filterEligible, estimateTokens, type CallSize } from './eligibility';
+import { filterEligible, estimateTokens, type CallSize, type ModelCapability } from './eligibility';
 import * as opencode from './opencode';
 import { zoAskConfigured, zoAskText, zoAskChat } from './zoask';
 import { openrouterConfigured, openrouterText, openrouterChat, openrouterStreamChat } from './openrouter';
+// Namespace import, deliberately, for MODEL_CHAIN below: a NAMED import of a
+// binding a test's `vi.mock('@/lib/ai/openrouter', ...)` doesn't list throws
+// at import time ("no MODEL_CHAIN export is defined on the mock") even for
+// tests that have nothing to do with ladder capability. A namespace import
+// degrades to a plain (possibly undefined) property read instead, which
+// windowForModelId and the Array.isArray guard below both already handle.
+import * as openrouterModule from './openrouter';
 import { log } from '@/lib/logger';
 import { registryConfigured, resolveChain, resolveChainForTask, callModel, callModelStream, type ResolvedModel } from './providers';
 import { isPastDeadline, deadlineExceededError } from './deadline';
 import { StoppedError } from './abort';
+import { windowForModelId } from './context-budget';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // LADDER ORDER
@@ -151,6 +159,56 @@ import { StoppedError } from './abort';
 export const DEFAULT_TIER_ORDER = ['openrouter', 'zoask', 'opencode'] as const;
 type TierName = (typeof DEFAULT_TIER_ORDER)[number];
 
+// ─────────────────────────────────────────────────────────────────────────────
+// LADDER TIER CAPABILITY
+// ─────────────────────────────────────────────────────────────────────────────
+// A ladder tier has no ai_models row (see Candidate.resolved's comment below),
+// so filterEligible's `(c) => c.resolved?.model` never saw one and a prompt
+// too large for every model a tier can reach was never filtered — it reached
+// the tier's own client, which (as of the openrouter.ts fix this same change
+// makes) filters again internally and picks a model that actually fits. This
+// is deliberately the LARGEST window among the models a tier's client can
+// reach, not the smallest or an average: filtering here is a coarse
+// "can this tier possibly serve a prompt this size at all" cut, and the
+// tier's internal chain is what narrows further to a model that fits. Using
+// the max means we never exclude a tier that COULD serve the prompt on its
+// biggest model just because it also carries a smaller one.
+//
+// Do not invent a window for a tier whose chain this file cannot establish
+// from the code — see zoask's comment below. filterEligible treats "no
+// capability" as "not excludable" (the same "unknown is not a verdict" rule
+// eligibility.ts applies to a model with no recorded context_window), so an
+// uncapped tier is filtered exactly as it was before this fix: not at all.
+const LADDER_CAPABILITY: Partial<Record<TierName, ModelCapability>> = {
+  // MODEL_CHAIN (lib/ai/openrouter.ts) is a known, fixed list (or a single
+  // OPENROUTER_MODEL override) — windowForModelId resolves each entry the
+  // same way lib/ai/context-budget.ts resolves every other model id, and the
+  // MAX is what this tier can possibly hold on its widest-window model.
+  // undefined (not 0) when nothing in the chain resolves — an env override
+  // to an unrecognised model id must not silently cap the tier at 0.
+  openrouter: (() => {
+    const chain = Array.isArray(openrouterModule.MODEL_CHAIN) ? openrouterModule.MODEL_CHAIN : [];
+    const windows = chain.map((id) => windowForModelId(id)).filter((w): w is number => typeof w === 'number');
+    return windows.length ? { context_window: Math.max(...windows) } : undefined;
+  })(),
+  // opencode's chain is ALSO a single resolved model (TEXT_MODEL, exported as
+  // opencode.opencodeModel — 'deepseek-v4-pro' by default, OPENCODE_MODEL
+  // overridable), so the same resolution applies with no chain to max over.
+  opencode: (() => {
+    const w = windowForModelId(opencode.opencodeModel);
+    return w != null ? { context_window: w } : undefined;
+  })(),
+  // zoask is DELIBERATELY LEFT UNCAPPED. Its client (lib/ai/zoask.ts) does not
+  // pin a model id at all by default — it omits `model_name` entirely and lets
+  // the Zo account's own default model answer (Opus today, Haiku if the
+  // account is reconfigured — see zoask.ts's header comment), and ZOASK_MODEL
+  // can override it to an arbitrary `byok:` id this file has no registry
+  // entry for. There is no fixed chain here to resolve a window from, so
+  // established honestly: unknown, not guessed. If ZOASK_MODEL is ever set to
+  // a fixed, known model in an operator's deployment, that operator can
+  // extend this map — but this file cannot infer it from the code.
+};
+
 export function tierOrder(): TierName[] {
   const raw = (process.env.AI_TIER_ORDER || '').split(',').map((t) => t.trim().toLowerCase()).filter(Boolean);
   const known = raw.filter((t): t is TierName => (DEFAULT_TIER_ORDER as readonly string[]).includes(t));
@@ -227,6 +285,11 @@ interface Candidate {
   /** Present for registry candidates; absent for ladder tiers, which have no
    *  ai_models row to point at. */
   resolved?: ResolvedModel;
+  /** Present for ladder tiers whose internal chain this file could establish
+   *  a window for (see LADDER_CAPABILITY above); absent for registry
+   *  candidates (which use `resolved.model` instead) and for a ladder tier
+   *  whose chain is genuinely unknown (zoask). */
+  capability?: ModelCapability;
   run: () => Promise<string>;
 }
 
@@ -316,7 +379,7 @@ function ladderCandidates(
   for (const tier of orderForTier(preferTier)) {
     const r = runners[tier];
     if (!r || !r.configured) continue;
-    out.push({ id: tier, label: tier, run: r.run });
+    out.push({ id: tier, label: tier, capability: LADDER_CAPABILITY[tier], run: r.run });
   }
   return out;
 }
@@ -399,6 +462,52 @@ function failureUsage(size: CallSize, captured: CapturedUsage): {
   };
 }
 
+/**
+ * What to record as tokens for an attempt that SUCCEEDED (context audit C11).
+ *
+ * Zo Ask — the primary tier — never returns a usage block at all, so before
+ * this every one of its successful calls logged tokens_in NULL: 299 of 299 in
+ * the 14 days that prompted this audit, roughly 60% of spend invisible to
+ * ai_usage. The failure path already had an estimate to fall back on
+ * (`failureUsage` above); the success path had none, because a candidate that
+ * ANSWERED felt like it should have real numbers — but "answered" and
+ * "reported usage" are independent facts, and Zo Ask satisfies the first
+ * while never satisfying the second.
+ *
+ * Same two rules as `failureUsage`, extended to the output side because here,
+ * unlike a failed call, we actually have the completion text to estimate from:
+ *
+ *  1. A provider that reported real tokensIn keeps its own numbers untouched —
+ *     a measurement always beats an estimate, including for whatever it said
+ *     about tokensOut (which might itself be null; that is the provider's own
+ *     honest gap, not ours to fill).
+ *  2. Otherwise both tokensIn (`size.promptTokens`, the same estimate
+ *     eligibility.ts::estimateTokens produced to size this very call) and
+ *     tokensOut (`estimateTokens(text)`, the actual returned completion) are
+ *     recorded as `usageSource: 'estimated'`. `usageStatus` is left at
+ *     whatever the capture scope actually observed about the PROVIDER — an
+ *     estimate can never be read back as a provider-reported figure. See the
+ *     ESTIMATES ON FAILURE block in lib/ai/usage.ts, which this mirrors.
+ *
+ * Checked on `tokensIn` specifically, not just `status === 'reported'`: a
+ * provider could in principle report a usage block that omits tokensIn (some
+ * dialect that only ever fills tokensOut) — that is still "the provider told
+ * us nothing about the input side", so it falls to the estimate branch rather
+ * than being read as a measurement that isn't there.
+ */
+export function successUsage(size: CallSize, captured: CapturedUsage, text: string): {
+  usage: TokenUsage; status: UsageStatus; source: UsageSource;
+} {
+  if (captured.status === 'reported' && captured.usage && captured.usage.tokensIn != null) {
+    return { usage: captured.usage, status: 'reported', source: 'provider' };
+  }
+  return {
+    usage: { tokensIn: size.promptTokens, tokensOut: estimateTokens(text) },
+    status: captured.status,
+    source: 'estimated',
+  };
+}
+
 async function runCandidates(
   fn: string,
   candidates: Candidate[],
@@ -413,7 +522,7 @@ async function runCandidates(
   // everything else is down. Never returns empty; see filterEligible.
   const eligible = filterEligible(
     candidates,
-    (c) => c.resolved?.model,
+    (c) => c.resolved?.model ?? c.capability,
     size,
     // log.info() is console-only and never persisted (lib/logger.ts) — a
     // candidate excluded before it is ever tried left no durable trace, which
@@ -470,9 +579,10 @@ async function runCandidates(
       // migration 060 the two were the same column, so a model answering in
       // prose was indistinguishable from a real success.
       if (accountId) {
+        const usage = successUsage(size, outcome, text);
         void logUsage({
           accountId, candidate, kind, ok: true, latencyMs,
-          usage: outcome.usage, usageStatus: outcome.status, usageSource: outcome.source,
+          usage: usage.usage, usageStatus: usage.status, usageSource: usage.source,
           timingMs: outcome.timingMs, timingStatus: outcome.timingStatus, timingSource: outcome.timingSource,
           conversationId: trace?.conversationId,
         })

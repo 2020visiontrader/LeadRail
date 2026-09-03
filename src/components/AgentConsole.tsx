@@ -264,6 +264,7 @@ const TOOL_VERB: Record<string, string> = {
   completePlanStep: 'Marking that step done',
   blockPlanStep: 'Parking that step for you',
   getPlan: 'Checking where we are',
+  listPlans: 'Checking what is in progress',
   startPlan: 'Starting the plan',
   cancelPlan: 'Stopping the plan',
   listDocuments: 'Checking what you have saved',
@@ -275,6 +276,14 @@ const TOOL_VERB: Record<string, string> = {
   forgetFact: 'Forgetting that',
   listFacts: 'Checking what I remember',
   describeTools: 'Working out what I can do here',
+  // --- added: C7 skill-injection cap (skillsBlock clips instructions past a
+  // per-skill budget; this is how the model pulls the untrimmed text back).
+  describeSkill: 'Reading the full skill guidance',
+  // --- added: C14 aggregate counts. These answer "how many" in SQL instead
+  // of listing whole tables, so the verb says counting, not fetching.
+  countLeads: 'Counting your leads',
+  countDeals: 'Counting your deals',
+  countCompanies: 'Counting your companies',
   // --- added by Packet 2.2 (domain backfill) ---
   listDeals: 'Pulling up your deals',
   getDeal: 'Opening that deal',
@@ -552,7 +561,25 @@ export function MessageActions({
   );
 }
 
-export default function AgentConsole({ brandId, conversationId, onSteps, onConversationId, onFirstMessage }: { brandId?: string; conversationId?: string; onSteps?: (steps: Step[], busy: boolean, pendingApproval: boolean) => void; onConversationId?: (id: string | undefined) => void; onFirstMessage?: (text: string) => void }) {
+export default function AgentConsole({
+  brandId, conversationId, page, selectedIds, filters, onSteps, onConversationId, onFirstMessage,
+}: {
+  brandId?: string;
+  conversationId?: string;
+  /** Which screen this console is mounted on — part of the compact turn
+   *  context sent with every message (lib/agent/turn-context.ts renders it
+   *  server-side; this is client-reported and never trusted for scoping).
+   *  Defaults to 'assistant' since that is this component's only mount
+   *  today. */
+  page?: string;
+  /** Row ids selected on this screen, if this screen has a selection concept. */
+  selectedIds?: string[];
+  /** Active filters on this screen, if any. */
+  filters?: Record<string, unknown>;
+  onSteps?: (steps: Step[], busy: boolean, pendingApproval: boolean) => void;
+  onConversationId?: (id: string | undefined) => void;
+  onFirstMessage?: (text: string) => void;
+}) {
   const [turns, setTurns] = useState<Array<any>>([]);
   const [input, setInput] = useState('');
   // Set of in-flight run ids. `busy` is derived from it rather than being its own
@@ -1049,6 +1076,11 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
         body: JSON.stringify({
           ...payload,
           brandId,
+          // Compact turn context (lib/agent/turn-context.ts renders and caps
+          // it server-side) — only sent for a real message, matching `from`
+          // just below: an approve-resume continues a turn that already ran
+          // with whatever context it started with.
+          ...(payload.message ? { turnContext: { page: page || 'assistant', ...(selectedIds?.length ? { selectedIds } : {}), ...(filters && Object.keys(filters).length ? { filters } : {}) } } : {}),
           ...(conversationIdRef.current ? { conversationId: conversationIdRef.current } : {}),
           ...(from ? { from } : {}),
           ...(selectedPersonaId ? { personaId: selectedPersonaId } : {}),

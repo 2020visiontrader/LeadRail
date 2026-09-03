@@ -23,12 +23,21 @@ vi.mock('@/lib/ai/zoask', () => ({
   zoAskChat: vi.fn(),
 }));
 vi.mock('@/lib/ai/opencode', () => ({
+  // See lib/ai/router.ts's LADDER_CAPABILITY — undefined here keeps this
+  // tier's capability undefined (unknown), matching this file's
+  // pre-existing, never-size-filtered behaviour.
+  opencodeModel: undefined,
   opencodeConfigured: () => true,
   generateText: (...a: any[]) => opencodeGenerateText(...a),
   generateChat: vi.fn(),
   streamChat: vi.fn(),
 }));
 vi.mock('@/lib/ai/openrouter', () => ({
+  // Router.ts reads this to cap the ladder tier's declared capability — see
+  // LADDER_CAPABILITY in lib/ai/router.ts. Empty here so this tier's
+  // capability comes back undefined (unknown, not excludable), matching this
+  // file's pre-existing behaviour of never filtering the ladder by size.
+  MODEL_CHAIN: [] as string[],
   openrouterConfigured: () => true,
   openrouterText: (...a: any[]) => openrouterText(...a),
   openrouterChat: vi.fn(),

@@ -20,7 +20,7 @@ import { generateChat, textConfigured, type ChatMessage } from '@/lib/ai/router'
 import { DeadlineExceededError } from '@/lib/ai/deadline';
 import { StoppedError } from '@/lib/ai/abort';
 import { withStopWatch } from './stop-watch';
-import { type StoredMessage, toWireMessages } from './transcript-store';
+import { type StoredMessage, pruneForWire } from './transcript-store';
 import {
   comprehend, formatUnderstandingBlock, type Understanding,
 } from './comprehension';
@@ -42,6 +42,7 @@ import { composeAnswer } from './compose';
 import { stripAiMarkers } from '@/lib/ai/humanizer';
 import { checkClaims } from './claim-check';
 import { createApproval, consumeApprovalForExecution, markApprovedByToolAndArgs, recordExecutedApproval, ApprovalExecutionError } from '@/lib/approvals/store';
+import { checkPendingApprovalShortCircuit } from './continuation-shortcircuit';
 import { consumeGrant, isGrantable } from '@/lib/approvals/grants';
 import { markParseOutcome } from '@/lib/credits';
 import { log } from '@/lib/logger';
@@ -217,6 +218,11 @@ export interface RunAgentInput {
   brandContext?: { name?: string; id?: string };
   /** Full grounding block (platform + venture + account + memory) from loadAgentContext. */
   agentContext?: string;
+  /** Client-reported "where the user is" — page/selection/filters. Rendered
+   *  by lib/agent/turn-context.ts into a short, capped block; already
+   *  sanitized by the caller (app/api/agent/route.ts and its /stream twin)
+   *  before it reaches here, so this is inert text, never a query scope. */
+  turnContext?: string;
   /** Carryover memo from a prior chat, injected to seed a reseeded conversation. */
   carryover?: CarryoverMemo | null;
   /** Prior transcript to resume from (returned by a needs_approval result). */
@@ -298,28 +304,93 @@ export function agentConfigured(): boolean {
   return textConfigured();
 }
 
+// C7: caps on how much skill guidance can flood the system prompt.
+//
+// Measured in production: account_skills holds 353 enabled rows for one
+// account (harvested skills average 11,269 chars, largest 94,247), and
+// selectSkillsForTurn's own routing is not always a backstop — below
+// SKILL_ROUTING_THRESHOLD it returns EVERY enabled skill unfiltered, so up to
+// eight uncapped skills could reach skillsBlock in the low-count path, not
+// just the four MAX_ROUTED_SKILLS caps in the routed path. Without a ceiling
+// here, either path could inject hundreds of thousands of characters into
+// every turn's system prompt.
+//
+// Two caps: SKILL_TOTAL_CHAR_BUDGET bounds what THIS function ever emits in
+// total, regardless of how many skills are passed in; SKILL_PER_SKILL_CHAR_CAP
+// additionally stops one long skill from eating the whole budget by itself, so
+// a turn with several enabled skills still gets a slice of each rather than
+// only the first one intact.
+export const SKILL_TOTAL_CHAR_BUDGET = 8000;
+export const SKILL_PER_SKILL_CHAR_CAP = 2000;
+
+/** Truncation marker appended to a clipped skill's instructions, naming the
+ *  describeSkill capability (lib/capabilities/skill-lookup.ts) and the exact
+ *  slug to pass it — so a clip is never a silent cut, and the model has a
+ *  concrete way to read the rest if it turns out to matter for this turn. */
+function skillTruncationMarker(slug: string): string {
+  return ` [...truncated — call describeSkill("${slug}") for the full text]`;
+}
+
+/** Clip `text` to at most `maxChars`, preferring to cut at a paragraph or
+ *  sentence boundary within the budget rather than mid-word or mid-clause.
+ *
+ *  This matters because skills are GUIDANCE, not data: a rule like "always do
+ *  X, unless Y" cut right before "unless Y" doesn't just lose information, it
+ *  reads as the OPPOSITE instruction — an unconditional "always do X". A hard
+ *  character cut can silently invert a skill's meaning; cutting at a sentence
+ *  or paragraph boundary at least keeps every retained sentence intact and
+ *  self-contained, so what's dropped is missing guidance, not inverted
+ *  guidance. Falls back to a hard cut only when no such boundary exists
+ *  within the budget (e.g. one very long unbroken paragraph).
+ */
+function clipSkillTextAtBoundary(text: string, maxChars: number): string {
+  if (maxChars <= 0) return '';
+  if (text.length <= maxChars) return text;
+  const window = text.slice(0, maxChars);
+  const paraBreak = window.lastIndexOf('\n\n');
+  if (paraBreak >= maxChars * 0.5) return window.slice(0, paraBreak);
+  const sentenceEnd = Math.max(window.lastIndexOf('. '), window.lastIndexOf('.\n'));
+  if (sentenceEnd >= maxChars * 0.5) return window.slice(0, sentenceEnd + 1);
+  return window;
+}
+
 // Build the enabled-skills system-prompt block (migration 025_skills.sql).
 // Same shape/spirit as composeSkillGuidance (lib/skills/registry.ts) used by
 // outreach generation: a short bullet list of "name: instructions". Returns
 // '' when nothing is enabled, so callers can splice it in unconditionally.
-function skillsBlock(skills: { name: string; instructions: string; capabilities?: string[] }[]): string {
+export function skillsBlock(skills: { slug: string; name: string; instructions: string; capabilities?: string[] }[]): string {
   if (!skills.length) return '';
-  return [
-    'ENABLED SKILLS — apply this guidance when relevant to the current task:',
-    ...skills.map((s) => {
-      // A skill may name the capabilities its guidance is about (migration
-      // 051). This is the bridge from prose to action: previously a skill
-      // could describe a competitor teardown but had no way to say the work
-      // needs a web search, so the model had to infer it. Naming them is NOT a
-      // grant — every one is the same tool, behind the same approval gate,
-      // that the assistant could already call. Names are filtered against the
-      // live registry so a stale one is ignored rather than sending the model
-      // after a tool that does not exist.
-      const tools = (s.capabilities || []).filter((c) => Boolean(TOOLS[c]));
-      const uses = tools.length ? ` [this work uses: ${tools.join(', ')}]` : '';
-      return `• ${s.name}${uses}: ${s.instructions}`;
-    }),
-  ].join('\n');
+  let budget = SKILL_TOTAL_CHAR_BUDGET;
+  const lines: string[] = [];
+  for (const s of skills) {
+    if (budget <= 0) break;
+    const perSkillMax = Math.min(SKILL_PER_SKILL_CHAR_CAP, budget);
+    let instructions = s.instructions;
+    if (instructions.length > perSkillMax) {
+      const marker = skillTruncationMarker(s.slug);
+      // If even the marker alone can't fit in what's left of the budget,
+      // there's no honest way to include this skill this turn — skip it
+      // rather than inject a fragment that busts the total budget or a
+      // marker with no guidance attached to it.
+      if (marker.length >= perSkillMax) continue;
+      instructions = clipSkillTextAtBoundary(instructions, perSkillMax - marker.length) + marker;
+    }
+    budget -= instructions.length;
+
+    // A skill may name the capabilities its guidance is about (migration
+    // 051). This is the bridge from prose to action: previously a skill
+    // could describe a competitor teardown but had no way to say the work
+    // needs a web search, so the model had to infer it. Naming them is NOT a
+    // grant — every one is the same tool, behind the same approval gate,
+    // that the assistant could already call. Names are filtered against the
+    // live registry so a stale one is ignored rather than sending the model
+    // after a tool that does not exist.
+    const tools = (s.capabilities || []).filter((c) => Boolean(TOOLS[c]));
+    const uses = tools.length ? ` [this work uses: ${tools.join(', ')}]` : '';
+    lines.push(`• ${s.name}${uses}: ${instructions}`);
+  }
+  if (!lines.length) return '';
+  return ['ENABLED SKILLS — apply this guidance when relevant to the current task:', ...lines].join('\n');
 }
 
 // Above how many enabled skills it stops being safe to inject them all. The
@@ -399,7 +470,7 @@ function promptCacheKey(accountId: string | undefined, personaBlock?: string, ex
   return [accountId || 'anon', personaBlock ? 'p' : '-', String(Object.keys(externalTools || {}).length)].join(':');
 }
 
-function systemPrompt(brandName?: string, agentContext?: string, carryover?: CarryoverMemo | null, personaBlock?: string, skillsGuidance?: string, externalTools?: Record<string, AgentTool>, accountId?: string, planOnly?: boolean): string {
+function systemPrompt(brandName?: string, agentContext?: string, carryover?: CarryoverMemo | null, personaBlock?: string, skillsGuidance?: string, externalTools?: Record<string, AgentTool>, accountId?: string, planOnly?: boolean, turnContext?: string): string {
   const staticSections: string[] = [
     // ---- STATIC (stable across every turn for an account) -------------------
     'You are LeadRail AI — the operator copilot built into the LeadRail platform. Think of yourself the way a great chief-of-staff works: you understand the whole platform, you know this account and its ventures, you reason things through in plain language, and you actually DO the work by using LeadRail\'s tools. You are conversational and intellectually engaged — you can discuss strategy, weigh options, and explain your thinking, not just fire off tool calls.',
@@ -472,10 +543,11 @@ function systemPrompt(brandName?: string, agentContext?: string, carryover?: Car
     '- NEVER call the same tool with the same arguments twice; if you already have the result, answer.',
     '- Speak only in plain language. NEVER mention internal tool names, vendors, model names, or third-party services (Apollo, Meta API internals, etc.) — everything is "LeadRail".',
     '',
-    // Two-stage tool catalog (Packet 10.3). Default (flag unset) is the full
-    // catalog, byte-identical to what shipped before this packet. With
-    // AGENT_STAGED_CATALOG=1 the route pass sees a compact per-domain index
-    // instead and expands one domain at a time with describeTools.
+    // Two-stage tool catalog (Packet 10.3, flipped 2026-09-03 — C6). Default
+    // is now the staged catalog: a compact per-domain index the route pass
+    // expands one domain at a time with describeTools. Set AGENT_FULL_CATALOG=1
+    // to restore the pre-flip full catalog (byte-identical to what shipped
+    // before this packet) as a rollback path.
     ...(AGENT_STAGED_CATALOG
       ? [
           'AVAILABLE TOOLS — grouped by domain, names only. Before calling a tool whose arguments you have not been shown, call describeTools with that domain to get its full signatures. Tools marked [needs approval] still pause for the user to confirm.',
@@ -505,6 +577,11 @@ function systemPrompt(brandName?: string, agentContext?: string, carryover?: Car
       : '',
     agentContext || (brandName ? `The user is working in the "${brandName}" venture; prefer it when a venture is needed and not otherwise specified.` : ''),
     carryover ? '\n' + carryoverBlock(carryover) : '',
+    // MOST volatile and LAST, deliberately — see the PROMPT BLOCK ORDER note
+    // above. This is a snapshot of one screen at one instant, truer than
+    // anything earlier in the prompt about "what does the user mean by
+    // this/these/selected" right now.
+    turnContext ? '\n' + turnContext : '',
   ];
 
   return buildCachedPrompt(
@@ -1286,9 +1363,9 @@ async function attemptEscalation(args: {
 
   // A separate local rather than an inline array literal in the generateChat
   // call below, purely so the transcript this call sends is unmistakably a
-  // toWireMessages(...)-wrapped variable, same as every other call site in
-  // this file (see tests/attachment-provenance.test.ts's static check that
-  // no StoredMessage id can reach a provider payload).
+  // pruneForWire(...)-wrapped variable, same as every other route-pass call
+  // site in this file (see tests/attachment-provenance.test.ts's static check
+  // that no StoredMessage id can reach a provider payload).
   const escalationMessages: StoredMessage[] = [
     ...args.messages,
     { role: 'user', content: ESCALATION_INSTRUCTION },
@@ -1297,7 +1374,7 @@ async function attemptEscalation(args: {
   try {
     raw = await withStopWatch(conversationId, accountId, (signal) => generateChat({
       system: args.system,
-      messages: toWireMessages(escalationMessages),
+      messages: pruneForWire(escalationMessages),
       temperature: 0.2,
       // A short JSON step list, not prose — the same ceiling shape as the
       // step loop's own tool-routing calls, not the forced-final draft call.
@@ -1707,6 +1784,25 @@ function initialTranscriptForStop(rawInput: RunAgentInput): StoredMessage[] {
 
 async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
   const { accountId, brandContext } = rawInput;
+
+  // PENDING-APPROVAL CONTINUATION SHORT-CIRCUIT — see
+  // lib/agent/continuation-shortcircuit.ts for the full rationale and the
+  // exact-match allow-list. Checked first, before any other work in the
+  // turn, so a contentless "continue" while an approval is pending makes NO
+  // model call at all. Excluded from the two cases that are never a plain
+  // "keep going": input.approve (this call IS the resume, executing an
+  // already-approved call) and isDelegate (a sub-run's message is the
+  // parent's synthesized sub-task, not something a person typed).
+  if (!rawInput.approve && !rawInput.isDelegate) {
+    const shortCircuit = await checkPendingApprovalShortCircuit(accountId, rawInput.conversationId, rawInput.message);
+    if (shortCircuit) {
+      const messages: StoredMessage[] = capTranscript(rawInput.transcript || []);
+      if (rawInput.message) messages.push({ role: 'user', content: rawInput.message, ...(rawInput.userMessageId ? { id: rawInput.userMessageId } : {}) });
+      messages.push({ role: 'assistant', content: shortCircuit.reply });
+      return { status: 'done', message: shortCircuit.reply, transcript: messages, steps: [], skillSlugs: [] };
+    }
+  }
+
   // Computed BEFORE anything else in the turn — see computeTurnDeadline's
   // comment — so every model call further down (step loop, forced-final)
   // measures against the same start-of-turn instant.
@@ -1799,7 +1895,7 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
   const externalCaps = await loadExternalCapabilities(accountId);
   const extraTools = toolsFromCapabilities(externalCaps);
   const extraCapsByName: Record<string, Capability> = Object.fromEntries(externalCaps.map((c) => [c.name, c]));
-  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId, input.planOnly);
+  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId, input.planOnly, input.turnContext);
   const messages: StoredMessage[] = capTranscript(input.transcript || []);
   const steps: AgentStep[] = [];
 
@@ -1946,11 +2042,12 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
     let usageRowId: string | null = null;
     try {
       raw = await withStopWatch(input.conversationId, accountId, (signal) => generateChat({
-        // toWireMessages strips the storage-only `id` field (migration 076)
-        // before this transcript is serialised into the provider request —
-        // see lib/agent/transcript-store.ts. This is the ONLY place these
-        // messages are handed to the router.
-        system, messages: toWireMessages(messages), temperature: 0.2,
+        // pruneForWire strips the storage-only `id` field (migration 076) AND
+        // drops turn-local nudges / collapses old JSON envelopes / reduces old
+        // OBSERVATION bodies to their digest — see lib/agent/transcript-store.ts.
+        // This is the ONLY place these messages are handed to the router for a
+        // route pass.
+        system, messages: pruneForWire(messages), temperature: 0.2,
         conversationId: input.conversationId,
         onUsageRow: (id) => { usageRowId = id; },
         // No fixed maxOutputTokens — see AGENT_ROUTE_CEILING.
@@ -2417,9 +2514,10 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
   try {
     messages.push({ role: 'user', content: 'Stop calling tools. Using the information above, answer the user now. Respond with ONLY {"action":"final","message":"..."}.' });
     const raw = await withStopWatch(input.conversationId, accountId, (signal) => generateChat({
-      // toWireMessages strips the storage-only `id` field (migration 076) —
-      // see the comment on the other generateChat call sites in this file.
-      system, messages: toWireMessages(messages), temperature: 0.2,
+      // pruneForWire strips the storage-only `id` field (migration 076) and
+      // prunes the transcript for a route pass — see the comment on the other
+      // generateChat call sites in this file.
+      system, messages: pruneForWire(messages), temperature: 0.2,
       // Deliberate hard cap, unlike the step loop's maxOutputCeiling: this
       // call composes ONE final message, not a tool-routing decision, so a
       // fixed 2048-token bound is appropriate and is kept as-is.
@@ -2603,6 +2701,24 @@ function emitAnalysis(emit: (e: AgentEvent) => void, analysis: Analysis | null):
 // "harmonize" the streaming/compose paths.
 async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent) => void): Promise<void> {
   const { accountId, brandContext } = rawInput;
+
+  // PENDING-APPROVAL CONTINUATION SHORT-CIRCUIT — identical to runAgentImpl's
+  // (CLAUDE.md: the two loops must stay identical). Emits the same shape a
+  // normal final answer emits — `final_delta` tokens then `final` — so the
+  // UI renders this exactly like any other assistant message, with no model
+  // call anywhere in the turn. See lib/agent/continuation-shortcircuit.ts.
+  if (!rawInput.approve && !rawInput.isDelegate) {
+    const shortCircuit = await checkPendingApprovalShortCircuit(accountId, rawInput.conversationId, rawInput.message);
+    if (shortCircuit) {
+      const messages: StoredMessage[] = capTranscript(rawInput.transcript || []);
+      if (rawInput.message) messages.push({ role: 'user', content: rawInput.message, ...(rawInput.userMessageId ? { id: rawInput.userMessageId } : {}) });
+      messages.push({ role: 'assistant', content: shortCircuit.reply });
+      await streamTokens(shortCircuit.reply, emit);
+      emit({ type: 'final', message: shortCircuit.reply, transcript: messages, skillSlugs: [] });
+      return;
+    }
+  }
+
   // Computed BEFORE anything else in the turn — see computeTurnDeadline's
   // comment and the identical placement in runAgentImpl above (CLAUDE.md:
   // the two loops must stay identical).
@@ -2695,7 +2811,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
   const personaModelId = input.modelId || personaPinnedModelId;
   const extraTools = toolsFromCapabilities(externalCaps);
   const extraCapsByName: Record<string, Capability> = Object.fromEntries(externalCaps.map((c) => [c.name, c]));
-  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId, input.planOnly);
+  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId, input.planOnly, input.turnContext);
   const messages: StoredMessage[] = capTranscript(input.transcript || []);
   // Mirrors runAgentImpl's `steps` — the streaming loop has no equivalent
   // return value to carry this in, since it reports via `emit` instead of a
@@ -2849,11 +2965,12 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
     let usageRowId: string | null = null;
     try {
       raw = await withStopWatch(input.conversationId, accountId, (signal) => generateChat({
-        // toWireMessages strips the storage-only `id` field (migration 076)
-        // before this transcript is serialised into the provider request —
-        // see lib/agent/transcript-store.ts. This is the ONLY place these
-        // messages are handed to the router.
-        system, messages: toWireMessages(messages), temperature: 0.2,
+        // pruneForWire strips the storage-only `id` field (migration 076) AND
+        // drops turn-local nudges / collapses old JSON envelopes / reduces old
+        // OBSERVATION bodies to their digest — see lib/agent/transcript-store.ts.
+        // This is the ONLY place these messages are handed to the router for a
+        // route pass.
+        system, messages: pruneForWire(messages), temperature: 0.2,
         conversationId: input.conversationId,
         onUsageRow: (id) => { usageRowId = id; },
         // No fixed maxOutputTokens — see AGENT_ROUTE_CEILING.
@@ -3360,9 +3477,10 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
     messages.push({ role: 'user', content: 'Stop calling tools. Using the information above, answer the user now. Respond with ONLY {"action":"final","message":"..."}.' });
     emit({ type: 'step_start', text: 'Putting the answer together…' });
     const raw = await withStopWatch(input.conversationId, accountId, (signal) => generateChat({
-      // toWireMessages strips the storage-only `id` field (migration 076) —
-      // see the comment on the other generateChat call sites in this file.
-      system, messages: toWireMessages(messages), temperature: 0.2,
+      // pruneForWire strips the storage-only `id` field (migration 076) and
+      // prunes the transcript for a route pass — see the comment on the other
+      // generateChat call sites in this file.
+      system, messages: pruneForWire(messages), temperature: 0.2,
       // Deliberate hard cap, unlike the step loop's maxOutputCeiling: this
       // call composes ONE final message, not a tool-routing decision, so a
       // fixed 2048-token bound is appropriate and is kept as-is.

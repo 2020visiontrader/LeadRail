@@ -1,22 +1,43 @@
 // Packet 2.2 — companies domain. Thin wrappers over lib/crm.ts's
 // account-scoped company functions; no business logic reimplemented.
 import { z } from 'zod';
-import { getCompanies, getCompany, createCompany, linkContactCompany } from '@/lib/crm';
+import { assertBrandOwned } from '@/lib/db';
+import {
+  getCompanies, getCompany, createCompany, linkContactCompany,
+  countCompanies, countCompaniesGrouped,
+} from '@/lib/crm';
 import {
   obj, S, type Capability,
-  rowsOf, plural, samples, digestLine,
+  present, rowsOf, plural, samples, digestLine, projectRows,
 } from './types';
+
+/** Fields listCompanies returns per row — see the same note on listLeads in
+ *  lib/capabilities/leads.ts. */
+const COMPANY_LIST_FIELDS = [
+  'id', 'name', 'domain', 'industry', 'size', 'employee_count', 'brand_id', 'created_at',
+];
 
 export const COMPANY_CAPABILITIES: Capability[] = [
   {
     name: 'listCompanies',
     domain: 'companies',
     title: 'List companies',
-    description: 'List companies in the account, optionally filtered to one venture.',
+    description: 'List companies in the account, optionally scoped to one venture with brandId.',
     gate: 'read',
     inputSchema: obj({ brandId: S.string, limit: S.number, offset: S.number }),
     zod: z.object({ brandId: z.string().optional(), limit: z.number().optional(), offset: z.number().optional() }),
-    run: (accountId, { brandId, limit = 50, offset = 0 }) => getCompanies(accountId, brandId, limit, offset),
+    run: async (accountId, { brandId, limit = 25, offset = 0 }) => {
+      const clamped = Math.min(Math.max(Math.floor(limit), 1), 100);
+      // Ownership-checked, matching listLeads/listDeals — see the comment on
+      // listDeals in lib/capabilities/deals.ts for why this throws instead of
+      // relying solely on getCompanies's account_id AND brand_id scoping.
+      if (brandId) {
+        const owned = await assertBrandOwned(brandId, accountId);
+        if (!owned) throw new Error('Brand not found');
+      }
+      const rows = await getCompanies(accountId, brandId, clamped, offset);
+      return projectRows(rows, COMPANY_LIST_FIELDS);
+    },
     digest: (_args, result) => {
       const rows = rowsOf(result);
       if (!rows) return '';
@@ -24,6 +45,45 @@ export const COMPANY_CAPABILITIES: Capability[] = [
       return digestLine(
         `${plural(rows.length, 'company', 'companies')} returned.`,
         names.length ? `Includes: ${names.join(', ')}.` : null,
+      );
+    },
+  },
+  {
+    name: 'countCompanies',
+    domain: 'companies',
+    title: 'Count companies',
+    description: "Count companies in the account WITHOUT fetching any rows — use this instead of listCompanies whenever the question is 'how many', not 'which ones'. Optionally scope to one venture with brandId, and/or break the total down with groupBy (brand or industry). The result is a total plus, if groupBy is set, a small list of per-group counts — never the underlying rows.",
+    gate: 'read',
+    inputSchema: obj({ brandId: S.string, groupBy: S.string }),
+    zod: z.object({
+      brandId: z.string().optional(),
+      groupBy: z.enum(['brand', 'industry']).optional(),
+    }),
+    run: async (accountId, { brandId, groupBy }) => {
+      if (brandId) {
+        const owned = await assertBrandOwned(brandId, accountId);
+        if (!owned) throw new Error('Brand not found');
+      }
+      const filters = { brandId };
+      const total = await countCompanies(accountId, filters);
+      if (!groupBy) return { total };
+      // Capped, not silently truncated into something misleading — see the
+      // matching note on countLeads in lib/capabilities/leads.ts.
+      const groups = (await countCompaniesGrouped(accountId, groupBy, filters)).slice(0, 25);
+      return { total, groupBy, groups };
+    },
+    // Truthful: `total` and `groups` are exactly what the aggregate query
+    // computed — never a count of rows the model happened to see elsewhere.
+    digest: (_args, result) => {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) return '';
+      if (!present(result, 'total')) return '';
+      const groups = Array.isArray((result as any).groups) ? (result as any).groups : null;
+      const byGroup = groups && groups.length
+        ? groups.slice(0, 8).map((g: any) => `${g.value}: ${g.count}`).join(', ')
+        : null;
+      return digestLine(
+        `${plural(Number((result as any).total), 'company', 'companies')} total.`,
+        byGroup ? `By ${(result as any).groupBy}: ${byGroup}.` : null,
       );
     },
   },

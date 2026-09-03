@@ -6,6 +6,7 @@ import Input from '@/components/Input';
 import Dropdown from '@/components/Dropdown';
 import Badge from '@/components/Badge';
 import EmptyState from '@/components/EmptyState';
+import CommandBar from '@/components/CommandBar';
 import { useToast } from '@/components/ToastProvider';
 import { apiGet, apiSend } from '@/lib/api';
 import type { Deal, PipelineStage, Company } from '@/lib/types';
@@ -49,6 +50,14 @@ export default function DealsPage() {
   const [saving, setSaving] = useState(false);
   const [dragId, setDragId] = useState<string | null>(null);
   const [overStage, setOverStage] = useState<string | null>(null);
+  // Which deal cards are checked — the turn-context proof for this page (see
+  // lib/agent/turn-context.ts and app/leads/page.tsx's matching comment).
+  // A plain checkbox, not a click-to-select on the card itself, because the
+  // whole card is already a drag handle — overloading its click would fight
+  // dragging and the existing ◀▶ stage buttons.
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const toggleSelected = (id: string) =>
+    setSelectedIds((s) => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
 
   useEffect(() => {
     apiGet<{ ventures: Venture[] }>('/api/ventures').then((d) => {
@@ -163,7 +172,16 @@ export default function DealsPage() {
                       style={{ borderLeft: `3px solid ${color}` }}
                     >
                       <div className="flex items-start justify-between gap-2">
-                        <div className="min-w-0">
+                        <div className="flex min-w-0 items-start gap-1.5">
+                          <input
+                            type="checkbox"
+                            className="mt-0.5 shrink-0"
+                            checked={selectedIds.has(d.id)}
+                            onChange={() => toggleSelected(d.id)}
+                            onClick={(e) => e.stopPropagation()}
+                            title="Select for Ask LeadRail AI"
+                          />
+                          <div className="min-w-0">
                           <div className="truncate text-sm font-medium text-[var(--text-primary)]">{d.name}</div>
                           <div className="mt-1 flex items-center gap-1.5 text-xs text-[var(--text-muted)]">
                             {d.company_id && (
@@ -176,6 +194,7 @@ export default function DealsPage() {
                               </span>
                             )}
                             <span className="truncate">{companyName(d.company_id) || 'No company'}</span>
+                          </div>
                           </div>
                         </div>
                         <span className="shrink-0 text-sm font-semibold text-[var(--text-primary)]">{money(d.amount, d.currency)}</span>
@@ -208,6 +227,12 @@ export default function DealsPage() {
           })}
         </div>
       )}
+
+      {/* PROOF OF THE TURN-CONTEXT PATTERN — see the matching comment on
+          app/leads/page.tsx. Same CommandBar, this screen's own state:
+          venture, the checked deal cards, and (once this page grows a filter
+          UI) whatever it filters by. */}
+      <CommandBar brandId={venture?.id} page="deals" selectedIds={[...selectedIds]} />
 
       <Modal isOpen={addOpen} title="Add Deal" onClose={() => setAddOpen(false)} onSubmit={save} submitLabel="Create" loading={saving}>
         <div className="space-y-3">

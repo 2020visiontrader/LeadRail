@@ -102,14 +102,27 @@ function renderTranscript(transcript: any[]): string {
   return joined.length > TRANSCRIPT_CHARS ? joined.slice(-TRANSCRIPT_CHARS) : joined;
 }
 
-function parseFacts(raw: string): any[] {
+/**
+ * `ok: true` iff `raw` actually parsed into a well-formed `{"facts":[...]}`
+ * payload — including the empty array, which is a normal, well-formed answer
+ * ("nothing durable was said"). `ok: false` covers everything the extractor
+ * could not make sense of: no JSON object found, malformed JSON, or a
+ * `facts` field that isn't an array.
+ *
+ * Split out from a single boolean on `facts.length === 0` (the original,
+ * buggy shape of this check) because that count alone cannot tell "the model
+ * validly reported nothing" from "the model said something the parser
+ * couldn't read at all" — both have `facts.length === 0`. Only the second is
+ * `parseFailed` in the summary log below.
+ */
+function parseFactsResult(raw: string): { facts: any[]; ok: boolean } {
   const m = raw.match(/\{[\s\S]*\}/);
-  if (!m) return [];
+  if (!m) return { facts: [], ok: false };
   try {
     const parsed = JSON.parse(m[0]);
-    return Array.isArray(parsed?.facts) ? parsed.facts : [];
+    return Array.isArray(parsed?.facts) ? { facts: parsed.facts, ok: true } : { facts: [], ok: false };
   } catch {
-    return [];
+    return { facts: [], ok: false };
   }
 }
 
@@ -266,7 +279,8 @@ async function extractOne(c: PendingConversation): Promise<Omit<ExtractionSummar
       });
     }
 
-    const facts = parseFacts(raw).slice(0, MAX_FACTS_PER_CONVERSATION);
+    const parseResult = parseFactsResult(raw);
+    const facts = parseResult.facts.slice(0, MAX_FACTS_PER_CONVERSATION);
     const decisions: FactDecision[] = [];
     const touched = new Map<string, SubjectRef>();
 
@@ -299,16 +313,49 @@ async function extractOne(c: PendingConversation): Promise<Omit<ExtractionSummar
 
     // WHAT WAS CONSIDERED AND SKIPPED, not just what was written. A threshold
     // that can only be observed through its successes cannot be tuned.
-    if (decisions.length) {
-      log.info('memory: extraction decisions', {
-        accountId: c.accountId,
-        conversationId: c.id,
-        decisions: decisions.map((d) => ({
-          outcome: d.outcome, tier: d.tier ?? null, rule: d.rule,
-          predicate: d.candidate.predicate,
-          subject: `${d.candidate.subject.type}:${d.candidate.subject.id}`,
-        })),
-      });
+    //
+    // PERSISTED, not console-only. `log.info` (what this used to call) never
+    // reaches `app_logs` — see lib/logger.ts and the comments in
+    // lib/agent/loop.ts / app/api/agent/stream/route.ts about `log.request`
+    // being the only persisted channel. That is half of why a production probe
+    // could see three successful model calls and 23 memory_edges rows with
+    // nothing explaining why agent_memory stayed at zero: the one line that
+    // would have said "written 12, skipped 8, rules: unresolved-subject…" was
+    // never durable. Per-decision detail (predicate/subject text) is
+    // deliberately left OUT of this persisted row — only counts, so the row
+    // stays bounded regardless of how many facts a conversation produces.
+    //
+    // EMITTED WHENEVER THE MODEL CALL WAS ATTEMPTED (unconditional on
+    // decisions.length, gated only by the enclosing `body.trim()`) — NOT only
+    // when there was at least one decision. A model reply that parses to zero
+    // facts, or a raw response the parser can't make sense of at all
+    // (parseFailed), is exactly the case this exists to surface: it used to
+    // emit nothing, which reads identically to "the conversation had nothing
+    // durable to report" when it can just as easily mean "the model's output
+    // was garbage and nobody could tell."
+    {
+      const rules: Record<string, number> = {};
+      for (const d of decisions) rules[d.rule] = (rules[d.rule] || 0) + 1;
+      const parseFailed = raw.trim().length > 0 && !parseResult.ok;
+      log.request(
+        {
+          route: 'memory:extract',
+          method: 'TICK',
+          accountId: c.accountId,
+          message: 'memory: extraction summary',
+          detail: {
+            conversationId: c.id,
+            promptChars: body.length,
+            facts: facts.length,
+            written: out.written,
+            recurrences: out.recurrences,
+            skipped: out.skipped,
+            rules,
+            parseFailed,
+          },
+        },
+        (out.written === 0 && facts.length > 0) || parseFailed ? 'warn' : 'info',
+      );
     }
 
     for (const subject of touched.values()) {

@@ -34,7 +34,7 @@ export function estimateTokens(text: string): number {
  *  borderline model is ruled out rather than being sent a request that
  *  overflows by a few hundred tokens — a failure that reads as a model problem
  *  rather than a sizing one. */
-const HEADROOM = 1.15;
+export const HEADROOM = 1.15;
 
 export interface ModelCapability {
   context_window?: number | null;

@@ -18,7 +18,13 @@ import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import type { Capability } from '@/lib/capabilities/types';
 import * as fs from 'fs';
 
-const ENV_KEY = 'AGENT_STAGED_CATALOG';
+// C6 (2026-09-03): the staged catalog is now the DEFAULT, and the escape
+// hatch that restores the old full-catalog-only shape is AGENT_FULL_CATALOG,
+// not AGENT_STAGED_CATALOG=0 — the registry no longer reads
+// AGENT_STAGED_CATALOG from the environment at all (it's derived as
+// `!AGENT_FULL_CATALOG`). "off"/"staged: false" below means "full catalog",
+// produced by setting AGENT_FULL_CATALOG=1, matching the pre-flip shape.
+const ENV_KEY = 'AGENT_FULL_CATALOG';
 const ORIGINAL_FLAG = process.env[ENV_KEY];
 
 interface RegressionSurfaces {
@@ -30,8 +36,8 @@ interface RegressionSurfaces {
 
 async function loadRegressionSurfaces(staged: boolean): Promise<RegressionSurfaces> {
   vi.resetModules();
-  if (staged) process.env[ENV_KEY] = '1';
-  else delete process.env[ENV_KEY];
+  if (staged) delete process.env[ENV_KEY];
+  else process.env[ENV_KEY] = '1';
 
   const registry = await import('@/lib/capabilities/registry');
   const types = await import('@/lib/capabilities/types');

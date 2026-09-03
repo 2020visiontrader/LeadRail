@@ -10,6 +10,7 @@ import { mintMessageId, ensureMessageIds, type StoredMessage } from '@/lib/agent
 import { stripPrivateReasoning } from '@/lib/agent/transcript-privacy';
 import { parseMentions } from '@/lib/agent/personas';
 import { assertSelectableModel } from '@/lib/ai/providers';
+import { sanitizeTurnContext, renderTurnContextBlock } from '@/lib/agent/turn-context';
 import { createStreamGuard } from '@/lib/agent/stream-guard';
 import { providersLookDown, turnFailureMessage } from '@/lib/agent/failure-copy';
 import { reportStreamFailure } from '@/lib/agent/failure-report';
@@ -138,6 +139,11 @@ export async function POST(request: NextRequest) {
     if (data?.id) { brandId = data.id; brandName = data.name || undefined; }
   }
 
+  // WHERE THE USER IS — see the twin comment in app/api/agent/route.ts.
+  // Client-reported, never a trust boundary; brandId above is already
+  // ownership-checked and is the only field here with real authority.
+  const turnContext = renderTurnContextBlock(sanitizeTurnContext(body?.turnContext));
+
   const fromId = typeof body?.from === 'string' && body.from ? body.from : undefined;
   // `let`, not `const`: the opening save below mints an id for a brand-new
   // conversation, and everything after it must use that id rather than undefined.
@@ -194,6 +200,22 @@ export async function POST(request: NextRequest) {
       // "(1 running) disappears while the trace still says Running" state.
       let terminalSent = false;
       let finalTranscript: StoredMessage[] | undefined;
+      // G8 FIX. Captured whenever a terminal `error` is sent to the client —
+      // from the loop's own emit({type:'error', ...}), from the catch block
+      // below, or from the `!terminalSent` fallback in `finally` — so the
+      // finally block's save can append the assistant's error text as a real
+      // transcript entry. Previously the save fell straight through to
+      // `finalTranscript ?? openingTranscript`, which for an error turn is
+      // always the latter: only the user's message, never the reply shown on
+      // screen. `errorTranscriptBase` is the transcript to build on — the
+      // loop's own `e.transcript` when the error event carries one (some do:
+      // see lib/agent/loop.ts's rescue-failed and forced-final-failed paths),
+      // otherwise left undefined so the save below falls back through
+      // `openingTranscript` (a real new message this turn) and finally
+      // `transcript` (the pre-turn history, for an approve-resume that has no
+      // new user turn of its own).
+      let errorMessageText: string | undefined;
+      let errorTranscriptBase: StoredMessage[] | undefined;
       // Migration 080 (message_feedback.skill_slugs): captured off the
       // terminal 'final' event, same lifetime as finalTranscript above, so
       // the 'conversation' event below can hand it to the client for a
@@ -208,6 +230,12 @@ export async function POST(request: NextRequest) {
       // the finally block can persist something even when the turn never
       // reaches a terminal event — see the save below.
       let openingTranscript: StoredMessage[] | undefined;
+      // The pre-turn transcript as loaded from the DB (before this turn's own
+      // user message, if any, is appended). Hoisted out of the try block
+      // (rather than left as the `const` it used to be) so the finally
+      // block's error-save fallback chain above can reach it for an
+      // approve-resume, which has no `openingTranscript` of its own.
+      let transcript: StoredMessage[] = [];
       // Minted BEFORE the turn runs (same reasoning as app/api/agent/route.ts):
       // scanning the finished transcript for a matching role/content pair is
       // ambiguous the moment the same message is sent twice. Only for a real
@@ -256,7 +284,7 @@ export async function POST(request: NextRequest) {
         // the user's own message vanished with it. Losing the assistant's half
         // of a failed turn is tolerable; losing what the person typed is not,
         // because only they can reproduce it.
-        const transcript = transcriptResult.messages;
+        transcript = transcriptResult.messages;
         // A FAILED READ MUST NOT BECOME A WRITE. When the transcript could not
         // be read, `transcript` is [] — indistinguishable from a new chat — and
         // saving [user message] against an existing id would replace the whole
@@ -334,7 +362,7 @@ export async function POST(request: NextRequest) {
         }
 
         await runAgentStream(
-          { accountId: session.accountId, message, approve, transcript, agentContext, carryover, brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined, personaId, personaMentions, requestedBy: session.email, conversationId, planOnly, userMessageId, modelId },
+          { accountId: session.accountId, message, approve, transcript, agentContext, carryover, brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined, turnContext, personaId, personaMentions, requestedBy: session.email, conversationId, planOnly, userMessageId, modelId },
           (e: AgentEvent) => {
             // Only `final`/`needs_approval` carry a transcript. Everything else,
             // including `final_delta` (a progressive preview of the answer being
@@ -346,7 +374,12 @@ export async function POST(request: NextRequest) {
             if (e.type === 'final') {
               finalSkillSlugs = e.skillSlugs;
             }
-            if (e.type === 'error') terminalSent = true;
+            if (e.type === 'error') {
+              terminalSent = true;
+              // G8 FIX — see the declaration comment above.
+              errorMessageText = e.message;
+              errorTranscriptBase = e.transcript;
+            }
             if (e.type === 'compaction_suggested') compaction = e.level;
             // ORDER MATTERS. `finalTranscript` is captured from the RAW event
             // above, because it is what `saveConversation` writes below — the
@@ -365,11 +398,13 @@ export async function POST(request: NextRequest) {
         );
       } catch (e: any) {
         const down = providersLookDown();
-        send({
-          type: 'error',
-          message: turnFailureMessage({ reason: 'exception', providersDown: down, hadAttachment: attachmentIds.length > 0 }),
-        });
+        const failureMessage = turnFailureMessage({ reason: 'exception', providersDown: down, hadAttachment: attachmentIds.length > 0 });
+        send({ type: 'error', message: failureMessage });
         terminalSent = true;
+        // G8 FIX — see the declaration comment above. No `e.transcript` here
+        // (this is the route's own catch, not a loop event), so the save
+        // below falls back through openingTranscript / transcript.
+        errorMessageText = failureMessage;
         // Best-effort, and defended TWICE: reportStreamFailure already
         // swallows its own errors (see its comment), and this call site
         // catches again regardless — reporting a failure must never become a
@@ -418,10 +453,11 @@ export async function POST(request: NextRequest) {
         // to guess, and would eventually give up on a turn that was fine.
         if (!terminalSent) {
           const down = providersLookDown();
-          send({
-            type: 'error',
-            message: turnFailureMessage({ reason: 'incomplete', providersDown: down, hadAttachment: attachmentIds.length > 0 }),
-          });
+          const incompleteMessage = turnFailureMessage({ reason: 'incomplete', providersDown: down, hadAttachment: attachmentIds.length > 0 });
+          send({ type: 'error', message: incompleteMessage });
+          // G8 FIX — see the declaration comment above. No `e.transcript`
+          // here either; same fallback chain as the catch block.
+          errorMessageText = incompleteMessage;
           // Best-effort, same double-guard as the catch block above — a
           // recurring "no terminal event" failure should increment a counter
           // on the support board, not just nag the customer to retry
@@ -444,9 +480,21 @@ export async function POST(request: NextRequest) {
         // Persist the conversation and tell the client its id so follow-up turns
         // and the carryover handoff can reference it.
         // Save the fullest transcript this turn produced. `finalTranscript` when
-        // the turn completed; otherwise the opening one, which at least keeps
-        // the user's message. The old code saved nothing in the second case.
-        const toSave = finalTranscript ?? openingTranscript;
+        // the turn completed; on an error turn (G8 FIX), the base transcript
+        // plus the exact assistant error text the client was shown — never
+        // just the user's message with no reply. `openingTranscript` when
+        // neither applies (there is no other terminal shape left).
+        const errorBase = errorTranscriptBase ?? openingTranscript ?? transcript;
+        const alreadyEndsWithError = errorMessageText !== undefined
+          && errorBase.length > 0
+          && errorBase[errorBase.length - 1]?.role === 'assistant'
+          && errorBase[errorBase.length - 1]?.content === errorMessageText;
+        const toSave = finalTranscript
+          ?? (errorMessageText !== undefined
+              ? (alreadyEndsWithError
+                  ? errorBase
+                  : [...errorBase, { role: 'assistant', content: errorMessageText } as StoredMessage])
+              : openingTranscript);
         if (toSave) {
           // Message-action Packet: the console needs a REAL, stable id for
           // the assistant reply it just streamed — to key a thumbs vote, or

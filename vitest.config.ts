@@ -3,8 +3,8 @@ import path from 'path';
 
 // Minimal vitest setup (Packet 2.3). It exists to run the API=MCP parity check,
 // which asserts over static registry data only — no DB, no network, no
-// credentials, no environment beyond the AGENT_STAGED_CATALOG flag the test sets
-// itself.
+// credentials, no environment beyond the AGENT_FULL_CATALOG flag the test sets
+// itself (see tests/parity.test.ts — staging is the default since C6).
 //
 // The Playwright e2e suite (tests/e2e/*.spec.ts, driven by playwright.config.ts)
 // is EXCLUDED here: vitest's default include would otherwise collect those specs

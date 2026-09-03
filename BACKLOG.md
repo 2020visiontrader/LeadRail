@@ -738,3 +738,206 @@ place; it should not be cited as the guarantee.
 **Still unproven in production:** `scheduled_tasks` has 0 rows, so no task
 has ever been claimed. Done when a real task is claimed and released — the
 same standard as #12 and #13.
+
+## 15. Migration 085 — APPLIED AND VERIFIED 2026-09-03
+
+`migrations/085_count_functions.sql` adds `count_leads_grouped`,
+`count_deals_grouped` and `count_companies_grouped` — the GROUP BY that
+PostgREST cannot portably express. Applied to production (project
+`kqimpzbphdogvchqmtos`) on 2026-09-03.
+
+**CLOSED.** Verified against `information_schema.routines`, not the apply
+call's `success: true`:
+
+```
+count_companies_grouped  INVOKER
+count_deals_grouped      INVOKER
+count_leads_grouped      INVOKER
+```
+
+Then checked against reality rather than the function's own return value:
+`count_leads_grouped(…, 'brand')` returned `retentionrail:56, filmops:5`,
+summing to 61 — matching the real `contacts` row count. That also settles the
+audit's anecdote about three delegates reporting 54, 56 and 61 leads: they
+were all reading the same 61-row table and counting it differently in JS.
+
+**Named readers, per the rule about things nothing reads:** `countLeads`,
+`countDeals`, `countCompanies` in `lib/capabilities/{leads,deals,companies}.ts`,
+registered in `CATALOG_ORDER` (`lib/capabilities/registry.ts`) by commit
+`f4a3b0e`. Registration was the actual gap — the capabilities shipped in
+`83760a0` fully built, tested and backed by these functions, and were
+unreachable for an hour because nothing listed them. Twelfth instance of the
+house anti-pattern, caught before merge rather than after.
+
+**Still unproven in production:** no real turn has called a count tool yet.
+Done when `ai_usage` (or `app_logs`) shows a production turn whose tool calls
+include `countLeads`, and the answer it produced carries the same number this
+entry records.
+
+## 16. 353 skills enabled by a write nothing in the app can make — 2026-09-03
+
+`account_skills` holds **353 rows, every one `enabled = true`, one account,
+all created 2026-08-18 between 12:01:24 and 14:46:36**. Zero disabled rows.
+The only writer in the application is `setAccountSkill`
+(`lib/skills/store.ts:181`), a **single-row** upsert behind the per-skill
+toggle; `POST /api/skills/sync` writes the global `skills` catalog
+(`account_id IS NULL`) and never touches `account_skills`. So no UI path can
+produce this shape — it came from outside the app.
+
+The token half is **closed** by commit `f4a3b0e`: `skillsBlock`
+(`lib/agent/loop.ts`) now caps injected skill text at 8,000 chars per turn and
+2,000 per skill, clipped at a sentence boundary with a marker naming
+`describeSkill` and the slug. Harvested skills average 11,269 chars and the
+largest is 94,247, so four routed skills could previously be 45K chars. That
+cap holds regardless of how many rows are enabled.
+
+**Still open, and it is a DATA decision, not a code one:** routing quality.
+Hermes shortlists 1–4 skills out of 353 rather than out of the 12 curated
+ones, and the remediation notes still claim "0 are enabled, so the budget is
+safe today", which is false and should be corrected wherever it appears.
+
+**Done when:** the owner decides whether to keep the harvested set enabled. If
+not, `update account_skills set enabled = false` for the 341 harvested slugs
+(reversible), and this entry records the row count actually changed. Nobody
+should run that silently — it changes how the live assistant routes.
+
+## 17. ~~Duplicate attachment rows are created at upload~~ — FIXED IN CODE 2026-09-03
+
+**Code fix landed the same day** (`lib/documents/attachments.ts`, `ingestAttachment`):
+before uploading, an identical `ready` document on the same account (same
+`chars`, same `bytes`, same sha256 of the extracted text, never a
+`scope='library'` row) is reused — bound to the incoming conversation when it
+was unbound, returned as-is when it already belongs to that conversation, or
+re-rowed without a second storage object when it belongs to another one.
+`deleteAttachment` removes the storage object only when no other row still
+references its `storage_path`. Proven by `tests/attachment-ingest-dedupe.test.ts`
+(9 tests, revert-checked). The production proof in **Done when** below still
+stands: nothing has been uploaded since.
+
+Original entry follows.
+
+## 17 (original). Duplicate attachment rows are created at upload — 2026-09-03
+
+One 34,456-char voice transcript is stored **nine times** (three unbound, two
+copies each in two conversations). `POST /api/assistant/attachments`
+(`app/api/assistant/attachments/route.ts`) calls `ingestAttachment` with no
+content hash and no idempotency check, so every upload writes a new row even
+when identical extracted text already exists on the account.
+
+Commit `5637d15` dedupes by content hash **at render time**, so the model now
+sees one copy — the context cost is closed. The rows are still being created.
+
+**Done when:** the upload path refuses (or reuses) an attachment whose
+extracted-text hash already exists for that account, and a production count of
+`assistant_attachments` grouped by content hash shows no group with more than
+one row for a newly uploaded file.
+
+## 18. The context reductions are code-verified only — 2026-09-03
+
+Commits `22ac3da`, `369bdbd`, `f722990`, `5637d15`, `83760a0`, `f4a3b0e` cut
+what enters a model call: list rows projected to summary fields, observations
+older than the last two reduced to their digest before the wire, budget
+ceilings clamped so a 1M declared window cannot produce a 400K-char
+observation cap, documents injected once then by handle, compose reduced to
+draft plus the last two observations, and the tool catalog staged (48,268 →
+3,812 chars).
+
+Every one is proven by tests and a revert-check. **None is proven in
+production.** The measured baseline was 55,318 avg input tokens per call on
+the worst conversation, peaking at 148,872, against models with 128K–200K
+windows.
+
+**Done when:** `ai_usage` shows post-change turns and this entry records the
+new avg and max `tokens_in` per call against those figures. Watch for the
+opposite failure too — an answer that got worse because something it needed
+was pruned. Specifically: a turn that calls `readDocument` because a stub was
+not enough, or a compose answer missing a fact that used to come from
+`agentContext`.
+
+Note `ai_usage` cannot see most of this on its own: Zo Ask reported NULL
+tokens on 299 of its calls, so roughly 60% of spend is unmeasured (gap C11,
+unfixed). Until that is closed, any before/after comparison is over the
+measured tiers only and should say so.
+
+## 19. Four more audit gaps closed in code, none yet seen in production — 2026-09-03
+
+Landed together on `claude/assistant-orchestration-gaps-qpv1jy` after the
+context-audit branch was merged onto main:
+
+- **Failed turns are persisted** (gap G8). `app/api/agent/stream/route.ts` and
+  `app/api/agent/route.ts` now save an `error` outcome as a trailing assistant
+  message carrying the exact text the user was shown, so a reload no longer
+  shows an unanswered question and the next turn's model no longer reads its
+  own failure as an open request. `tests/agent-error-turn-persisted.test.ts`.
+- **Plans are visible** (gap G16). `lib/plans/runner.ts` marks the plan's
+  conversation running around each step (so the console's existing poll
+  repaints), appends a progress line for single-shot steps and for approval
+  blocks, and raises one notification per status transition into
+  done/blocked/failed. `listPlans` capability added (`lib/plans/store.ts`,
+  `lib/capabilities/plans.ts`) so "what are you working on" has an answer.
+  `tests/plan-runner.test.ts`, `tests/plan-list-capability.test.ts`.
+- **Zo Ask tokens are estimated** (gap C11). `successUsage` in
+  `lib/ai/router.ts` records `size.promptTokens` and an estimate of the reply
+  as `usage_source='estimated'` whenever the provider reported nothing, so
+  the usage panel shows the order of magnitude instead of NULL. Estimates
+  stay split from reported totals in `getAiUsageSummary`.
+  `tests/ai-router-estimated-usage.test.ts`.
+- **Uploads deduplicated at ingest** (gap C5, §17 above).
+
+**Done when, one line each, all from production:**
+1. An `agent_conversations.transcript` whose last entry is an assistant
+   message equal to a `turnFailureMessage` string, on a turn logged as
+   `agent turn: error`.
+2. An `agent_plans` row whose conversation shows `Step N done:` lines and a
+   `notifications` row with `type='plan'` — which also closes §13.
+3. `ai_usage` rows with `model_label='zoask'`, `ok=true`, `tokens_in NOT NULL`
+   and `usage_source='estimated'`.
+4. Per §17.
+
+Still open from the audits, deliberately not started here: native tool use
+and provider caching (G1), persisted candidate health (G4), page fetch for
+research (G10), approvals decided from the Approvals page resuming the chat
+(G19), calling (G20), harvested skills default (§16), and the two dead chat
+UIs (sequences, inbox).
+
+## 20. Production probe after the 4da2d5e deploy: the tick is not running the merged code — 2026-09-03
+
+Deploy of `4da2d5e` was reported live at 13:5x UTC (`GIT_SHA=4da2d5e`,
+new PID, "Ready"). To verify §13/§19 the memory watermarks on three
+conversations were cleared at 13:57 and again on one conversation at 14:06.
+
+What production did (all from `ai_usage`, `memory_edges`, `agent_memory`,
+`app_logs`, not from any return value):
+
+| tick | conversation | prompt tokens | outcome |
+|---|---|---:|---|
+| 14:00 | 3b08d196 (457K-char transcript) | 110,375 | 146 s on gpt-oss-120b; edges written; `agent_memory` unchanged |
+| 14:00 | 28ac9366 (324K chars) | 79,239 | 47 s; edges written; unchanged |
+| 14:00 | 2ad98991 (438K chars) | 101,542 | 65 s; edges written; unchanged |
+| 14:10 | 28ac9366 again (probe) | 79,237 | identical prompt size; `agent_memory` still 0; edges 46 → 46 |
+
+Two facts contradict the merged code: (1) `renderTranscript` at `4da2d5e`
+caps the extraction prompt at `BUDGET.extractionChars` = 120,000 chars
+(~30K tokens; verified by evaluating the module at HEAD), yet every prompt
+was the WHOLE transcript at 4.1 chars/token; (2) `decideAndWrite` at
+`4da2d5e` calls `recordFact` on every 'written' edge, yet 23 edges were
+written and 0 facts. Both match the pre-#22 code exactly. A direct
+`INSERT INTO agent_memory` with the same columns succeeds (probed inside a
+rolled-back transaction), so the table is not the problem.
+
+**Conclusion: the process answering `/api/hermes/tick` is executing
+lib/memory/extract.ts and lib/ai/context-budget.ts from before PR #22/#23**,
+whatever `GIT_SHA` says. Most likely a stale `.next` server bundle or a
+second instance. Not fixable from the repo.
+
+**Done when:** a tick after a confirmed rebuild produces an `ai_usage` row
+for an extraction call with `tokens_in` under ~40,000 on one of these
+conversations, and `agent_memory` count > 0. Clear one watermark
+(`update agent_conversations set memory_extracted_at = null where id =
+'28ac9366-65e5-42eb-94f2-108ad0acbf8f'`), wait one tick, read both.
+
+Side finding from the same logs: OpenRouter credit is nearly gone. The
+"affordable" ceilings in the 402 bodies fell from 13,801 to 11,219 tokens
+(haiku) and 62,735 to 50,996 (luna) in ten minutes; only gpt-oss-120b still
+serves. The four extraction calls above cost about 370K input tokens on it.
+Top up or expect the OpenRouter tier to go dark.

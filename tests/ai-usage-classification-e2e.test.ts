@@ -30,7 +30,7 @@ describe('router plumbs usage classification into recordAiUsage', () => {
     delete process.env.HF_TOKEN;
   });
 
-  it('a Zo Ask answer (no usage field) logs usage_status: provider_not_reported, usage_source: none', async () => {
+  it('a Zo Ask answer (no usage field) logs an ESTIMATE (usage_status stays provider_not_reported, usage_source: estimated) — context audit C11', async () => {
     fetchMock.mockResolvedValue({ ok: true, json: async () => ({ output: 'hello there' }) });
 
     const { generateText } = await import('@/lib/ai/router');
@@ -44,12 +44,21 @@ describe('router plumbs usage classification into recordAiUsage', () => {
     expect(recordAiUsage).toHaveBeenCalledTimes(1);
     const arg: any = recordAiUsage.mock.calls[0]![0];
     expect(arg.ok).toBe(true);
-    expect(arg.tokensIn).toBeNull();
-    expect(arg.tokensOut).toBeNull();
+    // Zo Ask never reports usage, so lib/ai/router.ts::successUsage fills in
+    // the same estimate the selector sized the call with ('hi' -> 1 token),
+    // and estimates tokensOut from the text actually returned ('hello
+    // there', 11 chars -> 3 tokens) — no longer NULL (context audit C11: 299
+    // of 299 Zo Ask successes in a 14-day window logged tokens_in NULL).
+    expect(arg.tokensIn).toBe(1);
+    expect(arg.tokensOut).toBe(3);
+    // usage_status stays a statement about the PROVIDER (Zo Ask genuinely
+    // reported nothing) — an estimate must never read back as 'reported'.
     expect(arg.usageStatus).toBe('provider_not_reported');
-    expect(arg.usageSource).toBe('none');
-    // Same absence rule, same reason, for provider-reported timing (migration
-    // 078): Zo Ask's `{output}` body never carries a duration field either.
+    // usage_source now says where the NUMBER came from: ours, not theirs.
+    expect(arg.usageSource).toBe('estimated');
+    // Timing is untouched by this fix — Zo Ask's `{output}` body never
+    // carries a duration field either, and there is no text to estimate a
+    // duration from, so this stays absence, not a guess.
     expect(arg.providerLatencyMs).toBeNull();
     expect(arg.timingStatus).toBe('provider_not_reported');
     expect(arg.timingSource).toBe('none');

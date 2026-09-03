@@ -1,6 +1,7 @@
 import './globals.css';
 import AppShell from '@/components/AppShell';
 import ToastProvider from '@/components/ToastProvider';
+import VentureScopeProvider from '@/components/VentureScopeProvider';
 
 export const metadata = {
   title: 'LeadRail',
@@ -20,7 +21,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       </head>
       <body>
         <ToastProvider>
-          <AppShell>{children}</AppShell>
+          <VentureScopeProvider>
+            <AppShell>{children}</AppShell>
+          </VentureScopeProvider>
         </ToastProvider>
       </body>
     </html>

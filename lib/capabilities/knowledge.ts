@@ -71,9 +71,10 @@ export const KNOWLEDGE_CAPABILITIES: Capability[] = [
     zod: z.object({ fileId: z.string(), maxChars: z.number().optional() }),
     run: (accountId, { fileId, maxChars }) => driveReadFileText(accountId, fileId, maxChars),
   },
-  // --- Packet 10.3: stage 2 of the two-stage tool catalog. Registered ONLY when
-  // AGENT_STAGED_CATALOG=1 (filtered in registry.ts) — with staging off there is
-  // no compact index to expand.
+  // --- Packet 10.3: stage 2 of the two-stage tool catalog. Registered ONLY
+  // when AGENT_STAGED_CATALOG is true (filtered in registry.ts) — that's the
+  // default since 2026-09-03 (C6); it drops out only under the
+  // AGENT_FULL_CATALOG=1 rollback, where there is no compact index to expand.
   {
     name: 'describeTools',
     domain: 'knowledge',
