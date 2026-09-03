@@ -801,7 +801,22 @@ not, `update account_skills set enabled = false` for the 341 harvested slugs
 (reversible), and this entry records the row count actually changed. Nobody
 should run that silently — it changes how the live assistant routes.
 
-## 17. Duplicate attachment rows are created at upload — 2026-09-03
+## 17. ~~Duplicate attachment rows are created at upload~~ — FIXED IN CODE 2026-09-03
+
+**Code fix landed the same day** (`lib/documents/attachments.ts`, `ingestAttachment`):
+before uploading, an identical `ready` document on the same account (same
+`chars`, same `bytes`, same sha256 of the extracted text, never a
+`scope='library'` row) is reused — bound to the incoming conversation when it
+was unbound, returned as-is when it already belongs to that conversation, or
+re-rowed without a second storage object when it belongs to another one.
+`deleteAttachment` removes the storage object only when no other row still
+references its `storage_path`. Proven by `tests/attachment-ingest-dedupe.test.ts`
+(9 tests, revert-checked). The production proof in **Done when** below still
+stands: nothing has been uploaded since.
+
+Original entry follows.
+
+## 17 (original). Duplicate attachment rows are created at upload — 2026-09-03
 
 One 34,456-char voice transcript is stored **nine times** (three unbound, two
 copies each in two conversations). `POST /api/assistant/attachments`
@@ -843,3 +858,44 @@ Note `ai_usage` cannot see most of this on its own: Zo Ask reported NULL
 tokens on 299 of its calls, so roughly 60% of spend is unmeasured (gap C11,
 unfixed). Until that is closed, any before/after comparison is over the
 measured tiers only and should say so.
+
+## 19. Four more audit gaps closed in code, none yet seen in production — 2026-09-03
+
+Landed together on `claude/assistant-orchestration-gaps-qpv1jy` after the
+context-audit branch was merged onto main:
+
+- **Failed turns are persisted** (gap G8). `app/api/agent/stream/route.ts` and
+  `app/api/agent/route.ts` now save an `error` outcome as a trailing assistant
+  message carrying the exact text the user was shown, so a reload no longer
+  shows an unanswered question and the next turn's model no longer reads its
+  own failure as an open request. `tests/agent-error-turn-persisted.test.ts`.
+- **Plans are visible** (gap G16). `lib/plans/runner.ts` marks the plan's
+  conversation running around each step (so the console's existing poll
+  repaints), appends a progress line for single-shot steps and for approval
+  blocks, and raises one notification per status transition into
+  done/blocked/failed. `listPlans` capability added (`lib/plans/store.ts`,
+  `lib/capabilities/plans.ts`) so "what are you working on" has an answer.
+  `tests/plan-runner.test.ts`, `tests/plan-list-capability.test.ts`.
+- **Zo Ask tokens are estimated** (gap C11). `successUsage` in
+  `lib/ai/router.ts` records `size.promptTokens` and an estimate of the reply
+  as `usage_source='estimated'` whenever the provider reported nothing, so
+  the usage panel shows the order of magnitude instead of NULL. Estimates
+  stay split from reported totals in `getAiUsageSummary`.
+  `tests/ai-router-estimated-usage.test.ts`.
+- **Uploads deduplicated at ingest** (gap C5, §17 above).
+
+**Done when, one line each, all from production:**
+1. An `agent_conversations.transcript` whose last entry is an assistant
+   message equal to a `turnFailureMessage` string, on a turn logged as
+   `agent turn: error`.
+2. An `agent_plans` row whose conversation shows `Step N done:` lines and a
+   `notifications` row with `type='plan'` — which also closes §13.
+3. `ai_usage` rows with `model_label='zoask'`, `ok=true`, `tokens_in NOT NULL`
+   and `usage_source='estimated'`.
+4. Per §17.
+
+Still open from the audits, deliberately not started here: native tool use
+and provider caching (G1), persisted candidate health (G4), page fetch for
+research (G10), approvals decided from the Approvals page resuming the chat
+(G19), calling (G20), harvested skills default (§16), and the two dead chat
+UIs (sequences, inbox).
