@@ -27,6 +27,7 @@ import { improvePrompt } from '@/lib/ai/prompt-improver';
 import {
   runnablePlans, nextStep, claimStep, completeStep, blockStep,
   recordProgress, renderPlan, MAX_STEP_ATTEMPTS, advanceCursor, releaseStepForRetry,
+  clearStepApproval,
   type Plan, type PlanStep,
 } from './store';
 
@@ -64,6 +65,78 @@ const STEPS_PER_PLAN_STEP = Number(process.env.PLAN_STEPS_PER_RUN) || 6;
  *  trap is written up in BACKLOG §2). The lesson generalises — a real query
  *  over the wrong time range is still the wrong answer. */
 const ITEMS_PER_STEP_TICK = Number(process.env.PLAN_ITEMS_PER_TICK) || 8;
+
+/**
+ * A step that was parked with a granted approval carries `approvalId`. When
+ * that approval is still genuinely usable, hand it to runAgent so its
+ * existing hard gate (consumeApprovalForExecution) actually consumes it —
+ * without this, a resumed step just proposes the same sensitive call again,
+ * blocks again, and never executes (G15).
+ *
+ * Returns undefined for anything short of a clean, currently-approved,
+ * decryptable row — a pending/rejected/expired/invalidated/executed approval
+ * must NOT resume execution, it must fall back to today's behaviour (the
+ * model proposes again, which re-raises a fresh approval if the human still
+ * wants it done). Never throws: a failure here must degrade gracefully, not
+ * take the tick down with it.
+ */
+async function grantedApprovalFor(
+  plan: Plan,
+  step: PlanStep,
+): Promise<{ approvalId: string; tool: string; args: Record<string, any> } | undefined> {
+  if (!step.approvalId) return undefined;
+  try {
+    const { getApproval, decryptApprovalArgs } = await import('@/lib/approvals/store');
+    const row = await getApproval(plan.accountId, step.approvalId);
+    if (!row || row.state !== 'approved') return undefined;
+    const args = await decryptApprovalArgs(plan.accountId, step.approvalId);
+    if (!args) return undefined;
+    return { approvalId: row.id, tool: row.tool, args };
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Grounding for a plan step's runAgent call (G14): the same venture profile,
+ * account snapshot, durable memory, and conversation transcript an
+ * interactive turn gets via loadAgentContext/loadTranscript. Without this a
+ * plan step runs blind — it cannot see what earlier steps actually did, or
+ * anything the account has told the assistant outside this one turn.
+ *
+ * Both pieces degrade to undefined on failure rather than throwing — a
+ * grounding miss must not fail the tick that would otherwise complete real
+ * work.
+ */
+async function groundingFor(plan: Plan, step: PlanStep): Promise<{
+  agentContext?: string;
+  transcript?: any[];
+}> {
+  let agentContext: string | undefined;
+  try {
+    const { loadAgentContext } = await import('@/lib/agent/context');
+    agentContext = await loadAgentContext({
+      accountId: plan.accountId,
+      brandId: plan.brandId ?? undefined,
+      conversationId: plan.conversationId ?? undefined,
+      query: step.title,
+    });
+  } catch {
+    agentContext = undefined;
+  }
+
+  let transcript: any[] | undefined;
+  if (plan.conversationId) {
+    try {
+      const { loadTranscript } = await import('@/lib/agent/memory');
+      transcript = await loadTranscript(plan.conversationId, plan.accountId);
+    } catch {
+      transcript = undefined;
+    }
+  }
+
+  return { agentContext, transcript };
+}
 
 export interface PlanTickResult {
   plansTouched: number;
@@ -119,6 +192,14 @@ async function advance(plan: Plan): Promise<'completed' | 'blocked' | 'idle' | '
   }
 
   const { runAgent } = await import('@/lib/agent/loop');
+  // G15: a step parked with a GRANTED approval must be resumed through it —
+  // otherwise the model just proposes the same sensitive call again and
+  // blocks again, forever. G14: ground the step the same way an interactive
+  // turn is grounded, so it can actually see the plan's venture profile,
+  // account snapshot, memory, and — when the plan has one — the conversation
+  // it came from.
+  const approve = await grantedApprovalFor(plan, step);
+  const { agentContext, transcript } = await groundingFor(plan, step);
   try {
     const result = await runAgent({
       accountId: plan.accountId,
@@ -157,7 +238,17 @@ async function advance(plan: Plan): Promise<'completed' | 'blocked' | 'idle' | '
       // Same reasoning: the persona the plan was written for, so the voice and
       // judgement do not change between step 1 and step 4.
       ...(plan.personaId ? { personaId: plan.personaId } : {}),
+      ...(agentContext ? { agentContext } : {}),
+      ...(transcript ? { transcript } : {}),
+      ...(approve ? { approve } : {}),
     });
+
+    // The granted approval was either consumed above or turned out to be
+    // stale/rejected by the time runAgent looked at it — either way it must
+    // not linger on the step and be mistaken for still-usable next tick.
+    if (approve && result.status !== 'needs_approval') {
+      await clearStepApproval(step.id);
+    }
 
     if (result.status === 'needs_approval') {
       // Phase 3: the step waits on a human, and the approval id is recorded so
@@ -252,6 +343,10 @@ async function advanceBatch(plan: Plan, step: PlanStep): Promise<'completed' | '
   const slice = items.slice(step.cursor, step.cursor + ITEMS_PER_STEP_TICK);
 
   const { runAgent } = await import('@/lib/agent/loop');
+  // Same reasoning as the single-shot path above — see grantedApprovalFor and
+  // groundingFor's own comments (G15/G14).
+  const approve = await grantedApprovalFor(plan, step);
+  const { agentContext, transcript } = await groundingFor(plan, step);
   try {
     const result = await runAgent({
       accountId: plan.accountId,
@@ -278,7 +373,14 @@ async function advanceBatch(plan: Plan, step: PlanStep): Promise<'completed' | '
       requestedBy: `plan:${plan.id}`,
       pinnedSkills: plan.skills,
       ...(plan.personaId ? { personaId: plan.personaId } : {}),
+      ...(agentContext ? { agentContext } : {}),
+      ...(transcript ? { transcript } : {}),
+      ...(approve ? { approve } : {}),
     });
+
+    if (approve && result.status !== 'needs_approval') {
+      await clearStepApproval(step.id);
+    }
 
     if (result.status === 'needs_approval') {
       await blockStep(

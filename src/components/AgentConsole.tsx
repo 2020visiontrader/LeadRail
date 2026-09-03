@@ -264,6 +264,7 @@ const TOOL_VERB: Record<string, string> = {
   completePlanStep: 'Marking that step done',
   blockPlanStep: 'Parking that step for you',
   getPlan: 'Checking where we are',
+  startPlan: 'Starting the plan',
   cancelPlan: 'Stopping the plan',
   listDocuments: 'Checking what you have saved',
   readDocument: 'Reading through the document',
