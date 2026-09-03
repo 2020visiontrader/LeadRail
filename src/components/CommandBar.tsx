@@ -38,7 +38,28 @@ const EXAMPLES = [
   'Show my active campaigns',
 ];
 
-export default function CommandBar({ ventureName }: { ventureName?: string }) {
+export default function CommandBar({
+  brandId,
+  page = 'dashboard',
+  selectedIds,
+  filters,
+}: {
+  /** The venture currently selected in the UI, if any — sent as-is; the
+   *  server (app/api/agent/stream/route.ts) re-verifies ownership against
+   *  the session's account before using it for anything. Never a display
+   *  name: passing a name here used to mean "brandName, derived from
+   *  scopeName === 'All Brands' ? undefined : scopeName" reached the server,
+   *  which cannot scope a query — an id is required to actually narrow tool
+   *  calls to one venture. */
+  brandId?: string;
+  /** Which screen this command bar is mounted on — part of the turn context
+   *  block (lib/agent/turn-context.ts), not used for anything client-side. */
+  page?: string;
+  /** Row ids selected on this screen, if this screen has a selection concept. */
+  selectedIds?: string[];
+  /** Active filters on this screen, if any — plain key/value pairs. */
+  filters?: Record<string, unknown>;
+}) {
   const [text, setText] = useState('');
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<Bubble[]>([]);
@@ -65,7 +86,10 @@ export default function CommandBar({ ventureName }: { ventureName?: string }) {
     return () => clearTimeout(timer);
   }, [busy]);
 
-  const brandName = ventureName && ventureName !== 'All Brands' ? ventureName : undefined;
+  // Compact, capped on the server (lib/agent/turn-context.ts) — sent as-is;
+  // no client-side bounding needed here since the server never trusts these
+  // for scoping and clips every value before it reaches the model.
+  const turnContext = { page, ...(selectedIds?.length ? { selectedIds } : {}), ...(filters && Object.keys(filters).length ? { filters } : {}) };
 
   const handle = (res: AgentResult) => {
     if (typeof res.conversationId === 'string' && res.conversationId) conversationIdRef.current = res.conversationId;
@@ -86,7 +110,8 @@ export default function CommandBar({ ventureName }: { ventureName?: string }) {
     try {
       const res = await apiSend<AgentResult>('/api/agent', 'POST', {
         message,
-        brandName,
+        brandId,
+        turnContext,
         ...(conversationIdRef.current ? { conversationId: conversationIdRef.current } : {}),
       }, { timeoutMs: AGENT_REQUEST_TIMEOUT_MS });
       handle(res);
@@ -115,7 +140,7 @@ export default function CommandBar({ ventureName }: { ventureName?: string }) {
     try {
       const res = await apiSend<AgentResult>('/api/agent', 'POST', {
         approve: { approvalId: p.approvalId, tool: p.tool, args: p.args },
-        brandName,
+        brandId,
         ...(conversationIdRef.current ? { conversationId: conversationIdRef.current } : {}),
       }, { timeoutMs: AGENT_REQUEST_TIMEOUT_MS });
       handle(res);

@@ -38,6 +38,7 @@
 //           extracting nothing is the worst option, because it looks like it
 //           worked.
 
+import { createHash } from 'crypto';
 import { BUDGET } from '@/lib/ai/context-budget';
 import { supabase, dbReady } from '@/lib/db';
 import { putPrivate, signUrl, ensurePrivateBucket } from '@/lib/storage';
@@ -348,6 +349,50 @@ export async function deleteAttachment(accountId: string, id: string): Promise<v
   await supabase.from('assistant_attachments').delete().eq('id', id).eq('account_id', accountId);
 }
 
+/** SHA-256 over extracted text — the key content-dedupe (C5) groups on.
+ *  Hex, not base64: this only ever needs to be a stable map key and a short
+ *  human-readable diagnostic, never transmitted or compared against anything
+ *  hashed elsewhere. */
+function contentHash(text: string): string {
+  return createHash('sha256').update(text).digest('hex');
+}
+
+/** How much of a document's text to show in its stub summary (C5). Small on
+ *  purpose — a stub exists so a document already shown once, or a library
+ *  document nobody asked about this turn, costs almost nothing, while
+ *  `readDocument` remains one call away for the full text. */
+const STUB_SUMMARY_CHARS = 300;
+
+/** The compact form of a document once it no longer needs to be shown in
+ *  full: name, a short summary, its size, its id, and how to read the rest. */
+function stubBody(a: Attachment): string {
+  const text = a.extracted_text || '';
+  const summary = text.slice(0, STUB_SUMMARY_CHARS).trim();
+  const lines = [
+    `[Not shown in full here — ${a.chars} character(s) on file, id ${a.id}.]`,
+  ];
+  lines.push(summary ? `Summary: ${summary}${text.length > STUB_SUMMARY_CHARS ? '…' : ''}` : 'No summary available.');
+  lines.push(`Call readDocument with document "${a.id}" (or its name) for the full text.`);
+  return lines.join('\n');
+}
+
+export interface AttachmentContextOptions {
+  /**
+   * Attachment ids already shown IN FULL on an earlier turn of this same
+   * conversation (C5). Represented here as a stub instead of full text.
+   *
+   * "First appears" is read from real data, not guessed from array
+   * position: the caller (lib/agent/context.ts) derives this from
+   * attachment_bindings (migration 076) — a live binding row for this
+   * conversation that predates the current turn means the document was
+   * already injected in full on a prior turn. Both app/api/agent/route.ts
+   * and its /stream twin call loadAgentContext (and therefore this
+   * function) BEFORE writing the current turn's own binding, so any binding
+   * already on file at this point is unambiguously from an earlier turn.
+   */
+  alreadyShown?: Set<string>;
+}
+
 /**
  * Render attachments for the model's context, wrapped and labelled as data.
  *
@@ -361,9 +406,49 @@ export async function deleteAttachment(accountId: string, id: string): Promise<v
  * Documents that could not be read are still listed, with their reason. An
  * unreadable attachment the model never hears about produces a confident answer
  * that ignores the file the person actually attached, and nobody can tell.
+ *
+ * C5 — three behaviours layered on top of the original per-document render:
+ *
+ *   DEDUPE BY CONTENT. Two stored rows whose extracted_text is byte-identical
+ *   (the production case: one 34,456-char transcript stored nine times) are
+ *   grouped by a SHA-256 of that text and rendered ONCE. Every id in the
+ *   group still resolves via readDocument, since they carry the same text —
+ *   only the rendering is deduped, nothing is deleted.
+ *
+ *   FULL ONCE, THEN A STUB. A document is rendered in full (subject to the
+ *   budget below) only the FIRST time this function sees it as not-yet-shown
+ *   (`alreadyShown` from the caller). Every later turn gets `stubBody()`
+ *   instead — filename, a <=300-char summary, size, id, and a pointer at
+ *   readDocument. This is what stops a 34K-char transcript from sitting in
+ *   every prompt for the life of the chat and outweighing what the user just
+ *   said.
+ *
+ *   LIBRARY DOCS STOP BEING AMBIENT. A library-scoped document reaches every
+ *   chat on the account today (see listAttachments), which means it was
+ *   being injected in FULL into conversations that never mentioned it. A
+ *   library document is now ALWAYS rendered as a stub here, regardless of
+ *   `alreadyShown` — it only ever reaches full text through an explicit
+ *   readDocument call, which is the "injected only when the conversation
+ *   actually references it" behaviour without having to guess relevance
+ *   ahead of time.
  */
-export function attachmentContextBlock(attachments: Attachment[]): string {
+export function attachmentContextBlock(attachments: Attachment[], opts: AttachmentContextOptions = {}): string {
   if (!attachments.length) return '';
+  const alreadyShown = opts.alreadyShown ?? new Set<string>();
+
+  // Group by content hash. Attachments with no text (image/video/unreadable)
+  // are never merged into a group with each other — there's nothing to
+  // compare, and hashing "no text" the same for all of them would wrongly
+  // collapse unrelated files that both happen to be unreadable.
+  const groups = new Map<string, Attachment[]>();
+  const order: string[] = [];
+  for (const a of attachments) {
+    const text = a.extracted_text || '';
+    const key = text ? `text:${contentHash(text)}` : `id:${a.id}`;
+    if (!groups.has(key)) { groups.set(key, []); order.push(key); }
+    groups.get(key)!.push(a);
+  }
+  const rendered = order.map((k) => groups.get(k)!);
 
   const lines = [
     'ATTACHED DOCUMENTS — the user attached these to this conversation.',
@@ -377,34 +462,49 @@ export function attachmentContextBlock(attachments: Attachment[]): string {
   ];
 
   let budget = contextCharBudget();
-  for (const a of attachments) {
-    const label = a.title || a.filename;
-    const origin = a.scope === 'library' ? 'saved to this account, available in every chat' : 'attached to this conversation';
-    lines.push(`--- BEGIN DOCUMENT: ${label} (${a.kind}, ${a.bytes} bytes, ${origin}) ---`);
-    if (a.status === 'image' || a.status === 'video') {
+  for (let gi = 0; gi < rendered.length; gi++) {
+    const group = rendered[gi];
+    // The first row in the group stands for all of them in the render —
+    // filename/kind/bytes/status are expected to match for identical text,
+    // and if they don't (e.g. two differently-named uploads of the same
+    // content) the first one is still a faithful label for what is, to the
+    // model, one document.
+    const primary = group[0];
+    const label = primary.title || primary.filename;
+    const origin = primary.scope === 'library' ? 'saved to this account, available in every chat' : 'attached to this conversation';
+    const dupeNote = group.length > 1 ? `, identical to ${group.length - 1} other upload(s) — shown once` : '';
+    const isLibrary = group.some((g) => g.scope === 'library');
+    const shownBefore = group.some((g) => alreadyShown.has(g.id));
+
+    lines.push(`--- BEGIN DOCUMENT: ${label} (${primary.kind}, ${primary.bytes} bytes, ${origin}${dupeNote}) ---`);
+    if (primary.status === 'image' || primary.status === 'video') {
       // These have no text and are not failures. "No text could be read" on a
       // video the assistant can actually watch reads as broken, and the note
       // says which route to take instead.
-      lines.push(`[${a.note || 'No text in this file.'}]`);
-    } else if (a.status !== 'ready' || !a.extracted_text) {
+      lines.push(`[${primary.note || 'No text in this file.'}]`);
+    } else if (primary.status !== 'ready' || !primary.extracted_text) {
       // Named, not omitted.
-      lines.push(`[No text could be read. ${a.note || ''}]`.trim());
+      lines.push(`[No text could be read. ${primary.note || ''}]`.trim());
+    } else if (isLibrary) {
+      // Library docs never get full-text treatment here — see the header.
+      lines.push(stubBody(primary));
+    } else if (shownBefore) {
+      // Already shown in full on an earlier turn of THIS conversation.
+      lines.push(stubBody(primary));
     } else {
-      const slice = a.extracted_text.slice(0, Math.max(0, budget));
+      const slice = primary.extracted_text.slice(0, Math.max(0, budget));
       budget -= slice.length;
       lines.push(slice);
-      if (slice.length < a.extracted_text.length) {
+      if (slice.length < primary.extracted_text.length) {
         // Say so, rather than letting a truncated contract look complete.
-        lines.push(`[…truncated here. ${a.extracted_text.length - slice.length} more characters are on file — call readDocument with document "${a.title || a.filename}" and an offset to read further, or a query to find a passage.]`);
+        lines.push(`[…truncated here. ${primary.extracted_text.length - slice.length} more characters are on file — call readDocument with document "${label}" and an offset to read further, or a query to find a passage.]`);
       }
     }
     lines.push(`--- END DOCUMENT: ${label} ---`);
     lines.push('');
-    if (budget <= 0) {
-      const shown = attachments.indexOf(a) + 1;
-      if (shown < attachments.length) {
-        lines.push(`[${attachments.length - shown} further attachment(s) not shown — the context budget for documents is full.]`);
-      }
+    if (budget <= 0 && gi < rendered.length - 1) {
+      const remaining = rendered.length - gi - 1;
+      lines.push(`[${remaining} further attachment(s) not shown — the context budget for documents is full.]`);
       break;
     }
   }

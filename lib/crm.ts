@@ -45,6 +45,37 @@ export async function getCompanies(accountId: string, brandId?: string | null, l
   return data;
 }
 
+/** Count companies without fetching rows — see the matching note on
+ *  countContacts in lib/db.ts. Same tenancy/soft-delete scoping as
+ *  getCompanies. */
+export async function countCompanies(
+  accountId: string,
+  filters: { brandId?: string } = {},
+): Promise<number> {
+  let q = supabase.from('companies').select('id', { count: 'exact', head: true })
+    .eq('account_id', accountId).is('deleted_at', null);
+  if (filters.brandId) q = q.eq('brand_id', filters.brandId);
+  const { count, error } = await q;
+  if (error) throw error;
+  return count ?? 0;
+}
+
+/** Grouped company counts, computed in Postgres by count_companies_grouped
+ *  (migration 084) — see the matching note on countContactsGrouped. */
+export async function countCompaniesGrouped(
+  accountId: string,
+  groupBy: 'brand' | 'industry',
+  filters: { brandId?: string } = {},
+): Promise<{ value: string; count: number }[]> {
+  const { data, error } = await supabase.rpc('count_companies_grouped', {
+    p_account_id: accountId,
+    p_group_by: groupBy,
+    p_brand_id: filters.brandId ?? null,
+  });
+  if (error) throw error;
+  return (data ?? []).map((r: any) => ({ value: r.group_value, count: Number(r.n) }));
+}
+
 export async function getCompany(id: string, accountId: string) {
   const { data, error } = await supabase.from('companies').select('*').eq('id', id).eq('account_id', accountId).is('deleted_at', null).single();
   if (error) throw error;
@@ -107,6 +138,42 @@ export async function getDeals(accountId: string, brandId?: string | null, limit
   const { data, error } = await q.order('created_at', { ascending: false }).range(offset, offset + limit - 1);
   if (error) throw error;
   return data;
+}
+
+/** Count deals without fetching rows — see the matching note on
+ *  countContacts in lib/db.ts. Same tenancy/soft-delete scoping as
+ *  getDeals. */
+export async function countDeals(
+  accountId: string,
+  filters: { brandId?: string; stage?: string } = {},
+): Promise<number> {
+  let q = filters.stage
+    ? supabase.from('deals').select('id, pipeline_stages!inner(name)', { count: 'exact', head: true })
+    : supabase.from('deals').select('id', { count: 'exact', head: true });
+  q = q.eq('account_id', accountId).is('deleted_at', null);
+  if (filters.brandId) q = q.eq('brand_id', filters.brandId);
+  if (filters.stage) q = q.eq('pipeline_stages.name', filters.stage);
+  const { count, error } = await q;
+  if (error) throw error;
+  return count ?? 0;
+}
+
+/** Grouped deal counts, computed in Postgres by count_deals_grouped
+ *  (migration 084) — see the matching note on countContactsGrouped. Stage
+ *  grouping joins pipeline_stages for a human-readable name. */
+export async function countDealsGrouped(
+  accountId: string,
+  groupBy: 'brand' | 'stage',
+  filters: { brandId?: string; stage?: string } = {},
+): Promise<{ value: string; count: number }[]> {
+  const { data, error } = await supabase.rpc('count_deals_grouped', {
+    p_account_id: accountId,
+    p_group_by: groupBy,
+    p_brand_id: filters.brandId ?? null,
+    p_stage: filters.stage ?? null,
+  });
+  if (error) throw error;
+  return (data ?? []).map((r: any) => ({ value: r.group_value, count: Number(r.n) }));
 }
 
 export async function getDeal(id: string, accountId: string) {

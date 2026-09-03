@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useVentureScope, ALL_VENTURES } from '@/components/VentureScopeProvider';
 import KPICard from '@/components/KPICard';
 import Chart from '@/components/Chart';
 import LoadingSpinner from '@/components/LoadingSpinner';
@@ -21,7 +22,11 @@ interface VentureProfile extends Venture {
   deck_name?: string; deck_summary?: string;
 }
 interface SkillMeta { id: string; name: string; category: string; when: string }
-const ALL = 'all';
+// ALL is the local alias this file has always used for "no venture selected";
+// kept so the rest of this file (and its option value below) reads the same
+// as before. ALL_VENTURES is the shared provider's own sentinel — the two
+// must stay the same string, so this is a re-export, not a second constant.
+const ALL = ALL_VENTURES;
 const AUTO_SKILLS = 'auto'; // let Hermes decide skills per request
 
 const money = (n: number) => (n >= 1000 ? `$${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `$${n}`);
@@ -29,7 +34,16 @@ const money = (n: number) => (n >= 1000 ? `$${(n / 1000).toFixed(n >= 10000 ? 0 
 export default function Overview() {
   const { notify } = useToast();
   const [ventures, setVentures] = useState<Venture[]>([]);
-  const [scopeId, setScopeId] = useState<string>(ALL); // 'all' or a brand id
+  // Shared, persisted venture scope (src/components/VentureScopeProvider.tsx)
+  // — was a local useState here, which is why a venture chosen on the
+  // dashboard did not stay selected on /assistant. This is now the single
+  // source of truth; every other page reads/writes the same one.
+  const { scopeId, setScopeId } = useVentureScope();
+  // Mirrors scopeId for the one place below that needs its LATEST value
+  // inside an async callback without retriggering the effect — see that
+  // effect's comment.
+  const scopeIdRef = useRef(scopeId);
+  useEffect(() => { scopeIdRef.current = scopeId; }, [scopeId]);
   const [stats, setStats] = useState<any>(null);
   const [recent, setRecent] = useState<Contact[]>([]);
   const [loading, setLoading] = useState(true);
@@ -124,8 +138,16 @@ export default function Overview() {
 
   useEffect(() => {
     loadVentures().then((vs) => {
-      // Default: wide "All Brands" preview when >1 venture, else the single one.
-      setScopeId((cur) => (cur !== ALL ? cur : vs.length === 1 ? vs[0].id : ALL));
+      // Default: wide "All Brands" preview when >1 venture, else the single
+      // one — but ONLY when nothing has already picked a scope, including a
+      // scope PERSISTED from a prior visit (VentureScopeProvider restores it
+      // from localStorage in its own effect, which lands in scopeIdRef by the
+      // time this fetch resolves). Read via the ref, not the `scopeId`
+      // closed over at mount, for the same reason the old code used a
+      // functional setState update: this callback fires after an async
+      // fetch, by which point the "current" scope may differ from what it
+      // was when the effect started.
+      if (scopeIdRef.current === ALL && vs.length === 1) setScopeId(vs[0].id);
     });
   }, []);
 
@@ -239,7 +261,7 @@ export default function Overview() {
         <FirstRunHero onStart={openWizard} />
       ) : (
         <>
-          <CommandBar ventureName={scopeName} />
+          <CommandBar brandId={scopeId !== ALL ? scopeId : undefined} page="dashboard" />
           <div className="space-y-6">
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
             <KPICard label="Total Contacts" value={stats?.contacts ?? 0} icon="👥" sub={`${stats?.emails ?? 0} emails sent`} />

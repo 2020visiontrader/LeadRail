@@ -13,22 +13,27 @@
 // This file is the standing guarantee that the same class of drift cannot recur
 // unnoticed. It asserts over STATIC registry data only: no DB, no network, no
 // credentials, no fixtures on disk. The only environment it touches is the
-// AGENT_STAGED_CATALOG flag, which it sets itself (see "Both flag modes" below).
+// AGENT_FULL_CATALOG flag, which it sets itself (see "Both flag modes" below).
 //
 // Both flag modes
 // ---------------
-// Packet 10.3 added AGENT_STAGED_CATALOG. The flag is read at module-import time
-// (lib/capabilities/registry.ts), and it changes registry MEMBERSHIP: with the
-// flag unset `describeTools` is filtered out of both ALL and CATALOG_ORDER; with
-// it set to '1' the capability is an ordinary registry member and appears in MCP
-// tools/list. Parity must hold in both. Rather than assert one mode and argue the
-// other follows, each mode is loaded into a fresh module graph (vi.resetModules()
-// + dynamic import) and the full assertion set runs against both.
+// Packet 10.3 added the two-stage catalog behind AGENT_STAGED_CATALOG. C6
+// (2026-09-03) flipped the default so staging is now ON unless
+// AGENT_FULL_CATALOG=1 restores the old shape — AGENT_STAGED_CATALOG is no
+// longer read from the environment at all; it's derived in
+// lib/capabilities/registry.ts as `!AGENT_FULL_CATALOG`. The flag still
+// changes registry MEMBERSHIP the same way it always did: with full-catalog
+// mode active `describeTools` is filtered out of both ALL and CATALOG_ORDER;
+// with staging active (the default) the capability is an ordinary registry
+// member and appears in MCP tools/list. Parity must hold in both. Rather than
+// assert one mode and argue the other follows, each mode is loaded into a
+// fresh module graph (vi.resetModules() + dynamic import) and the full
+// assertion set runs against both.
 
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import type { Capability } from '@/lib/capabilities/types';
 
-const ENV_KEY = 'AGENT_STAGED_CATALOG';
+const ENV_KEY = 'AGENT_FULL_CATALOG';
 const ORIGINAL_FLAG = process.env[ENV_KEY];
 
 interface Surfaces {
@@ -51,8 +56,10 @@ interface Surfaces {
  *  vacuously. */
 async function loadSurfaces(staged: boolean): Promise<Surfaces> {
   vi.resetModules();
-  if (staged) process.env[ENV_KEY] = '1';
-  else delete process.env[ENV_KEY];
+  // staged mode is now the default: it's active whenever AGENT_FULL_CATALOG
+  // is unset, and full-catalog mode requires setting it to '1'.
+  if (staged) delete process.env[ENV_KEY];
+  else process.env[ENV_KEY] = '1';
 
   const registry = await import('@/lib/capabilities/registry');
   const tools = await import('@/lib/agent/tools');
@@ -125,7 +132,7 @@ afterAll(() => {
 });
 
 for (const staged of [false, true]) {
-  describe(`API=MCP parity — ${ENV_KEY}=${staged ? "'1'" : 'unset'}`, () => {
+  describe(`API=MCP parity — ${ENV_KEY}=${staged ? 'unset' : "'1'"} (staged=${staged})`, () => {
     let S: Surfaces;
     beforeAll(async () => { S = await loadSurfaces(staged); });
 
@@ -284,7 +291,7 @@ for (const staged of [false, true]) {
 
 // --- 6. Cross-mode: the flag changes membership and NOTHING else ------------
 
-describe('AGENT_STAGED_CATALOG changes registry membership only by the staged-only set', () => {
+describe('the staged/full-catalog flag changes registry membership only by the staged-only set', () => {
   let off: Surfaces;
   let on: Surfaces;
   beforeAll(async () => {
