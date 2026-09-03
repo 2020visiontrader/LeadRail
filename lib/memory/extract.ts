@@ -37,6 +37,11 @@ const MAX_FACTS_PER_CONVERSATION = 12;
 /** Transcript characters handed to the extractor. The tail matters more than
  *  the head — decisions land at the end of a conversation. */
 const TRANSCRIPT_CHARS = BUDGET.extractionChars;
+/** How much of a raw, unparseable model reply gets logged for diagnosis
+ *  (see the parseFailed branch of the extraction summary below). This is
+ *  transcript-derived model output — bounded hard, and only ever logged on a
+ *  parse failure, never on success. */
+const RAW_SAMPLE_CHARS = 300;
 
 const EXTRACTION_SYSTEM = [
   'You extract durable facts from a CRM/marketing conversation for long-term memory.',
@@ -102,28 +107,129 @@ function renderTranscript(transcript: any[]): string {
   return joined.length > TRANSCRIPT_CHARS ? joined.slice(-TRANSCRIPT_CHARS) : joined;
 }
 
+/** Unwraps a ```json ... ``` (or bare ``` ... ```) fence when the model wraps
+ *  its answer in one despite the prompt asking for a bare object. Returns the
+ *  input unchanged when there is no fence — the common case. */
+function extractJsonFence(raw: string): string {
+  const m = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  return m ? m[1] : raw;
+}
+
+/**
+ * From `s[start]` — which must be `{` or `[` — walks forward tracking
+ * bracket depth and string literals (respecting escapes, so a brace inside a
+ * quoted value is never mistaken for structure) to find the index just past
+ * the matching close. Returns -1 when the input ends before the structure
+ * closes — the signature of a response cut off mid-object, most often an
+ * output-token ceiling reached partway through a long fact list.
+ */
+function findMatchingClose(s: string, start: number): number {
+  const open = s[start];
+  const close = open === '{' ? '}' : ']';
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === open) depth++;
+    else if (ch === close) { depth--; if (depth === 0) return i + 1; }
+  }
+  return -1;
+}
+
+/**
+ * Best-effort recovery when the top-level structure never closed. Walks the
+ * `facts` array (or a bare array) element by element, keeping only elements
+ * that themselves close cleanly and parse. The element truncation actually
+ * cut off — necessarily the last one reached, since nothing after a cut can
+ * be complete — has no matching close and the walk stops there: dropped, not
+ * repaired, not guessed at. A bracket-balanced element that still fails
+ * `JSON.parse` (a stray comma, say) is likewise skipped, never invented.
+ */
+function recoverFactsArray(s: string, arrayStart: number): any[] {
+  const out: any[] = [];
+  let i = arrayStart + 1;
+  while (i < s.length) {
+    while (i < s.length && /[\s,]/.test(s[i])) i++;
+    if (i >= s.length || s[i] === ']') break;
+    if (s[i] !== '{') break; // not a fact object here — stop rather than guess.
+    const end = findMatchingClose(s, i);
+    if (end === -1) break; // truncated mid-element.
+    try {
+      out.push(JSON.parse(s.slice(i, end)));
+    } catch {
+      /* bracket-balanced but not valid JSON — skip, don't invent */
+    }
+    i = end;
+  }
+  return out;
+}
+
 /**
  * `ok: true` iff `raw` actually parsed into a well-formed `{"facts":[...]}`
- * payload — including the empty array, which is a normal, well-formed answer
- * ("nothing durable was said"). `ok: false` covers everything the extractor
- * could not make sense of: no JSON object found, malformed JSON, or a
- * `facts` field that isn't an array.
+ * payload (a bare `[...]` array of facts is tolerated as an equivalent
+ * complete shape too) — including the empty array, which is a normal,
+ * well-formed answer ("nothing durable was said"). `ok: false` covers
+ * everything the extractor could not make sense of AS A WHOLE: no
+ * object/array found, malformed JSON, a `facts` field that isn't an array, or
+ * a structure that never closed (truncated) — even when a partial recovery
+ * below still yields usable facts, `ok` stays false, because a truncated
+ * response is not a well-formed answer and the caller needs to know that.
  *
  * Split out from a single boolean on `facts.length === 0` (the original,
  * buggy shape of this check) because that count alone cannot tell "the model
  * validly reported nothing" from "the model said something the parser
  * couldn't read at all" — both have `facts.length === 0`. Only the second is
  * `parseFailed` in the summary log below.
+ *
+ * Tolerates, in order of how real model output actually deviates from the
+ * prompt's contract: a ```json fence around the payload; prose before and/or
+ * after the object; the object being truncated mid-stream (recovers whatever
+ * complete `facts` elements arrived before the cut); and the model returning
+ * a bare array of facts instead of the requested `{"facts":[...]}` wrapper.
  */
-function parseFactsResult(raw: string): { facts: any[]; ok: boolean } {
-  const m = raw.match(/\{[\s\S]*\}/);
-  if (!m) return { facts: [], ok: false };
-  try {
-    const parsed = JSON.parse(m[0]);
-    return Array.isArray(parsed?.facts) ? { facts: parsed.facts, ok: true } : { facts: [], ok: false };
-  } catch {
-    return { facts: [], ok: false };
+export function parseFactsResult(raw: string): { facts: any[]; ok: boolean } {
+  const text = extractJsonFence(raw).trim();
+  if (!text) return { facts: [], ok: false };
+
+  const braceIdx = text.indexOf('{');
+  const bracketIdx = text.indexOf('[');
+  const starts = [braceIdx, bracketIdx].filter((n) => n !== -1);
+  if (!starts.length) return { facts: [], ok: false };
+  const start = Math.min(...starts);
+
+  const end = findMatchingClose(text, start);
+  if (end !== -1) {
+    try {
+      const parsed = JSON.parse(text.slice(start, end));
+      if (Array.isArray(parsed)) return { facts: parsed, ok: true };
+      if (Array.isArray(parsed?.facts)) return { facts: parsed.facts, ok: true };
+      return { facts: [], ok: false };
+    } catch {
+      // Bracket-balanced but not valid JSON (e.g. a stray trailing comma) —
+      // fall through to the same recovery a truncated reply gets, rather
+      // than giving up outright.
+    }
   }
+
+  let arrayStart = -1;
+  if (text[start] === '[') {
+    arrayStart = start;
+  } else {
+    const keyMatch = text.slice(start).match(/"facts"\s*:\s*\[/);
+    if (keyMatch && keyMatch.index !== undefined) {
+      arrayStart = start + keyMatch.index + keyMatch[0].length - 1;
+    }
+  }
+  const facts = arrayStart !== -1 ? recoverFactsArray(text, arrayStart) : [];
+  return { facts, ok: false };
 }
 
 /**
@@ -320,6 +426,22 @@ async function extractOne(c: PendingConversation): Promise<Omit<ExtractionSummar
         accountId: c.accountId,
         conversationId: c.id,
         task: 'reason',
+        // No maxOutputTokens/maxOutputCeiling here — deliberately, after
+        // checking, not by omission. resolveMaxOutputTokens (lib/ai/
+        // providers.ts) already gives an omitted budget the SELECTED MODEL'S
+        // OWN full max_output_tokens (registry) or KIND_MAX_OUTPUT_TOKENS
+        // fallback when unregistered — i.e. this call already asks for the
+        // most a chosen model can give. maxOutputCeiling only ever clamps
+        // DOWN (`min(cap, ceiling)`); passing one here cannot raise a
+        // genuinely low per-model cap, it can only shrink budget for models
+        // whose cap is already generous. See the extraction-summary log
+        // comment above `parseFailed` and the raw-sample field below for how
+        // to tell, from the next production tick, whether a truncated reply
+        // is actually an output-budget cutoff or something else (reasoning
+        // tokens consumed before the answer, a confused/verbose model, etc.)
+        // — that is a DB (ai_models.max_output_tokens) or model-selection
+        // question, not something this call site can fix without a schema
+        // change, which is out of scope here.
       });
     } catch (e) {
       log.warn('memory: extraction model call failed', {
@@ -385,6 +507,18 @@ async function extractOne(c: PendingConversation): Promise<Omit<ExtractionSummar
       const rules: Record<string, number> = {};
       for (const d of decisions) rules[d.rule] = (rules[d.rule] || 0) + 1;
       const parseFailed = raw.trim().length > 0 && !parseResult.ok;
+      // ONLY on a parse failure, and ONLY a bounded prefix. This is
+      // model-generated text derived from a real transcript — the same
+      // sensitivity as the transcript itself — so it is never logged when the
+      // parse SUCCEEDED (there is nothing to diagnose then), and even on
+      // failure only the first RAW_SAMPLE_CHARS characters plus the total
+      // length go out, never the whole reply. That sample is what tells a
+      // truncated JSON body apart from a code-fenced one, from prose, from a
+      // plain refusal — right now none of those are distinguishable from the
+      // persisted row alone.
+      const rawSample = parseFailed
+        ? { rawSample: raw.slice(0, RAW_SAMPLE_CHARS), rawLength: raw.length }
+        : {};
       log.request(
         {
           route: 'memory:extract',
@@ -400,6 +534,7 @@ async function extractOne(c: PendingConversation): Promise<Omit<ExtractionSummar
             skipped: out.skipped,
             rules,
             parseFailed,
+            ...rawSample,
           },
         },
         (out.written === 0 && facts.length > 0) || parseFailed ? 'warn' : 'info',
