@@ -181,7 +181,42 @@ export async function decideAndWrite(
   candidate: CandidateFact,
   conversationId: string | null,
 ): Promise<FactDecision> {
-  const fact = (candidate.fact || '').trim();
+  let fact = (candidate.fact || '').trim();
+
+  // COMPOSE, DON'T DISCARD. The extraction prompt asks the model for a `fact`
+  // field alongside subject/predicate/object, but does not require one — when
+  // the model omits it, `fact` is empty here even though the SAME candidate
+  // can carry a complete subject/predicate/object triple, which is everything
+  // writeEdge needs to record a graph edge. Before this, an empty `fact`
+  // returned 'skipped: empty' right here, before writeEdge was ever called —
+  // so a candidate the model under-specified in exactly this one field lost
+  // BOTH the graph edge and the durable fact, not just the durable fact.
+  //
+  // Composed HERE, at the top of the one function that turns a candidate into
+  // a write, so every downstream check (exclusion, tiering, writeEdge, and the
+  // recordFact call below) sees the identical text a model-supplied fact would
+  // have gone through — no separate path, no weakened guard. A model-supplied
+  // fact is never touched: this only fires when `candidate.fact` was empty.
+  //
+  // "<subject> <predicate> <object>" with the predicate's underscores turned
+  // into spaces — short, natural, human-readable prose, not a JSON blob —
+  // because this text is shown to a person (listFacts) and re-embedded for
+  // semantic recall (recordFact), not just stored as a graph label. Mirrors
+  // the subject text the recordFact call below already uses
+  // (candidate.subject.label || candidate.subject.id).
+  if (!fact && candidate.subject && candidate.predicate && candidate.object) {
+    const subjectText = candidate.subject.label || candidate.subject.id;
+    const predicateText = candidate.predicate.replace(/_/g, ' ').trim();
+    const composed = `${subjectText} ${predicateText} ${candidate.object}`.trim();
+    if (composed) {
+      fact = composed;
+      // Rebind `candidate` (a local parameter, not the caller's binding) so
+      // exclusionFor/tierFor below — which read `.fact` off the candidate
+      // object, not this local `fact` variable — see the composed text too.
+      candidate = { ...candidate, fact };
+    }
+  }
+
   if (!fact) return { candidate, outcome: 'skipped', rule: 'empty' };
   if (fact.length > MAX_FACT_LENGTH) {
     return { candidate, outcome: 'skipped', rule: 'too-long' };

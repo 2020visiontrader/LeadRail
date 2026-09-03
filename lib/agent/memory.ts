@@ -742,15 +742,31 @@ export async function recordFact(accountId: string, f: MemoryFact, source: FactS
   const fact = (f.fact || '').trim();
   const rejection = factRejectionReason(fact, source);
   if (rejection) {
-    // PRODUCTION DEFECT (observability half): a fact rejected here from the
-    // 'extraction' source used to vanish with no trace — a skipped write here
-    // looks identical, from every counter upstream, to one that was never a
-    // candidate at all. The fact TEXT is deliberately not logged (this branch
-    // exists partly to keep secrets out of durable storage; logging the text
-    // would just move the leak into app_logs).
-    if (source === 'extraction') {
-      log.warn('memory: recordFact rejected extraction fact', { accountId, reason: rejection });
-    }
+    // PRODUCTION DEFECT (observability half): a fact rejected here used to
+    // vanish with no trace for 'extraction' (the only source this warned for),
+    // and silently for 'capability' and 'carryover' always — a skipped write
+    // here looks identical, from every counter upstream, to one that was never
+    // a candidate at all. Now logged for EVERY source, since all three can
+    // fail the same silent way, and through log.request with route
+    // 'memory:record' (not the bare log.warn this used to be) so it lands
+    // alongside — and is findable next to — the extractor's own
+    // 'memory:extract' summary rows in app_logs, rather than as an
+    // unrouted warn line nothing else groups with.
+    //
+    // The fact TEXT is deliberately not logged (this branch exists partly to
+    // keep secrets out of durable storage; logging the text would just move
+    // the leak into app_logs) — only the reason, which is safe: it never
+    // contains the candidate fact itself, only which check rejected it.
+    log.request(
+      {
+        route: 'memory:record',
+        method: 'RECORD',
+        accountId,
+        message: 'memory: recordFact rejected fact',
+        detail: { source, reason: rejection },
+      },
+      'warn',
+    );
     return;
   }
   const row: Record<string, any> = {
