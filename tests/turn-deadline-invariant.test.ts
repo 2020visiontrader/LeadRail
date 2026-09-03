@@ -263,3 +263,40 @@ describe('composeAnswer forwards deadlineAt to the router call (both branches)',
     expect(streamChat.mock.calls[0][0]?.deadlineAt).toBe(deadlineAt);
   });
 });
+
+// HOLE 3 (this packet): src/components/CommandBar.tsx used to abort its own
+// fetch to /api/agent after 90s while that route's own maxDuration is 300s
+// (app/api/agent/route.ts) — the operator saw a failure for a turn that was
+// still legitimately running server-side and would go on to complete. Read
+// by source, same technique as the maxDuration scans above, so a value that
+// silently drifts back below the server's own ceiling fails here instead of
+// shipping a fourth instance of "the client gave up before the server did".
+describe('CommandBar\'s request timeout no longer aborts before the server\'s own turn budget', () => {
+  it('REVERT-CHECK TARGET: AGENT_REQUEST_TIMEOUT_MS is at least app/api/agent/route.ts\'s maxDuration', async () => {
+    const commandBarSrc = readFileSync(
+      path.join(process.cwd(), 'src/components/CommandBar.tsx'),
+      'utf8',
+    );
+    const timeoutMatch = commandBarSrc.match(/^const AGENT_REQUEST_TIMEOUT_MS = (\d[\d_]*);/m);
+    expect(timeoutMatch, 'CommandBar.tsx must declare AGENT_REQUEST_TIMEOUT_MS').toBeTruthy();
+    const timeoutMs = Number(timeoutMatch![1].replace(/_/g, ''));
+
+    const routeSrc = readFileSync(path.join(process.cwd(), 'app/api/agent/route.ts'), 'utf8');
+    const maxDurationMatch = routeSrc.match(/^export const maxDuration = (\d+)/m);
+    expect(maxDurationMatch, 'app/api/agent/route.ts must declare export const maxDuration').toBeTruthy();
+    const serverMaxDurationMs = Number(maxDurationMatch![1]) * 1000;
+
+    expect(timeoutMs).toBeGreaterThanOrEqual(serverMaxDurationMs);
+  });
+
+  it('both of CommandBar\'s apiSend calls (send and approve) use AGENT_REQUEST_TIMEOUT_MS, not a hardcoded number', async () => {
+    const commandBarSrc = readFileSync(
+      path.join(process.cwd(), 'src/components/CommandBar.tsx'),
+      'utf8',
+    );
+    const uses = commandBarSrc.match(/timeoutMs:\s*AGENT_REQUEST_TIMEOUT_MS/g) || [];
+    expect(uses.length).toBe(2);
+    // No stray hardcoded millisecond timeout left over from before the fix.
+    expect(commandBarSrc).not.toMatch(/timeoutMs:\s*90_000/);
+  });
+});
