@@ -224,6 +224,69 @@ export async function activePlanForConversation(accountId: string, conversationI
   }
 }
 
+/**
+ * Plans worth surfacing when asked "what are you working on" (G16d) — before
+ * this there was no way to discover a planId at all, so getPlan needed an id
+ * nothing could produce. Every plan still active (`draft`/`running`/`blocked`)
+ * plus the 5 most recently touched terminal ones (`done`/`failed`/
+ * `cancelled`), newest first across the combined set. Scoped to `accountId`
+ * like every other read here; never throws — degrades to `[]` on failure, the
+ * same discipline as runnablePlans below.
+ */
+export async function listPlans(accountId: string): Promise<Array<{
+  id: string;
+  objective: string;
+  status: PlanStatus;
+  stepsDone: number;
+  stepsTotal: number;
+  conversationId: string | null;
+  createdAt: string;
+}>> {
+  try {
+    const { data: active } = await supabase
+      .from('agent_plans')
+      .select('*')
+      .eq('account_id', accountId)
+      .in('status', ['draft', 'running', 'blocked'])
+      .order('created_at', { ascending: false });
+
+    const { data: recent } = await supabase
+      .from('agent_plans')
+      .select('*')
+      .eq('account_id', accountId)
+      .in('status', ['done', 'failed', 'cancelled'])
+      .order('created_at', { ascending: false })
+      .limit(5);
+
+    const rows = [...(active || []), ...(recent || [])] as any[];
+    if (!rows.length) return [];
+
+    const ids = rows.map((r) => r.id);
+    const { data: stepData } = await supabase
+      .from('agent_plan_steps')
+      .select('plan_id, status')
+      .in('plan_id', ids);
+    const stepRows = (stepData || []) as any[];
+
+    return rows
+      .map((r) => {
+        const mine = stepRows.filter((s) => s.plan_id === r.id);
+        return {
+          id: r.id,
+          objective: r.objective,
+          status: r.status as PlanStatus,
+          stepsDone: mine.filter((s) => s.status === 'done').length,
+          stepsTotal: mine.length,
+          conversationId: r.conversation_id ?? null,
+          createdAt: r.created_at,
+        };
+      })
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : a.createdAt > b.createdAt ? -1 : 0));
+  } catch {
+    return [];
+  }
+}
+
 /** Plans with work to do, for the runner. Ordered least-recently-run so one
  *  busy plan cannot starve the others. */
 export async function runnablePlans(limit = 3): Promise<Plan[]> {

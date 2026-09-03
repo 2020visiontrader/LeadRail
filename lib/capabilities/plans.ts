@@ -24,6 +24,7 @@ import { obj, S, type Capability } from './types';
 import {
   createPlan, getPlan, activePlanForConversation, completeStep, blockStep,
   cancelPlans, renderPlan, approvePlan, MAX_PLAN_STEPS, MAX_STEP_OVER_ITEMS,
+  listPlans,
 } from '@/lib/plans/store';
 import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
 import { hermesRoute } from '@/lib/ai/hermes';
@@ -212,6 +213,27 @@ export const PLAN_CAPABILITIES: Capability[] = [
       if (!r.plan && !r.planId) return 'No plan is active for this chat.';
       const done = (r.steps || []).filter((s: any) => s.status === 'done').length;
       return `Plan "${r.objective}" — ${done} of ${(r.steps || []).length} steps done.`;
+    },
+  },
+  {
+    name: 'listPlans',
+    domain: 'workspace',
+    title: 'List your plans',
+    description:
+      'List the plans on this account — what is running, blocked, or recently finished — so "what are you working on" has an answer. Use getPlan with an id from here to see one in full detail.',
+    gate: 'read',
+    inputSchema: obj({}),
+    zod: z.object({}),
+    run: async (accountId) => {
+      const rows = await listPlans(accountId);
+      return { plans: rows };
+    },
+    digest: (_a, r: any) => {
+      const rows = Array.isArray(r?.plans) ? r.plans : null;
+      if (!rows) return '';
+      if (!rows.length) return 'No plans right now.';
+      const active = rows.filter((p: any) => p.status === 'running' || p.status === 'draft' || p.status === 'blocked').length;
+      return `${rows.length} plan(s) — ${active} active.`;
     },
   },
   {

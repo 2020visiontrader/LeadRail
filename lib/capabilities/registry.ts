@@ -132,7 +132,7 @@ const CATALOG_ORDER: string[] = [
   'declareContext', 'recallSubject', 'recallHistory', 'listObservedPatterns',
   'promoteObservation', 'demoteObservation',
   'listStandingApprovals', 'revokeStandingApproval',
-  'createPlan', 'completePlanStep', 'blockPlanStep', 'getPlan', 'startPlan', 'cancelPlan',
+  'createPlan', 'completePlanStep', 'blockPlanStep', 'getPlan', 'listPlans', 'startPlan', 'cancelPlan',
   'listDocuments', 'readDocument', 'saveDocumentToLibrary', 'removeDocumentFromLibrary',
   // --- appended by Packet 2.2-S (social). Appended after 1.1's three, never
   // sorted: every name above must keep its exact order or the prompt catalog
