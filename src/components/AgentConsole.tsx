@@ -598,17 +598,22 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
    *  useful next action is to fix that sentence, not retype it from memory.
    *
    *  WHAT STOPPING DOES AND DOES NOT DO, said plainly in the trace rather than
-   *  implied: it disconnects THIS browser. The server finishes the turn it
-   *  started and saves it, because there is no way to reach in and unspend work
-   *  already done. Anything already approved has already run. */
+   *  implied: it disconnects THIS browser AND asks the server to stop the
+   *  turn (migration 083, POST /api/agent/stop) — checked between steps, so a
+   *  tool call already in progress still finishes before the turn honours it.
+   *  Anything already approved has already run, and a turn that is between
+   *  its very last step and its answer may still complete and save normally;
+   *  the local abort below is what gives the user IMMEDIATE feedback either
+   *  way, without waiting on the network round trip. */
   function stopAll() {
     const lastText = [...inFlightTextRef.current.values()].pop();
+    const stoppingConversationId = conversationIdRef.current;
     for (const [id, c] of abortersRef.current) {
       c.abort();
       patchTurn(id, (t: any) => {
         t.status = 'error';
         closeOpenSteps(t, true);
-        t.steps.push({ kind: 'error', text: 'Stopped. The server will finish this turn and save it — the answer will be here when you come back to this chat.' });
+        t.steps.push({ kind: 'error', text: 'Stopped. The server will end this turn at its next step and save what it has — the answer will be here when you come back to this chat.' });
         if (t.endedAt === undefined) t.endedAt = Date.now();
       });
     }
@@ -616,6 +621,13 @@ export default function AgentConsole({ brandId, conversationId, onSteps, onConve
     inFlightTextRef.current.clear();
     setActiveRuns(new Set());
     if (lastText) setInput((prev) => (prev.trim() ? prev : lastText));
+    // Best-effort, fire-and-forget: the local abort above already gave the
+    // user their immediate feedback, so this must never block or throw into
+    // the UI — a network hiccup here just means the server-side turn runs to
+    // its own deadline instead of stopping early, not a broken Stop button.
+    if (stoppingConversationId) {
+      apiSend('/api/agent/stop', 'POST', { conversationId: stoppingConversationId }).catch(() => {});
+    }
   }
   // Message action bar state (thumbs / copy / read-aloud / edit). Votes are
   // keyed by the REAL transcript messageId (never the turn's local React-key

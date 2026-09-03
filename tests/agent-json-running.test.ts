@@ -51,6 +51,11 @@ vi.mock('@/lib/agent/memory', () => ({
   ingestCarryoverFacts: (acc: any, memo: any) => ingestCarryoverFacts(acc, memo),
   markConversationRunning: (id: any, acc: any) => markConversationRunning(id, acc),
   clearConversationRunning: (id: any, acc: any) => clearConversationRunning(id, acc),
+  // Cooperative stop (migration 083) — irrelevant to what this file tests,
+  // but the route now calls this unconditionally at the start of every turn
+  // (same call site as markConversationRunning), so it needs a no-op
+  // stand-in or the call throws before runAgent(Stream) is ever reached.
+  clearStopRequest: async () => {},
 }));
 
 let runBehavior: 'succeed' | 'throw' = 'succeed';

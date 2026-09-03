@@ -134,6 +134,10 @@ describe('POST /api/agent/stream — openStreams counter', () => {
       ingestCarryoverFacts: vi.fn(async () => {}),
       markConversationRunning: vi.fn(async () => {}),
       clearConversationRunning: vi.fn(async () => {}),
+      // Cooperative stop (migration 083) — the route now calls this
+      // unconditionally alongside markConversationRunning, so it needs a
+      // no-op stand-in or the call throws before the run is ever reached.
+      clearStopRequest: vi.fn(async () => {}),
     }));
     vi.doMock('@/lib/agent/loop', () => ({
       runAgentStream: vi.fn(async (args: any, emit: (e: any) => void) => {
@@ -271,6 +275,10 @@ describe('POST /api/agent — openRequests counter (JSON path)', () => {
       // the route now makes them unconditionally, so the mock must have them.
       markConversationRunning: vi.fn(async () => {}),
       clearConversationRunning: vi.fn(async () => {}),
+      // Cooperative stop (migration 083) — the route now calls this
+      // unconditionally alongside markConversationRunning, so it needs a
+      // no-op stand-in or the call throws before the run is ever reached.
+      clearStopRequest: vi.fn(async () => {}),
     }));
     vi.doMock('@/lib/agent/loop', () => ({
       runAgent: vi.fn(async (args: any) => {

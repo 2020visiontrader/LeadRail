@@ -28,7 +28,7 @@ import {
 } from './tools';
 import { loadExternalCapabilities } from '@/lib/capabilities/external-mcp';
 import type { Capability, Analysis, Basis } from '@/lib/capabilities/types';
-import { estimateTokens, carryoverBlock, type CarryoverMemo } from './memory';
+import { estimateTokens, carryoverBlock, isStopRequested, type CarryoverMemo } from './memory';
 import {
   loadPersonaForAgent, resolveMentionedPersonas, getCoordinator, listPersonas,
   buildPersonaSystemBlock, buildCoordinatorSystemBlock, type PersonaRow,
@@ -1026,6 +1026,30 @@ export const DEADLINE_EMPTY_MESSAGE =
   "This turn ran out of time before it could produce an answer, and nothing had completed yet to salvage. " +
   'Retrying the exact same request will very likely hit the same limit — try a narrower one.';
 
+// STOP — cooperative, server-side stop (migration 083). A user clicking Stop
+// used to abort only the browser's own fetch; the server-side turn kept
+// running regardless (spending, executing tools, sending approved actions),
+// staying flagged "running" for up to RUNNING_STALE_MS. isStopRequested is
+// checked at the SAME point as the deadline check above — between steps,
+// before starting another model call — never mid-tool-call, so a half
+// executed send is never possible from this path. Reuses buildSalvageMessage
+// exactly like the deadline path does (CLAUDE.md: extract for the path, not
+// the parts) — only the framing text below differs.
+export function stopSalvageFraming(steps: AgentStep[]): { intro: string; outro: string } {
+  const progress = describeStepsProgress(steps);
+  return {
+    intro: `This turn was stopped — ${progress}before it stopped. `,
+    outro: 'Nothing further ran after the stop. Send a new message when you are ready and it will start a fresh turn.',
+  };
+}
+
+// The bare fallback when a stop landed with NOTHING salvageable yet (zero
+// qualifying steps) — mirrors DEADLINE_EMPTY_MESSAGE's role for the deadline
+// path. Distinct wording on purpose: this was requested, not an outage and
+// not a timeout, so neither "try again" nor "ran out of time" is honest here.
+export const STOP_EMPTY_MESSAGE =
+  'This turn was stopped before it produced an answer, and nothing had completed yet to salvage.';
+
 // ESCALATION — Phase 2. A turn that runs out of TIME is not a turn that ran
 // out of WORK: "try breaking this into a smaller request" asks the user to do
 // the system's own job. When the reserve (ESCALATION_RESERVE_MS) or the
@@ -1711,6 +1735,21 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
       // Escalation declined (no conversationId, a plan already runs, the
       // model call failed) — fall through to EXACTLY today's behaviour.
       break;
+    }
+    // Cooperative stop (migration 083) — checked at the SAME point as the
+    // deadline above: between steps, before starting another model call,
+    // never mid-tool-call. Only meaningful once a conversationId exists (an
+    // approve-resume or an existing chat has one; a brand-new chat's turn has
+    // nothing yet for POST /api/agent/stop to target). Fail-open:
+    // isStopRequested never throws, so a transient DB read failure cannot
+    // itself interrupt a turn nobody asked to stop.
+    if (input.conversationId && await isStopRequested(input.conversationId, accountId)) {
+      log.warn('agent: stop requested, ending turn early', {
+        accountId, step: i, afterTool: lastToolName ?? null,
+      });
+      const salvage = buildSalvageMessage(steps, extraTools, stopSalvageFraming(steps));
+      if (salvage) return { status: 'salvage', message: salvage, transcript: messages, steps, skillSlugs };
+      return { status: 'error', message: STOP_EMPTY_MESSAGE, transcript: messages, steps, skillSlugs };
     }
     let raw: string;
     // Set by the router once the ai_usage row for the attempt that ANSWERED has
@@ -2432,6 +2471,27 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
       }
       // Escalation declined — fall through to EXACTLY today's behaviour.
       break;
+    }
+    // Cooperative stop (migration 083) — mirrors runAgentImpl's check above
+    // EXACTLY (CLAUDE.md: both loops stay identical): between steps, before
+    // starting another model call, never mid-tool-call. Emitted as a
+    // terminal `final` event (salvage: true) instead of returned, same
+    // pattern as the deadline branch below, so the streaming turn ends with
+    // what was accomplished rather than a bare `error` event carrying
+    // nothing.
+    if (input.conversationId && await isStopRequested(input.conversationId, accountId)) {
+      log.warn('agent stream: stop requested, ending turn early', {
+        accountId, step: i, afterTool: lastToolName ?? null,
+      });
+      const salvage = buildSalvageMessage(steps, extraTools, stopSalvageFraming(steps));
+      if (salvage) {
+        messages.push({ role: 'assistant', content: salvage });
+        await streamTokens(salvage, emit);
+        emit({ type: 'final', message: salvage, transcript: messages, salvage: true, skillSlugs });
+        return;
+      }
+      emit({ type: 'error', message: STOP_EMPTY_MESSAGE });
+      return;
     }
     // Live "working" step BEFORE the blocking model call (from main): without
     // it the first event of a step only lands after generateChat returns, so the

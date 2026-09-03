@@ -6,7 +6,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/db';
 import { runAgent, agentConfigured, generateCarryover } from '@/lib/agent/loop';
 import { loadAgentContext } from '@/lib/agent/context';
-import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts, markConversationRunning, clearConversationRunning } from '@/lib/agent/memory';
+import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts, markConversationRunning, clearConversationRunning, clearStopRequest } from '@/lib/agent/memory';
 import { mintMessageId, ensureMessageIds } from '@/lib/agent/transcript-store';
 import { stripPrivateReasoning } from '@/lib/agent/transcript-privacy';
 import { parseMentions } from '@/lib/agent/personas';
@@ -128,8 +128,12 @@ async function runPost(request: NextRequest, session: Session) {
   // — see the CRITICAL PROCESS RULE note above) shows the saved transcript
   // with no answer, no spinner, and no polling, because GET .../conversations
   // /[id] reports running: false the whole time the turn is actually running.
+  // Cleared at the SAME point as the running flag is set — the start of a
+  // turn — so a stop requested against a PRIOR turn on this conversation can
+  // never be misread as applying to the turn about to run (migration 083).
   if (conversationId) {
     await markConversationRunning(conversationId, session.accountId);
+    await clearStopRequest(conversationId, session.accountId);
   }
 
   try {
@@ -248,6 +252,12 @@ async function runTurn(
   // never had a chance to mark because it didn't exist yet when runPost ran.
   if (wasNewConversation && conversationId) {
     await markConversationRunning(conversationId, session.accountId);
+    // A brand-new chat cannot have a stop requested against it yet — nothing
+    // could have named this id before this line minted it — so this call is
+    // a no-op today. Kept alongside markConversationRunning anyway so both
+    // paths stay structurally identical and neither can silently drift if a
+    // future caller starts reusing conversation ids.
+    await clearStopRequest(conversationId, session.accountId);
   }
 
   let result;

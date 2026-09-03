@@ -5,7 +5,7 @@ import { NextRequest } from 'next/server';
 import { supabase } from '@/lib/db';
 import { runAgentStream, agentConfigured, generateCarryover, type AgentEvent } from '@/lib/agent/loop';
 import { loadAgentContext } from '@/lib/agent/context';
-import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts, markConversationRunning, clearConversationRunning } from '@/lib/agent/memory';
+import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts, markConversationRunning, clearConversationRunning, clearStopRequest } from '@/lib/agent/memory';
 import { mintMessageId, ensureMessageIds, type StoredMessage } from '@/lib/agent/transcript-store';
 import { stripPrivateReasoning } from '@/lib/agent/transcript-privacy';
 import { parseMentions } from '@/lib/agent/personas';
@@ -313,8 +313,13 @@ export async function POST(request: NextRequest) {
         // take minutes. Cleared unconditionally in the `finally` below. Only
         // meaningful once an id exists: an approve-resume or an existing chat
         // has one already; a brand-new chat has one from the block above.
+        // Cleared at the SAME point as the running flag is set — the start of
+        // a turn — so a stop requested against a PRIOR turn on this
+        // conversation can never be misread as applying to the turn about to
+        // run (migration 083).
         if (conversationId) {
           await markConversationRunning(conversationId, session.accountId);
+          await clearStopRequest(conversationId, session.accountId);
         }
 
         await runAgentStream(

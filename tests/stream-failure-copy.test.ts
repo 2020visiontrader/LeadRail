@@ -51,6 +51,11 @@ vi.mock('@/lib/agent/memory', () => ({
   ingestCarryoverFacts: (acc: any, memo: any) => ingestCarryoverFacts(acc, memo),
   markConversationRunning: async () => {},
   clearConversationRunning: async () => {},
+  // Cooperative stop (migration 083) — irrelevant to what this file tests,
+  // but the route now calls this unconditionally at the start of every turn
+  // (same call site as markConversationRunning), so it needs a no-op
+  // stand-in or the call throws before runAgentStream is ever reached.
+  clearStopRequest: async () => {},
 }));
 
 // A run that finishes its work (all "delegates" report progress) but NEVER

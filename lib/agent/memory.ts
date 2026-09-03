@@ -531,6 +531,73 @@ export async function isConversationRunning(id: string, accountId: string): Prom
   }
 }
 
+// --- cooperative stop (migration 083) ---------------------------------------
+//
+// Same shape as the running-state block above, for the opposite direction:
+// running_since says a turn IS in progress; stop_requested_at says a turn
+// SHOULD stop. Set by POST /api/agent/stop (account-scoped from the session,
+// never the body), read by the agent loop between steps (lib/agent/loop.ts,
+// alongside the existing turnDeadline check), and cleared unconditionally the
+// moment a fresh turn starts on a conversation — the same call site as
+// markConversationRunning — so a stale stop from a PRIOR turn can never kill
+// one that hasn't started yet.
+//
+// Deliberately distinct from a client disconnect: stream-guard.ts's guard
+// keeps a turn running when the browser goes away, on purpose (a disconnected
+// client must still get its turn persisted). This column is set ONLY by an
+// explicit stop request — nothing in stream-guard.ts, or anywhere a
+// connection merely closes, may write to it.
+
+/** Ask a running turn on this conversation to stop at its next between-steps
+ *  check. Account-scoped in the query, never after the fetch. Returns
+ *  whether a row was actually found and updated for THIS account, so the
+ *  route can tell a real conversation from an unknown/foreign id — this is
+ *  the one function in this block that is not silently best-effort, because
+ *  the caller needs to know whether the stop will actually take effect. */
+export async function requestStop(id: string, accountId: string): Promise<boolean> {
+  try {
+    const { data } = await supabase.from('agent_conversations')
+      .update({ stop_requested_at: new Date().toISOString() })
+      .eq('id', id).eq('account_id', accountId).is('deleted_at', null)
+      .select('id');
+    return Array.isArray(data) && data.length > 0;
+  } catch {
+    return false;
+  }
+}
+
+/** Clear a conversation's stop request. Called unconditionally at the start
+ *  of every turn (same call sites as markConversationRunning) — BEFORE the
+ *  loop runs — so a stop left over from a turn that already ended can never
+ *  be misread as applying to the turn about to start. Best-effort: a failure
+ *  here must not fail the turn — worst case a stale stop from a previous turn
+ *  (already-ended, so nothing was listening for it anyway) lingers until the
+ *  next between-steps check clears it. */
+export async function clearStopRequest(id: string, accountId: string): Promise<void> {
+  try {
+    await supabase.from('agent_conversations')
+      .update({ stop_requested_at: null })
+      .eq('id', id).eq('account_id', accountId);
+  } catch { /* best-effort */ }
+}
+
+/** Whether a stop has been requested for this conversation. Called from
+ *  inside the agent loop, between steps — see the turnDeadline check it sits
+ *  alongside in lib/agent/loop.ts. Never throws: a failed read degrades to
+ *  "not stopped", the same fail-open posture as isConversationRunning, so a
+ *  transient DB error cannot itself interrupt a turn that was never asked to
+ *  stop. */
+export async function isStopRequested(id: string, accountId: string): Promise<boolean> {
+  try {
+    const { data } = await supabase.from('agent_conversations')
+      .select('stop_requested_at').eq('id', id).eq('account_id', accountId)
+      .is('deleted_at', null).maybeSingle();
+    return Boolean((data as any)?.stop_requested_at);
+  } catch {
+    return false;
+  }
+}
+
 // --- durable facts ---------------------------------------------------------
 
 export interface MemoryFact {
