@@ -117,17 +117,26 @@ function buildSystemPrompt(input: ComposeInput): string {
   // include…" — three paragraphs of briefing nobody asked for, copied almost
   // verbatim out of this block. The header below is what tells the model this
   // is reference material for resolving names and nothing else.
-  if (input.agentContext && input.agentContext.trim()) {
-    parts.push(
-      [
-        'BACKGROUND BRIEFING — reference only.',
-        'This is context so you can resolve names, ids and terminology. It is NOT the answer and it is NOT news to the user: they already know what ventures they run and what they have connected.',
-        'NEVER recite, summarise, or volunteer anything from this block. Use a fact from it only when the user\'s question actually asks for it.',
-        '',
-        input.agentContext.trim(),
-      ].join('\n'),
-    );
-  }
+  // C10 — agentContext (the full grounding block: platform brief, venture
+  // profile, account snapshot, connected socials, recalled memory, attached
+  // documents) used to be pasted in here wholesale, labelled "reference
+  // only". It did not stay reference-only in practice: asked to "pull 2 more
+  // leads and enrich them", the model answered with the leads and then
+  // recited "You have 41 leads on file across your 3 ventures… Your
+  // connected social accounts include…" — three unrequested paragraphs lifted
+  // almost verbatim out of this block, despite the guardrail text above.
+  //
+  // Compose's job is to rewrite the ROUTE PASS'S OWN DRAFT using the
+  // OBSERVATIONS as evidence — both of which already carry whatever names,
+  // ids and terms the route pass needed (it had the full agentContext when
+  // it wrote the draft, and any id a tool call resolved is in the
+  // observation that returned it). There is no fact compose needs that is in
+  // agentContext and NOT already in one of those two — so nothing from it is
+  // kept: the smallest correct piece turned out to be none of it, and the
+  // block is dropped entirely rather than re-summarized or partially kept.
+  // If a future defect surfaces a fact compose genuinely cannot resolve
+  // without it, that is a case for the draft or an observation to carry the
+  // fact explicitly, not for this block to come back.
 
   parts.push(`You are the operator copilot. Write the final answer to the user based on the provided draft and observations.
 
@@ -168,53 +177,72 @@ function buildUserTurn(input: ComposeInput): string {
   return parts.join('\n\n');
 }
 
-/** Total characters of OBSERVATION text handed to the compose pass, newest
- *  first. This is the REAL ceiling on how much evidence the final answer can be
- *  written from — a per-observation budget above it is not bigger, it is just
- *  re-clipped here, which is precisely how analyzeBrand's strategy went missing.
- *
- *  Sized against MAX_STEPS (10): a turn that calls ten tools must not have its
- *  early findings silently dropped before the answer is composed. ~32k chars is
- *  roughly 8k tokens, which every model on the ladder carries comfortably.
- *
- *  EXPORTED so lib/agent/loop.ts and the capability contract test assert
- *  against this number rather than restating it. The one thing that must never
- *  happen again is two caps in series disagreeing in silence. */
-//
-// Raised with the per-observation limit and the transcript budget: 32k chars is
-// ~8k tokens, which was sized for the weakest tier on the ladder rather than
-// for the Claude model that actually composes the answer. On a turn that calls
-// a dozen tools it silently dropped the earliest findings before the answer was
-// written — which reads as the assistant ignoring half of what it just looked up.
+/** @deprecated Compose no longer packs observations up to a character
+ *  budget — see extractObservationBlock below. Kept only so nothing that
+ *  still imports this constant (lib/agent/loop.ts, the capability contract
+ *  test) fails to compile; its value is unused by this file now. */
 export const OBSERVATION_BLOCK_CHARS =
   Number(process.env.AGENT_OBSERVATION_BLOCK_CHARS) || BUDGET.composeBlockChars;
 
-function extractObservationBlock(transcript: ChatMessage[]): string {
-  const lines: string[] = [];
-  let totalLength = 0;
-  const MAX = OBSERVATION_BLOCK_CHARS;
+/** C10 — how many of the most recent OBSERVATION: messages compose reads,
+ *  full stop. This replaces a running character budget (up to
+ *  composeBlockChars, 160k) that packed in every observation newest-first
+ *  until it filled — on a turn that called several tools, the compose call
+ *  ended up nearly as large as the step call it was meant to summarize.
+ *  Two is enough for the turns compose actually has to write about: the
+ *  answer is about what just happened, and what just happened is the last
+ *  one or two tool results — everything the route pass reasoned about along
+ *  the way is still reflected in its OWN draft, which compose also receives
+ *  in full. */
+const LAST_N_OBSERVATIONS = 2;
 
-  // Iterate from newest to oldest (end of transcript)
-  for (let i = transcript.length - 1; i >= 0; i--) {
+/**
+ * Per-observation safety ceiling, applied only when a single observation is
+ * unusually large. Kept generous — most observations are far smaller than
+ * this — because with only two observations reaching compose at all there is
+ * no longer a shared budget to protect; this exists solely so one
+ * pathological result (a capability with a very large `observationLimit`,
+ * e.g. readDocument's ~44k) cannot dominate an otherwise-small prompt.
+ */
+const MAX_SINGLE_OBSERVATION_CHARS = 40_000;
+
+/**
+ * Last two OBSERVATION: entries from the route-pass transcript, newest
+ * first, for the compose pass to write from.
+ *
+ * THE DIGEST-THEN-JSON LAYOUT THIS RELIES ON. successObservation() in
+ * lib/agent/loop.ts builds each observation as `${digest}\n${raw}` when the
+ * capability declares a `digest()` — a short, truthful, plain-language line
+ * FIRST, with the full JSON result after it under the same single
+ * `OBSERVATION: ` prefix (raw JSON alone, no digest, for a capability that
+ * doesn't declare one, or `ERROR: ...` for a failed call). That ordering is
+ * why simply keeping an observation whole is safe even under the per-entry
+ * ceiling below: the digest is the earliest, most load-bearing text, so a
+ * cut that lands past it removes only the JSON tail, never the summary a
+ * human would read first.
+ *
+ * This is a deliberately MINIMAL local reimplementation of "find the
+ * OBSERVATION: lines" — not an import of successObservation or its digest
+ * logic from lib/agent/loop.ts. loop.ts imports composeAnswer (this module)
+ * to run the compose pass itself, so importing back from here would be a
+ * cycle; the actual parsing needed on this side is a single startsWith
+ * check, not worth breaking that cycle for.
+ */
+function extractObservationBlock(transcript: ChatMessage[]): string {
+  const kept: string[] = [];
+
+  // Iterate from newest to oldest (end of transcript) and stop at two.
+  for (let i = transcript.length - 1; i >= 0 && kept.length < LAST_N_OBSERVATIONS; i--) {
     const message = transcript[i];
     const content = typeof message.content === 'string' ? message.content : '';
     if (!content.startsWith('OBSERVATION: ')) continue;
-
-    if (totalLength + content.length > MAX) {
-      if (lines.length === 0) {
-        // First (newest) line exceeds cap — truncate it to fit exactly.
-        const remaining = MAX - totalLength;
-        lines.push(content.slice(0, remaining));
-        totalLength += remaining;
-      }
-      break; // Stop adding more lines once cap is reached
-    }
-
-    lines.push(content);
-    totalLength += content.length;
-    if (totalLength >= MAX) break;
+    kept.push(
+      content.length > MAX_SINGLE_OBSERVATION_CHARS
+        ? `${content.slice(0, MAX_SINGLE_OBSERVATION_CHARS)}\n[…truncated — this single observation exceeded ${MAX_SINGLE_OBSERVATION_CHARS} characters.]`
+        : content,
+    );
   }
 
-  // lines are in newest-first order as collected
-  return lines.join('\n');
+  // kept is newest-first as collected.
+  return kept.join('\n');
 }
