@@ -13,7 +13,7 @@ estimated tokens out of the reported total on `usage_source`.
 When adding an entry, say what proves it is done — a passing test, a row in a
 table, a non-401 log line — not "wire it up".
 
-Last reviewed: 2026-09-02
+Last reviewed: 2026-09-03
 
 ---
 
@@ -560,3 +560,55 @@ the counter stays at zero, the marker is not landing and the flag should go
 back off rather than be left on as decoration. Watch `app_logs` for
 `retrying once without it` while it is on: that warning firing means the
 gateway is rejecting the field and every marked call is costing a round trip.
+
+## 12. Migration 083 — APPLIED AND VERIFIED 2026-09-03
+
+`migrations/083_agent_conversation_stop_request.sql` adds
+`agent_conversations.stop_requested_at`, the column the cooperative
+server-side stop reads between steps. Applied to production (project
+`kqimpzbphdogvchqmtos`) on 2026-09-03.
+
+**CLOSED.** Verified against `information_schema`, not the apply call's
+`success: true`:
+
+```
+column_name        data_type                   nullable  has_comment
+running_since      timestamp with time zone    YES       true
+stop_requested_at  timestamp with time zone    YES       true
+```
+
+Shape matches `running_since` (migration 072) exactly, which is the pattern
+it was modelled on. The reader's own predicate was then run against the live
+table: 30 conversations, 0 with `stop_requested_at` set — a clean baseline,
+and proof the column is queryable rather than merely present.
+
+**Named reader, per the rule about columns nothing reads:**
+`isStopRequested` in `lib/agent/memory.ts`, called between steps in BOTH
+`runAgentImpl` and `runAgentStreamImpl` (`lib/agent/loop.ts`). Disabling only
+the streaming check fails 2 tests, so the loop real chat turns actually run
+is covered on its own rather than riding on the JSON twin.
+
+**Still unproven in production:** no real user has clicked Stop against this
+yet. The column has never been non-null. Done when a production turn is
+stopped and `app_logs` carries `agent stream: stop requested, ending turn
+early` with the turn ending in salvage rather than running to completion.
+
+## 13. The background layer has still never executed — 2026-09-03
+
+Four tables remain at zero rows in production: `agent_plans`,
+`agent_plan_steps`, `scheduled_tasks`, `agent_memory`. Commit 2ed611a fixed
+the three defects that made plans structurally unrunnable — an approval that
+re-proposed instead of executing, steps that ran with no grounding, and a
+plan-mode draft that could never leave `draft` because `approvePlan` had zero
+callers. That makes the layer *able* to run. It is not evidence that it *has*.
+
+**Done when:** one real plan runs end to end in production and this entry
+carries its `agent_plans.id` and the ids of its completed
+`agent_plan_steps` — row ids, not a passing test and not `success: true`.
+Until then treat every "it runs in the background as a plan" claim in the
+assistant's own copy as unverified.
+
+Related and untouched: `agent_memory` at 0 rows while every one of the 30
+conversations carries `memory_extracted_at`, so the extractor ran and wrote
+nothing, and `recallMemoryDigest` still pays for an embedding call on every
+turn to search an empty table.
