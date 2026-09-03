@@ -178,6 +178,36 @@ describe('the turn deadline reaches capabilities that can spawn sub-runs', () =>
     expect(ctxs[0].deadlineAt).toBe([...modelDeadlines][0]);
   });
 
+  // The GROUNDING half of the same property, and the reason it lives here
+  // rather than in the delegation tests: lib/capabilities/delegation.ts
+  // forwards ctx.agentContext into a sub-run, but that forward is INERT unless
+  // the loop actually puts agentContext on the tool context. It did not, so
+  // the delegate fix shipped dormant in d023848 and this pins the wiring that
+  // activates it. A delegation unit test against a hand-made ctx cannot catch
+  // that, which is the whole lesson.
+  it('puts the turn GROUNDING on the tool context, so a sub-run inherits it', async () => {
+    let calls = 0;
+    generateChat.mockImplementation(async () => {
+      calls++;
+      return calls > 2 ? FINAL : toolCall();
+    });
+    const { runAgent } = await import('@/lib/agent/loop');
+    const res = await runAgent({
+      accountId: 'acct-1',
+      message: 'find me some leads',
+      agentContext: 'CURRENT VENTURE — RetentionRail. ICP: ecommerce ops leads.',
+      brandContext: { id: 'brand-1', name: 'RetentionRail' },
+    });
+
+    expect(res.status).toBe('done');
+    const ctxs = runTool.mock.calls.map((c: any[]) => c[6]);
+    expect(ctxs.length).toBeGreaterThan(0);
+    for (const ctx of ctxs) {
+      expect(ctx?.agentContext).toContain('RetentionRail');
+      expect(ctx?.brandContext?.id).toBe('brand-1');
+    }
+  });
+
   it('streaming: identical property holds for runAgentStream', async () => {
     let calls = 0;
     generateChat.mockImplementation(async () => {
