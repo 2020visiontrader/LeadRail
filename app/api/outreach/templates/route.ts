@@ -1,5 +1,5 @@
-import { withApi } from '@/lib/http';
-import { NextResponse } from 'next/server';
+import { withApi, requireSession } from '@/lib/http';
+import { NextRequest, NextResponse } from 'next/server';
 
 export const dynamic = 'force-dynamic';
 
@@ -13,7 +13,12 @@ const TEMPLATES = [
   { id: 'partner-collab', segment: 'partner', name: 'Partnership', subject: 'Partnership with {{company}}', body: '<p>Hi {{name}},</p><p>I see a clean partnership fit. Worth a quick exploratory call?</p>' },
 ];
 
-async function GET__impl() {
+async function GET__impl(request: NextRequest) {
+  // The payload is static starter copy, not tenant data, but every route
+  // must carry an explicit guard per the route-audit test rather than rely
+  // on middleware alone.
+  const { error } = await requireSession(request);
+  if (error) return error;
   return NextResponse.json(TEMPLATES);
 }
 
