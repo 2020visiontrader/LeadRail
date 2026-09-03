@@ -31,8 +31,17 @@
 /** Matches batchSummary()'s (lib/agent/batch.ts) two header shapes exactly:
  *  "<tool>: all <N> succeeded." / "<tool>: <k> of <N> succeeded, <f> failed." */
 const BATCH_HEADER_RE = /^(.+?): (?:all \d+ succeeded|\d+ of \d+ succeeded, \d+ failed)\.$/;
-/** Matches one batchObservation() item line: "[n] ok — " / "[n] FAILED — ". */
-const BATCH_ITEM_RE = /^\[(\d+)\] (ok — |FAILED — )/;
+/** Matches readsSummary()'s (lib/agent/reads.ts) header shape exactly:
+ *  "<N> reads — <tool>: ok, <tool>: FAILED, ….". A multi-read step folds
+ *  several DIFFERENT tools' results into one observation, same raw-JSON risk
+ *  as a batch, so it gets the same item-by-item rendering below. */
+const READS_HEADER_RE = /^\d+ reads — .+\.$/;
+/** Matches one item line from EITHER folded shape:
+ *   - batchObservation(): "[n] ok — " / "[n] FAILED — "
+ *   - readsObservation(): "[n] <tool> — ok — " / "[n] <tool> — FAILED — "
+ *  The tool name (group 2, reads only) is captured so the rendered line can
+ *  keep attributing each result to the tool that produced it. */
+const ITEM_RE = /^\[(\d+)\] (?:([^\s]+) — )?(ok — |FAILED — )/;
 
 /** An array of RECORDS (objects) longer than this renders only the first N,
  *  with the rest folded into a stated "… and N more" line — never silently
@@ -118,6 +127,19 @@ export function renderJsonValue(value: any): string {
   return String(value);
 }
 
+/** Turn an object key like `documents` or `socialAutomations` into the plain
+ *  noun a sentence would use — "documents", "social automations". Purely
+ *  mechanical (camelCase split + lowercase), so it works for a field nobody
+ *  wrote label text for, which is the whole point of a shape-based fallback:
+ *  a NEW capability that returns `{ whatever: [] }` gets "No whatever found."
+ *  for free, without anyone naming `whatever` here. */
+function humanizeKey(key: string): string {
+  return key
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/_/g, ' ')
+    .toLowerCase();
+}
+
 function renderObjectValue(value: Record<string, any>): string {
   if (isFileValue(value)) return renderFileValue(value);
   if (typeof value.subject === 'string' && typeof value.body === 'string') {
@@ -126,16 +148,32 @@ function renderObjectValue(value: Record<string, any>): string {
       .map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`);
     return [`Subject: ${value.subject}`, '', value.body, ...(extras.length ? ['', ...extras] : [])].join('\n');
   }
+  // A common wrapper shape: an API/tool result of the form `{ leads: [...] }`
+  // or `{ documents: [] }` — one key, an array. This is EXACTLY the shape
+  // that produced the production defect (`{"documents":[]}`): no digest, one
+  // field, an empty array. Unwrapping it and rendering that array (with the
+  // key itself supplying the noun) turns it into "No documents found." /
+  // "3 documents: …" instead of the literal field-listing fallback below,
+  // for ANY capability shaped this way — not just listDocuments.
+  const keys = Object.keys(value);
+  if (keys.length === 1 && Array.isArray(value[keys[0]])) {
+    return renderArray(value[keys[0]], humanizeKey(keys[0]));
+  }
   const entries = Object.entries(value).filter(([, v]) => v !== null && v !== undefined && v !== '');
   if (!entries.length) return '(empty result)';
   return entries.map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`).join('\n');
 }
 
-function renderArray(value: any[]): string {
-  if (!value.length) return '(0 items)';
+/** `noun` names what the array actually holds — e.g. "documents",
+ *  "candidates" — for a wrapped single-array object (see renderObjectValue
+ *  above). Omitted for a top-level array, which keeps the generic "N
+ *  record(s):" / "N item(s): …" wording it always had. */
+function renderArray(value: any[], noun?: string): string {
+  if (!value.length) return noun ? `No ${noun} found.` : '(0 items)';
   const hasRecords = value.some((v) => v && typeof v === 'object' && !Array.isArray(v));
   if (!hasRecords) {
-    return `${value.length} item${value.length === 1 ? '' : 's'}: ${value
+    const label = noun ? noun : `item${value.length === 1 ? '' : 's'}`;
+    return `${value.length} ${label}: ${value
       .map((v) => (typeof v === 'string' ? v : JSON.stringify(v)))
       .join(', ')}`;
   }
@@ -147,7 +185,8 @@ function renderArray(value: any[]): string {
     return `  ${i + 1}. ${rendered}`;
   });
   const omitted = value.length - shown.length;
-  const header = `${value.length} record${value.length === 1 ? '' : 's'}:`;
+  const label = noun ? noun : `record${value.length === 1 ? '' : 's'}`;
+  const header = `${value.length} ${label}:`;
   return [
     header,
     ...lines,
@@ -228,13 +267,14 @@ export function renderPayload(text: string, budget: number): string {
 export function renderObservation(observation: string, budget: number): string {
   try {
     const lines = observation.split('\n');
-    if (BATCH_HEADER_RE.test(lines[0] || '')) {
+    const folded = BATCH_HEADER_RE.test(lines[0] || '') || READS_HEADER_RE.test(lines[0] || '');
+    if (folded) {
       const header = lines[0];
-      const items: { idx: string; ok: boolean; text: string }[] = [];
+      const items: { idx: string; tool?: string; ok: boolean; text: string }[] = [];
       for (let i = 1; i < lines.length; i++) {
-        const m = BATCH_ITEM_RE.exec(lines[i]);
+        const m = ITEM_RE.exec(lines[i]);
         if (m) {
-          items.push({ idx: m[1], ok: m[2].startsWith('ok'), text: lines[i].slice(m[0].length) });
+          items.push({ idx: m[1], tool: m[2], ok: m[3].startsWith('ok'), text: lines[i].slice(m[0].length) });
         } else if (items.length) {
           // A continuation line (e.g. a digest+raw item payload carrying its
           // own real newline) belongs to the item currently being built.
@@ -247,7 +287,8 @@ export function renderObservation(observation: string, budget: number): string {
         let shown = 0;
         for (const item of items) {
           const rendered = item.ok ? renderPayload(item.text, budget) : truncate(item.text, budget);
-          const line = `  [${item.idx}] ${item.ok ? 'ok' : 'FAILED'} — ${rendered}`;
+          const label = item.tool ? `${item.tool} — ${item.ok ? 'ok' : 'FAILED'}` : (item.ok ? 'ok' : 'FAILED');
+          const line = `  [${item.idx}] ${label} — ${rendered}`;
           if (shown > 0 && used + line.length + 1 > budget) break;
           out.push(line);
           used += line.length + 1;
@@ -259,7 +300,8 @@ export function renderObservation(observation: string, budget: number): string {
         return out.join('\n');
       }
       // Header matched but no item lines parsed (shouldn't happen for a real
-      // batchObservation) — fall through to plain payload rendering below.
+      // batchObservation/readsObservation) — fall through to plain payload
+      // rendering below.
     }
     return renderPayload(observation, budget);
   } catch {
