@@ -12,6 +12,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'fs';
 import path from 'path';
+// NOT a plain `import` of composeAnswer: this file's `vi.mock('@/lib/agent/compose', ...)`
+// above (needed so the loop.ts tests can assert on composeAnswer's call args)
+// mocks that module for the WHOLE file, so a normal import here would just
+// return the mock's `_a[0]?.draft` stub — exactly the gap this block exists
+// to close. vi.importActual bypasses that mock and loads the real module.
+// Resolved once, statically, against the SAME generateChat/streamChat vi.fn()s
+// the router mock factory above forwards to. compose.ts reads
+// AGENT_COMPOSE_STREAM once at module load; it is left unset (its default,
+// "enabled") for the whole file, which is what the streaming-branch test
+// below relies on.
+const { composeAnswer: realComposeAnswer } =
+  await vi.importActual<typeof import('@/lib/agent/compose')>('@/lib/agent/compose');
 
 // TURN_DEADLINE_MS lives inside lib/agent/loop.ts, a module with a large
 // dependency graph (tools, personas, skills, approvals, db, ...). Reusing
@@ -20,9 +32,10 @@ import path from 'path';
 // rather than inventing a second one. vi.mock calls are hoisted above
 // imports by vitest, so ordering here does not matter.
 const generateChat = vi.fn();
+const streamChat = vi.fn();
 vi.mock('@/lib/ai/router', () => ({
   generateChat: (...a: any[]) => generateChat(...a),
-  streamChat: vi.fn(),
+  streamChat: (...a: any[]) => streamChat(...a),
   textConfigured: () => true,
 }));
 vi.mock('@/lib/credits', () => ({ markParseOutcome: vi.fn(), recordAiUsage: vi.fn() }));
@@ -192,5 +205,61 @@ describe('the turn deadline actually reaches composeAnswer and Hermes routing', 
     expect(typeof ctx?.deadlineAt).toBe('number');
     expect(ctx.deadlineAt).toBeGreaterThan(before);
     expect(ctx.deadlineAt).toBeLessThanOrEqual(before + 300_000);
+  });
+});
+
+// THE OTHER HALF OF THE TRIP: the test above proves loop.ts hands deadlineAt
+// to composeAnswer, but composeAnswer itself is mocked there, so nothing
+// proves compose.ts actually forwards it onto the router call. This block
+// imports the REAL composeAnswer from lib/agent/compose and mocks only
+// @/lib/ai/router underneath it, so a dropped `deadlineAt: input.deadlineAt,`
+// line in compose.ts's callOpts is caught here even though the whole rest of
+// the suite (including the block above) stays green.
+//
+// Both branches of compose.ts's onDelta/AGENT_COMPOSE_STREAM gate are
+// covered: composeAnswer calls streamChat when an onDelta callback is passed
+// and AGENT_COMPOSE_STREAM !== '0', and generateChat otherwise. A test that
+// only exercises one branch leaves the other free to drop the value.
+describe('composeAnswer forwards deadlineAt to the router call (both branches)', () => {
+  beforeEach(() => {
+    generateChat.mockReset();
+    streamChat.mockReset();
+  });
+
+  it('generateChat branch (no onDelta): callOpts carries this call\'s deadlineAt', async () => {
+    generateChat.mockResolvedValue('the final answer');
+
+    const deadlineAt = Date.now() + 42_000;
+    const result = await realComposeAnswer({
+      accountId: 'acct-1',
+      draft: 'draft text',
+      transcript: [],
+      deadlineAt,
+    });
+
+    expect(result).toBe('the final answer');
+    expect(streamChat).not.toHaveBeenCalled();
+    expect(generateChat).toHaveBeenCalledTimes(1);
+    expect(generateChat.mock.calls[0][0]?.deadlineAt).toBe(deadlineAt);
+  });
+
+  it('streamChat branch (onDelta + AGENT_COMPOSE_STREAM enabled): callOpts carries this call\'s deadlineAt', async () => {
+    streamChat.mockResolvedValue('the streamed answer');
+
+    const deadlineAt = Date.now() + 99_000;
+    const result = await realComposeAnswer(
+      {
+        accountId: 'acct-1',
+        draft: 'draft text',
+        transcript: [],
+        deadlineAt,
+      },
+      () => {},
+    );
+
+    expect(result).toBe('the streamed answer');
+    expect(generateChat).not.toHaveBeenCalled();
+    expect(streamChat).toHaveBeenCalledTimes(1);
+    expect(streamChat.mock.calls[0][0]?.deadlineAt).toBe(deadlineAt);
   });
 });
