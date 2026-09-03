@@ -936,6 +936,21 @@ function truncate(s: string, limit: number = OBSERVATION_CHAR_LIMIT): string {
   return s.length > limit ? `${s.slice(0, limit)}… [truncated]` : s;
 }
 
+// PRESENTATION-ONLY. `messages`/`steps` keep the raw `${digest}\n${raw}` (or
+// bare raw-JSON) observation text exactly as before — the model still parses
+// real JSON, and buildSalvageMessage still runs renderObservation() itself
+// later. This is only for the `emit({ type: 'observation', ... })` SSE event,
+// which is what the LIVE TRACE (AgentConsole.tsx) shows a person while a turn
+// is running: that view used to display the raw text untouched, truncated to
+// 240 chars on the client — which is the exact production defect this closes
+// (a digest+raw pair front-truncated at 240 chars still shows trailing JSON,
+// and a digest-less capability shows nothing BUT JSON). renderObservation()
+// already existed for the salvage path; this reuses it for the common case
+// instead of adding a second renderer.
+function displayObservation(obs: string, limit: number | undefined): string {
+  return renderObservation(obs, limit ?? OBSERVATION_CHAR_LIMIT);
+}
+
 function observation(text: string, limit?: number): ChatMessage {
   return { role: 'user', content: `OBSERVATION: ${truncate(text, limit)}` };
 }
@@ -2867,7 +2882,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
       const obs = batchObservation(tool, results, extraCapsByName);
       const perCall = obsLimitFor(tool, extraCapsByName);
       const obsLimit = perCall === undefined ? undefined : perCall * Math.min(approvedBatch.calls.length, 4);
-      emit({ type: 'observation', text: truncate(obs, obsLimit), ok: results.every((r) => r.ok), tool });
+      emit({ type: 'observation', text: displayObservation(obs, obsLimit), ok: results.every((r) => r.ok), tool });
       steps.push({ tool, args, observation: truncate(obs, obsLimit) });
       messages.push(observation(obs, obsLimit));
     } else {
@@ -2875,7 +2890,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
       const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id, toolCtx);
       const obs = observationFor(tool, args, res, extraCapsByName);
       const obsLimit = obsLimitFor(tool, extraCapsByName);
-      emit({ type: 'observation', text: truncate(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
+      emit({ type: 'observation', text: displayObservation(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
       emitAnalysis(emit, analysisFor(tool, args, res, extraCapsByName));
       steps.push({ tool, args, observation: truncate(obs, obsLimit) });
       messages.push(observation(obs, obsLimit));
@@ -3219,7 +3234,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
       lastToolName = rd.reads[rd.reads.length - 1].tool;
       const readsLimit = readsObsLimit(rd.reads, extraCapsByName);
       emit({
-        type: 'observation', text: truncate(readsObs, readsLimit), tool: readsLabel,
+        type: 'observation', text: displayObservation(readsObs, readsLimit), tool: readsLabel,
         // ok only when EVERY read worked — same rule as a batch.
         ok: readResults.every((r) => r.ok),
       });
@@ -3298,7 +3313,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
       const perCall = obsLimitFor(tool, extraCapsByName);
       const obsLimit = perCall === undefined ? undefined : perCall * Math.min(calls.length, 4);
       emit({
-        type: 'observation', text: truncate(obs, obsLimit), tool,
+        type: 'observation', text: displayObservation(obs, obsLimit), tool,
         // ok only when EVERY call worked: a batch that half-failed must not
         // render with a plain tick, which is what "mostly fine" looks like.
         ok: results.every((r) => r.ok),
@@ -3360,7 +3375,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
           const obsLimit = obsLimitFor(tool, extraCapsByName);
           // Same events a normal tool call emits, so the live trace shows the
           // work rather than going silent just because nobody was asked.
-          emit({ type: 'observation', text: truncate(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
+          emit({ type: 'observation', text: displayObservation(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
           emitAnalysis(emit, analysisFor(tool, args, res, extraCapsByName));
           steps.push({ thought: narrationFor(parsed), tool, args, observation: obs });
           messages.push(observation(obs, obsLimit));
@@ -3455,7 +3470,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
     const res = await runTool(tool, accountId, args, extraTools, extraCapsByName, brandContext?.id, toolCtx);
     const obs = observationFor(tool, args, res, extraCapsByName);
     const obsLimit = obsLimitFor(tool, extraCapsByName);
-    emit({ type: 'observation', text: truncate(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
+    emit({ type: 'observation', text: displayObservation(obs, obsLimit), ok: res.ok, tool, metrics: res.ok ? (capabilityFor(tool, extraCapsByName)?.metrics?.(args, res.result) ?? {}) : {} });
     emitAnalysis(emit, analysisFor(tool, args, res, extraCapsByName));
     steps.push({ thought: narrationFor(parsed), tool, args, observation: truncate(obs, obsLimit) });
     messages.push(observation(obs, obsLimit));
