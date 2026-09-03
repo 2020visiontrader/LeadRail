@@ -326,14 +326,24 @@ describe('a reloaded conversation still names the file it was given', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Part 5 — no id leaks to providers. toWireMessages stripping id is proven
-// above (Part 1); this pins the actual call sites in lib/agent/loop.ts so a
-// future edit that reintroduces a bare `messages` (StoredMessage[], carrying
-// `id`) into a generateChat call is caught here rather than discovered as a
-// stricter provider rejecting a request, or a leaked id in model context.
+// Part 5 — no id leaks to providers. toWireMessages/pruneForWire stripping id
+// is proven above (Part 1) and in transcript-store.pruneForWire.test.ts; this
+// pins the actual call sites in lib/agent/loop.ts so a future edit that
+// reintroduces a bare `messages` (StoredMessage[], carrying `id`) into a
+// generateChat call is caught here rather than discovered as a stricter
+// provider rejecting a request, or a leaked id in model context.
+//
+// Route-pass (and the escalation) calls send `pruneForWire(messages)` —
+// pruneForWire strips `id` exactly as toWireMessages does, plus drops nudges,
+// collapses old JSON envelopes, and digests old observations, all to cut the
+// resent-transcript cost on route passes (see the module comment in
+// lib/agent/transcript-store.ts). The compose pass deliberately keeps sending
+// the FULL, unpruned transcript (`transcript: messages` to composeAnswer) —
+// it is grounded on complete OBSERVATION text by construction — so it is not
+// checked here.
 // ---------------------------------------------------------------------------
 describe('no StoredMessage id reaches a provider payload', () => {
-  it('every generateChat call in loop.ts that sends the transcript wraps it in toWireMessages', async () => {
+  it('every generateChat call in loop.ts that sends the transcript wraps it in pruneForWire', async () => {
     const fs = await import('node:fs');
     const path = await import('node:path');
     const src = fs.readFileSync(path.resolve(process.cwd(), 'lib/agent/loop.ts'), 'utf8');
@@ -342,11 +352,15 @@ describe('no StoredMessage id reaches a provider payload', () => {
     // handed straight to generateChat as `messages`, unwrapped. Must not
     // exist anywhere in the file.
     expect(src).not.toMatch(/generateChat\(\{[^}]*\bmessages,/s);
-    expect(src).not.toMatch(/\bmessages:\s*messages\b(?!\))/); // `messages: messages` (not `toWireMessages(messages)`)
+    expect(src).not.toMatch(/\bmessages:\s*messages\b(?!\))/); // `messages: messages` (not `pruneForWire(messages)`)
 
-    // The four call sites that actually send the running transcript must
-    // route it through the stripping helper.
-    const wrapped = src.match(/toWireMessages\(messages\)/g) || [];
+    // The four route-pass call sites (plus escalation) that actually send the
+    // running transcript to a provider must route it through the pruning
+    // helper — never bare toWireMessages(messages), which would resend full
+    // JSON on every call.
+    expect(src).not.toMatch(/toWireMessages\(messages\)/);
+    const wrapped = src.match(/pruneForWire\(messages\)/g) || [];
     expect(wrapped.length).toBeGreaterThanOrEqual(4);
+    expect(src).toMatch(/pruneForWire\(escalationMessages\)/);
   });
 });

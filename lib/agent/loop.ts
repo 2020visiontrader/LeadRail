@@ -18,7 +18,7 @@
 import { BUDGET } from '@/lib/ai/context-budget';
 import { generateChat, textConfigured, type ChatMessage } from '@/lib/ai/router';
 import { DeadlineExceededError } from '@/lib/ai/deadline';
-import { type StoredMessage, toWireMessages } from './transcript-store';
+import { type StoredMessage, pruneForWire } from './transcript-store';
 import {
   comprehend, formatUnderstandingBlock, type Understanding,
 } from './comprehension';
@@ -1178,9 +1178,9 @@ async function attemptEscalation(args: {
 
   // A separate local rather than an inline array literal in the generateChat
   // call below, purely so the transcript this call sends is unmistakably a
-  // toWireMessages(...)-wrapped variable, same as every other call site in
-  // this file (see tests/attachment-provenance.test.ts's static check that
-  // no StoredMessage id can reach a provider payload).
+  // pruneForWire(...)-wrapped variable, same as every other route-pass call
+  // site in this file (see tests/attachment-provenance.test.ts's static check
+  // that no StoredMessage id can reach a provider payload).
   const escalationMessages: StoredMessage[] = [
     ...args.messages,
     { role: 'user', content: ESCALATION_INSTRUCTION },
@@ -1189,7 +1189,7 @@ async function attemptEscalation(args: {
   try {
     raw = await generateChat({
       system: args.system,
-      messages: toWireMessages(escalationMessages),
+      messages: pruneForWire(escalationMessages),
       temperature: 0.2,
       // A short JSON step list, not prose — the same ceiling shape as the
       // step loop's own tool-routing calls, not the forced-final draft call.
@@ -1759,11 +1759,12 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
     let usageRowId: string | null = null;
     try {
       raw = await generateChat({
-        // toWireMessages strips the storage-only `id` field (migration 076)
-        // before this transcript is serialised into the provider request —
-        // see lib/agent/transcript-store.ts. This is the ONLY place these
-        // messages are handed to the router.
-        system, messages: toWireMessages(messages), temperature: 0.2,
+        // pruneForWire strips the storage-only `id` field (migration 076) AND
+        // drops turn-local nudges / collapses old JSON envelopes / reduces old
+        // OBSERVATION bodies to their digest — see lib/agent/transcript-store.ts.
+        // This is the ONLY place these messages are handed to the router for a
+        // route pass.
+        system, messages: pruneForWire(messages), temperature: 0.2,
         conversationId: input.conversationId,
         onUsageRow: (id) => { usageRowId = id; },
         // No fixed maxOutputTokens — see AGENT_ROUTE_CEILING.
@@ -2123,9 +2124,10 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
   try {
     messages.push({ role: 'user', content: 'Stop calling tools. Using the information above, answer the user now. Respond with ONLY {"action":"final","message":"..."}.' });
     const raw = await generateChat({
-      // toWireMessages strips the storage-only `id` field (migration 076) —
-      // see the comment on the other generateChat call sites in this file.
-      system, messages: toWireMessages(messages), temperature: 0.2,
+      // pruneForWire strips the storage-only `id` field (migration 076) and
+      // prunes the transcript for a route pass — see the comment on the other
+      // generateChat call sites in this file.
+      system, messages: pruneForWire(messages), temperature: 0.2,
       // Deliberate hard cap, unlike the step loop's maxOutputCeiling: this
       // call composes ONE final message, not a tool-routing decision, so a
       // fixed 2048-token bound is appropriate and is kept as-is.
@@ -2505,11 +2507,12 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
     let usageRowId: string | null = null;
     try {
       raw = await generateChat({
-        // toWireMessages strips the storage-only `id` field (migration 076)
-        // before this transcript is serialised into the provider request —
-        // see lib/agent/transcript-store.ts. This is the ONLY place these
-        // messages are handed to the router.
-        system, messages: toWireMessages(messages), temperature: 0.2,
+        // pruneForWire strips the storage-only `id` field (migration 076) AND
+        // drops turn-local nudges / collapses old JSON envelopes / reduces old
+        // OBSERVATION bodies to their digest — see lib/agent/transcript-store.ts.
+        // This is the ONLY place these messages are handed to the router for a
+        // route pass.
+        system, messages: pruneForWire(messages), temperature: 0.2,
         conversationId: input.conversationId,
         onUsageRow: (id) => { usageRowId = id; },
         // No fixed maxOutputTokens — see AGENT_ROUTE_CEILING.
@@ -2900,9 +2903,10 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
     messages.push({ role: 'user', content: 'Stop calling tools. Using the information above, answer the user now. Respond with ONLY {"action":"final","message":"..."}.' });
     emit({ type: 'step_start', text: 'Putting the answer together…' });
     const raw = await generateChat({
-      // toWireMessages strips the storage-only `id` field (migration 076) —
-      // see the comment on the other generateChat call sites in this file.
-      system, messages: toWireMessages(messages), temperature: 0.2,
+      // pruneForWire strips the storage-only `id` field (migration 076) and
+      // prunes the transcript for a route pass — see the comment on the other
+      // generateChat call sites in this file.
+      system, messages: pruneForWire(messages), temperature: 0.2,
       // Deliberate hard cap, unlike the step loop's maxOutputCeiling: this
       // call composes ONE final message, not a tool-routing decision, so a
       // fixed 2048-token bound is appropriate and is kept as-is.
