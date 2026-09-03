@@ -147,14 +147,25 @@ describe('the routes strip on the way out and save on the way in', () => {
     expect(capture).toBeGreaterThan(-1);
     expect(strip).toBeGreaterThan(-1);
     expect(capture).toBeLessThan(strip);
-    // And what is saved is the captured (unstripped) object.
-    expect(src).toContain('const toSave = finalTranscript ?? openingTranscript;');
+    // And what is saved is the captured (unstripped) object. The save line
+    // grew an error-turn branch (gap G8: a failed turn persists its error
+    // text as a trailing assistant message), so pin the shape rather than
+    // the whole expression: `toSave` starts from the RAW `finalTranscript`,
+    // and nothing between capture and save runs it through the stripper.
+    const save = src.indexOf('const toSave = finalTranscript');
+    expect(save).toBeGreaterThan(capture);
+    expect(src.slice(capture, save)).not.toContain('finalTranscript = stripPrivateReasoning');
     expect(src).toContain('const withIds = ensureMessageIds(toSave);');
   });
 
   it('the JSON route saves the unstripped copy and responds with the stripped one', () => {
     const src = read('app/api/agent/route.ts');
-    expect(src).toContain('transcript: transcriptWithIds,');            // the save
+    // The save: `transcriptForSave` is derived from `transcriptWithIds`
+    // (plus, on an error turn, the assistant's error message — gap G8) and
+    // is never passed through the stripper.
+    expect(src).toContain('let transcriptForSave = transcriptWithIds;');
+    expect(src).toContain('transcript: transcriptForSave,');            // the save
+    expect(src).not.toContain('transcriptForSave = stripPrivateReasoning');
     expect(src).toContain('transcript: stripPrivateReasoning(transcriptWithIds),'); // the response
   });
 

@@ -321,12 +321,37 @@ async function runTurn(
   // the console uses to key a thumbs vote or a retry the moment the turn
   // finishes, without waiting for a reload. ensureMessageIds is pure and
   // idempotent, so calling it here duplicates no minting saveConversation
-  // would otherwise do.
+  // would otherwise do. This copy — and everything derived from it below
+  // (the response's `transcript`/`lastMessageId`) — is UNCHANGED by the G8
+  // fix just below: only what gets persisted changes, never what goes on
+  // the wire.
   const transcriptWithIds = ensureMessageIds(result.transcript);
+
+  // G8 FIX. On `status: 'error'` (a model failure, a deadline or stop with
+  // nothing to salvage, an approval that could no longer be recorded, ...)
+  // `result.transcript` never includes the error text itself as an assistant
+  // entry (mirrors the stream route's runAgentStream events; the two loops
+  // stay identical per CLAUDE.md). Persisting it unmodified saved only the
+  // user's message with no reply, so a reload showed an unanswered question
+  // and the next turn's model saw one too. Persist the id-bearing transcript
+  // above PLUS the exact text the client receives as `message` below, unless
+  // it already ends with that message (defensive — no runAgent path does
+  // this today, but never double-add). A fresh id is minted for the appended
+  // entry by re-running ensureMessageIds — it preserves every id already
+  // present, so this cannot disturb anything computed from
+  // `transcriptWithIds` above.
+  let transcriptForSave = transcriptWithIds;
+  if (result.status === 'error' && typeof result.message === 'string' && result.message) {
+    const last = transcriptForSave.length ? transcriptForSave[transcriptForSave.length - 1] : undefined;
+    const alreadyEndsWithError = last && last.role === 'assistant' && last.content === result.message;
+    if (!alreadyEndsWithError) {
+      transcriptForSave = ensureMessageIds([...transcriptForSave, { role: 'assistant', content: result.message }]);
+    }
+  }
   const savedId = await saveConversation({
     id: conversationId, accountId: session.accountId, brandId: brandId ?? null,
     title: typeof message === 'string' ? message.slice(0, 80) : undefined,
-    transcript: transcriptWithIds,
+    transcript: transcriptForSave,
   });
 
   // Durable, message-level provenance (migration 076) — separate from, and
@@ -364,10 +389,11 @@ async function runTurn(
     proposal: result.proposal,
     steps: result.steps,
     // The CLIENT-BOUND copy: the model's private `plan` removed from every
-    // assistant envelope. `transcriptWithIds` itself (unstripped) is what was
-    // saved above, so a later turn still resumes on the full reasoning — see
-    // lib/agent/transcript-privacy.ts. Twin of the strip on the stream route's
-    // `final`/`needs_approval` events.
+    // assistant envelope. `transcriptForSave` (unstripped) is what was saved
+    // above — `transcriptWithIds` plus the G8 error-message entry when this
+    // turn errored — so a later turn still resumes on the full reasoning and
+    // sees its own unanswered message answered. See lib/agent/transcript-privacy.ts.
+    // Twin of the strip on the stream route's `final`/`needs_approval` events.
     transcript: stripPrivateReasoning(transcriptWithIds),
     conversationId: savedId ?? conversationId,
     tokenEstimate: result.tokenEstimate,
