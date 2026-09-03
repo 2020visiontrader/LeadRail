@@ -602,9 +602,51 @@ re-proposed instead of executing, steps that ran with no grounding, and a
 plan-mode draft that could never leave `draft` because `approvePlan` had zero
 callers. That makes the layer *able* to run. It is not evidence that it *has*.
 
+**CROSSCHECKED 2026-09-03, and the runner was not the binding constraint.**
+The layer below is healthy; the queue above it is empty. Measured against
+production:
+
+```
+cron.job 1 'hermes-tick-every-5-min'  */5 * * * *  active
+net._http_response                    72 rows, ALL 200, latest 07:30 today
+app_logs POST /api/hermes/tick -> 200 861 calls in 3 days
+runPlanTick                           wired, called by the tick every run
+PLAN_CAPABILITIES                     registered in the catalog
+```
+
+So the runner has fired ~861 times in three days against an empty table.
+`agent_plans` is 0 because NOTHING EVER CREATED A PLAN, not because a plan
+failed to run. Across all 274 logged turns (2026-08-25 to 2026-09-02):
+
+```
+createPlan called                     0
+any plan tool called                  1  (getPlan, 2026-08-29, returned null)
+outcome 'escalated'                   0
+turns recording planOnly              0
+```
+
+**All three entry points to createPlan are dead:**
+
+1. *The model choosing it.* The ONLY prompt text instructing createPlan sits
+   inside `planOnly ? ... : ''` (lib/agent/loop.ts ~line 477), so it exists
+   only when plan mode is toggled on. In an ordinary turn nothing tells the
+   model to plan — createPlan is discoverable only as one line inside the
+   183-tool, 48k-char catalog. 0 calls in 274 turns is the result.
+2. *Plan mode.* Never recorded in production.
+3. *Deadline escalation* (shipped 2026-09-02, converts a timed-out turn into
+   a plan). `outcome='escalated'` is 0; 31 turns ended in error and 8 in
+   salvage without ever escalating.
+
+Commit 2ed611a fixed three defects that would each have broken the FIRST plan
+to run — an approval that re-proposed instead of executing, steps with no
+grounding, a draft that could never start. Those were real and necessary.
+They do not make a plan exist, and this entry previously implied the only
+missing thing was running one. That was wrong.
+
 **Done when:** one real plan runs end to end in production and this entry
 carries its `agent_plans.id` and the ids of its completed
 `agent_plan_steps` — row ids, not a passing test and not `success: true`.
+That now requires fixing the entry point first, not just the runner.
 Until then treat every "it runs in the background as a plan" claim in the
 assistant's own copy as unverified.
 
