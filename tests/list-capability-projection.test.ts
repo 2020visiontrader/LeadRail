@@ -348,3 +348,144 @@ describe('listLeads brandId scoping', () => {
     vi.doUnmock('@/lib/tags');
   });
 });
+
+// ---------------------------------------------------------------------------
+// listDeals / listCompanies brandId ownership — parity with listLeads.
+//
+// C — listDeals/listCompanies passed a client-supplied brandId straight to
+// getDeals/getCompanies, which AND it with account_id, so an unowned brandId
+// could never leak another account's rows — but it silently returned []
+// (reading as "this venture has no deals") instead of the explicit
+// "Brand not found" listLeads gives for the exact same mistake. Both now call
+// assertBrandOwned first, exactly like listLeads/countDeals/countCompanies.
+// ---------------------------------------------------------------------------
+describe('listDeals brandId scoping', () => {
+  it('scopes to brandId and passes it to getDeals when owned', async () => {
+    vi.resetModules();
+    const getDeals = vi.fn(async () => []);
+    const assertBrandOwned = vi.fn(async () => true);
+    vi.doMock('@/lib/crm', () => ({
+      getDeals, getDeal: vi.fn(), updateDeal: vi.fn(), deleteDeal: vi.fn(),
+      getActivities: vi.fn(), createActivity: vi.fn(),
+      countDeals: vi.fn(async () => 0), countDealsGrouped: vi.fn(async () => []),
+    }));
+    vi.doMock('@/lib/db', () => ({ assertBrandOwned }));
+
+    const { DEAL_CAPABILITIES } = await import('@/lib/capabilities/deals');
+    const listDeals = DEAL_CAPABILITIES.find((c) => c.name === 'listDeals')!;
+
+    await listDeals.run('acct_1', { brandId: 'brand_1' });
+    expect(assertBrandOwned).toHaveBeenCalledWith('brand_1', 'acct_1');
+    expect(getDeals).toHaveBeenCalledWith('acct_1', 'brand_1', 50, 0);
+
+    vi.doUnmock('@/lib/crm');
+    vi.doUnmock('@/lib/db');
+  });
+
+  it('throws "Brand not found" for an unowned brandId, and never calls getDeals', async () => {
+    vi.resetModules();
+    const getDeals = vi.fn(async () => []);
+    const assertBrandOwned = vi.fn(async () => false);
+    vi.doMock('@/lib/crm', () => ({
+      getDeals, getDeal: vi.fn(), updateDeal: vi.fn(), deleteDeal: vi.fn(),
+      getActivities: vi.fn(), createActivity: vi.fn(),
+      countDeals: vi.fn(async () => 0), countDealsGrouped: vi.fn(async () => []),
+    }));
+    vi.doMock('@/lib/db', () => ({ assertBrandOwned }));
+
+    const { DEAL_CAPABILITIES } = await import('@/lib/capabilities/deals');
+    const listDeals = DEAL_CAPABILITIES.find((c) => c.name === 'listDeals')!;
+
+    await expect(listDeals.run('acct_1', { brandId: 'brand_evil' })).rejects.toThrow('Brand not found');
+    expect(getDeals).not.toHaveBeenCalled();
+
+    vi.doUnmock('@/lib/crm');
+    vi.doUnmock('@/lib/db');
+  });
+
+  it('keeps today\'s behaviour (no scoping) when brandId is absent', async () => {
+    vi.resetModules();
+    const getDeals = vi.fn(async () => []);
+    const assertBrandOwned = vi.fn(async () => true);
+    vi.doMock('@/lib/crm', () => ({
+      getDeals, getDeal: vi.fn(), updateDeal: vi.fn(), deleteDeal: vi.fn(),
+      getActivities: vi.fn(), createActivity: vi.fn(),
+      countDeals: vi.fn(async () => 0), countDealsGrouped: vi.fn(async () => []),
+    }));
+    vi.doMock('@/lib/db', () => ({ assertBrandOwned }));
+
+    const { DEAL_CAPABILITIES } = await import('@/lib/capabilities/deals');
+    const listDeals = DEAL_CAPABILITIES.find((c) => c.name === 'listDeals')!;
+
+    await listDeals.run('acct_1', {});
+    expect(assertBrandOwned).not.toHaveBeenCalled();
+    expect(getDeals).toHaveBeenCalledWith('acct_1', undefined, 50, 0);
+
+    vi.doUnmock('@/lib/crm');
+    vi.doUnmock('@/lib/db');
+  });
+});
+
+describe('listCompanies brandId scoping', () => {
+  it('scopes to brandId and passes it to getCompanies when owned', async () => {
+    vi.resetModules();
+    const getCompanies = vi.fn(async () => []);
+    const assertBrandOwned = vi.fn(async () => true);
+    vi.doMock('@/lib/crm', () => ({
+      getCompanies, getCompany: vi.fn(), createCompany: vi.fn(), linkContactCompany: vi.fn(),
+      countCompanies: vi.fn(async () => 0), countCompaniesGrouped: vi.fn(async () => []),
+    }));
+    vi.doMock('@/lib/db', () => ({ assertBrandOwned }));
+
+    const { COMPANY_CAPABILITIES } = await import('@/lib/capabilities/companies');
+    const listCompanies = COMPANY_CAPABILITIES.find((c) => c.name === 'listCompanies')!;
+
+    await listCompanies.run('acct_1', { brandId: 'brand_1' });
+    expect(assertBrandOwned).toHaveBeenCalledWith('brand_1', 'acct_1');
+    expect(getCompanies).toHaveBeenCalledWith('acct_1', 'brand_1', 25, 0);
+
+    vi.doUnmock('@/lib/crm');
+    vi.doUnmock('@/lib/db');
+  });
+
+  it('throws "Brand not found" for an unowned brandId, and never calls getCompanies', async () => {
+    vi.resetModules();
+    const getCompanies = vi.fn(async () => []);
+    const assertBrandOwned = vi.fn(async () => false);
+    vi.doMock('@/lib/crm', () => ({
+      getCompanies, getCompany: vi.fn(), createCompany: vi.fn(), linkContactCompany: vi.fn(),
+      countCompanies: vi.fn(async () => 0), countCompaniesGrouped: vi.fn(async () => []),
+    }));
+    vi.doMock('@/lib/db', () => ({ assertBrandOwned }));
+
+    const { COMPANY_CAPABILITIES } = await import('@/lib/capabilities/companies');
+    const listCompanies = COMPANY_CAPABILITIES.find((c) => c.name === 'listCompanies')!;
+
+    await expect(listCompanies.run('acct_1', { brandId: 'brand_evil' })).rejects.toThrow('Brand not found');
+    expect(getCompanies).not.toHaveBeenCalled();
+
+    vi.doUnmock('@/lib/crm');
+    vi.doUnmock('@/lib/db');
+  });
+
+  it('keeps today\'s behaviour (no scoping) when brandId is absent', async () => {
+    vi.resetModules();
+    const getCompanies = vi.fn(async () => []);
+    const assertBrandOwned = vi.fn(async () => true);
+    vi.doMock('@/lib/crm', () => ({
+      getCompanies, getCompany: vi.fn(), createCompany: vi.fn(), linkContactCompany: vi.fn(),
+      countCompanies: vi.fn(async () => 0), countCompaniesGrouped: vi.fn(async () => []),
+    }));
+    vi.doMock('@/lib/db', () => ({ assertBrandOwned }));
+
+    const { COMPANY_CAPABILITIES } = await import('@/lib/capabilities/companies');
+    const listCompanies = COMPANY_CAPABILITIES.find((c) => c.name === 'listCompanies')!;
+
+    await listCompanies.run('acct_1', {});
+    expect(assertBrandOwned).not.toHaveBeenCalled();
+    expect(getCompanies).toHaveBeenCalledWith('acct_1', undefined, 25, 0);
+
+    vi.doUnmock('@/lib/crm');
+    vi.doUnmock('@/lib/db');
+  });
+});

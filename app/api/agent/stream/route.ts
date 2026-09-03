@@ -9,6 +9,7 @@ import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverF
 import { mintMessageId, ensureMessageIds, type StoredMessage } from '@/lib/agent/transcript-store';
 import { stripPrivateReasoning } from '@/lib/agent/transcript-privacy';
 import { parseMentions } from '@/lib/agent/personas';
+import { sanitizeTurnContext, renderTurnContextBlock } from '@/lib/agent/turn-context';
 import { createStreamGuard } from '@/lib/agent/stream-guard';
 import { providersLookDown, turnFailureMessage } from '@/lib/agent/failure-copy';
 import { reportStreamFailure } from '@/lib/agent/failure-report';
@@ -136,6 +137,11 @@ export async function POST(request: NextRequest) {
       .select('id, name').eq('id', body.brandId).eq('account_id', session.accountId).maybeSingle();
     if (data?.id) { brandId = data.id; brandName = data.name || undefined; }
   }
+
+  // WHERE THE USER IS — see the twin comment in app/api/agent/route.ts.
+  // Client-reported, never a trust boundary; brandId above is already
+  // ownership-checked and is the only field here with real authority.
+  const turnContext = renderTurnContextBlock(sanitizeTurnContext(body?.turnContext));
 
   const fromId = typeof body?.from === 'string' && body.from ? body.from : undefined;
   // `let`, not `const`: the opening save below mints an id for a brand-new
@@ -323,7 +329,7 @@ export async function POST(request: NextRequest) {
         }
 
         await runAgentStream(
-          { accountId: session.accountId, message, approve, transcript, agentContext, carryover, brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined, personaId, personaMentions, requestedBy: session.email, conversationId, planOnly, userMessageId },
+          { accountId: session.accountId, message, approve, transcript, agentContext, carryover, brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined, turnContext, personaId, personaMentions, requestedBy: session.email, conversationId, planOnly, userMessageId },
           (e: AgentEvent) => {
             // Only `final`/`needs_approval` carry a transcript. Everything else,
             // including `final_delta` (a progressive preview of the answer being

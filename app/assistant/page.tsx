@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import AgentConsole from '@/components/AgentConsole';
 import ChatHistory from '@/components/assistant/ChatHistory';
+import { useVentureScope, ALL_VENTURES } from '@/components/VentureScopeProvider';
 
 // ============================================================================
 // ASSISTANT WORKSPACE — up to 4 simultaneous chats
@@ -77,6 +78,14 @@ function tabForConversation(conversationId: string, title: string): ChatTab {
 }
 
 export default function AssistantPage() {
+  // Shared, persisted venture scope (src/components/VentureScopeProvider.tsx).
+  // AgentConsole already accepted a `brandId` prop (it sends it on every
+  // turn — see its own fetch body below) but this page never passed one, so
+  // every /assistant turn ran brandless and got lib/agent/context.ts's
+  // "WHICH VENTURE — no venture is selected" rules instead of a venture
+  // profile, even when the dashboard had a venture selected a moment ago.
+  const { scopeId } = useVentureScope();
+  const brandId = scopeId !== ALL_VENTURES ? scopeId : undefined;
   const [tabs, setTabs] = useState<ChatTab[]>([]);
   const [activeKey, setActiveKey] = useState<string>('');
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -284,6 +293,8 @@ export default function AssistantPage() {
             <AgentConsole
               conversationId={t.conversationId}
               key={`${t.key}-${t.conversationId ?? 'new'}`}
+              brandId={brandId}
+              page="assistant"
               onConversationId={(id) => handleConversationId(t.key, id)}
               onFirstMessage={(text) => handleFirstMessage(t.key, text)}
             />

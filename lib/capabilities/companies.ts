@@ -22,12 +22,19 @@ export const COMPANY_CAPABILITIES: Capability[] = [
     name: 'listCompanies',
     domain: 'companies',
     title: 'List companies',
-    description: 'List companies in the account, optionally filtered to one venture.',
+    description: 'List companies in the account, optionally scoped to one venture with brandId.',
     gate: 'read',
     inputSchema: obj({ brandId: S.string, limit: S.number, offset: S.number }),
     zod: z.object({ brandId: z.string().optional(), limit: z.number().optional(), offset: z.number().optional() }),
     run: async (accountId, { brandId, limit = 25, offset = 0 }) => {
       const clamped = Math.min(Math.max(Math.floor(limit), 1), 100);
+      // Ownership-checked, matching listLeads/listDeals — see the comment on
+      // listDeals in lib/capabilities/deals.ts for why this throws instead of
+      // relying solely on getCompanies's account_id AND brand_id scoping.
+      if (brandId) {
+        const owned = await assertBrandOwned(brandId, accountId);
+        if (!owned) throw new Error('Brand not found');
+      }
       const rows = await getCompanies(accountId, brandId, clamped, offset);
       return projectRows(rows, COMPANY_LIST_FIELDS);
     },

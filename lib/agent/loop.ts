@@ -214,6 +214,11 @@ export interface RunAgentInput {
   brandContext?: { name?: string; id?: string };
   /** Full grounding block (platform + venture + account + memory) from loadAgentContext. */
   agentContext?: string;
+  /** Client-reported "where the user is" — page/selection/filters. Rendered
+   *  by lib/agent/turn-context.ts into a short, capped block; already
+   *  sanitized by the caller (app/api/agent/route.ts and its /stream twin)
+   *  before it reaches here, so this is inert text, never a query scope. */
+  turnContext?: string;
   /** Carryover memo from a prior chat, injected to seed a reseeded conversation. */
   carryover?: CarryoverMemo | null;
   /** Prior transcript to resume from (returned by a needs_approval result). */
@@ -447,7 +452,7 @@ function promptCacheKey(accountId: string | undefined, personaBlock?: string, ex
   return [accountId || 'anon', personaBlock ? 'p' : '-', String(Object.keys(externalTools || {}).length)].join(':');
 }
 
-function systemPrompt(brandName?: string, agentContext?: string, carryover?: CarryoverMemo | null, personaBlock?: string, skillsGuidance?: string, externalTools?: Record<string, AgentTool>, accountId?: string, planOnly?: boolean): string {
+function systemPrompt(brandName?: string, agentContext?: string, carryover?: CarryoverMemo | null, personaBlock?: string, skillsGuidance?: string, externalTools?: Record<string, AgentTool>, accountId?: string, planOnly?: boolean, turnContext?: string): string {
   const staticSections: string[] = [
     // ---- STATIC (stable across every turn for an account) -------------------
     'You are LeadRail AI — the operator copilot built into the LeadRail platform. Think of yourself the way a great chief-of-staff works: you understand the whole platform, you know this account and its ventures, you reason things through in plain language, and you actually DO the work by using LeadRail\'s tools. You are conversational and intellectually engaged — you can discuss strategy, weigh options, and explain your thinking, not just fire off tool calls.',
@@ -548,6 +553,11 @@ function systemPrompt(brandName?: string, agentContext?: string, carryover?: Car
       : '',
     agentContext || (brandName ? `The user is working in the "${brandName}" venture; prefer it when a venture is needed and not otherwise specified.` : ''),
     carryover ? '\n' + carryoverBlock(carryover) : '',
+    // MOST volatile and LAST, deliberately — see the PROMPT BLOCK ORDER note
+    // above. This is a snapshot of one screen at one instant, truer than
+    // anything earlier in the prompt about "what does the user mean by
+    // this/these/selected" right now.
+    turnContext ? '\n' + turnContext : '',
   ];
 
   return buildCachedPrompt(
@@ -1691,7 +1701,7 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
   const externalCaps = await loadExternalCapabilities(accountId);
   const extraTools = toolsFromCapabilities(externalCaps);
   const extraCapsByName: Record<string, Capability> = Object.fromEntries(externalCaps.map((c) => [c.name, c]));
-  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId, input.planOnly);
+  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId, input.planOnly, input.turnContext);
   const messages: StoredMessage[] = capTranscript(input.transcript || []);
   const steps: AgentStep[] = [];
 
@@ -2427,7 +2437,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
     : await resolveSkillPersonaForTurn(accountId, enabledSkills);
   const extraTools = toolsFromCapabilities(externalCaps);
   const extraCapsByName: Record<string, Capability> = Object.fromEntries(externalCaps.map((c) => [c.name, c]));
-  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId, input.planOnly);
+  const system = systemPrompt(brandContext?.name, input.agentContext, input.carryover, personaBlock, skillsBlock(enabledSkills), extraTools, accountId, input.planOnly, input.turnContext);
   const messages: StoredMessage[] = capTranscript(input.transcript || []);
   // Mirrors runAgentImpl's `steps` — the streaming loop has no equivalent
   // return value to carry this in, since it reports via `emit` instead of a

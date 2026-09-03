@@ -27,12 +27,21 @@ export const DEAL_CAPABILITIES: Capability[] = [
     name: 'listDeals',
     domain: 'deals',
     title: 'List deals',
-    description: 'List deals in the pipeline for the account, optionally filtered to one venture.',
+    description: 'List deals in the pipeline for the account, optionally scoped to one venture with brandId.',
     gate: 'read',
     inputSchema: obj({ brandId: S.string, limit: S.number, offset: S.number }),
     zod: z.object({ brandId: z.string().optional(), limit: z.number().optional(), offset: z.number().optional() }),
     run: async (accountId, { brandId, limit = 50, offset = 0 }) => {
       const clamped = Math.min(Math.max(Math.floor(limit), 1), 200);
+      // Ownership-checked, matching listLeads/countDeals — getDeals ANDs
+      // account_id with brand_id so a foreign brandId already returns []
+      // rather than another account's rows, but a wrong-id-shaped mistake
+      // deserves the same explicit "Brand not found" listLeads gives, not a
+      // silently empty page that reads as "this venture has no deals".
+      if (brandId) {
+        const owned = await assertBrandOwned(brandId, accountId);
+        if (!owned) throw new Error('Brand not found');
+      }
       const rows = await getDeals(accountId, brandId, clamped, offset);
       return projectRows(rows, DEAL_LIST_FIELDS);
     },

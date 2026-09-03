@@ -10,6 +10,7 @@ import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverF
 import { mintMessageId, ensureMessageIds } from '@/lib/agent/transcript-store';
 import { stripPrivateReasoning } from '@/lib/agent/transcript-privacy';
 import { parseMentions } from '@/lib/agent/personas';
+import { sanitizeTurnContext, renderTurnContextBlock } from '@/lib/agent/turn-context';
 import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
@@ -176,6 +177,14 @@ async function runTurn(
     if (n && n.toLowerCase() !== 'all ventures') brandName = n;
   }
 
+  // WHERE THE USER IS. Client-reported {page, selectedIds, filters} — never
+  // trusted for scoping (brandId above is the only field here with real
+  // authority, and it is already ownership-checked), only rendered as a
+  // short, hard-capped block for orientation. sanitizeTurnContext clips every
+  // string/list BEFORE it reaches the prompt, so an adversarially long filter
+  // value cannot grow the turn's system prompt unbounded.
+  const turnContext = renderTurnContextBlock(sanitizeTurnContext(body?.turnContext));
+
   // Carryover reseed: when a fresh chat is opened from a prior one, load its memo.
   const fromId = typeof body?.from === 'string' && body.from ? body.from : undefined;
   const carryover = fromId ? await loadCarryover(fromId, session.accountId) : null;
@@ -270,6 +279,7 @@ async function runTurn(
       agentContext,
       carryover,
       brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined,
+      turnContext,
       personaId,
       personaMentions,
       requestedBy: session.email,

@@ -11,6 +11,7 @@ import Button from '@/components/Button';
 import Input from '@/components/Input';
 import Dropdown from '@/components/Dropdown';
 import ProgressStages from '@/components/ProgressStages';
+import CommandBar from '@/components/CommandBar';
 import { useToast } from '@/components/ToastProvider';
 import { apiGet, apiSend } from '@/lib/api';
 import { Contact, SEGMENTS } from '@/lib/types';
@@ -406,6 +407,21 @@ export default function LeadsPage() {
           onClearAll={() => { onSegment(''); setSearch(''); }}
         />
       </div>
+
+      {/* PROOF OF THE TURN-CONTEXT PATTERN (see lib/agent/turn-context.ts) —
+          the same CommandBar the dashboard uses, mounted here with THIS
+          screen's real state: which venture, which row is open, and the
+          search/segment filters actually applied. A third page (Campaigns,
+          say) needs the identical three lines — brandId from its own venture
+          selector, selectedIds from whatever row/selection state it already
+          tracks, filters from whatever it already filters by — there is
+          nothing page-specific about CommandBar itself. */}
+      <CommandBar
+        brandId={isAll ? undefined : venture?.id}
+        page="leads"
+        selectedIds={selected ? [selected.id] : []}
+        filters={{ ...(segment ? { segment } : {}), ...(query ? { search: query } : {}) }}
+      />
 
       <DataTable contacts={contacts} isLoading={loading} onRowClick={openContact} onDelete={handleDelete} />
 
