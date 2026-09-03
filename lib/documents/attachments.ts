@@ -38,6 +38,7 @@
 //           extracting nothing is the worst option, because it looks like it
 //           worked.
 
+import { createHash } from 'crypto';
 import { BUDGET } from '@/lib/ai/context-budget';
 import { supabase, dbReady } from '@/lib/db';
 import { putPrivate, signUrl, ensurePrivateBucket } from '@/lib/storage';
@@ -136,6 +137,129 @@ function videoNote(): string {
 }
 
 /**
+ * Look for an existing successfully-extracted attachment with byte-identical
+ * text (C5 residual — see `attachmentContextBlock`'s header, which dedupes
+ * the same content at RENDER time but never stopped it being CREATED nine
+ * times over in production: a 34,456-char voice transcript, three unbound
+ * rows plus two copies each in two conversations, each with its own storage
+ * object). This is the CREATE-time half of that fix.
+ *
+ * A cheap column pre-filter (same account, same `chars`, same `bytes`) keeps
+ * this to a handful of candidate rows; `extracted_text` equality is then
+ * checked in code with the same SHA-256 the render path already uses, so two
+ * files that happen to share a length by coincidence are never conflated.
+ *
+ * LIBRARY ROWS ARE EXCLUDED. A `scope='library'` row is account-wide by
+ * design and has `conversation_id = NULL` for that reason, not because it is
+ * an ordinary unbound upload waiting to be claimed. Treating it as a normal
+ * dedupe candidate would let `reuseDuplicateAttachment` "bind" the account's
+ * library document to whichever chat happened to re-upload the same text —
+ * silently turning an account-wide document into a conversation-scoped one.
+ * `scope` is `NOT NULL DEFAULT 'conversation'` (migration 067), so `.neq`
+ * here never has to worry about excluding a NULL scope by accident.
+ *
+ * Never throws — any DB error here must fall through to the ordinary
+ * upload+insert path exactly as if no duplicate existed, never block an
+ * upload that would otherwise succeed.
+ */
+async function findDuplicateAttachment(
+  accountId: string,
+  text: string,
+  bytes: number,
+): Promise<Attachment | null> {
+  try {
+    const { data, error } = await supabase
+      .from('assistant_attachments')
+      .select('*')
+      .eq('account_id', accountId)
+      .eq('status', 'ready')
+      .eq('chars', text.length)
+      .eq('bytes', bytes)
+      .neq('scope', 'library')
+      .limit(10);
+    if (error || !Array.isArray(data)) return null;
+    const wanted = contentHash(text);
+    for (const row of data as Attachment[]) {
+      if (row.extracted_text && contentHash(row.extracted_text) === wanted) return row;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Turn a found duplicate into the row `ingestAttachment` should hand back,
+ * without ever uploading the bytes a second time.
+ *
+ *   - Unbound, or already bound to the SAME conversation the caller named
+ *     (or the caller named none at all): return the existing row. If it was
+ *     unbound and this call DOES name a conversation, bind it first — this
+ *     is what makes a retried upload land in the chat instead of resurfacing
+ *     as invisible-and-unbound the way the original C5 defect did.
+ *   - Bound to a DIFFERENT conversation: insert a new row that reuses the
+ *     existing `storage_path` and `extracted_text` (no second upload), so
+ *     the file is visible in the new conversation without a second copy in
+ *     the bucket.
+ *
+ * `conversationId === undefined` (the caller did not name a conversation at
+ * all, as opposed to explicitly passing `null` for "no conversation yet")
+ * is treated as "go with whatever the existing row already is" — a bare
+ * `null` conversation is left to fall into the "different conversation"
+ * branch below when the existing row is already bound elsewhere, because
+ * that unbound copy is exactly what a normal upload+bind retry needs to
+ * find and claim next; conflating it with the already-bound row would
+ * reproduce the very orphaned-attachment defect this file exists to avoid.
+ *
+ * Returns null (never throws) on any DB error, so the caller falls back to
+ * the ordinary upload+insert path.
+ */
+async function reuseDuplicateAttachment(
+  dupe: Attachment,
+  input: { accountId: string; conversationId?: string | null; filename: string; bytes: Buffer; mimeType?: string },
+): Promise<Attachment | null> {
+  try {
+    const incoming = input.conversationId;
+    const sameOrUnnamed = dupe.conversation_id === null || dupe.conversation_id === incoming || incoming === undefined;
+
+    if (sameOrUnnamed) {
+      if (dupe.conversation_id === null && incoming) {
+        const { data, error } = await supabase
+          .from('assistant_attachments')
+          .update({ conversation_id: incoming })
+          .eq('id', dupe.id)
+          .eq('account_id', input.accountId)
+          .select('*')
+          .maybeSingle();
+        if (!error && data) return data as Attachment;
+        return dupe; // bind failed — still a legitimate dedupe hit, hand back what we had
+      }
+      return dupe;
+    }
+
+    // Bound to a different conversation: a new row, same storage object and
+    // text, no second upload.
+    const { data, error } = await supabase.from('assistant_attachments').insert([{
+      account_id: input.accountId,
+      conversation_id: incoming ?? null,
+      filename: input.filename.slice(0, 300),
+      mime_type: input.mimeType ?? dupe.mime_type ?? null,
+      bytes: dupe.bytes,
+      storage_path: dupe.storage_path,
+      kind: dupe.kind,
+      extracted_text: dupe.extracted_text,
+      chars: dupe.chars,
+      status: 'ready',
+      note: null,
+    }]).select('*').single();
+    if (error) return null;
+    return data as Attachment;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Take an uploaded file: store the bytes privately, extract what text there is,
  * and record both.
  *
@@ -164,6 +288,41 @@ export async function ingestAttachment(input: {
     throw new Error(`.${kind || '?'} files cannot be read. Supported: PDF, DOCX, PPTX, XLSX, CSV, TXT, MD, JSON, images, and video.`);
   }
 
+  // Extract BEFORE touching storage. Doing it first is what makes create-time
+  // dedupe possible at all: an identical upload can be detected and handed
+  // back without ever writing a second copy of the bytes to the bucket.
+  let text = '';
+  let note: string | null = null;
+  let status = 'ready';
+
+  if (isImage) {
+    note = imageNote();
+    status = 'image';
+  } else if (isVideo) {
+    note = videoNote();
+    status = 'video';
+  } else {
+    const res = await extractDeckText(input.filename, input.bytes, 200_000);
+    if (res.ok) {
+      text = res.text;
+    } else {
+      note = res.note || 'Nothing could be read from this file.';
+      status = 'unreadable';
+    }
+  }
+
+  // CREATE-TIME DEDUPE (C5 residual). Only for rows that actually extracted
+  // text — an image, a video, or a file that failed to parse has nothing to
+  // compare and is never a dedupe candidate, so this block is a no-op for
+  // all three and they fall straight through to the ordinary upload below.
+  if (status === 'ready' && text) {
+    const dupe = await findDuplicateAttachment(input.accountId, text, input.bytes.length);
+    if (dupe) {
+      const reused = await reuseDuplicateAttachment(dupe, input);
+      if (reused) return reused;
+    }
+  }
+
   // Prepare the bucket and say so if it cannot be. ensurePrivateBucket never
   // throws by design, so a permissions problem used to surface one line later
   // as an opaque upload failure — the storage key lacking bucket-create rights
@@ -186,26 +345,6 @@ export async function ingestAttachment(input: {
         ? `The "${ASSISTANT_BUCKET}" storage bucket does not exist and could not be created automatically. Create it as a PRIVATE bucket in Supabase → Storage, or give the service key permission to create buckets.`
         : `Could not store that file: ${put.error}`,
     );
-  }
-
-  let text = '';
-  let note: string | null = null;
-  let status = 'ready';
-
-  if (isImage) {
-    note = imageNote();
-    status = 'image';
-  } else if (isVideo) {
-    note = videoNote();
-    status = 'video';
-  } else {
-    const res = await extractDeckText(input.filename, input.bytes, 200_000);
-    if (res.ok) {
-      text = res.text;
-    } else {
-      note = res.note || 'Nothing could be read from this file.';
-      status = 'unreadable';
-    }
   }
 
   const { data, error } = await supabase.from('assistant_attachments').insert([{
@@ -343,9 +482,80 @@ export async function deleteAttachment(accountId: string, id: string): Promise<v
     .from('assistant_attachments').select('storage_path')
     .eq('id', id).eq('account_id', accountId).maybeSingle();
   if (data?.storage_path) {
-    await supabase.storage.from(ASSISTANT_BUCKET).remove([data.storage_path]).catch(() => {});
+    // A storage object can now be SHARED by more than one row — see
+    // reuseDuplicateAttachment above, which points a second row at the same
+    // `storage_path` instead of uploading a second copy when an identical
+    // document reaches a different conversation. Removing the object
+    // unconditionally here would delete it out from under that other row the
+    // moment either copy is deleted. Only remove it once nothing else on the
+    // account still references it.
+    //
+    // On any error checking that, default to NOT removing the object: a
+    // leaked storage object is a cheap, later-cleanable mistake; deleting one
+    // still referenced by another row is a dangling reference nothing here
+    // can repair afterwards.
+    let stillReferenced = true;
+    try {
+      const { data: others, error } = await supabase
+        .from('assistant_attachments')
+        .select('id')
+        .eq('account_id', accountId)
+        .eq('storage_path', data.storage_path)
+        .neq('id', id)
+        .limit(1);
+      stillReferenced = !!error || (Array.isArray(others) && others.length > 0);
+    } catch {
+      stillReferenced = true;
+    }
+    if (!stillReferenced) {
+      await supabase.storage.from(ASSISTANT_BUCKET).remove([data.storage_path]).catch(() => {});
+    }
   }
   await supabase.from('assistant_attachments').delete().eq('id', id).eq('account_id', accountId);
+}
+
+/** SHA-256 over extracted text — the key content-dedupe (C5) groups on.
+ *  Hex, not base64: this only ever needs to be a stable map key and a short
+ *  human-readable diagnostic, never transmitted or compared against anything
+ *  hashed elsewhere. */
+function contentHash(text: string): string {
+  return createHash('sha256').update(text).digest('hex');
+}
+
+/** How much of a document's text to show in its stub summary (C5). Small on
+ *  purpose — a stub exists so a document already shown once, or a library
+ *  document nobody asked about this turn, costs almost nothing, while
+ *  `readDocument` remains one call away for the full text. */
+const STUB_SUMMARY_CHARS = 300;
+
+/** The compact form of a document once it no longer needs to be shown in
+ *  full: name, a short summary, its size, its id, and how to read the rest. */
+function stubBody(a: Attachment): string {
+  const text = a.extracted_text || '';
+  const summary = text.slice(0, STUB_SUMMARY_CHARS).trim();
+  const lines = [
+    `[Not shown in full here — ${a.chars} character(s) on file, id ${a.id}.]`,
+  ];
+  lines.push(summary ? `Summary: ${summary}${text.length > STUB_SUMMARY_CHARS ? '…' : ''}` : 'No summary available.');
+  lines.push(`Call readDocument with document "${a.id}" (or its name) for the full text.`);
+  return lines.join('\n');
+}
+
+export interface AttachmentContextOptions {
+  /**
+   * Attachment ids already shown IN FULL on an earlier turn of this same
+   * conversation (C5). Represented here as a stub instead of full text.
+   *
+   * "First appears" is read from real data, not guessed from array
+   * position: the caller (lib/agent/context.ts) derives this from
+   * attachment_bindings (migration 076) — a live binding row for this
+   * conversation that predates the current turn means the document was
+   * already injected in full on a prior turn. Both app/api/agent/route.ts
+   * and its /stream twin call loadAgentContext (and therefore this
+   * function) BEFORE writing the current turn's own binding, so any binding
+   * already on file at this point is unambiguously from an earlier turn.
+   */
+  alreadyShown?: Set<string>;
 }
 
 /**
@@ -361,9 +571,49 @@ export async function deleteAttachment(accountId: string, id: string): Promise<v
  * Documents that could not be read are still listed, with their reason. An
  * unreadable attachment the model never hears about produces a confident answer
  * that ignores the file the person actually attached, and nobody can tell.
+ *
+ * C5 — three behaviours layered on top of the original per-document render:
+ *
+ *   DEDUPE BY CONTENT. Two stored rows whose extracted_text is byte-identical
+ *   (the production case: one 34,456-char transcript stored nine times) are
+ *   grouped by a SHA-256 of that text and rendered ONCE. Every id in the
+ *   group still resolves via readDocument, since they carry the same text —
+ *   only the rendering is deduped, nothing is deleted.
+ *
+ *   FULL ONCE, THEN A STUB. A document is rendered in full (subject to the
+ *   budget below) only the FIRST time this function sees it as not-yet-shown
+ *   (`alreadyShown` from the caller). Every later turn gets `stubBody()`
+ *   instead — filename, a <=300-char summary, size, id, and a pointer at
+ *   readDocument. This is what stops a 34K-char transcript from sitting in
+ *   every prompt for the life of the chat and outweighing what the user just
+ *   said.
+ *
+ *   LIBRARY DOCS STOP BEING AMBIENT. A library-scoped document reaches every
+ *   chat on the account today (see listAttachments), which means it was
+ *   being injected in FULL into conversations that never mentioned it. A
+ *   library document is now ALWAYS rendered as a stub here, regardless of
+ *   `alreadyShown` — it only ever reaches full text through an explicit
+ *   readDocument call, which is the "injected only when the conversation
+ *   actually references it" behaviour without having to guess relevance
+ *   ahead of time.
  */
-export function attachmentContextBlock(attachments: Attachment[]): string {
+export function attachmentContextBlock(attachments: Attachment[], opts: AttachmentContextOptions = {}): string {
   if (!attachments.length) return '';
+  const alreadyShown = opts.alreadyShown ?? new Set<string>();
+
+  // Group by content hash. Attachments with no text (image/video/unreadable)
+  // are never merged into a group with each other — there's nothing to
+  // compare, and hashing "no text" the same for all of them would wrongly
+  // collapse unrelated files that both happen to be unreadable.
+  const groups = new Map<string, Attachment[]>();
+  const order: string[] = [];
+  for (const a of attachments) {
+    const text = a.extracted_text || '';
+    const key = text ? `text:${contentHash(text)}` : `id:${a.id}`;
+    if (!groups.has(key)) { groups.set(key, []); order.push(key); }
+    groups.get(key)!.push(a);
+  }
+  const rendered = order.map((k) => groups.get(k)!);
 
   const lines = [
     'ATTACHED DOCUMENTS — the user attached these to this conversation.',
@@ -377,34 +627,49 @@ export function attachmentContextBlock(attachments: Attachment[]): string {
   ];
 
   let budget = contextCharBudget();
-  for (const a of attachments) {
-    const label = a.title || a.filename;
-    const origin = a.scope === 'library' ? 'saved to this account, available in every chat' : 'attached to this conversation';
-    lines.push(`--- BEGIN DOCUMENT: ${label} (${a.kind}, ${a.bytes} bytes, ${origin}) ---`);
-    if (a.status === 'image' || a.status === 'video') {
+  for (let gi = 0; gi < rendered.length; gi++) {
+    const group = rendered[gi];
+    // The first row in the group stands for all of them in the render —
+    // filename/kind/bytes/status are expected to match for identical text,
+    // and if they don't (e.g. two differently-named uploads of the same
+    // content) the first one is still a faithful label for what is, to the
+    // model, one document.
+    const primary = group[0];
+    const label = primary.title || primary.filename;
+    const origin = primary.scope === 'library' ? 'saved to this account, available in every chat' : 'attached to this conversation';
+    const dupeNote = group.length > 1 ? `, identical to ${group.length - 1} other upload(s) — shown once` : '';
+    const isLibrary = group.some((g) => g.scope === 'library');
+    const shownBefore = group.some((g) => alreadyShown.has(g.id));
+
+    lines.push(`--- BEGIN DOCUMENT: ${label} (${primary.kind}, ${primary.bytes} bytes, ${origin}${dupeNote}) ---`);
+    if (primary.status === 'image' || primary.status === 'video') {
       // These have no text and are not failures. "No text could be read" on a
       // video the assistant can actually watch reads as broken, and the note
       // says which route to take instead.
-      lines.push(`[${a.note || 'No text in this file.'}]`);
-    } else if (a.status !== 'ready' || !a.extracted_text) {
+      lines.push(`[${primary.note || 'No text in this file.'}]`);
+    } else if (primary.status !== 'ready' || !primary.extracted_text) {
       // Named, not omitted.
-      lines.push(`[No text could be read. ${a.note || ''}]`.trim());
+      lines.push(`[No text could be read. ${primary.note || ''}]`.trim());
+    } else if (isLibrary) {
+      // Library docs never get full-text treatment here — see the header.
+      lines.push(stubBody(primary));
+    } else if (shownBefore) {
+      // Already shown in full on an earlier turn of THIS conversation.
+      lines.push(stubBody(primary));
     } else {
-      const slice = a.extracted_text.slice(0, Math.max(0, budget));
+      const slice = primary.extracted_text.slice(0, Math.max(0, budget));
       budget -= slice.length;
       lines.push(slice);
-      if (slice.length < a.extracted_text.length) {
+      if (slice.length < primary.extracted_text.length) {
         // Say so, rather than letting a truncated contract look complete.
-        lines.push(`[…truncated here. ${a.extracted_text.length - slice.length} more characters are on file — call readDocument with document "${a.title || a.filename}" and an offset to read further, or a query to find a passage.]`);
+        lines.push(`[…truncated here. ${primary.extracted_text.length - slice.length} more characters are on file — call readDocument with document "${label}" and an offset to read further, or a query to find a passage.]`);
       }
     }
     lines.push(`--- END DOCUMENT: ${label} ---`);
     lines.push('');
-    if (budget <= 0) {
-      const shown = attachments.indexOf(a) + 1;
-      if (shown < attachments.length) {
-        lines.push(`[${attachments.length - shown} further attachment(s) not shown — the context budget for documents is full.]`);
-      }
+    if (budget <= 0 && gi < rendered.length - 1) {
+      const remaining = rendered.length - gi - 1;
+      lines.push(`[${remaining} further attachment(s) not shown — the context budget for documents is full.]`);
       break;
     }
   }

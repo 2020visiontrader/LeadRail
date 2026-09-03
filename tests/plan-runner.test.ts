@@ -83,9 +83,22 @@ vi.mock('@/lib/db', () => ({
 }));
 vi.mock('@/lib/logger', () => ({ log: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), request: vi.fn() } }));
 vi.mock('@/lib/agent/loop', () => ({ runAgent: (...a: any[]) => runAgent(...(a as [])) }));
+
+// G16a — the console polls GET conversations/[id] only while `running` is
+// true; the runner must mark/clear that flag around every agent turn it runs.
+const markRunningMock = vi.fn(async (..._a: any[]) => {});
+const clearRunningMock = vi.fn(async (..._a: any[]) => {});
 vi.mock('@/lib/agent/memory', () => ({
   loadTranscript: (...a: any[]) => loadTranscriptMock(...a),
   saveConversation: (...a: any[]) => saveConversationMock(...a),
+  markConversationRunning: (...a: any[]) => markRunningMock(...a),
+  clearConversationRunning: (...a: any[]) => clearRunningMock(...a),
+}));
+
+// G16c — a plan reaching done/blocked/failed raises a best-effort notification.
+const createNotificationMock = vi.fn(async (..._a: any[]) => ({ id: 'notif-1' }));
+vi.mock('@/lib/notifications/store', () => ({
+  createNotification: (...a: any[]) => createNotificationMock(...a),
 }));
 
 function seed(opts: { stepsUsed?: number; maxSteps?: number; attempts?: number; status?: string } = {}) {
@@ -715,5 +728,163 @@ describe('a plan step is grounded like an interactive turn (G14)', () => {
     expect(loadTranscriptMock).not.toHaveBeenCalled();
     const input = runAgent.mock.calls[0]?.[0];
     expect(input?.transcript).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G16a — the assistant console (which polls GET conversations/[id] only while
+// `running` is true) never repaints a plan step's completion without this:
+// markConversationRunning immediately before runAgent, clearConversationRunning
+// in a `finally` after — mirroring exactly what an interactive turn does.
+// ---------------------------------------------------------------------------
+describe('a plan step marks its conversation running for the console (G16a)', () => {
+  beforeEach(() => {
+    vi.resetModules(); runAgent.mockClear();
+    markRunningMock.mockClear(); clearRunningMock.mockClear();
+    agentResult = { status: 'done', message: 'Did it.', steps: [{}], transcript: [] };
+    seed();
+  });
+
+  it('marks running immediately before runAgent and clears it after, on success', async () => {
+    await tick();
+    expect(markRunningMock).toHaveBeenCalledWith('c1', 'acct-1');
+    expect(clearRunningMock).toHaveBeenCalledWith('c1', 'acct-1');
+    // Ordering: mark happens strictly before the agent call, clear strictly after.
+    expect(markRunningMock.mock.invocationCallOrder[0])
+      .toBeLessThan(runAgent.mock.invocationCallOrder[0]);
+    expect(clearRunningMock.mock.invocationCallOrder[0])
+      .toBeGreaterThan(runAgent.mock.invocationCallOrder[0]);
+  });
+
+  it('clears the running flag even when runAgent throws', async () => {
+    runAgent.mockImplementationOnce(async () => { throw new Error('container died'); });
+    await tick();
+    expect(markRunningMock).toHaveBeenCalledWith('c1', 'acct-1');
+    expect(clearRunningMock).toHaveBeenCalledWith('c1', 'acct-1');
+  });
+
+  it('does nothing when the plan has no conversationId', async () => {
+    plans[0].conversation_id = null;
+    await tick();
+    expect(markRunningMock).not.toHaveBeenCalled();
+    expect(clearRunningMock).not.toHaveBeenCalled();
+  });
+
+  it('same behaviour on the BATCH path: marks and clears around the batch tick', async () => {
+    const items = Array.from({ length: 3 }, (_, i) => `lead-${i}`);
+    seedBatch({ over: items, itemsPerTick: 8 });
+    await tick();
+    expect(markRunningMock).toHaveBeenCalledWith('c1', 'acct-1');
+    expect(clearRunningMock).toHaveBeenCalledWith('c1', 'acct-1');
+  });
+
+  it('clears the running flag on the batch path even when runAgent throws', async () => {
+    const items = Array.from({ length: 3 }, (_, i) => `lead-${i}`);
+    seedBatch({ over: items, itemsPerTick: 8 });
+    runAgent.mockImplementationOnce(async () => { throw new Error('down'); });
+    await tick();
+    expect(markRunningMock).toHaveBeenCalledWith('c1', 'acct-1');
+    expect(clearRunningMock).toHaveBeenCalledWith('c1', 'acct-1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G16b — a single-shot step completing previously wrote nothing into the
+// conversation; only a batch tick got a progress line. This closes that gap,
+// and adds the equivalent line when a step blocks on approval.
+// ---------------------------------------------------------------------------
+describe('single-shot step outcomes are reported into the conversation (G16b)', () => {
+  beforeEach(() => {
+    vi.resetModules(); runAgent.mockClear();
+    loadTranscriptMock.mockClear(); saveConversationMock.mockClear();
+    loadTranscriptMock.mockResolvedValue([]);
+    seed();
+  });
+
+  it('appends "Step N done: ..." on ordinary completion', async () => {
+    agentResult = { status: 'done', message: 'Sent the report.', steps: [{}], transcript: [] };
+    await tick();
+    expect(saveConversationMock).toHaveBeenCalledTimes(1);
+    const saved = saveConversationMock.mock.calls[0][0];
+    const lastMsg = saved.transcript[saved.transcript.length - 1];
+    expect(lastMsg.role).toBe('assistant');
+    expect(lastMsg.content).toBe('Step 1 done: Sent the report.');
+  });
+
+  it('appends a waiting-on-approval line when the step blocks', async () => {
+    agentResult = {
+      status: 'needs_approval', message: 'needs you',
+      proposal: { approvalId: 'appr-1', summary: 'Spend credits on 50 leads' },
+      steps: [{}], transcript: [],
+    };
+    await tick();
+    expect(saveConversationMock).toHaveBeenCalledTimes(1);
+    const saved = saveConversationMock.mock.calls[0][0];
+    const lastMsg = saved.transcript[saved.transcript.length - 1];
+    expect(lastMsg.content).toBe('Step 1 is waiting on your approval: Spend credits on 50 leads');
+  });
+
+  it('is not appended when the plan has no conversationId', async () => {
+    plans[0].conversation_id = null;
+    agentResult = { status: 'done', message: 'Sent.', steps: [{}], transcript: [] };
+    await tick();
+    expect(saveConversationMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G16c — a plan reaching done/blocked/failed raises exactly one best-effort
+// notification for that transition, never a repeat on a later tick that
+// merely observes the same (unchanged) status.
+// ---------------------------------------------------------------------------
+describe('a plan status transition raises exactly one notification (G16c)', () => {
+  beforeEach(() => {
+    vi.resetModules(); runAgent.mockClear();
+    createNotificationMock.mockClear();
+  });
+
+  it('notifies once when the plan finishes (running -> done)', async () => {
+    seed();
+    steps[1].status = 'done'; // only s1 is left to work
+    agentResult = { status: 'done', message: 'Done.', steps: [{}], transcript: [] };
+    await tick();
+    expect(plans[0].status).toBe('done');
+    expect(createNotificationMock).toHaveBeenCalledTimes(1);
+    const [accountId, input] = createNotificationMock.mock.calls[0];
+    expect(accountId).toBe('acct-1');
+    expect(input.title).toMatch(/^Plan finished:/);
+    expect(input.email).toBe(false);
+    expect(input.link).toBe('/assistant?c=c1');
+  });
+
+  it('notifies once when the plan becomes blocked (running -> blocked)', async () => {
+    seed();
+    steps[1].status = 'blocked'; // second step already parked
+    agentResult = {
+      status: 'needs_approval', message: 'needs you',
+      proposal: { approvalId: 'appr-1', summary: 's' }, steps: [{}], transcript: [],
+    };
+    await tick();
+    expect(plans[0].status).toBe('blocked');
+    expect(createNotificationMock).toHaveBeenCalledTimes(1);
+    expect(createNotificationMock.mock.calls[0][1].title).toMatch(/^Plan needs you:/);
+  });
+
+  it('notifies once when the plan fails on budget exhaustion', async () => {
+    seed({ stepsUsed: 200, maxSteps: 200 });
+    await tick();
+    expect(plans[0].status).toBe('failed');
+    expect(createNotificationMock).toHaveBeenCalledTimes(1);
+    expect(createNotificationMock.mock.calls[0][1].title).toMatch(/^Plan failed:/);
+  });
+
+  it('does NOT notify on a tick where the status does not change', async () => {
+    // s1 completes, s2 is still pending afterward — the plan stays 'running'
+    // both before and after this tick.
+    seed();
+    agentResult = { status: 'done', message: 'ok', steps: [{}], transcript: [] };
+    await tick();
+    expect(plans[0].status).toBe('running');
+    expect(createNotificationMock).not.toHaveBeenCalled();
   });
 });

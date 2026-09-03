@@ -26,12 +26,14 @@ vi.mock('@/lib/ai/opencode', () => ({
   generateText: (...a: any[]) => opencodeGenerateText(...a),
   generateChat: vi.fn(),
   streamChat: vi.fn(),
+  opencodeModel: undefined,
 }));
 vi.mock('@/lib/ai/openrouter', () => ({
   openrouterConfigured: () => true,
   openrouterText: (...a: any[]) => openrouterText(...a),
   openrouterChat: vi.fn(),
   openrouterStreamChat: vi.fn(),
+  MODEL_CHAIN: [] as string[],
 }));
 vi.mock('@/lib/ai/providers', () => ({
   registryConfigured: async () => false,

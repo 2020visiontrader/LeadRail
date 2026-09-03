@@ -266,6 +266,25 @@ export function digestLine(...parts: (string | null | undefined)[]): string {
   return parts.filter((p): p is string => !!p && p.trim() !== '').join(' ');
 }
 
+/** Project an array of plain-object rows down to a fixed field list, dropping
+ *  everything else (in particular any large raw-enrichment blob a row may
+ *  carry). A key is copied over ONLY when it is actually present on the row —
+ *  never fabricated as null/undefined for a row that lacks it, because that
+ *  would change what present() (above) reports for it. Non-throwing: any
+ *  shape that isn't an array of plain objects is returned unchanged, since
+ *  there is nothing meaningful to project. */
+export function projectRows(rows: unknown, fields: string[]): unknown {
+  if (!Array.isArray(rows)) return rows;
+  return rows.map((row) => {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+    const out: Record<string, any> = {};
+    for (const f of fields) {
+      if (Object.prototype.hasOwnProperty.call(row, f)) out[f] = (row as any)[f];
+    }
+    return out;
+  });
+}
+
 export const SENSITIVE_GATES: GateClass[] =
   ['spend', 'external_send', 'destructive', 'standing_rule'];
 

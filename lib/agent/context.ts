@@ -14,6 +14,7 @@ import { supabase, getConnections } from '@/lib/db';
 import { LIVE_SOCIALS } from '@/lib/social/providers';
 import { loadVentureContext } from '@/lib/ai/venture-context';
 import { listAttachments, attachmentContextBlock, attachmentsByIds } from '@/lib/documents/attachments';
+import { listBindingsForConversation } from '@/lib/documents/attachment-bindings';
 import { recallMemoryDigest } from './memory';
 import { resolveSubjects } from '@/lib/memory/resolve';
 import { loadSubjectMemory } from '@/lib/memory/project';
@@ -268,9 +269,16 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
       // the message explicitly named. The second half is what makes a file
       // dropped into a NEW chat visible on its very first turn — there is no
       // conversation id to have bound it to yet.
-      const [byConversation, byId] = await Promise.all([
+      const [byConversation, byId, priorBindings] = await Promise.all([
         input.conversationId ? listAttachments(accountId, input.conversationId) : Promise.resolve([]),
         input.attachmentIds?.length ? attachmentsByIds(accountId, input.attachmentIds) : Promise.resolve([]),
+        // C5 — "first appears" is read from attachment_bindings (migration
+        // 076), never guessed from array position. Both callers of
+        // loadAgentContext (app/api/agent/route.ts and its /stream twin)
+        // write THIS turn's own binding only AFTER runAgent returns, so any
+        // live binding already on file here is unambiguously from an
+        // earlier turn — never the one being assembled right now.
+        input.conversationId ? listBindingsForConversation(accountId, input.conversationId) : Promise.resolve([]),
       ]);
       const seen = new Set<string>();
       const files = [...byId, ...byConversation].filter((f: any) => {
@@ -278,7 +286,9 @@ export async function loadAgentContext(input: AgentContextInput): Promise<string
         seen.add(f.id);
         return true;
       });
-      return files.length ? attachmentContextBlock(files) : null;
+      if (!files.length) return null;
+      const alreadyShown = new Set(priorBindings.map((b) => b.attachment_id));
+      return attachmentContextBlock(files, { alreadyShown });
     } catch { return null; /* a failed read must not blank the whole context */ }
   })();
 

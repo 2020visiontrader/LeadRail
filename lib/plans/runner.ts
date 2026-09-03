@@ -28,7 +28,7 @@ import {
   runnablePlans, nextStep, claimStep, completeStep, blockStep,
   recordProgress, renderPlan, MAX_STEP_ATTEMPTS, advanceCursor, releaseStepForRetry,
   clearStepApproval,
-  type Plan, type PlanStep,
+  type Plan, type PlanStep, type PlanStatus,
 } from './store';
 
 /** Plans advanced per tick. Small: each one is a full agent turn, and a tick
@@ -138,6 +138,87 @@ async function groundingFor(plan: Plan, step: PlanStep): Promise<{
   return { agentContext, transcript };
 }
 
+/**
+ * Mark/clear the plan's own conversation as "has a turn in progress" around
+ * the runAgent call — exactly what an interactive turn does (see
+ * markConversationRunning's own comment in lib/agent/memory.ts). Without this
+ * the assistant console — which polls GET /api/agent/conversations/[id] only
+ * while `running` is true — never repaints when a plan step finishes, even
+ * though the escalation copy promises "you'll see it continue right here"
+ * (G16a). A plan with no conversationId has nothing to mark.
+ *
+ * Both best-effort and silent on failure: markConversationRunning/
+ * clearConversationRunning already never throw on their own, but the dynamic
+ * import is wrapped here too so a broken module resolution can never take a
+ * tick down with it — the plan step itself is the work that matters.
+ */
+async function markRunning(plan: Plan): Promise<void> {
+  if (!plan.conversationId) return;
+  try {
+    const { markConversationRunning } = await import('@/lib/agent/memory');
+    await markConversationRunning(plan.conversationId, plan.accountId);
+  } catch { /* best-effort */ }
+}
+
+async function clearRunning(plan: Plan): Promise<void> {
+  if (!plan.conversationId) return;
+  try {
+    const { clearConversationRunning } = await import('@/lib/agent/memory');
+    await clearConversationRunning(plan.conversationId, plan.accountId);
+  } catch { /* best-effort */ }
+}
+
+/**
+ * Best-effort notification for a plan reaching done, blocked, or failed
+ * (G16c) — raised by recordAndNotify below exactly on the STATUS TRANSITION,
+ * never on every tick that merely observes an unchanged status. That matters
+ * because a blocked plan drops out of runnablePlans (it only ever selects
+ * `status = 'running'`), so without the transition check a plan sitting
+ * blocked across many ticks would otherwise be safe by construction — but the
+ * check is what makes that safety explicit rather than accidental, and it is
+ * what keeps a `done`/`failed` transition (reachable from within a single
+ * tick) from re-firing if recordAndNotify is ever called more than once
+ * against the same tick's pre-work snapshot.
+ */
+async function notifyPlanStatus(plan: Plan, status: 'done' | 'blocked' | 'failed'): Promise<void> {
+  try {
+    const { createNotification } = await import('@/lib/notifications/store');
+    const done = plan.steps.filter((s) => s.status === 'done').length;
+    const total = plan.steps.length;
+    const label = status === 'done' ? 'finished' : status === 'blocked' ? 'needs you' : 'failed';
+    await createNotification(plan.accountId, {
+      type: 'plan',
+      title: `Plan ${label}: ${plan.objective.slice(0, 80)}`,
+      body: `${done}/${total} steps done.`,
+      ...(plan.conversationId ? { link: `/assistant?c=${plan.conversationId}` } : {}),
+      // Never email a plan tick's own notification — the bell (and the
+      // console, already repainting via markRunning/clearRunning above) is
+      // enough; an unattended background job should not also page someone.
+      email: false,
+    });
+  } catch { /* best-effort — a missed bell entry must not fail the tick */ }
+}
+
+/**
+ * recordProgress, plus notifyPlanStatus exactly when it caused a transition.
+ * `plan` is the tick's PRE-work snapshot — in practice always `status:
+ * 'running'`, since that is the only status runnablePlans ever selects — so
+ * this compares that snapshot against whatever recordProgress just set,
+ * rather than assuming what "before" was.
+ */
+async function recordAndNotify(
+  plan: Plan,
+  stepsSpent: number,
+  error?: string | null,
+): Promise<PlanStatus | null> {
+  const before = plan.status;
+  const after = await recordProgress(plan.id, stepsSpent, error);
+  if (after && after !== before && (after === 'done' || after === 'blocked' || after === 'failed')) {
+    await notifyPlanStatus(plan, after);
+  }
+  return after;
+}
+
 export interface PlanTickResult {
   plansTouched: number;
   stepsCompleted: number;
@@ -157,7 +238,7 @@ async function advance(plan: Plan): Promise<'completed' | 'blocked' | 'idle' | '
   // Budget first. Checking after the work would let a plan always run one more
   // step than it was allowed.
   if (plan.stepsUsed >= plan.maxSteps) {
-    await recordProgress(plan.id, 0, 'step budget exhausted');
+    await recordAndNotify(plan, 0, 'step budget exhausted');
     return 'idle';
   }
 
@@ -165,7 +246,7 @@ async function advance(plan: Plan): Promise<'completed' | 'blocked' | 'idle' | '
   if (!step) {
     // Nothing pending and nothing in progress — recordProgress decides whether
     // that is done or blocked.
-    await recordProgress(plan.id, 0);
+    await recordAndNotify(plan, 0);
     return 'idle';
   }
 
@@ -174,7 +255,7 @@ async function advance(plan: Plan): Promise<'completed' | 'blocked' | 'idle' | '
   // spends a budget on nothing.
   if (step.attempts >= MAX_STEP_ATTEMPTS) {
     await blockStep(step.id, `Tried ${step.attempts} times without completing it.`);
-    await recordProgress(plan.id, 0);
+    await recordAndNotify(plan, 0);
     return 'blocked';
   }
 
@@ -200,6 +281,10 @@ async function advance(plan: Plan): Promise<'completed' | 'blocked' | 'idle' | '
   // it came from.
   const approve = await grantedApprovalFor(plan, step);
   const { agentContext, transcript } = await groundingFor(plan, step);
+  // G16a: the console polls while `running` is true — mark it immediately
+  // before the agent turn actually runs, and clear it no matter how the turn
+  // ends (including a thrown exception, hence the `finally` below).
+  await markRunning(plan);
   try {
     const result = await runAgent({
       accountId: plan.accountId,
@@ -253,12 +338,12 @@ async function advance(plan: Plan): Promise<'completed' | 'blocked' | 'idle' | '
     if (result.status === 'needs_approval') {
       // Phase 3: the step waits on a human, and the approval id is recorded so
       // granting it resumes HERE rather than restarting the plan.
-      await blockStep(
-        step.id,
-        result.proposal?.summary || 'Waiting on your approval.',
-        result.proposal?.approvalId ?? null,
-      );
-      await recordProgress(plan.id, result.steps.length);
+      const summary = result.proposal?.summary || 'Waiting on your approval.';
+      await blockStep(step.id, summary, result.proposal?.approvalId ?? null);
+      // G16b: a single-shot step blocking is otherwise invisible in the
+      // conversation the console is watching.
+      await appendProgressLine(plan, `Step ${step.seq} is waiting on your approval: ${summary.slice(0, 200)}`);
+      await recordAndNotify(plan, result.steps.length);
       return 'blocked';
     }
 
@@ -266,7 +351,7 @@ async function advance(plan: Plan): Promise<'completed' | 'blocked' | 'idle' | '
       // Left `in_progress`; the attempts counter already rose when it was
       // claimed, so a repeatedly failing step reaches MAX_STEP_ATTEMPTS and
       // parks itself rather than looping.
-      await recordProgress(plan.id, result.steps.length, result.message);
+      await recordAndNotify(plan, result.steps.length, result.message);
       return 'error';
     }
 
@@ -276,11 +361,16 @@ async function advance(plan: Plan): Promise<'completed' | 'blocked' | 'idle' | '
     // stall the plan behind a step nothing will ever advance.
     const stillOpen = plan.steps.find((s) => s.id === step.id)?.status !== 'done';
     if (stillOpen) await completeStep(step.id, result.message || 'Completed.');
-    await recordProgress(plan.id, result.steps.length);
+    // G16b: a single-shot step's completion previously wrote nothing into the
+    // conversation at all — only batch ticks got a progress line.
+    await appendProgressLine(plan, `Step ${step.seq} done: ${(result.message || 'Completed.').slice(0, 200)}`);
+    await recordAndNotify(plan, result.steps.length);
     return 'completed';
   } catch (e: any) {
-    await recordProgress(plan.id, 0, String(e?.message || e));
+    await recordAndNotify(plan, 0, String(e?.message || e));
     return 'error';
+  } finally {
+    await clearRunning(plan);
   }
 }
 
@@ -347,6 +437,8 @@ async function advanceBatch(plan: Plan, step: PlanStep): Promise<'completed' | '
   // groundingFor's own comments (G15/G14).
   const approve = await grantedApprovalFor(plan, step);
   const { agentContext, transcript } = await groundingFor(plan, step);
+  // G16a: same reasoning as the single-shot path above.
+  await markRunning(plan);
   try {
     const result = await runAgent({
       accountId: plan.accountId,
@@ -383,19 +475,19 @@ async function advanceBatch(plan: Plan, step: PlanStep): Promise<'completed' | '
     }
 
     if (result.status === 'needs_approval') {
-      await blockStep(
-        step.id,
-        result.proposal?.summary || 'Waiting on your approval.',
-        result.proposal?.approvalId ?? null,
-      );
-      await recordProgress(plan.id, result.steps.length);
+      const summary = result.proposal?.summary || 'Waiting on your approval.';
+      await blockStep(step.id, summary, result.proposal?.approvalId ?? null);
+      // G16b: same line the single-shot path writes — a batch step blocking
+      // on approval is otherwise as invisible as a single-shot one was.
+      await appendProgressLine(plan, `Step ${step.seq} is waiting on your approval: ${summary.slice(0, 200)}`);
+      await recordAndNotify(plan, result.steps.length);
       return 'blocked';
     }
 
     if (result.status === 'error') {
       // Re-claimable next tick, cursor untouched — see the function comment.
       await releaseStepForRetry(step.id);
-      await recordProgress(plan.id, result.steps.length, result.message);
+      await recordAndNotify(plan, result.steps.length, result.message);
       return 'error';
     }
 
@@ -404,7 +496,7 @@ async function advanceBatch(plan: Plan, step: PlanStep): Promise<'completed' | '
       // Lost the race to another tick, or the model closed the step itself
       // against instructions — either way there is nothing safe to do this
       // tick. Not an error: the next tick re-reads real state.
-      await recordProgress(plan.id, result.steps.length);
+      await recordAndNotify(plan, result.steps.length);
       return 'idle';
     }
 
@@ -415,16 +507,18 @@ async function advanceBatch(plan: Plan, step: PlanStep): Promise<'completed' | '
 
     if (progress.done) {
       await completeStep(step.id, result.message || `Completed all ${progress.total} items.`);
-      await recordProgress(plan.id, result.steps.length);
+      await recordAndNotify(plan, result.steps.length);
       return 'completed';
     }
 
-    await recordProgress(plan.id, result.steps.length);
+    await recordAndNotify(plan, result.steps.length);
     return 'idle';
   } catch (e: any) {
     await releaseStepForRetry(step.id);
-    await recordProgress(plan.id, 0, String(e?.message || e));
+    await recordAndNotify(plan, 0, String(e?.message || e));
     return 'error';
+  } finally {
+    await clearRunning(plan);
   }
 }
 

@@ -45,9 +45,16 @@ vi.mock('@/lib/ai/zoask', () => ({
   zoAskConfigured: () => false, zoAskText: vi.fn(), zoAskChat: vi.fn(),
 }));
 vi.mock('@/lib/ai/opencode', () => ({
+  // See lib/ai/router.ts's LADDER_CAPABILITY — undefined keeps this tier's
+  // capability unknown, matching this file's pre-existing behaviour.
+  opencodeModel: undefined,
   opencodeConfigured: () => false, generateText: vi.fn(), generateChat: vi.fn(), streamChat: vi.fn(),
 }));
 vi.mock('@/lib/ai/openrouter', () => ({
+  // See lib/ai/router.ts's LADDER_CAPABILITY — empty keeps this tier's
+  // capability undefined (unknown), matching this file's pre-existing,
+  // never-size-filtered behaviour.
+  MODEL_CHAIN: [] as string[],
   openrouterConfigured: () => openrouterConf,
   openrouterText: (...a: any[]) => openrouterText(...a),
   openrouterChat: vi.fn(),

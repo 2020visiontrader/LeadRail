@@ -82,3 +82,136 @@ export function ensureMessageIds(messages: StoredMessage[]): StoredMessage[] {
 export function toWireMessages(messages: StoredMessage[]): ChatMessage[] {
   return messages.map((m) => ({ role: m.role, content: m.content }));
 }
+
+/** Default number of most-recent OBSERVATION messages `pruneForWire` leaves
+ *  untouched (full text). */
+const DEFAULT_KEEP_RECENT_OBSERVATIONS = 2;
+
+/** Default character budget for a reduced (digest) observation body. */
+const DEFAULT_DIGEST_CHARS = 2000;
+
+const NUDGE_PREFIX = 'Respond with ONLY one JSON object';
+const OBSERVATION_PREFIX = 'OBSERVATION: ';
+const TRUNCATION_MARKER = '… [truncated]';
+
+/** Result of trying to collapse an assistant message's content as a
+ *  pre-compose JSON envelope. `unparsed` means content is not one of the
+ *  `{"action":"tool"|"final",...}` shapes and must be left exactly as-is;
+ *  `keep`/`drop` are the two collapsed outcomes. */
+type EnvelopeCollapse = { kind: 'unparsed' } | { kind: 'keep'; text: string } | { kind: 'drop' };
+
+/**
+ * Turn a route-pass envelope (`{"action":"tool",...}` / `{"action":"final",...}`)
+ * into a short one-line narration (`keep`), or `drop` when it is a `final`
+ * envelope with nothing worth showing, or `unparsed` when `content` is not
+ * one of those envelopes at all (i.e. it should be left exactly as-is).
+ */
+function collapseEnvelope(content: string): EnvelopeCollapse {
+  const trimmed = content.trim();
+  if (!trimmed) return { kind: 'unparsed' };
+  let parsed: any;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return { kind: 'unparsed' };
+  }
+  if (!parsed || typeof parsed !== 'object') return { kind: 'unparsed' };
+  if (parsed.action === 'tool') {
+    const tool = typeof parsed.tool === 'string' && parsed.tool ? parsed.tool : undefined;
+    return { kind: 'keep', text: tool ? `[called ${tool}]` : '[called tool]' };
+  }
+  if (parsed.action === 'final') {
+    const msg = parsed.message ?? parsed.answer ?? parsed.text;
+    if (typeof msg === 'string' && msg.trim() !== '') return { kind: 'keep', text: msg };
+    return { kind: 'drop' }; // nothing worth keeping — drop the message entirely
+  }
+  return { kind: 'unparsed' };
+}
+
+/**
+ * Reduce an old OBSERVATION message body to its digest line (see
+ * successObservation in lib/agent/loop.ts: the digest is the FIRST line, the
+ * raw JSON follows). Returns the full `OBSERVATION: ...` content to keep.
+ */
+function reduceObservationBody(body: string, digestChars: number): string {
+  const newlineIdx = body.indexOf('\n');
+  const firstLine = newlineIdx === -1 ? body : body.slice(0, newlineIdx);
+  const looksLikeJson = firstLine.startsWith('{') || firstLine.startsWith('[');
+  if (firstLine !== '' && !looksLikeJson && firstLine.length < digestChars) {
+    return `${OBSERVATION_PREFIX}${firstLine}`;
+  }
+  const clipped = body.length > digestChars ? `${body.slice(0, digestChars)}${TRUNCATION_MARKER}` : body;
+  return `${OBSERVATION_PREFIX}${clipped}`;
+}
+
+/**
+ * Prune a stored transcript for a ROUTE-PASS provider call — never for the
+ * persisted transcript, never for the compose pass (which is grounded on full
+ * OBSERVATION text by construction — see compose.ts). This is a separate,
+ * opt-in function; `toWireMessages` above is untouched and keeps its exact
+ * current behaviour for every other call site.
+ *
+ * - Nudges (`role: 'user'`, content starting with "Respond with ONLY one JSON
+ *   object") are turn-local instructions, meaningless once answered: dropped.
+ * - Pre-compose JSON envelopes (`role: 'assistant'`, content that parses as
+ *   `{"action":"tool"|"final",...}`) are collapsed to a one-line narration.
+ * - All but the most recent `keepRecent` OBSERVATION messages are reduced to
+ *   their digest line (or clipped with a truncation marker when there is no
+ *   usable digest).
+ * - Everything else passes through byte-identical.
+ *
+ * Never mutates `messages`; order is preserved; dropped entries leave no
+ * placeholder.
+ */
+export function pruneForWire(
+  messages: StoredMessage[],
+  opts?: { keepRecent?: number; digestChars?: number },
+): ChatMessage[] {
+  const keepRecent = opts?.keepRecent ?? DEFAULT_KEEP_RECENT_OBSERVATIONS;
+  const digestChars = opts?.digestChars ?? DEFAULT_DIGEST_CHARS;
+
+  const observationIdxs: number[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    if (m.role === 'user' && typeof m.content === 'string' && m.content.startsWith(OBSERVATION_PREFIX)) {
+      observationIdxs.push(i);
+    }
+  }
+  const recentObservationIdxs = new Set(observationIdxs.slice(Math.max(0, observationIdxs.length - keepRecent)));
+
+  const out: ChatMessage[] = [];
+  for (let i = 0; i < messages.length; i++) {
+    const m = messages[i];
+    const content = m.content;
+
+    if (m.role === 'user' && typeof content === 'string' && content.startsWith(NUDGE_PREFIX)) {
+      continue; // nudge — dropped entirely
+    }
+
+    if (m.role === 'user' && typeof content === 'string' && content.startsWith(OBSERVATION_PREFIX)) {
+      if (recentObservationIdxs.has(i)) {
+        out.push({ role: m.role, content });
+      } else {
+        const body = content.slice(OBSERVATION_PREFIX.length);
+        out.push({ role: m.role, content: reduceObservationBody(body, digestChars) });
+      }
+      continue;
+    }
+
+    if (m.role === 'assistant' && typeof content === 'string') {
+      const collapsed = collapseEnvelope(content);
+      if (collapsed.kind === 'keep') {
+        out.push({ role: m.role, content: collapsed.text });
+        continue;
+      }
+      if (collapsed.kind === 'drop') {
+        continue; // `final` envelope with nothing worth showing
+      }
+      // collapsed.kind === 'unparsed' — not a recognised envelope, fall
+      // through to byte-identical pass-through below.
+    }
+
+    out.push({ role: m.role, content });
+  }
+  return out;
+}
