@@ -13,7 +13,7 @@ estimated tokens out of the reported total on `usage_source`.
 When adding an entry, say what proves it is done — a passing test, a row in a
 table, a non-401 log line — not "wire it up".
 
-Last reviewed: 2026-09-02
+Last reviewed: 2026-09-03
 
 ---
 
@@ -560,3 +560,46 @@ the counter stays at zero, the marker is not landing and the flag should go
 back off rather than be left on as decoration. Watch `app_logs` for
 `retrying once without it` while it is on: that warning firing means the
 gateway is rejecting the field and every marked call is costing a round trip.
+
+## 12. `internal_write` and `read` capabilities still have no digest — 2026-09-03
+
+The digest guard (`tests/capability-digest-guard.test.ts`) now requires a
+`digest` on all four SENSITIVE gates. It requires nothing on the other two.
+
+Measured against the live registry on 2026-09-03 (183 capabilities total):
+
+```
+external_send:   9 caps,  0 without digest   ← guarded
+spend:           3 caps,  0 without digest   ← guarded
+destructive:     6 caps,  0 without digest   ← guarded 2026-09-03
+standing_rule:   7 caps,  0 without digest   ← guarded 2026-09-03
+internal_write: 62 caps, 45 without digest   ← OPEN
+read:           96 caps, 26 without digest   ← OPEN
+```
+
+**Why this is a risk and not just untidiness.** Without a digest,
+`successObservation` (lib/agent/loop.ts) puts the raw JSON in the transcript
+alone and the model states the outcome itself. That is the exact mechanism
+behind the defect this whole packet exists for — "the last batch already went
+out to all 13 contacts" when one email had been sent two weeks earlier. The
+gate class bounds how bad a false claim is, not whether one can happen: an
+`internal_write` that silently matched no row still gets narrated as a
+success, and 45 of them can.
+
+**A known sub-case, found while writing the destructive digests.**
+`deleteContentItem` and `deletePillar` (lib/content/store.ts) run
+`.delete().eq(...)` with **no `.select()` and no row-count check**, then return
+`{ id, deleted: true }` where `id` is the argument they were handed. A delete
+matching zero rows returns byte-for-byte the same object as one removing a
+row, so there is no evidence at the capability layer to digest. Their digests
+say so explicitly rather than claiming a removal. Adding `.select('id')` to
+both store functions would make the row count real and let those two lines
+state a fact instead of a hedge. Same shape as the house anti-pattern: the
+return value is written and never actually read for what it claims to prove.
+
+**Done when:** `GUARDED_GATES` in `tests/capability-digest-guard.test.ts`
+contains `internal_write` and `read`, that file passes, and the per-gate
+count above reads 0 without digest for both — verified by enumerating
+`CAPABILITIES` at runtime, not by reading this file. The two store functions
+above return a real row count, proven by a test that deletes a
+non-existent id and asserts the capability's digest stays silent.

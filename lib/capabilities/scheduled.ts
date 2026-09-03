@@ -11,7 +11,7 @@ import { z } from 'zod';
 import { listScheduledTasks, createScheduledTask, updateScheduledTask } from '@/lib/scheduled/store';
 import {
   obj, S, type Capability,
-  rowsOf, plural, tally, samples, digestLine,
+  rowsOf, present, clip, plural, tally, samples, digestLine,
 } from './types';
 
 export const SCHEDULED_CAPABILITIES: Capability[] = [
@@ -58,6 +58,36 @@ export const SCHEDULED_CAPABILITIES: Capability[] = [
     zod: z.object({ name: z.string(), prompt: z.string(), interval: z.enum(['hourly', 'daily', 'weekly']), enabled: z.boolean().optional() }),
     run: (accountId, a) => createScheduledTask(accountId, { name: a.name, prompt: a.prompt, interval: a.interval, enabled: a.enabled }),
     summarize: (a) => `Create a scheduled task "${a.name}" that runs automatically on the agent, ${a.interval}, with no one reviewing each run${a.enabled === false ? ' (created OFF — will not run until enabled)' : ' (starts running immediately)'}.`,
+    // The strongest evidence of "keeps running after this turn" anywhere in
+    // this gate, and it exists only on the RETURN: createScheduledTask
+    // (lib/scheduled/store.ts) computes next_run_at itself via computeNextRun
+    // and stores it, so the row names a real future moment at which the agent
+    // will run this prompt with nobody watching. It is nowhere in the
+    // arguments, which is exactly why it is worth stating.
+    //
+    // `enabled` is likewise the row's (`input.enabled ?? true`), not the
+    // argument's. This capability defaults to ARMED, so getting that backwards
+    // in the transcript is the difference between a stored draft and an
+    // unattended agent loop.
+    digest: (_args, result) => {
+      const r: any = result;
+      if (!r || typeof r !== 'object' || Array.isArray(r) || !present(r, 'id')) return '';
+      const id = clip(String(r.id), 60);
+      const name = present(r, 'name') ? ` "${clip(String(r.name), 80)}"` : '';
+      if (r.enabled !== true) {
+        return digestLine(
+          `Stored scheduled task ${id}${name}, and the stored row says enabled=false — it will NOT run on its own and nothing happens after this turn until it is enabled.`,
+        );
+      }
+      const every = present(r, 'interval') ? ` ${clip(String(r.interval), 20)},` : '';
+      return digestLine(
+        `Scheduled task ${id}${name} is stored and ARMED (enabled=true on the row).`,
+        `It runs the full agent on this prompt${every} by itself after this turn ends, with nobody reviewing any individual run.`,
+        present(r, 'next_run_at')
+          ? `The row already names its first unattended run: ${clip(String(r.next_run_at), 40)}.`
+          : null,
+      );
+    },
   },
   {
     name: 'disableScheduledTask',

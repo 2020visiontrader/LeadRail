@@ -24,7 +24,7 @@ import { proposeLearning } from '@/lib/content/learning';
 import { runIntake, proposeCanon } from '@/lib/content/intake';
 import { generateImage as routeImage } from '@/lib/ai/image-router';
 import { generateVideo, getVideoStatus, higgsfieldUnavailableReason } from '@/lib/integrations/higgsfield';
-import { obj, S, type Capability, rowsOf, plural, samples, tally, digestLine } from './types';
+import { obj, S, type Capability, rowsOf, present, clip, plural, samples, tally, digestLine } from './types';
 
 /** Persist generated image bytes and hand back a URL. Shared by the two image
  *  capabilities so a generated asset always has the same URL shape. */
@@ -171,6 +171,31 @@ export const CONTENT_CAPABILITIES: Capability[] = [
     zod: z.object({ itemId: z.string().min(1) }),
     run: (accountId, a) => deleteContentItem(accountId, a.itemId),
     summarize: (a) => `Permanently delete content item ${a.itemId}. This cannot be undone.`,
+    // A FINDING, not a wording preference. deleteContentItem
+    // (lib/content/store.ts) runs .delete().eq(...) with NO .select() and no
+    // row-count check, then returns `{ id, deleted: true }` whose `id` is the
+    // ARGUMENT it was handed. A delete that matched nothing returns byte-for-
+    // byte the same object as one that removed a row. There is therefore no
+    // evidence here that anything existed to delete.
+    //
+    // The line still speaks, and deliberately, because silence is the WORSE
+    // option in this one case: with no digest the loop falls back to the raw
+    // JSON alone, and `{"id":"x","deleted":true}` reads to a model as a
+    // confirmed deletion — a STRONGER claim than the truth. So the digest
+    // states the accepted call, bounds the scope to at most one row, and names
+    // the limitation, which is the only reading the result supports.
+    //
+    // Closing this properly means .select('id') in the store so the row count
+    // is real; see the BACKLOG entry on the remaining digest gates.
+    digest: (_a, result) => {
+      const r: any = result;
+      if (!r || typeof r !== 'object' || Array.isArray(r) || r.deleted !== true) return '';
+      const id = present(r, 'id') ? clip(String(r.id), 60) : null;
+      return digestLine(
+        `The delete of content item ${id ?? '(no id returned)'} was accepted without error. It could remove at most that one row and touched nothing else on the board.`,
+        'It returns no row count, so this is NOT evidence a row existed — an id that had already been deleted returns exactly the same result. Read the board to confirm.',
+      );
+    },
   },
 
   // -------------------------------------------------------------- generation
@@ -696,6 +721,23 @@ export const CONTENT_CAPABILITIES: Capability[] = [
     zod: z.object({ pillarId: z.string().min(1) }),
     run: (accountId, a) => deletePillar(accountId, a.pillarId),
     summarize: (a) => `Delete content pillar ${a.pillarId}. Content already assigned to it keeps its recorded pillar name.`,
+    // Identical shape and identical limitation to deleteContentItem above —
+    // deletePillar (lib/content/store.ts) also has no .select() and no row
+    // count, so `{ id, deleted: true }` is returned whether or not a pillar was
+    // there. Read that comment; the reasoning is not repeated.
+    //
+    // The extra fact worth stating here is the blast radius, which IS known
+    // from the code rather than guessed from the result: content rows keep
+    // their recorded pillar name, so no content is removed with the pillar.
+    digest: (_a, result) => {
+      const r: any = result;
+      if (!r || typeof r !== 'object' || Array.isArray(r) || r.deleted !== true) return '';
+      const id = present(r, 'id') ? clip(String(r.id), 60) : null;
+      return digestLine(
+        `The delete of content pillar ${id ?? '(no id returned)'} was accepted without error. No content items were deleted with it — pieces already assigned keep their recorded pillar name.`,
+        'It returns no row count, so this is NOT evidence a pillar existed — an id that had already been deleted returns exactly the same result.',
+      );
+    },
   },
 
   // --------------------------------------------------------- platform specs

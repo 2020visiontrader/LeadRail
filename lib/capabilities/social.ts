@@ -642,6 +642,27 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     run: (accountId, a) =>
       deleteComment(accountId, a.commentId, a.platform ? commentPlatform(a.platform) : undefined, a.accountExternalId),
     summarize: (a) => `Permanently delete comment ${a.commentId}. This cannot be undone.`,
+    // WHAT THE RETURN ACTUALLY CARRIES. deleteComment (lib/social/meta-engagement.ts)
+    // throws on any non-2xx and otherwise returns `{ deleted: true, commentId }`
+    // — and that `commentId` is the ARGUMENT it was handed. The Graph response
+    // body is parsed only to build an error message and is then discarded, so
+    // nothing Meta said about the comment survives into the result.
+    //
+    // The one fact present is therefore "the DELETE was accepted", and the line
+    // says that rather than "the comment is gone", which would be a re-read
+    // this capability never performs. Same discipline as hideSocialComment
+    // above. Scope is stated because that is what a reviewer needs from a
+    // destructive call: one comment, not a thread, not a post.
+    digest: (_a, result) => {
+      if (!result || typeof result !== 'object' || Array.isArray(result)) return '';
+      const r: any = result;
+      if (r.deleted !== true) return '';
+      const id = present(r, 'commentId') ? clip(String(r.commentId), 60) : null;
+      return digestLine(
+        `Meta accepted the permanent deletion of one comment${id ? ` (${id})` : ''}. Only that comment was targeted — replies under it are not reported on.`,
+        'The Graph response body is discarded, so this confirms the call was accepted for the id sent; it is not a re-read proving the comment is now absent.',
+      );
+    },
   },
   {
     name: 'sendSocialMessage',

@@ -64,6 +64,26 @@ export const DEAL_CAPABILITIES: Capability[] = [
     zod: z.object({ id: z.string() }),
     run: (accountId, { id }) => deleteDeal(id, accountId),
     summarize: (a) => `Delete deal ${a.id} from the pipeline.`,
+    // deleteDeal (lib/crm.ts) SELECTs the live row first — .eq(id).eq(account)
+    // .is('deleted_at', null).single() — and throws 'not found' when there is
+    // none, then stamps deleted_at and writes an audit row. So the bare
+    // `{ ok: true }` it returns is stronger than it looks: it can only be
+    // produced when exactly one not-already-deleted deal existed and was
+    // removed from every pipeline read.
+    //
+    // What it does NOT carry is the deal's id, name or amount. The id is only
+    // in the arguments, and restating an argument as the outcome is the failure
+    // this mechanism exists to stop — so the line reports the count and the
+    // kind of delete, and says plainly that the identity is not in the result.
+    digest: (_args, result) => {
+      const r: any = result;
+      if (!r || typeof r !== 'object' || Array.isArray(r) || r.ok !== true) return '';
+      return digestLine(
+        `${plural(1, 'deal')} deleted from the pipeline — deleteDeal reads the live row first and throws when there is none, so an ok result means exactly one deal existed and has been removed.`,
+        'It is a SOFT delete: deleted_at is stamped, so the row is hidden from every pipeline read but still in the database, and it cannot be restored from chat.',
+        'The result carries no id, name or amount, so which deal this was is known only from the request, not from the outcome.',
+      );
+    },
   },
   {
     name: 'listActivities',

@@ -21,7 +21,7 @@
 // the fiftieth.
 
 import { z } from 'zod';
-import { obj, S, type Capability } from './types';
+import { obj, S, type Capability, present, clip, digestLine } from './types';
 import { writeEdge, activeEdges, beliefHistory, promotionCandidates, promoteEdge, demoteEdge } from '@/lib/memory/edges';
 import { projectSubjectWithRetry } from '@/lib/memory/project';
 import { TIER2_PROMOTION_THRESHOLD, exclusionFor } from '@/lib/memory/tiers';
@@ -170,6 +170,32 @@ export const SUBJECT_MEMORY_CAPABILITIES: Capability[] = [
     },
     summarize: (a: any) =>
       `Make an observed pattern into a standing rule. From now on the assistant will act on it on its own, in every future campaign, until you withdraw it.`,
+    // THE ARGUMENT IS THE REQUEST, THE RETURN IS WHAT HAPPENED, and here they
+    // diverge constantly. promoteEdge (lib/memory/edges.ts) refuses on four
+    // separate paths — no such edge, the observation is no longer current, it
+    // is already tier 1, the write failed — and each returns
+    // `{ promoted: false, reason }`. Reading `args.observationId` and saying
+    // "promoted" would announce a standing rule that does not exist, in the
+    // exact voice the model later trusts as fact.
+    //
+    // On the success path the line has to carry the property that makes this
+    // gate different from every other write: it is in force AFTER this turn.
+    digest: (_a, r: any) => {
+      if (!r || typeof r !== 'object' || Array.isArray(r)) return '';
+      if (r.promoted === false) {
+        return digestLine(
+          'That observation was NOT promoted. Nothing changed, no standing rule exists, and the assistant still may not act on it.',
+          present(r, 'reason') ? `The reason given was: ${clip(String(r.reason), 120)}.` : null,
+        );
+      }
+      if (r.promoted !== true) return '';
+      return digestLine(
+        present(r, 'fact')
+          ? `Promoted to a standing rule: "${clip(String(r.fact), 160)}".`
+          : 'The observation was promoted to a standing rule.',
+        'This does not end with this turn — the assistant will act on it by itself in future turns and future campaigns, with no further approval, until it is withdrawn with demoteObservation.',
+      );
+    },
   },
   {
     name: 'demoteObservation',

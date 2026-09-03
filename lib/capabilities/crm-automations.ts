@@ -25,7 +25,7 @@
 
 import { z } from 'zod';
 import { listAutomations, createAutomation, updateAutomation, deleteAutomation } from '@/lib/automations';
-import { obj, S, type Capability, rowsOf, plural, samples, digestLine } from './types';
+import { obj, S, type Capability, rowsOf, present, clip, plural, samples, digestLine } from './types';
 
 // ONLY the triggers something actually emits. evaluateAutomations is called
 // from exactly two places in the codebase; a rule on any other trigger string
@@ -135,6 +135,29 @@ export const CRM_AUTOMATION_CAPABILITIES: Capability[] = [
       is_active: false,
     } as any),
     summarize: (a) => `Create a CRM automation (switched OFF) called "${a.name}": when ${a.trigger} fires, ${describeConditions({ match: a.match, conditions: a.conditions })}, ${describeAction(a.action, a.config)}. It does nothing until it is separately switched on.`,
+    // Read off the INSERTED ROW. createAutomation (lib/automations.ts) applies
+    // its own `is_active: input.is_active ?? true` default, so the armed state
+    // is a property of the row and not of the arguments this capability sent —
+    // and it is the difference between a rule that does nothing and one that
+    // starts enrolling real people in a sequence.
+    //
+    // describeAction is reused so the stored action reads the same way in the
+    // digest as it does on the approval card the user already saw.
+    digest: (_a, result) => {
+      const r: any = result;
+      if (!r || typeof r !== 'object' || Array.isArray(r) || !present(r, 'id')) return '';
+      const name = present(r, 'name') ? ` "${clip(String(r.name), 80)}"` : '';
+      const trig = r.trigger && present(r.trigger, 'type') ? String(r.trigger.type) : null;
+      const act = r.action && present(r.action, 'type')
+        ? describeAction(String(r.action.type), (r.action.config && typeof r.action.config === 'object') ? r.action.config : {})
+        : null;
+      return digestLine(
+        `Stored CRM automation ${clip(String(r.id), 60)}${name}${trig ? `: when ${trig} fires` : ''}${act ? `, ${act}` : ''}.`,
+        r.is_active === true
+          ? 'The stored row says is_active=true — it fires by itself from now on, including after this turn ends, with no approval per firing.'
+          : 'The stored row says is_active=false: it does NOTHING yet, and nothing runs after this turn until enableAutomation is separately approved.',
+      );
+    },
   },
   {
     name: 'enableAutomation',
@@ -146,6 +169,28 @@ export const CRM_AUTOMATION_CAPABILITIES: Capability[] = [
     zod: z.object({ automationId: z.string().min(1) }),
     run: (accountId, a) => updateAutomation(a.automationId, accountId, { is_active: true }),
     summarize: (a) => `Switch ON automation ${a.automationId}. From then on it acts by itself every time its trigger fires, without asking again.`,
+    // updateAutomation throws 'not found' when the patch matches no row, so a
+    // result at all means the rule exists. What is still not implied is that it
+    // is ON: that is read from `is_active` on the row that came back, never
+    // from the fact that an enable was requested.
+    digest: (_a, result) => {
+      const r: any = result;
+      if (!r || typeof r !== 'object' || Array.isArray(r) || typeof r.is_active !== 'boolean') return '';
+      const id = present(r, 'id') ? ` ${clip(String(r.id), 60)}` : '';
+      const name = present(r, 'name') ? ` "${clip(String(r.name), 80)}"` : '';
+      if (r.is_active !== true) {
+        return digestLine(`CRM automation${id}${name} came back with is_active=false — it is NOT switched on and will not fire.`);
+      }
+      const trig = r.trigger && present(r.trigger, 'type') ? String(r.trigger.type) : null;
+      const act = r.action && present(r.action, 'type')
+        ? describeAction(String(r.action.type), (r.action.config && typeof r.action.config === 'object') ? r.action.config : {})
+        : null;
+      return digestLine(
+        `CRM automation${id}${name} is now SWITCHED ON.`,
+        trig ? `Every time ${trig} fires${act ? ` it will ${act}` : ''},` : 'It now fires on its own,',
+        'without asking again — and it keeps doing so after this turn ends, until it is switched off with disableAutomation.',
+      );
+    },
   },
   {
     name: 'disableAutomation',
@@ -169,5 +214,25 @@ export const CRM_AUTOMATION_CAPABILITIES: Capability[] = [
     zod: z.object({ automationId: z.string().min(1) }),
     run: (accountId, a) => deleteAutomation(a.automationId, accountId),
     summarize: (a) => `Permanently delete automation ${a.automationId}. This cannot be undone.`,
+    // deleteAutomation (lib/automations.ts) deletes with .select('id') and
+    // THROWS 'not found' when the delete matched no row, so a returned
+    // `{ id, deleted: true }` is real evidence: exactly one rule existed under
+    // this account and no longer does. (The `id` field is the argument echoed
+    // back, but the throw is what makes the deletion itself a fact — the id is
+    // reported as the target, never as the proof.)
+    //
+    // What the result does NOT carry is the rule's name, trigger, or whether it
+    // was switched on. Deleting a live rule stops a standing behaviour and
+    // deleting a dormant one does not; since the return cannot tell those
+    // apart, the line says so instead of guessing.
+    digest: (_a, result) => {
+      const r: any = result;
+      if (!r || typeof r !== 'object' || Array.isArray(r) || r.deleted !== true) return '';
+      const id = present(r, 'id') ? clip(String(r.id), 60) : null;
+      return digestLine(
+        `Permanently deleted ${plural(1, 'CRM automation')}${id ? ` (${id})` : ''} — the delete matched a row, since deleteAutomation throws when it matches none.`,
+        'The result carries no name, trigger or active flag, so whether this rule had been firing on its own is not known from here.',
+      );
+    },
   },
 ];

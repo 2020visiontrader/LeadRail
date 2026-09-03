@@ -20,15 +20,42 @@
 // thirteenth gated capability — which is precisely how the gap opened. The
 // guard below enumerates CAPABILITIES at runtime, so a new `external_send` or
 // `spend` entry fails this file on the day it is added, with no edit here.
+//
+// WIDENED to `destructive` and `standing_rule`. The registry-driven guard did
+// its job for the two gates it covered and, exactly as designed, said nothing
+// about the two it did not: measured against the live registry, `destructive`
+// was 6 of 6 without a digest and `standing_rule` 7 of 7 — 100% uncovered on
+// both. Those are the highest-consequence gates left. `destructive` removes
+// data; `standing_rule` installs behaviour that keeps running after the turn
+// ends. A false claim in either direction — "deleted it" when the delete
+// matched nothing, or silence when an automation is now live — is not
+// recoverable the way a wrong read is.
+//
+// STILL OUT: `internal_write` (45 of 62 without a digest) and `read` (26 of
+// 96). Their absence here is an OPEN ITEM, not an accepted state — see
+// BACKLOG.md §12, which carries the counts and what proves it closed. They are
+// left out only because that surface is 71 capabilities and belongs in its own
+// packet; adding them to GUARDED_GATES is the whole change when it is done.
 
 import { describe, it, expect } from 'vitest';
 import { CAPABILITIES } from '@/lib/capabilities/registry';
-import type { Capability } from '@/lib/capabilities/types';
+import { SENSITIVE_GATES, type Capability } from '@/lib/capabilities/types';
 
-/** Every registered capability whose false claim costs money or reaches a real
- *  person. Read from the registry, never listed by hand. */
+/** The gates this file requires a digest on. Adding a gate here is how the
+ *  guard grows; nothing else in the file needs to change. */
+const GUARDED_GATES = ['external_send', 'spend', 'destructive', 'standing_rule'] as const;
+
+/** Every registered capability whose false claim costs money, reaches a real
+ *  person, destroys data, or arms something that runs unattended. Read from the
+ *  registry, never listed by hand. */
 const costly = (): Capability[] =>
-  CAPABILITIES.filter((c) => c.gate === 'external_send' || c.gate === 'spend');
+  CAPABILITIES.filter((c) => (GUARDED_GATES as readonly string[]).includes(c.gate));
+
+/** Sensitive gates the guard does NOT yet cover. Asserted below so that this
+ *  list and GUARDED_GATES together stay exhaustive over SENSITIVE_GATES: a new
+ *  sensitive gate class cannot be added to lib/capabilities/types.ts and
+ *  quietly escape both. */
+const NOT_YET_GUARDED: string[] = [];
 
 describe('every capability that spends or sends declares a digest', () => {
   it('the gated set is non-empty (a registry that failed to load would vacuously pass)', () => {
@@ -36,13 +63,48 @@ describe('every capability that spends or sends declares a digest', () => {
     // — a real failure mode in this repo, see the SCHEDULED_CAPABILITIES note
     // in lib/capabilities/registry.ts — would turn the guard below into a test
     // that asserts nothing at all.
-    expect(costly().length).toBeGreaterThanOrEqual(12);
+    // 12 external_send+spend when this file was written, plus the 13
+    // destructive+standing_rule capabilities the widening brought in.
+    expect(costly().length).toBeGreaterThanOrEqual(25);
+  });
+
+  it('every sensitive gate is either guarded or explicitly named as not yet guarded', () => {
+    // Keeps the two lists honest against the type. Without it, a new sensitive
+    // gate class added to SENSITIVE_GATES would be covered by neither, and
+    // nothing would say so.
+    const uncovered = SENSITIVE_GATES.filter(
+      (g) => !(GUARDED_GATES as readonly string[]).includes(g) && !NOT_YET_GUARDED.includes(g),
+    );
+    expect(uncovered).toEqual([]);
   });
 
   it('none of them is missing one', () => {
+    // The message has to name the capability AND its gate: "a digest is
+    // missing" sends the reader back to the registry to work out which of 183
+    // entries it means, and the gate is what tells them how bad it is.
     const missing = costly().filter((c) => typeof c.digest !== 'function').map((c) => `${c.gate}:${c.name}`);
-    expect(missing).toEqual([]);
+    expect(missing, `capabilities on a guarded gate with no digest (gate:name): ${missing.join(', ') || 'none'}`).toEqual([]);
   });
+
+  // Per-gate coverage, so a failure points at ONE capability by name rather
+  // than at a list. The gate list is derived, so a new gate added to
+  // GUARDED_GATES generates its own cases with no edit here.
+  for (const gate of GUARDED_GATES) {
+    describe(`gate: ${gate}`, () => {
+      for (const c of CAPABILITIES.filter((x) => x.gate === gate)) {
+        it(`${c.name} declares a digest`, () => {
+          expect(
+            typeof c.digest,
+            `${c.name} is gated '${gate}' and declares no digest. Without one, successObservation() ` +
+            'falls back to the raw JSON and the model states the outcome itself — which is how it came ' +
+            'to tell a user a batch "already went out to all 13 contacts" when nothing had been sent. ' +
+            'Add a digest in the capability\'s own file that reads the RETURN, not the arguments, and ' +
+            "returns '' when the result carries no evidence.",
+          ).toBe('function');
+        });
+      }
+    });
+  }
 });
 
 describe('a digest speaks only for a result that carries evidence', () => {
@@ -287,5 +349,249 @@ describe('the outcome is read from the RETURN, never restated from the ARGUMENTS
   it('hideSocialComment distinguishes unhide from hide', () => {
     const line = digestFor('hideSocialComment')({ commentId: 'c-1', hide: false }, { success: true });
     expect(line).toMatch(/unhide/i);
+  });
+});
+
+describe('a destructive digest makes the SCOPE of what was removed legible', () => {
+  const digestFor = (name: string) => {
+    const c = CAPABILITIES.find((x) => x.name === name);
+    if (!c?.digest) throw new Error(`${name} has no digest`);
+    return c.digest;
+  };
+
+  // deleteSocialAutomation is the only delete in the registry whose return
+  // carries the deleted row's real prior state: ownedRule() loads it BEFORE the
+  // delete and throws when it is absent. `was.enabled` is the fact a reviewer
+  // actually needs — deleting a dormant rule changes nothing about the future,
+  // deleting a live one stops a standing behaviour.
+  it('deleteSocialAutomation says a LIVE rule was the thing removed', () => {
+    const line = digestFor('deleteSocialAutomation')(
+      { id: 'REQUESTED_ID' },
+      { deleted: true, id: 'rule-9', was: { trigger: 'comment_received', action: 'reply', enabled: true } },
+    );
+    expect(line).toContain('rule-9');
+    expect(line).not.toContain('REQUESTED_ID');   // the id reported is the one the result carries
+    expect(line).toMatch(/SWITCHED ON/);
+    expect(line).toMatch(/comment_received/);
+    expect(line).toMatch(/\b1 social automation rule\b/);
+  });
+
+  it('deleteSocialAutomation does not imply a dormant rule was doing anything', () => {
+    const line = digestFor('deleteSocialAutomation')(
+      { id: 'rule-9' },
+      { deleted: true, id: 'rule-9', was: { trigger: 'dm_received', action: 'hide', enabled: false } },
+    );
+    expect(line).toMatch(/already switched off/i);
+    expect(line).not.toMatch(/SWITCHED ON/);
+  });
+
+  // THE ARGS-VS-RETURN CASE FOR A DELETE. deleteDeal (lib/crm.ts) returns a
+  // bare `{ ok: true }` — no id, no name, no amount. The only place the deal's
+  // identity exists is the request, and printing it as the outcome is exactly
+  // the failure this mechanism exists to stop.
+  it('deleteDeal reports one deal and does NOT restate the id it was asked about', () => {
+    const line = digestFor('deleteDeal')({ id: 'deal-abc-123' }, { ok: true });
+    expect(line).not.toContain('deal-abc-123');
+    expect(line).toMatch(/\b1 deal\b/);
+    expect(line).toMatch(/soft delete/i);       // the scope: hidden, not erased
+    expect(line).toMatch(/carries no id/i);     // and it says why no id is given
+  });
+
+  // deleteContentItem/deletePillar (lib/content/store.ts) issue .delete() with
+  // NO .select() and no row count, so `{id, deleted:true}` is returned whether
+  // or not a row existed. The digest may report the accepted call; it may NOT
+  // report a row as removed.
+  it('deleteContentItem does not claim a row existed to delete', () => {
+    const line = digestFor('deleteContentItem')({ itemId: 'item-1' }, { id: 'item-1', deleted: true });
+    expect(line).toMatch(/at most that one row/i);
+    expect(line).toMatch(/NOT evidence a row existed/i);
+    expect(line).not.toMatch(/\bDeleted 1\b|\bRemoved 1\b/);
+  });
+
+  it('deleteContentPillar states that no content was deleted with the pillar', () => {
+    const line = digestFor('deleteContentPillar')({ pillarId: 'p-1' }, { id: 'p-1', deleted: true });
+    expect(line).toMatch(/No content items were deleted/i);
+    expect(line).toMatch(/NOT evidence a pillar existed/i);
+  });
+
+  // deleteAutomation THROWS 'not found' on a no-match delete, so unlike the two
+  // above, a result really is evidence of one removed row — and the digest is
+  // allowed to say so. It must still not invent the rule's state.
+  it('deleteAutomation claims exactly one row and admits what it cannot know', () => {
+    const line = digestFor('deleteAutomation')({ automationId: 'auto-1' }, { id: 'auto-1', deleted: true });
+    expect(line).toMatch(/\b1 CRM automation\b/);
+    expect(line).toMatch(/no name, trigger or active flag/i);
+  });
+
+  it('deleteSocialComment bounds the scope to one comment and admits it is not a re-read', () => {
+    const line = digestFor('deleteSocialComment')(
+      { commentId: 'c-1', platform: 'facebook' },
+      { deleted: true, commentId: 'c-1' },
+    );
+    expect(line).toMatch(/one comment/i);
+    expect(line).toMatch(/not a re-read/i);
+  });
+});
+
+describe('a standing_rule digest states that the thing KEEPS RUNNING after this turn', () => {
+  const digestFor = (name: string) => {
+    const c = CAPABILITIES.find((x) => x.name === name);
+    if (!c?.digest) throw new Error(`${name} has no digest`);
+    return c.digest;
+  };
+
+  // The property that distinguishes this gate from every other write. A digest
+  // that reads like a one-off action ("automation created") is actively
+  // misleading: approving one send authorises one action, approving a standing
+  // rule authorises an unbounded stream of them. Driven off the registry so a
+  // standing_rule capability added later must supply a fixture here or fail.
+  const ARMED: Record<string, [any, any]> = {
+    promoteObservation: [{ observationId: 'obs-1' }, { promoted: true, fact: 'Tuesday sends open best' }],
+    createSocialAutomation: [
+      { platform: 'facebook', externalId: 'page-1', trigger: 'comment_received', action: 'reply' },
+      { id: 'rule-1', trigger: 'comment_received', action: 'reply', daily_cap: 25, enabled: true },
+    ],
+    enableSocialAutomation: [{ id: 'rule-1' }, { id: 'rule-1', trigger: 'comment_received', action: 'reply', daily_cap: 25, enabled: true }],
+    resumeAllSocialAutomations: [{}, { id: 'acct-1', social_automations_paused: false }],
+    createAutomation: [
+      { name: 'Tag repliers', trigger: 'email.replied', action: 'add_tag' },
+      { id: 'auto-1', name: 'Tag repliers', trigger: { type: 'email.replied' }, action: { type: 'add_tag', config: { tag: 'hot' } }, is_active: true },
+    ],
+    enableAutomation: [
+      { automationId: 'auto-1' },
+      { id: 'auto-1', name: 'Tag repliers', trigger: { type: 'email.replied' }, action: { type: 'add_tag', config: { tag: 'hot' } }, is_active: true },
+    ],
+    createScheduledTask: [
+      { name: 'Daily digest', prompt: 'summarise', interval: 'daily' },
+      { id: 'task-1', name: 'Daily digest', interval: 'daily', enabled: true, next_run_at: '2026-09-04T06:00:00Z' },
+    ],
+  };
+
+  const standing = CAPABILITIES.filter((c) => c.gate === 'standing_rule');
+
+  it('every standing_rule capability has a fixture here (a new one must not slip through)', () => {
+    expect(standing.map((c) => c.name).filter((n) => !(n in ARMED))).toEqual([]);
+  });
+
+  for (const c of standing) {
+    it(`${c.name} says the effect outlasts this turn`, () => {
+      const [args, result] = ARMED[c.name];
+      const line = c.digest!(args, result) ?? '';
+      expect(line).not.toBe('');
+      // "after this turn", "future turns", "from now on" — some statement of
+      // continuation. The exact wording is the capability's business; that it
+      // makes the claim at all is this file's.
+      expect(
+        line,
+        `${c.name}'s digest for an ARMED result does not say the rule keeps acting beyond this turn: "${line}"`,
+      ).toMatch(/after this turn|future turns|from now on|until it is (switched off|withdrawn)/i);
+      // …and does not simultaneously read as dormant. Without this the check
+      // is satisfiable by the OFF-branch wording, which also says "after this
+      // turn" (as in "nothing happens after this turn until it is enabled").
+      // Found by revert-checking: a digest reading `enabled` off the ARGUMENTS
+      // instead of the row passed this test until the line below was added.
+      expect(
+        line,
+        `${c.name}'s digest describes an ARMED result as dormant: "${line}"`,
+      // Only the dormant markers. NOT a blanket /did not/: resume's correct
+      // line contains "This did NOT switch any rule on", which is the truthful
+      // negative this gate needs, not a sign the rule is dormant.
+      ).not.toMatch(/does NOTHING yet|will NOT run|is NOT switched on|was NOT promoted/i);
+    });
+  }
+
+  // --- ARGS VS RETURN, one per capability where they can diverge -----------
+
+  // The clearest divergence in this gate. promoteEdge (lib/memory/edges.ts)
+  // refuses on four paths and returns {promoted:false, reason}. The request
+  // named an observation to promote; the outcome is that nothing was promoted.
+  it('promoteObservation does not announce a rule the platform refused to create', () => {
+    const line = digestFor('promoteObservation')(
+      { observationId: 'obs-1' },
+      { promoted: false, reason: 'already established' },
+    );
+    expect(line).toMatch(/NOT promoted/);
+    expect(line).toMatch(/already established/);
+    expect(line).not.toMatch(/after this turn|will act on it by itself/i);
+  });
+
+  // createSocialAutomation's stored daily_cap falls back to 25 when the
+  // argument is absent, and migration 040's CHECK is the real bound. The cap
+  // the rule will honour is the row's, never the argument's.
+  it('createSocialAutomation reports the STORED daily cap, not the requested one', () => {
+    const line = digestFor('createSocialAutomation')(
+      { platform: 'facebook', externalId: 'page-1', trigger: 'comment_received', action: 'reply', dailyCap: 200 },
+      { id: 'rule-1', trigger: 'comment_received', action: 'reply', daily_cap: 25, enabled: false },
+    );
+    expect(line).toContain('25 actions a day');
+    expect(line).not.toContain('200');
+    // Created OFF: it must NOT read as something now running.
+    expect(line).toMatch(/does NOTHING yet/);
+  });
+
+  // An enable that came back with the row still off is a rule that is still
+  // dormant, however the call was framed.
+  it('enableSocialAutomation believes the row, not the request', () => {
+    const line = digestFor('enableSocialAutomation')({ id: 'rule-1' }, { id: 'rule-1', enabled: false, daily_cap: 25 });
+    expect(line).toMatch(/NOT switched on/);
+    expect(line).not.toMatch(/SWITCHED ON\b/);
+  });
+
+  it('enableAutomation believes is_active on the row, not the request', () => {
+    const line = digestFor('enableAutomation')(
+      { automationId: 'auto-1' },
+      { id: 'auto-1', name: 'Tag repliers', is_active: false },
+    );
+    expect(line).toMatch(/NOT switched on/);
+    expect(line).not.toMatch(/is now SWITCHED ON/);
+  });
+
+  // Un-pausing the account-level gate is not the same as enabling any rule,
+  // and the result says nothing at all about how many are on. Inferring a live
+  // fleet here is the same shape as the "went out to all 13 contacts" defect.
+  it('resumeAllSocialAutomations does not imply any rule is now live', () => {
+    const line = digestFor('resumeAllSocialAutomations')({}, { id: 'acct-1', social_automations_paused: false });
+    expect(line).toMatch(/did NOT switch any rule on/i);
+    expect(line).toMatch(/says nothing about how many are enabled/i);
+  });
+
+  it('resumeAllSocialAutomations reports a row that is still paused as still paused', () => {
+    const line = digestFor('resumeAllSocialAutomations')({}, { id: 'acct-1', social_automations_paused: true });
+    expect(line).toMatch(/still paused/i);
+    expect(line).not.toMatch(/may act by itself again/i);
+  });
+
+  // createScheduledTask defaults to ARMED. Reading `enabled` off the arguments
+  // would report a stored draft where the row describes an unattended agent
+  // loop with a first run already scheduled — and next_run_at exists ONLY on
+  // the return, computed by the store.
+  it('createScheduledTask reports the row as armed even when the args said otherwise', () => {
+    const line = digestFor('createScheduledTask')(
+      { name: 'Daily digest', prompt: 'summarise', interval: 'weekly', enabled: false },
+      { id: 'task-1', name: 'Daily digest', interval: 'daily', enabled: true, next_run_at: '2026-09-04T06:00:00Z' },
+    );
+    expect(line).toMatch(/ARMED/);
+    expect(line).toContain('2026-09-04T06:00:00Z');
+    expect(line).toContain('daily');
+    expect(line).not.toContain('weekly');
+  });
+
+  it('createScheduledTask reports a row stored OFF as not running', () => {
+    const line = digestFor('createScheduledTask')(
+      { name: 'Daily digest', prompt: 'summarise', interval: 'daily' },
+      { id: 'task-1', name: 'Daily digest', interval: 'daily', enabled: false, next_run_at: '2026-09-04T06:00:00Z' },
+    );
+    expect(line).toMatch(/will NOT run on its own/);
+    expect(line).not.toMatch(/ARMED/);
+  });
+
+  it('createAutomation reports is_active from the stored row', () => {
+    const line = digestFor('createAutomation')(
+      { name: 'Tag repliers', trigger: 'email.replied', action: 'add_tag', config: { tag: 'hot' } },
+      { id: 'auto-1', name: 'Tag repliers', trigger: { type: 'email.replied' }, action: { type: 'add_tag', config: { tag: 'hot' } }, is_active: false },
+    );
+    expect(line).toMatch(/does NOTHING yet/);
+    expect(line).toContain('tag them "hot"');
+    expect(line).not.toMatch(/fires by itself/);
   });
 });
