@@ -33,6 +33,15 @@ export interface HermesContext {
   ventureName?: string;
   leadGoal?: string;
   sectors?: string[];
+  /** Server-derived account id (never client-supplied). Threaded into the
+   *  classify call so routing shows up in ai_usage instead of being invisible
+   *  there. */
+  accountId?: string;
+  /** Absolute epoch-ms deadline for the turn this routing call belongs to.
+   *  Optional/additive: a caller that omits it gets byte-identical
+   *  (unbounded) behaviour. A call made while a user is waiting on a turn
+   *  must carry THAT turn's deadline — never an invented one. */
+  deadlineAt?: number;
 }
 
 // Deterministic intent → (taskKind, seed skills) map. Also the fallback brain.
@@ -197,6 +206,8 @@ export async function hermesRoute(request: string, ctx: HermesContext = {}): Pro
       temperature: 0.1,
       maxOutputTokens: 400,
       model: pickModel('classify'),
+      accountId: ctx.accountId,
+      deadlineAt: ctx.deadlineAt,
     });
     const m = raw.match(/\{[\s\S]*\}/);
     const parsed = m ? JSON.parse(m[0]) : {};

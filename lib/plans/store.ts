@@ -423,6 +423,19 @@ export async function recordProgress(planId: string, stepsSpent: number, error?:
   }
 }
 
+/** Clear a consumed approval id off a step, so a resumed-and-executed grant
+ *  does not linger and get mistaken for a still-usable one. Best-effort, like
+ *  its neighbours — a failure here must not fail the tick that already did
+ *  the real work. */
+export async function clearStepApproval(stepId: string): Promise<void> {
+  try {
+    await supabase
+      .from('agent_plan_steps')
+      .update({ approval_id: null, updated_at: new Date().toISOString() })
+      .eq('id', stepId);
+  } catch { /* best-effort */ }
+}
+
 /** Approve a draft plan into a running one — the "go" in plan mode. */
 export async function approvePlan(accountId: string, planId: string): Promise<boolean> {
   try {

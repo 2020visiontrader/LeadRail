@@ -16,6 +16,23 @@ const runAgent = vi.fn(async (_input?: any) => agentResult);
 const loadTranscriptMock = vi.fn(async (..._a: any[]) => [] as any[]);
 const saveConversationMock = vi.fn(async (..._a: any[]) => 'conv-saved');
 
+// D1 (G15) — approval resume. Keyed by approval id, per-test.
+let approvalRows: Record<string, { id: string; state: string; tool: string } | undefined> = {};
+let approvalArgs: Record<string, Record<string, any> | null> = {};
+const getApprovalMock = vi.fn(async (_accountId: string, id: string) => approvalRows[id] ?? null);
+const decryptApprovalArgsMock = vi.fn(async (_accountId: string, id: string) => approvalArgs[id] ?? null);
+vi.mock('@/lib/approvals/store', () => ({
+  getApproval: (...a: any[]) => getApprovalMock(...(a as [any, any])),
+  decryptApprovalArgs: (...a: any[]) => decryptApprovalArgsMock(...(a as [any, any])),
+}));
+
+// D2 (G14) — grounding. loadAgentContext never throws in reality; the mock
+// mirrors that by returning a fixed string unless a test overrides it.
+const loadAgentContextMock = vi.fn(async (..._a: any[]) => 'GROUNDING BLOCK');
+vi.mock('@/lib/agent/context', () => ({
+  loadAgentContext: (...a: any[]) => loadAgentContextMock(...(a as [any])),
+}));
+
 function rowsFor(table: string) { return table === 'agent_plans' ? plans : steps; }
 
 vi.mock('@/lib/db', () => ({
@@ -532,5 +549,171 @@ describe('batch progress is reported into the plan\'s conversation', () => {
 
     expect(loadTranscriptMock).not.toHaveBeenCalled();
     expect(saveConversationMock).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G15 — approving a blocked plan step must RESUME it through runAgent's
+// existing approve/consume path, not just release it back to `pending` and
+// let the model propose the same sensitive call again (which re-blocks
+// forever and never executes). See lib/plans/runner.ts's grantedApprovalFor.
+// ---------------------------------------------------------------------------
+describe('a step with a granted approval is resumed through it (G15)', () => {
+  beforeEach(() => {
+    vi.resetModules(); runAgent.mockClear();
+    getApprovalMock.mockClear(); decryptApprovalArgsMock.mockClear();
+    approvalRows = {}; approvalArgs = {};
+    agentResult = { status: 'done', message: 'Sent.', steps: [{}], transcript: [] };
+    seed();
+    // Simulate what resumeStepForApproval already leaves behind: the step
+    // back to `pending` (so nextStep picks it up), approval_id still set
+    // (unblockStep never clears it — clearing only happens after a real
+    // resume, which is exactly what this test is proving).
+    steps[0].approval_id = 'appr-1';
+  });
+
+  it('hands runAgent the approvalId, tool, and decrypted args of an APPROVED row', async () => {
+    approvalRows['appr-1'] = { id: 'appr-1', state: 'approved', tool: 'sendEmail' };
+    approvalArgs['appr-1'] = { to: 'lead@example.com', subject: 'Hi' };
+
+    await tick();
+
+    expect(getApprovalMock).toHaveBeenCalledWith('acct-1', 'appr-1');
+    const input = runAgent.mock.calls[0]?.[0];
+    expect(input?.approve).toEqual({
+      approvalId: 'appr-1', tool: 'sendEmail', args: { to: 'lead@example.com', subject: 'Hi' },
+    });
+  });
+
+  it('clears the approval off the step once it has been handed to runAgent and the step did not re-block', async () => {
+    approvalRows['appr-1'] = { id: 'appr-1', state: 'approved', tool: 'sendEmail' };
+    approvalArgs['appr-1'] = { to: 'lead@example.com' };
+
+    await tick();
+
+    expect(steps[0].approval_id).toBeNull();
+  });
+
+  it('does NOT pass approve for a row in state "executed" — single-use, already spent', async () => {
+    approvalRows['appr-1'] = { id: 'appr-1', state: 'executed', tool: 'sendEmail' };
+    approvalArgs['appr-1'] = { to: 'lead@example.com' };
+
+    await tick();
+
+    const input = runAgent.mock.calls[0]?.[0];
+    expect(input?.approve).toBeUndefined();
+  });
+
+  it('does NOT pass approve for a row still in state "pending" — nobody has granted it yet', async () => {
+    approvalRows['appr-1'] = { id: 'appr-1', state: 'pending', tool: 'sendEmail' };
+    approvalArgs['appr-1'] = { to: 'lead@example.com' };
+
+    await tick();
+
+    const input = runAgent.mock.calls[0]?.[0];
+    expect(input?.approve).toBeUndefined();
+  });
+
+  it('does NOT pass approve when there is no approval row at all', async () => {
+    // approvalRows stays empty — getApproval resolves null.
+    await tick();
+    const input = runAgent.mock.calls[0]?.[0];
+    expect(input?.approve).toBeUndefined();
+  });
+
+  it('degrades to no approve, without throwing, when decryptApprovalArgs returns null', async () => {
+    approvalRows['appr-1'] = { id: 'appr-1', state: 'approved', tool: 'sendEmail' };
+    // approvalArgs['appr-1'] left unset -> decryptApprovalArgsMock resolves null.
+
+    const r = await tick();
+
+    const input = runAgent.mock.calls[0]?.[0];
+    expect(input?.approve).toBeUndefined();
+    expect(r.stepsCompleted).toBe(1); // the tick still completed the step normally
+  });
+
+  it('a step with no approval_id at all never calls getApproval — the common case stays cheap', async () => {
+    steps[0].approval_id = null;
+    await tick();
+    expect(getApprovalMock).not.toHaveBeenCalled();
+    const input = runAgent.mock.calls[0]?.[0];
+    expect(input?.approve).toBeUndefined();
+  });
+
+  it('same behaviour on the BATCH path: a batch step resumed with a granted approval passes it through', async () => {
+    const items = Array.from({ length: 5 }, (_, i) => `lead-${i}`);
+    seedBatch({ over: items, itemsPerTick: 3 });
+    steps[0].approval_id = 'appr-1';
+    approvalRows['appr-1'] = { id: 'appr-1', state: 'approved', tool: 'sendEmail' };
+    approvalArgs['appr-1'] = { to: 'lead@example.com' };
+    agentResult = { status: 'done', message: 'ok', steps: [{}], transcript: [] };
+
+    await tick();
+
+    const input = runAgent.mock.calls[0]?.[0];
+    expect(input?.approve).toEqual({
+      approvalId: 'appr-1', tool: 'sendEmail', args: { to: 'lead@example.com' },
+    });
+    expect(steps[0].approval_id).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G14 — a plan step must run GROUNDED: the same venture profile, account
+// snapshot, durable memory, and conversation transcript an interactive turn
+// gets, via loadAgentContext / loadTranscript. Without it "the plan is in
+// your context above" is false and a step cannot see what earlier steps did.
+// ---------------------------------------------------------------------------
+describe('a plan step is grounded like an interactive turn (G14)', () => {
+  beforeEach(() => {
+    vi.resetModules(); runAgent.mockClear();
+    loadAgentContextMock.mockClear(); loadTranscriptMock.mockClear();
+    loadAgentContextMock.mockResolvedValue('VENTURE + ACCOUNT + MEMORY GROUNDING');
+    loadTranscriptMock.mockResolvedValue([{ role: 'user', content: 'earlier turn' }]);
+    agentResult = { status: 'done', message: 'Did it.', steps: [{}], transcript: [] };
+    seed();
+  });
+
+  it('single-shot step: passes a non-empty agentContext, built from the plan\'s account/brand/conversation', async () => {
+    await tick();
+    expect(loadAgentContextMock).toHaveBeenCalledWith({
+      accountId: 'acct-1', brandId: undefined, conversationId: 'c1', query: 'First',
+    });
+    const input = runAgent.mock.calls[0]?.[0];
+    expect(input?.agentContext).toBe('VENTURE + ACCOUNT + MEMORY GROUNDING');
+  });
+
+  it('single-shot step: passes the conversation transcript', async () => {
+    await tick();
+    expect(loadTranscriptMock).toHaveBeenCalledWith('c1', 'acct-1');
+    const input = runAgent.mock.calls[0]?.[0];
+    expect(input?.transcript).toEqual([{ role: 'user', content: 'earlier turn' }]);
+  });
+
+  it('batch step: passes a non-empty agentContext and the transcript too', async () => {
+    const items = Array.from({ length: 5 }, (_, i) => `lead-${i}`);
+    seedBatch({ over: items, itemsPerTick: 3 });
+
+    await tick();
+
+    const input = runAgent.mock.calls[0]?.[0];
+    expect(input?.agentContext).toBe('VENTURE + ACCOUNT + MEMORY GROUNDING');
+    expect(input?.transcript).toEqual([{ role: 'user', content: 'earlier turn' }]);
+  });
+
+  it('degrades to no agentContext, without throwing, when loadAgentContext fails', async () => {
+    loadAgentContextMock.mockRejectedValueOnce(new Error('down'));
+    const r = await tick();
+    const input = runAgent.mock.calls[0]?.[0];
+    expect(input?.agentContext).toBeUndefined();
+    expect(r.stepsCompleted).toBe(1); // the tick still completes — grounding is best-effort
+  });
+
+  it('does not fetch a transcript when the plan has no conversationId', async () => {
+    plans[0].conversation_id = null;
+    await tick();
+    expect(loadTranscriptMock).not.toHaveBeenCalled();
+    const input = runAgent.mock.calls[0]?.[0];
+    expect(input?.transcript).toBeUndefined();
   });
 });

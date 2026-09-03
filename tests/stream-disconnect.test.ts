@@ -135,6 +135,11 @@ vi.mock('@/lib/agent/memory', () => ({
   // throws before runAgentStream is ever reached.
   markConversationRunning: async () => {},
   clearConversationRunning: async () => {},
+  // Cooperative stop (migration 083) — irrelevant to what this file tests,
+  // but the route now calls this unconditionally at the start of every turn
+  // (same call site as markConversationRunning), so it needs a no-op
+  // stand-in or the call throws before runAgentStream is ever reached.
+  clearStopRequest: async () => {},
 }));
 
 // Controllable: the test releases the gate to simulate the agent run reaching

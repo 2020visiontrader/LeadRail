@@ -28,7 +28,7 @@ import {
 } from './tools';
 import { loadExternalCapabilities } from '@/lib/capabilities/external-mcp';
 import type { Capability, Analysis, Basis } from '@/lib/capabilities/types';
-import { estimateTokens, carryoverBlock, type CarryoverMemo } from './memory';
+import { estimateTokens, carryoverBlock, isStopRequested, type CarryoverMemo } from './memory';
 import {
   loadPersonaForAgent, resolveMentionedPersonas, getCoordinator, listPersonas,
   buildPersonaSystemBlock, buildCoordinatorSystemBlock, type PersonaRow,
@@ -332,13 +332,15 @@ async function selectSkillsForTurn(
   enabled: { slug: string; name: string; instructions: string }[],
   message: string | undefined,
   ventureName: string | undefined,
+  accountId?: string,
+  deadlineAt?: number,
 ): Promise<{ slug: string; name: string; instructions: string }[]> {
   if (enabled.length <= SKILL_ROUTING_THRESHOLD) return enabled;
   const text = (message || '').trim();
   if (!text) return enabled.slice(0, MAX_ROUTED_SKILLS);
 
   try {
-    const plan = await hermesRoute(text, ventureName ? { ventureName } : {});
+    const plan = await hermesRoute(text, { ...(ventureName ? { ventureName } : {}), accountId, deadlineAt });
     const wanted = new Set(plan.skillIds || []);
     // Intersect: Hermes routes over the whole catalog, but an account may not
     // have every routed skill enabled. Enabled-ness always wins.
@@ -732,6 +734,7 @@ async function answerFromObservations(
   input: RunAgentInput,
   messages: ChatMessage[],
   personaBlock?: string,
+  deadlineAt?: number,
 ): Promise<string | null> {
   const hasEvidence = messages.some(
     (m) => typeof m.content === 'string' && m.content.startsWith('OBSERVATION: '),
@@ -745,6 +748,7 @@ async function answerFromObservations(
       transcript: messages,
       agentContext: input.agentContext,
       personaBlock,
+      deadlineAt,
     });
     const trimmed = stripAiMarkers(composed).trim();
     return trimmed || null;
@@ -1021,6 +1025,30 @@ export function deadlineSalvageFraming(steps: AgentStep[]): { intro: string; out
 export const DEADLINE_EMPTY_MESSAGE =
   "This turn ran out of time before it could produce an answer, and nothing had completed yet to salvage. " +
   'Retrying the exact same request will very likely hit the same limit — try a narrower one.';
+
+// STOP — cooperative, server-side stop (migration 083). A user clicking Stop
+// used to abort only the browser's own fetch; the server-side turn kept
+// running regardless (spending, executing tools, sending approved actions),
+// staying flagged "running" for up to RUNNING_STALE_MS. isStopRequested is
+// checked at the SAME point as the deadline check above — between steps,
+// before starting another model call — never mid-tool-call, so a half
+// executed send is never possible from this path. Reuses buildSalvageMessage
+// exactly like the deadline path does (CLAUDE.md: extract for the path, not
+// the parts) — only the framing text below differs.
+export function stopSalvageFraming(steps: AgentStep[]): { intro: string; outro: string } {
+  const progress = describeStepsProgress(steps);
+  return {
+    intro: `This turn was stopped — ${progress}before it stopped. `,
+    outro: 'Nothing further ran after the stop. Send a new message when you are ready and it will start a fresh turn.',
+  };
+}
+
+// The bare fallback when a stop landed with NOTHING salvageable yet (zero
+// qualifying steps) — mirrors DEADLINE_EMPTY_MESSAGE's role for the deadline
+// path. Distinct wording on purpose: this was requested, not an outage and
+// not a timeout, so neither "try again" nor "ran out of time" is honest here.
+export const STOP_EMPTY_MESSAGE =
+  'This turn was stopped before it produced an answer, and nothing had completed yet to salvage.';
 
 // ESCALATION — Phase 2. A turn that runs out of TIME is not a turn that ran
 // out of WORK: "try breaking this into a smaller request" asks the user to do
@@ -1527,10 +1555,11 @@ async function withMaterialUnderstanding(
   agentContext: string | undefined,
   message: string | undefined,
   accountId: string,
+  deadlineAt: number,
 ): Promise<string | undefined> {
   const material = attachmentMaterial(agentContext);
   if (!material) return agentContext;
-  const understanding = await comprehend({ message: message || '', material, accountId });
+  const understanding = await comprehend({ message: message || '', material, accountId, deadlineAt });
   if (!understanding) return agentContext;
   const idx = agentContext!.indexOf(ATTACHMENT_MARKER);
   if (idx === -1) return agentContext; // defensive — attachmentMaterial already found it above
@@ -1566,7 +1595,7 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
   // attached, which is the common case.
   const input: RunAgentInput = {
     ...rawInput,
-    agentContext: await withMaterialUnderstanding(rawInput.agentContext, rawInput.message, accountId),
+    agentContext: await withMaterialUnderstanding(rawInput.agentContext, rawInput.message, accountId, turnDeadline),
   };
   const pinnedPersona = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
   const allEnabledSkills = await loadEnabledSkillsForAgent(accountId);
@@ -1576,7 +1605,7 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
   // cannot resurrect a skill that was since turned off.
   const enabledSkills = input.pinnedSkills?.length
     ? allEnabledSkills.filter((sk) => input.pinnedSkills!.includes(sk.slug))
-    : await selectSkillsForTurn(allEnabledSkills, input.message, brandContext?.name);
+    : await selectSkillsForTurn(allEnabledSkills, input.message, brandContext?.name, accountId, turnDeadline);
   // Migration 080 (message_feedback.skill_slugs): the routed skill slugs for
   // THIS turn, exposed on AgentResult so a feedback vote can snapshot which
   // skills produced the message being voted on. Computed once, right where
@@ -1707,6 +1736,21 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
       // model call failed) — fall through to EXACTLY today's behaviour.
       break;
     }
+    // Cooperative stop (migration 083) — checked at the SAME point as the
+    // deadline above: between steps, before starting another model call,
+    // never mid-tool-call. Only meaningful once a conversationId exists (an
+    // approve-resume or an existing chat has one; a brand-new chat's turn has
+    // nothing yet for POST /api/agent/stop to target). Fail-open:
+    // isStopRequested never throws, so a transient DB read failure cannot
+    // itself interrupt a turn nobody asked to stop.
+    if (input.conversationId && await isStopRequested(input.conversationId, accountId)) {
+      log.warn('agent: stop requested, ending turn early', {
+        accountId, step: i, afterTool: lastToolName ?? null,
+      });
+      const salvage = buildSalvageMessage(steps, extraTools, stopSalvageFraming(steps));
+      if (salvage) return { status: 'salvage', message: salvage, transcript: messages, steps, skillSlugs };
+      return { status: 'error', message: STOP_EMPTY_MESSAGE, transcript: messages, steps, skillSlugs };
+    }
     let raw: string;
     // Set by the router once the ai_usage row for the attempt that ANSWERED has
     // been written, so this turn can report back whether the text was usable
@@ -1796,7 +1840,7 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
       });
       // Salvage the turn from the evidence already gathered before declaring it
       // a failure — see answerFromObservations.
-      const rescued = await answerFromObservations(input, messages, personaBlock);
+      const rescued = await answerFromObservations(input, messages, personaBlock, turnDeadline);
       if (rescued) {
         messages.push({ role: 'assistant', content: rescued });
         return { status: 'done', message: rescued, transcript: messages, steps, skillSlugs };
@@ -1813,7 +1857,7 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
       const message = stripAiMarkers(AGENT_COMPOSE
         ? await composeAnswer({
             accountId, userMessage: input.message, draft, transcript: messages,
-            agentContext: input.agentContext, personaBlock,
+            agentContext: input.agentContext, personaBlock, deadlineAt: turnDeadline,
           })
         : draft);
       // Overwrite the raw JSON envelope just pushed above with the actual
@@ -2292,7 +2336,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
   // into the Promise.all above; it would only add a branch for no benefit.
   const input: RunAgentInput = {
     ...rawInput,
-    agentContext: await withMaterialUnderstanding(rawInput.agentContext, rawInput.message, accountId),
+    agentContext: await withMaterialUnderstanding(rawInput.agentContext, rawInput.message, accountId, turnDeadline),
   };
   // Hermes picks the 1-4 that apply to THIS request instead of injecting all.
   // This is the one hop that must stay sequential — it genuinely depends on
@@ -2302,7 +2346,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
   // cannot resurrect a skill that was since turned off.
   const enabledSkills = input.pinnedSkills?.length
     ? allEnabledSkills.filter((sk) => input.pinnedSkills!.includes(sk.slug))
-    : await selectSkillsForTurn(allEnabledSkills, input.message, brandContext?.name);
+    : await selectSkillsForTurn(allEnabledSkills, input.message, brandContext?.name, accountId, turnDeadline);
   // Migration 080 (message_feedback.skill_slugs) — identical computation to
   // runAgentImpl's, right where the two loops already share the same routing
   // decision (CLAUDE.md: the two loops must stay identical).
@@ -2428,6 +2472,27 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
       // Escalation declined — fall through to EXACTLY today's behaviour.
       break;
     }
+    // Cooperative stop (migration 083) — mirrors runAgentImpl's check above
+    // EXACTLY (CLAUDE.md: both loops stay identical): between steps, before
+    // starting another model call, never mid-tool-call. Emitted as a
+    // terminal `final` event (salvage: true) instead of returned, same
+    // pattern as the deadline branch below, so the streaming turn ends with
+    // what was accomplished rather than a bare `error` event carrying
+    // nothing.
+    if (input.conversationId && await isStopRequested(input.conversationId, accountId)) {
+      log.warn('agent stream: stop requested, ending turn early', {
+        accountId, step: i, afterTool: lastToolName ?? null,
+      });
+      const salvage = buildSalvageMessage(steps, extraTools, stopSalvageFraming(steps));
+      if (salvage) {
+        messages.push({ role: 'assistant', content: salvage });
+        await streamTokens(salvage, emit);
+        emit({ type: 'final', message: salvage, transcript: messages, salvage: true, skillSlugs });
+        return;
+      }
+      emit({ type: 'error', message: STOP_EMPTY_MESSAGE });
+      return;
+    }
     // Live "working" step BEFORE the blocking model call (from main): without
     // it the first event of a step only lands after generateChat returns, so the
     // trace renders in a burst at the end instead of showing motion.
@@ -2529,7 +2594,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
         accountId, step: i, afterTool: lastToolName ?? null, rawPreview: raw.slice(0, 500),
       });
       // Salvage from the evidence already gathered — see answerFromObservations.
-      const rescued = await answerFromObservations(input, messages, personaBlock);
+      const rescued = await answerFromObservations(input, messages, personaBlock, turnDeadline);
       if (rescued) {
         messages.push({ role: 'assistant', content: rescued });
         await streamTokens(rescued, emit);
@@ -2556,7 +2621,7 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
         message = await composeAnswer(
           {
             accountId, userMessage: input.message, draft, transcript: messages,
-            agentContext: input.agentContext, personaBlock,
+            agentContext: input.agentContext, personaBlock, deadlineAt: turnDeadline,
           },
           // Stream the answer to the UI as it is written. The `final` event
           // below still carries the complete, authoritative message.
@@ -2938,6 +3003,16 @@ const CARRYOVER_SYSTEM = [
   'Be terse and concrete. No prose outside the JSON.',
 ].join('\n');
 
+// generateCarryover is called `void`-fire-and-forget, AFTER the response has
+// already gone out (both app/api/agent/route.ts and .../stream/route.ts call
+// it inside their post-response/finally tail, once the user already has
+// their answer). It must NOT reuse the just-finished turn's own deadlineAt —
+// that deadline has typically already passed by the time this runs, and a
+// caller only ever holds the turn's deadline in scope right where this call
+// happens, not any looser one — so this call gets a fresh, independent bound
+// of its own rather than the turn's, and rather than running unbounded.
+const CARRYOVER_DEADLINE_MS = 60_000;
+
 export async function generateCarryover(transcript: ChatMessage[]): Promise<CarryoverMemo> {
   const convo = transcript
     .filter((m) => m.role === 'user' || m.role === 'assistant')
@@ -2952,6 +3027,7 @@ export async function generateCarryover(transcript: ChatMessage[]): Promise<Carr
       maxOutputTokens: 700,
       zoAskModel: AGENT_ZOASK_MODEL || undefined,
       model: AGENT_OPENCODE_MODEL,
+      deadlineAt: Date.now() + CARRYOVER_DEADLINE_MS,
     });
     const parsed = extractJson(raw);
     if (!parsed || typeof parsed !== 'object') return {};

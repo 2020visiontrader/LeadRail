@@ -6,13 +6,24 @@ import { NextRequest, NextResponse } from 'next/server';
 import { supabase } from '@/lib/db';
 import { runAgent, agentConfigured, generateCarryover } from '@/lib/agent/loop';
 import { loadAgentContext } from '@/lib/agent/context';
-import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts, markConversationRunning, clearConversationRunning } from '@/lib/agent/memory';
+import { saveConversation, loadCarryover, loadTranscriptResult, ingestCarryoverFacts, markConversationRunning, clearConversationRunning, clearStopRequest } from '@/lib/agent/memory';
 import { mintMessageId, ensureMessageIds } from '@/lib/agent/transcript-store';
 import { stripPrivateReasoning } from '@/lib/agent/transcript-privacy';
 import { parseMentions } from '@/lib/agent/personas';
 import { log } from '@/lib/logger';
 
 export const dynamic = 'force-dynamic';
+// Both were MISSING on this route — see app/api/agent/stream/route.ts's
+// identical exports (lines ~19-33) for the full rationale: without an
+// explicit `runtime` the platform's default is not guaranteed to be Node, and
+// without `maxDuration` above lib/agent/loop.ts's own turn deadline the
+// platform can cut the request off before the loop's deadline ever gets a
+// chance to fire and hand back a salvaged answer (production observed a turn
+// killed at durationMs 300004/300005 on this exact path). Do not lower this
+// below, or raise TURN_DEADLINE_MS to meet, the stream route's value — see
+// tests/turn-deadline-invariant.test.ts.
+export const runtime = 'nodejs';
+export const maxDuration = 300;
 
 // CONCURRENCY INSTRUMENTATION — JSON twin of the block in
 // app/api/agent/stream/route.ts. Read that comment for the full decision
@@ -117,8 +128,12 @@ async function runPost(request: NextRequest, session: Session) {
   // — see the CRITICAL PROCESS RULE note above) shows the saved transcript
   // with no answer, no spinner, and no polling, because GET .../conversations
   // /[id] reports running: false the whole time the turn is actually running.
+  // Cleared at the SAME point as the running flag is set — the start of a
+  // turn — so a stop requested against a PRIOR turn on this conversation can
+  // never be misread as applying to the turn about to run (migration 083).
   if (conversationId) {
     await markConversationRunning(conversationId, session.accountId);
+    await clearStopRequest(conversationId, session.accountId);
   }
 
   try {
@@ -139,7 +154,13 @@ async function runTurn(
   session: Session,
   ctx: { conversationId: string | undefined; transcript: any; message: string | undefined; approve: any; body: any },
 ) {
-  const { conversationId, transcript, message, approve, body } = ctx;
+  const { transcript, message, approve, body } = ctx;
+  // `let`, not `const`: the opening save below (mirroring
+  // app/api/agent/stream/route.ts) mints an id for a brand-new conversation,
+  // and everything after it — agentContext's own conversationId param aside,
+  // which intentionally still reads the pre-open value below — must use that
+  // minted id rather than undefined.
+  let conversationId = ctx.conversationId;
 
   // Resolve a venture id/name for grounding (best-effort; ownership is still
   // enforced per-tool). Only for brands the session owns.
@@ -193,21 +214,78 @@ async function runTurn(
   // message — an approve-resume has no new user turn to bind anything to.
   const userMessageId = typeof message === 'string' && message.trim() ? mintMessageId() : undefined;
 
-  const result = await runAgent({
-    accountId: session.accountId,
-    message,
-    approve,
-    transcript,
-    agentContext,
-    carryover,
-    brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined,
-    personaId,
-    personaMentions,
-    requestedBy: session.email,
-    conversationId,
-    planOnly,
-    userMessageId,
-  });
+  // WHAT THE PERSON SAID IS DURABLE FROM HERE, whatever happens next —
+  // mirrors app/api/agent/stream/route.ts's opening save (see its comment).
+  // Previously this route only wrote a transcript AFTER runAgent returned, so
+  // a turn that errored or ran past the platform's timeout lost the user's
+  // own message together with everything else — the production symptom was
+  // three consecutive user messages with no assistant reply in between.
+  const wasNewConversation = !conversationId;
+  if (typeof message === 'string' && message.trim()) {
+    const openingTranscript = [
+      ...transcript,
+      { role: 'user', content: message, ...(userMessageId ? { id: userMessageId } : {}) },
+    ];
+    const openedId = await saveConversation({
+      id: conversationId, accountId: session.accountId, brandId: brandId ?? null,
+      title: message.slice(0, 80),
+      transcript: openingTranscript,
+    }).catch(() => null);
+    if (openedId) {
+      conversationId = openedId;
+      // THE RETRY THIS EXISTS FOR — twin of the stream route's: a brand-new
+      // chat has no id yet at the top of this function, so the attachment
+      // bind above was skipped rather than done. Now that an id exists, bind
+      // against it — but only if the earlier attempt didn't already run (an
+      // existing chat that already had conversationId at the top), so a file
+      // is never bound twice.
+      if (attachmentIds.length && wasNewConversation) {
+        await bindAttachments(session.accountId, attachmentIds, openedId).catch(() => 0);
+      }
+    }
+  }
+
+  // Mark this conversation as having a turn in progress (migration 072) —
+  // BEFORE runAgent, which is the part that can legitimately take minutes.
+  // Twin of the mark in runPost above for a pre-existing conversationId; this
+  // one covers the id just minted above for a BRAND-NEW chat, which runPost
+  // never had a chance to mark because it didn't exist yet when runPost ran.
+  if (wasNewConversation && conversationId) {
+    await markConversationRunning(conversationId, session.accountId);
+    // A brand-new chat cannot have a stop requested against it yet — nothing
+    // could have named this id before this line minted it — so this call is
+    // a no-op today. Kept alongside markConversationRunning anyway so both
+    // paths stay structurally identical and neither can silently drift if a
+    // future caller starts reusing conversation ids.
+    await clearStopRequest(conversationId, session.accountId);
+  }
+
+  let result;
+  try {
+    result = await runAgent({
+      accountId: session.accountId,
+      message,
+      approve,
+      transcript,
+      agentContext,
+      carryover,
+      brandContext: (brandId || brandName) ? { id: brandId, name: brandName } : undefined,
+      personaId,
+      personaMentions,
+      requestedBy: session.email,
+      conversationId,
+      planOnly,
+      userMessageId,
+    });
+  } finally {
+    // Twin of the clear in runPost's own finally, for the id minted above —
+    // runPost's clear only ever knew about a conversationId that was already
+    // in the request body, so a brand-new chat's freshly-minted id would
+    // otherwise never have its running flag cleared here.
+    if (wasNewConversation && conversationId) {
+      await clearConversationRunning(conversationId, session.accountId);
+    }
+  }
   // Message-action Packet — see the twin comment in
   // app/api/agent/stream/route.ts's `finally` block for why this reads back
   // the id-bearing copy of the transcript rather than trusting

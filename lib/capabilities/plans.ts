@@ -23,7 +23,7 @@ import { z } from 'zod';
 import { obj, S, type Capability } from './types';
 import {
   createPlan, getPlan, activePlanForConversation, completeStep, blockStep,
-  cancelPlans, renderPlan, MAX_PLAN_STEPS, MAX_STEP_OVER_ITEMS,
+  cancelPlans, renderPlan, approvePlan, MAX_PLAN_STEPS, MAX_STEP_OVER_ITEMS,
 } from '@/lib/plans/store';
 import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
 import { hermesRoute } from '@/lib/ai/hermes';
@@ -212,6 +212,28 @@ export const PLAN_CAPABILITIES: Capability[] = [
       if (!r.plan && !r.planId) return 'No plan is active for this chat.';
       const done = (r.steps || []).filter((s: any) => s.status === 'done').length;
       return `Plan "${r.objective}" — ${done} of ${(r.steps || []).length} steps done.`;
+    },
+  },
+  {
+    name: 'startPlan',
+    domain: 'workspace',
+    title: 'Start an approved plan',
+    description:
+      'Start a plan that was written in plan mode and is waiting in draft, so it begins working its steps. Call this ONLY when the user has explicitly said to go ahead / approved the plan — for example "go ahead", "start it", "approved" — never on your own initiative and never as part of writing the plan itself. Pass a planId to start one, or omit it to start the draft plan attached to this chat.',
+    gate: 'internal_write',
+    inputSchema: obj({ planId: S.string }, []),
+    zod: z.object({ planId: z.string().optional() }),
+    run: async (accountId, a, ctx?: any) => {
+      const plan = a.planId
+        ? await getPlan(accountId, a.planId)
+        : ctx?.conversationId ? await activePlanForConversation(accountId, ctx.conversationId) : null;
+      if (!plan || plan.status !== 'draft') return { started: false, planId: plan?.id ?? null };
+      const started = await approvePlan(accountId, plan.id);
+      return { started, planId: plan.id };
+    },
+    digest: (_a, r: any) => {
+      if (!r) return '';
+      return r.started ? 'Started the plan.' : 'There was no draft plan waiting to start.';
     },
   },
   {
