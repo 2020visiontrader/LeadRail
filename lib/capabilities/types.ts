@@ -93,6 +93,27 @@ export interface CapabilityContext {
    *  spawned it. Optional: a capability that never spawns anything ignores it,
    *  and a caller that omits it degrades to the sub-run's own budget. */
   deadlineAt?: number;
+  /** The PARENT turn's full grounding block — platform + venture + account +
+   *  memory, already built once by loadAgentContext for this turn (see
+   *  RunAgentInput.agentContext in lib/agent/loop.ts). Carried here so a
+   *  capability that spawns a sub-run (askSpecialist,
+   *  lib/capabilities/delegation.ts) can hand it straight to the sub-run
+   *  instead of rebuilding it — a second build would be a second set of DB
+   *  round trips per delegate, for a fact the parent already paid for.
+   *
+   *  Never truncated or divided by how many sub-runs spawn from this turn:
+   *  each sub-run is an independent model call with its own context window,
+   *  and CLAUDE.md records two shipped defects from rationing a delegate's
+   *  share of context (a `/ delegateCount` division, then a `0.25` share).
+   *  Optional: a capability that never spawns anything ignores it. */
+  agentContext?: string;
+  /** The PARENT turn's selected venture — name (for framing a sub-run's
+   *  prompt) and id (for scoping its tool calls), same shape as
+   *  RunAgentInput.brandContext in lib/agent/loop.ts. Passed through
+   *  unchanged for the same reason as `agentContext` above: the parent
+   *  already resolved it, and a sub-run answering about "this venture"
+   *  without it has no idea which one that is. */
+  brandContext?: { name?: string; id?: string };
 }
 
 export interface Capability {

@@ -40,6 +40,7 @@ import { PERSONA_TEMPLATES } from './persona-registry';
 import { loadEnabledSkillsForAgent } from '@/lib/skills/store';
 import { composeAnswer } from './compose';
 import { stripAiMarkers } from '@/lib/ai/humanizer';
+import { checkClaims } from './claim-check';
 import { createApproval, consumeApprovalForExecution, markApprovedByToolAndArgs, recordExecutedApproval, ApprovalExecutionError } from '@/lib/approvals/store';
 import { consumeGrant, isGrantable } from '@/lib/approvals/grants';
 import { markParseOutcome } from '@/lib/credits';
@@ -1725,6 +1726,17 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
     // sub-agent — was bounded solely by its own 90s wall clock and could
     // therefore legally outlive the parent turn that spawned it.
     deadlineAt: turnDeadline,
+    // The grounding this turn already built, handed down so a capability that
+    // spawns a sub-run (askSpecialist) inherits it instead of advising blind —
+    // without which lib/capabilities/delegation.ts's ctx.agentContext is
+    // always undefined and its fix is inert. Passed WHOLE: never sliced, and
+    // never divided by the number of delegates. CLAUDE.md records that
+    // rationing this shipped twice (a / delegateCount division, then a 0.25
+    // share). Seeded from rawInput here and upgraded below to the
+    // comprehension-folded grounding once it exists, so a delegate sees any
+    // attached material too.
+    agentContext: rawInput.agentContext,
+    brandContext,
   };
   // One comprehension pass, folded into agentContext, when this turn has
   // material attached — see withMaterialUnderstanding's comment above. A no-op
@@ -1748,6 +1760,10 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
     ...rawInput,
     agentContext: materialAgentContext,
   };
+  // Upgrade the tool context to the comprehension-folded grounding now that it
+  // exists, so a delegate sees attached material too — toolCtx is built before
+  // this point (it needs turnDeadline) but is not READ until the step loop.
+  toolCtx.agentContext = input.agentContext;
   const pinnedPersona = await resolvePersonaForTurn(accountId, input.personaId, input.personaMentions);
   const allEnabledSkills = await loadEnabledSkillsForAgent(accountId);
   // Hermes picks the 1-4 that apply to THIS request instead of injecting all.
@@ -2100,6 +2116,17 @@ async function runAgentImpl(rawInput: RunAgentInput): Promise<AgentResult> {
       // "sees" only the raw tool observations, not its own prior answer, and
       // re-derives conclusions from scratch instead of building on what it
       // already told the user.
+      // CLAIM CHECK — the last thing between the model and the user.
+      // Production, 2026-09-02: "The last batch already went out to all 13
+      // marketing and e-commerce agency contacts" when only draftOutreach had
+      // run and the approvals table held ONE sendEmail row ever. Every other
+      // defence against this is advice in the prompt, and compose faithfully
+      // polishes a fabricated claim into confident prose. This downgrades a
+      // completed-action claim with no matching executed tool, and runs after
+      // compose so it covers the composed answer AND the compose-disabled
+      // draft. The ledger is toolCalls, not steps: several step-push sites
+      // record an observation for a call that never executed.
+      message = checkClaims(message, Object.keys(toolCalls)).message;
       messages[messages.length - 1] = { role: 'assistant', content: message };
       steps.push({ thought: narrationFor(parsed) });
       const tokenEstimate = estimateTokens(messages);
@@ -2595,6 +2622,17 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
     // sub-agent — was bounded solely by its own 90s wall clock and could
     // therefore legally outlive the parent turn that spawned it.
     deadlineAt: turnDeadline,
+    // The grounding this turn already built, handed down so a capability that
+    // spawns a sub-run (askSpecialist) inherits it instead of advising blind —
+    // without which lib/capabilities/delegation.ts's ctx.agentContext is
+    // always undefined and its fix is inert. Passed WHOLE: never sliced, and
+    // never divided by the number of delegates. CLAUDE.md records that
+    // rationing this shipped twice (a / delegateCount division, then a 0.25
+    // share). Seeded from rawInput here and upgraded below to the
+    // comprehension-folded grounding once it exists, so a delegate sees any
+    // attached material too.
+    agentContext: rawInput.agentContext,
+    brandContext,
   };
   // These three reads don't depend on each other, so they run concurrently
   // instead of as one sequential chain — the difference between ~3
@@ -2629,6 +2667,10 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
     ...rawInput,
     agentContext: materialAgentContext,
   };
+  // Upgrade the tool context to the comprehension-folded grounding now that it
+  // exists, so a delegate sees attached material too — toolCtx is built before
+  // this point (it needs turnDeadline) but is not READ until the step loop.
+  toolCtx.agentContext = input.agentContext;
   // Hermes picks the 1-4 that apply to THIS request instead of injecting all.
   // This is the one hop that must stay sequential — it genuinely depends on
   // allEnabledSkills (which skills exist to route over).
@@ -2998,6 +3040,17 @@ async function runAgentStreamImpl(rawInput: RunAgentInput, emit: (e: AgentEvent)
         }
       }
       message = stripAiMarkers(message);
+      // CLAIM CHECK — the last thing between the model and the user.
+      // Production, 2026-09-02: "The last batch already went out to all 13
+      // marketing and e-commerce agency contacts" when only draftOutreach had
+      // run and the approvals table held ONE sendEmail row ever. Every other
+      // defence against this is advice in the prompt, and compose faithfully
+      // polishes a fabricated claim into confident prose. This downgrades a
+      // completed-action claim with no matching executed tool, and runs after
+      // compose so it covers the composed answer AND the compose-disabled
+      // draft. The ledger is toolCalls, not steps: several step-push sites
+      // record an observation for a call that never executed.
+      message = checkClaims(message, Object.keys(toolCalls)).message;
       // See the matching comment in runAgent: overwrite the raw JSON envelope
       // with the actual composed answer so a later turn builds on what the
       // user was actually shown instead of re-deriving it from raw observations.

@@ -22,6 +22,7 @@ import { BUDGET } from '@/lib/ai/context-budget';
 import { supabase } from '@/lib/db';
 import { log } from '@/lib/logger';
 import { generateChat } from '@/lib/ai/router';
+import { recordFact } from '@/lib/agent/memory';
 import { writeEdge } from './edges';
 import { projectSubjectWithRetry } from './project';
 import { exclusionFor, tierFor, MAX_FACT_LENGTH } from './tiers';
@@ -189,6 +190,38 @@ export async function decideAndWrite(
   });
 
   if (res.outcome === 'failed') return { candidate, outcome: 'skipped', rule: 'write-failed' };
+
+  // THE FIX (production defect: agent_memory had zero rows for the feature's
+  // entire life). Everything above writes to the memory GRAPH (memory_edges /
+  // memory_subjects, migration 061) — that landed, which is why those tables
+  // were non-empty. It never wrote to `agent_memory`, the older flat durable-
+  // facts table that `recallMemoryDigest` / `semanticRecall` / `listFacts` /
+  // `forgetFact` all read. Nothing in this file called `recordFact`. Every fact
+  // the extractor accepted was written to a table nothing downstream of those
+  // four reads from, and dropped from agent_memory's point of view — silently,
+  // because writeEdge succeeding looked identical to success from every log
+  // line and every counter this job emits.
+  //
+  // Only on a genuinely NEW edge (`written`, not `recurrence`): agent_memory has
+  // no occurrence-counting or supersession model, so recording every repeat
+  // mention would just accumulate duplicate rows for one fact restated many
+  // times — the same failure mode `writeEdge`'s recurrence branch exists to
+  // avoid, one layer up. `recordFact` re-applies its own secret/length guard
+  // independently (defense in depth: two call sites must NOT drift into only
+  // one of them enforcing it), and is itself best-effort — a failure here must
+  // not undo the edge already written, so it is swallowed, not surfaced as a
+  // skip the caller would misread as "this fact was rejected".
+  if (res.outcome === 'written') {
+    try {
+      await recordFact(accountId, {
+        fact,
+        subject: candidate.subject.label || candidate.subject.id,
+        predicate: candidate.predicate,
+        object: candidate.object,
+      }, 'extraction');
+    } catch { /* best-effort — the graph edge already written is the source of truth */ }
+  }
+
   return {
     candidate,
     outcome: res.outcome === 'recurrence' ? 'recurrence' : 'written',
