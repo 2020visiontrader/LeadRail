@@ -1,5 +1,6 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  output: 'standalone',
   reactStrictMode: true,
   typescript: {
     tsconfigPath: './tsconfig.json'
@@ -8,7 +9,7 @@ const nextConfig = {
   // them external so webpack doesn't try to bundle native/worker code into the
   // server chunks — they're only ever imported in the deck route at runtime.
   experimental: {
-    serverComponentsExternalPackages: ['pdf-parse', 'mammoth', 'jszip', 'xlsx']
+    serverComponentsExternalPackages: ['pdf-parse', 'mammoth', 'jszip', 'xlsx', 'pdfkit']
   }
 };
 
