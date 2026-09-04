@@ -51,6 +51,19 @@ vi.mock('@/lib/ai/image-router', () => ({
   imageConfigured: () => true,
   generateImage: async (_a: any) => ({ base64: Buffer.from('fake-png').toString('base64'), mimeType: 'image/png' }),
 }));
+// generateImage (lib/capabilities/workspace.ts) now routes its upload through
+// recordMediaGeneration (lib/generations/store.ts) rather than calling
+// uploadGenerated directly — see migration 088 / the generations ledger.
+// This test is about campaign_assets.storage_path specifically, so the
+// generations ledger itself is mocked out rather than wiring a second fake
+// supabase query surface here; tests/generations-store.test.ts covers the
+// ledger's own behaviour (quota, review, purge).
+vi.mock('@/lib/generations/store', () => ({
+  recordMediaGeneration: async (accountId: string, input: any) => {
+    const r = await uploadGeneratedMock(accountId, input.bytes, input.mimeType);
+    return { ...r, generationId: 'gen-1' };
+  },
+}));
 
 const { WORKSPACE_CAPABILITIES } = await import('@/lib/capabilities/workspace');
 const { resolveCampaignAssetUrl } = await import('@/lib/crm');

@@ -24,7 +24,7 @@ import { proposeLearning } from '@/lib/content/learning';
 import { runIntake, proposeCanon } from '@/lib/content/intake';
 import { generateImage as routeImage } from '@/lib/ai/image-router';
 import { generateVideo, getVideoStatus, higgsfieldUnavailableReason } from '@/lib/integrations/higgsfield';
-import { uploadGenerated } from '@/lib/storage';
+import { recordMediaGeneration, recordExternalVideoGeneration } from '@/lib/generations/store';
 import { obj, S, type Capability, rowsOf, plural, samples, tally, digestLine } from './types';
 
 export const CONTENT_CAPABILITIES: Capability[] = [
@@ -272,12 +272,20 @@ export const CONTENT_CAPABILITIES: Capability[] = [
         prompt = `${ref.description}\n\nScene: ${a.prompt}`;
       }
       const img = await routeImage({ prompt, caption: a.caption, aspect: a.aspect, referenceUrls, styleLock });
-      const { storagePath, url } = await uploadGenerated(accountId, Buffer.from(img.base64, 'base64'), img.mimeType);
-      // Both travel forward: `url` is a freshly signed link for immediate
-      // display, `storagePath` is the stable identifier — pass THIS to
-      // createCharacterRef so the character reference re-signs at use time
-      // instead of persisting a URL that expires (see GENERATED_URL_TTL).
-      return { url, storagePath, mimeType: img.mimeType, conditioned: Boolean(referenceUrls) };
+      // recordMediaGeneration is the ONE shared write path (checks quota,
+      // uploads to GENERATED_BUCKET, records the generations row) — see
+      // lib/generations/store.ts. `url` is a freshly signed link for
+      // immediate display, `storagePath` is the stable identifier — pass
+      // THIS to createCharacterRef so the character reference re-signs at
+      // use time instead of persisting a URL that expires (GENERATED_URL_TTL).
+      const { storagePath, url, generationId } = await recordMediaGeneration(accountId, {
+        kind: 'image',
+        sourceTool: 'generateBrandImage',
+        prompt,
+        bytes: Buffer.from(img.base64, 'base64'),
+        mimeType: img.mimeType,
+      });
+      return { url, storagePath, generationId, mimeType: img.mimeType, conditioned: Boolean(referenceUrls) };
     },
     digest: (_a, result) => {
       const r: any = result;
@@ -338,7 +346,23 @@ export const CONTENT_CAPABILITIES: Capability[] = [
       const blocked = await higgsfieldUnavailableReason(accountId);
       if (blocked) return { error: blocked };
       try {
-        return await generateVideo(accountId, { imageUrl: a.imageUrl, prompt: a.prompt, dialogue: a.dialogue });
+        const result = await generateVideo(accountId, { imageUrl: a.imageUrl, prompt: a.prompt, dialogue: a.dialogue });
+        // Record only once a URL actually exists — a still-processing render
+        // (result.url unset, only a jobId) has nothing to point a generation
+        // row at yet; getVideoStatus is the polling path and does not itself
+        // generate anything new to record. bytes=0: Higgsfield hosts this
+        // video, nothing was uploaded to our bucket, so it consumes none of
+        // the account's GENERATION_QUOTA_BYTES.
+        let generationId: string | undefined;
+        if (result?.url) {
+          const rec = await recordExternalVideoGeneration(accountId, {
+            sourceTool: 'generateBrandVideo',
+            prompt: a.prompt,
+            externalUrl: result.url,
+          }).catch(() => null);
+          if (rec) generationId = rec.generationId;
+        }
+        return { ...result, generationId };
       } catch (e: any) {
         return { error: e?.message || 'The video render failed.' };
       }

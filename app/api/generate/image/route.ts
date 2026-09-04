@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 import { generateImage, imageConfigured } from '@/lib/ai/image-router';
 import { insertCampaignAsset, dbReady } from '@/lib/db';
-import { uploadGenerated } from '@/lib/storage';
+import { recordMediaGeneration } from '@/lib/generations/store';
 
 export const dynamic = 'force-dynamic';
 
@@ -25,7 +25,16 @@ async function POST__impl(request: NextRequest) {
     // storagePath is the stable identifier — persist THIS (never the signed
     // `url`, which expires after GENERATED_URL_TTL and would otherwise make
     // every campaign asset 404 a day after it was generated).
-    const { url, storagePath } = await uploadGenerated(session.accountId, Buffer.from(img.base64, 'base64'), img.mimeType);
+    // recordMediaGeneration is the ONE shared write path (checks quota,
+    // uploads, records the generations ledger row) — see
+    // lib/generations/store.ts.
+    const { url, storagePath, generationId } = await recordMediaGeneration(session.accountId, {
+      kind: 'image',
+      sourceTool: 'POST /api/generate/image',
+      prompt: body.prompt,
+      bytes: Buffer.from(img.base64, 'base64'),
+      mimeType: img.mimeType,
+    });
 
     let asset = null;
     // account_id is authoritative from the session, never the client body.
@@ -38,7 +47,7 @@ async function POST__impl(request: NextRequest) {
         ai_analysis: { caption: body.caption ?? null, prompt: body.prompt },
       });
     }
-    return NextResponse.json({ url, mimeType: img.mimeType, asset }, { status: 201 });
+    return NextResponse.json({ url, mimeType: img.mimeType, generationId, asset }, { status: 201 });
   } catch (error: any) {
     if (error?.code === 'not_configured') return NextResponse.json({ error: 'not_configured' }, { status: 409 });
     if (error?.code === 'auth') return NextResponse.json({ error: 'image_generation_auth_failed' }, { status: 502 });

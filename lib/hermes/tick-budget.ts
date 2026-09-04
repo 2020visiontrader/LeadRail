@@ -48,3 +48,16 @@ export const TICK_TIME_BUDGET_MS = Number(process.env.HERMES_TICK_TIME_BUDGET_MS
 //      progress every tick, small enough that it can never by itself consume
 //      the whole run even if every other engine finished instantly.
 export const SCHEDULED_TASKS_SUB_BUDGET_MS = Math.floor(TICK_TIME_BUDGET_MS / 2);
+
+// generations retention purge (lib/generations/store.ts's
+// purgeExpiredGenerations) — the LOWEST-priority work in the tick. It runs
+// last, after every engine above AND after the tick's existing best-effort
+// housekeeping (soft-delete purge, account purge, reward maturation, app-log
+// retention), and is capped to its own small, fixed slice rather than
+// sharing TICK_TIME_BUDGET_MS or running unbounded: none of the seven
+// engines' correctness depends on generations ever being purged on any
+// particular tick (an unpurged backlog just means slightly higher storage
+// use until the next tick), so it must never be able to delay or crowd out
+// work that other things DO depend on. 20s is generous for the couple of
+// small, indexed batch deletes purgeExpiredGenerations actually issues.
+export const GENERATIONS_PURGE_BUDGET_MS = 20 * 1000;

@@ -21,7 +21,7 @@ import { createSequence, listSequences } from '@/lib/sequences';
 import { listVisibleSkills, listAccountSkillStates, setAccountSkillState } from '@/lib/skills/store';
 import { generateImage as routeImage, imageConfigured } from '@/lib/ai/image-router';
 import { insertCampaignAsset, dbReady } from '@/lib/db';
-import { uploadGenerated } from '@/lib/storage';
+import { recordMediaGeneration } from '@/lib/generations/store';
 import { obj, S, type Capability, rowsOf, plural, samples, tally, digestLine } from './types';
 
 const STEP_CHANNELS = ['email', 'wait', 'task', 'branch'] as const;
@@ -290,7 +290,16 @@ export const WORKSPACE_CAPABILITIES: Capability[] = [
       // storagePath is the stable identifier — persist THIS (never the signed
       // `url`, which expires after GENERATED_URL_TTL and would otherwise make
       // every campaign asset 404 a day after it was generated).
-      const { url, storagePath } = await uploadGenerated(accountId, Buffer.from(img.base64, 'base64'), img.mimeType);
+      // recordMediaGeneration is the ONE shared write path (checks quota,
+      // uploads, records the generations ledger row) — see
+      // lib/generations/store.ts.
+      const { url, storagePath, generationId } = await recordMediaGeneration(accountId, {
+        kind: 'image',
+        sourceTool: 'generateImage',
+        prompt: a.prompt,
+        bytes: Buffer.from(img.base64, 'base64'),
+        mimeType: img.mimeType,
+      });
 
       let asset = null;
       if (a.campaignId && dbReady()) {
@@ -302,7 +311,7 @@ export const WORKSPACE_CAPABILITIES: Capability[] = [
           ai_analysis: { caption: a.caption ?? null, prompt: a.prompt },
         });
       }
-      return { url, mimeType: img.mimeType, attachedToCampaign: Boolean(asset) };
+      return { url, mimeType: img.mimeType, generationId, attachedToCampaign: Boolean(asset) };
     },
     digest: (a, result) => {
       const r: any = result;

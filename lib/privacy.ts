@@ -181,6 +181,10 @@ export const EXPORT_TABLE_NAMES = [
   // migration 080 — per-message thumbs up/down. User-authored reaction data,
   // not internal telemetry (contrast ai_usage in EXPORT_EXCLUDED below).
   'message_feedback',
+  // migration 088 — the generations ledger (prompts, review decisions,
+  // channel links for published media). User-authored content, same as
+  // content_items/campaign_assets above.
+  'generations',
 ];
 
 // Table -> scope, derived from the name list above plus the overrides. This

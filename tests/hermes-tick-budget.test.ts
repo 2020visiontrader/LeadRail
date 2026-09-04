@@ -18,6 +18,7 @@ const runMemoryExtraction = vi.fn(async (..._a: any[]) => ({ processed: 0 }));
 const runPlanTick = vi.fn(async (..._a: any[]) => ({ ticked: 0 }));
 const purgeDueAccounts = vi.fn(async (..._a: any[]) => [] as string[]);
 const maturateRewards = vi.fn(async (..._a: any[]) => 0);
+const purgeExpiredGenerations = vi.fn(async (..._a: any[]) => ({ deletedRows: 0, deletedObjects: 0, publishedPurged: 0 }));
 
 vi.mock('@/lib/hermes/agent', () => ({ processDueJobs: (...a: any[]) => processDueJobs(...a) }));
 vi.mock('@/lib/sequences', () => ({ processDueEnrollments: (...a: any[]) => processDueEnrollments(...a) }));
@@ -28,6 +29,7 @@ vi.mock('@/lib/memory/extract', () => ({ runMemoryExtraction: (...a: any[]) => r
 vi.mock('@/lib/plans/runner', () => ({ runPlanTick: (...a: any[]) => runPlanTick(...a) }));
 vi.mock('@/lib/privacy', () => ({ purgeDueAccounts: (...a: any[]) => purgeDueAccounts(...a) }));
 vi.mock('@/lib/referrals', () => ({ maturateRewards: (...a: any[]) => maturateRewards(...a) }));
+vi.mock('@/lib/generations/store', () => ({ purgeExpiredGenerations: (...a: any[]) => purgeExpiredGenerations(...a) }));
 vi.mock('@/lib/db', () => ({
   supabase: {
     rpc: async () => ({ data: 0, error: null }),
@@ -44,6 +46,7 @@ beforeEach(() => {
   for (const fn of [
     processDueJobs, processDueEnrollments, processEnrichmentJobs, processDueWebhookDeliveries,
     runDueScheduledTasks, runMemoryExtraction, runPlanTick, purgeDueAccounts, maturateRewards,
+    purgeExpiredGenerations,
   ]) fn.mockClear();
   delete process.env.APP_API_SECRET;
   delete process.env.HERMES_TICK_TIME_BUDGET_MS;
@@ -174,5 +177,48 @@ describe('no engine can be permanently starved by its position in the run order'
     expect(runDueScheduledTasks).toHaveBeenCalledTimes(1);
     expect(body.plans).not.toMatchObject({ skipped: true });
     expect(body.memory).not.toMatchObject({ skipped: true });
+  });
+});
+
+describe('generations retention purge — lowest priority, own bounded budget', () => {
+  it('runs on every tick, after every engine and every other housekeeping step, and reports its result', async () => {
+    process.env.HERMES_TICK_TIME_BUDGET_MS = String(5 * 60 * 1000);
+    const { POST } = await import('@/app/api/hermes/tick/route');
+    const res = await POST(makeRequest());
+    const body = await res.json();
+    expect(purgeExpiredGenerations).toHaveBeenCalledTimes(1);
+    expect(body.generationsPurge).toEqual({ deletedRows: 0, deletedObjects: 0, publishedPurged: 0 });
+  });
+
+  it('is called with its OWN bounded deadline (GENERATIONS_PURGE_BUDGET_MS), not the shared engine deadline', async () => {
+    process.env.HERMES_TICK_TIME_BUDGET_MS = String(5 * 60 * 1000);
+    const { POST } = await import('@/app/api/hermes/tick/route');
+    const { GENERATIONS_PURGE_BUDGET_MS } = await import('@/lib/hermes/tick-budget');
+    const before = Date.now();
+    await POST(makeRequest());
+    expect(purgeExpiredGenerations).toHaveBeenCalledTimes(1);
+    const deadlineArg = purgeExpiredGenerations.mock.calls[0][0];
+    expect(typeof deadlineArg).toBe('number');
+    expect(deadlineArg).toBeLessThanOrEqual(before + GENERATIONS_PURGE_BUDGET_MS + 5_000);
+  });
+
+  it("a failure purging generations does not fail the tick — same best-effort discipline as its siblings", async () => {
+    purgeExpiredGenerations.mockRejectedValueOnce(new Error('boom'));
+    const { POST } = await import('@/app/api/hermes/tick/route');
+    const res = await POST(makeRequest());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.generationsPurge).toMatchObject({ error: expect.stringContaining('boom') });
+  });
+
+  it('REVERT-CHECK TARGET: even when the shared engine budget is fully spent, the purge still runs — it is not gated on the engines’ deadline', async () => {
+    process.env.HERMES_TICK_TIME_BUDGET_MS = '5';
+    processDueJobs.mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+      return { processed: 1 };
+    });
+    const { POST } = await import('@/app/api/hermes/tick/route');
+    await POST(makeRequest());
+    expect(purgeExpiredGenerations).toHaveBeenCalledTimes(1);
   });
 });

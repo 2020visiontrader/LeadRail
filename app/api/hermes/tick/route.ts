@@ -11,7 +11,8 @@ import { maturateRewards } from '@/lib/referrals';
 import { runDueScheduledTasks } from '@/lib/scheduled/store';
 import { runMemoryExtraction } from '@/lib/memory/extract';
 import { runPlanTick } from '@/lib/plans/runner';
-import { TICK_TIME_BUDGET_MS, SCHEDULED_TASKS_SUB_BUDGET_MS } from '@/lib/hermes/tick-budget';
+import { TICK_TIME_BUDGET_MS, SCHEDULED_TASKS_SUB_BUDGET_MS, GENERATIONS_PURGE_BUDGET_MS } from '@/lib/hermes/tick-budget';
+import { purgeExpiredGenerations } from '@/lib/generations/store';
 
 export const dynamic = 'force-dynamic';
 // No explicit `runtime`/`maxDuration` here previously, so the platform
@@ -116,9 +117,20 @@ async function POST__impl(request: NextRequest) {
     await supabase.from('app_logs').delete().lt('created_at', new Date(Date.now() - 90 * 864e5).toISOString()).then(
       () => {}, () => {},
     );
+    // Generations retention purge — LAST, after every engine and every other
+    // housekeeping step above. Deletes expired PENDING/REJECTED generations
+    // (row + storage object) and drops the storage object (row kept) for
+    // generations published past their grace period. Own small time budget
+    // (GENERATIONS_PURGE_BUDGET_MS, lib/hermes/tick-budget.ts), not the
+    // shared engine `deadline` — see that constant's comment for why this is
+    // ordered and bounded the way it is. Best-effort, same as its siblings
+    // above: a failure here never fails the tick.
+    const generationsPurge = await purgeExpiredGenerations(Date.now() + GENERATIONS_PURGE_BUDGET_MS).catch(
+      (e: any) => ({ error: String(e?.message || e) }),
+    );
     return NextResponse.json({
       ok: true, legacy, sequences, enrichment, webhooks, scheduledTasks, memory, plans,
-      purged: purged ?? 0, purgedAccounts: purgedAccounts.length, maturedRewards,
+      purged: purged ?? 0, purgedAccounts: purgedAccounts.length, maturedRewards, generationsPurge,
     });
   } catch (error) {
     return errorResponse(error);

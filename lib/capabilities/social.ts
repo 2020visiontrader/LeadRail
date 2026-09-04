@@ -46,6 +46,7 @@ import { publishXPost, listXReplies } from '@/lib/social/x-oauth';
 import { publishThreadsPost, listThreadsReplies, replyToThreadsPost, hideThreadsReply } from '@/lib/social/threads';
 import { generateContentPost } from '@/lib/ai/generation';
 import { LIVE_SOCIALS, SOCIAL_KEYS, type SocialKey } from '@/lib/social/providers';
+import { markGenerationPublished, listGenerations } from '@/lib/generations/store';
 import { obj, S, type Capability, rowsOf, plural, samples, tally, present, clip, digestLine } from './types';
 
 // ---------------------------------------------------------------------------
@@ -220,6 +221,29 @@ function platformReceiptId(result: any): string | null {
   if (d && typeof d === 'object' && !Array.isArray(d)) {
     for (const k of ['id', 'publish_id', 'post_id']) if (present(d, k)) return String(d[k]);
   }
+  return null;
+}
+
+/**
+ * A real, followable permalink built straight from the platform's own publish
+ * receipt — NEVER a guess. Deliberately narrow: only X (`x.com/i/web/status/
+ * {id}`, documented to resolve without a username) and LinkedIn
+ * (`linkedin.com/feed/update/{urn}`, the URN IS the update identifier) are
+ * constructible this way. Facebook and Instagram's publish responses carry
+ * only an internal id — their real permalink_url is a SEPARATE field only a
+ * follow-up Graph read returns (see listOwnPosts / syncPerformance,
+ * lib/content/performance.ts, which does exactly that read, later). Threads
+ * is the same shape. TikTok never actually publishes here at all — see the
+ * digest above. Generations tied to those platforms are simply never marked
+ * published by this path; they keep consuming quota until a human approves/
+ * rejects them by hand. That gap is a real, currently-unclosed one — see this
+ * packet's report.
+ */
+function constructChannelUrl(platform: string, result: any): string | null {
+  const id = platformReceiptId(result);
+  if (!id) return null;
+  if (platform === 'x') return `https://x.com/i/web/status/${id}`;
+  if (platform === 'linkedin') return `https://www.linkedin.com/feed/update/${id}`;
   return null;
 }
 
@@ -616,11 +640,11 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     name: 'publishSocialPost',
     domain: 'social',
     title: 'Publish a social post',
-    description: 'Publish a post to one of the connected social accounts, right now, visible to that account\'s real audience. Call listSocialAccounts first and pass the id of the account to post to. Instagram posts must include an image or video. Use draftSocialPost to write the copy first.',
+    description: 'Publish a post to one of the connected social accounts, right now, visible to that account\'s real audience. Call listSocialAccounts first and pass the id of the account to post to. Instagram posts must include an image or video. Use draftSocialPost to write the copy first. Pass contentItemId when this post carries an approved generated image/video (from promoteGenerationToContent) — on platforms where the platform hands back a real permalink (currently X and LinkedIn), that generation is marked published so its stored copy can eventually be freed once the channel is the system of record.',
     gate: 'external_send',
     inputSchema: obj({
       platform: S.string, accountExternalId: S.string, message: S.string,
-      imageUrl: S.string, videoUrl: S.string, link: S.string,
+      imageUrl: S.string, videoUrl: S.string, link: S.string, contentItemId: S.string,
     }, ['platform']),
     zod: z.object({
       platform: livePlatform,
@@ -629,6 +653,7 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
       imageUrl: z.string().url().optional(),
       videoUrl: z.string().url().optional(),
       link: z.string().url().optional(),
+      contentItemId: z.string().optional(),
     })
       .refine((a) => !!(a.message || a.imageUrl || a.videoUrl), {
         message: 'A post needs a message, an image, or a video.',
@@ -642,7 +667,25 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
       const pub = PUBLISHERS[a.platform as SocialKey];
       if (!pub) throw new Error(`Publishing to ${a.platform} isn't available yet.`);
       const externalId = await resolveExternalId(accountId, a.platform, a.accountExternalId);
-      return pub(accountId, a, externalId);
+      const result = await pub(accountId, a, externalId);
+      // Best-effort, never fails the publish itself: link this publish back to
+      // any generation queued for this content item so its stored bytes can
+      // eventually be freed (purgeExpiredGenerations, after
+      // GENERATION_PUBLISH_GRACE_DAYS) now that the channel — not us — is the
+      // system of record. Only when constructChannelUrl actually produced a
+      // real permalink; see its comment for which platforms that covers.
+      if (a.contentItemId) {
+        const channelUrl = constructChannelUrl(a.platform, result);
+        if (channelUrl) {
+          const linked = await listGenerations(accountId, {
+            contentItemId: a.contentItemId, reviewState: 'APPROVED',
+          }).catch(() => [] as any[]);
+          for (const g of linked) {
+            if (!g.published_at) await markGenerationPublished(accountId, g.id, channelUrl).catch(() => {});
+          }
+        }
+      }
+      return result;
     },
     summarize: (a) => `Publish this post to ${a.platform}${a.accountExternalId ? ` (${a.accountExternalId})` : ''}. It goes live immediately to that account's real audience.`,
     // THE TIKTOK CASE IS WHY THIS READS THE RESULT AND NOT THE ARGUMENTS.

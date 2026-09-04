@@ -141,3 +141,21 @@ export async function removePrefix(bucket: string, prefix: string): Promise<numb
   }
   return removed;
 }
+
+/**
+ * Delete specific objects (not a whole prefix) from a bucket. Used by
+ * purgeExpiredGenerations (lib/generations/store.ts) to remove exactly the
+ * storage objects behind the individual rows that expired, rather than every
+ * object under the account's prefix (which would also delete other, unrelated
+ * generations that have not expired). Returns the count actually removed.
+ */
+export async function removeObjects(bucket: string, paths: string[]): Promise<number> {
+  if (!paths.length) return 0;
+  let removed = 0;
+  for (let i = 0; i < paths.length; i += 100) {
+    const chunk = paths.slice(i, i + 100);
+    const { error } = await supabase.storage.from(bucket).remove(chunk);
+    if (!error) removed += chunk.length;
+  }
+  return removed;
+}

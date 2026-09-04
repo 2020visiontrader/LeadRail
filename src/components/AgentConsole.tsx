@@ -350,6 +350,10 @@ const TOOL_VERB: Record<string, string> = {
   moveDriveFile: 'Moving that file',
   deleteDriveFile: 'Preparing to delete that file',
   shareDriveFile: 'Preparing to share that file',
+  // --- added 2026-09-04: generations ledger.
+  listGenerations: 'Checking what has been generated',
+  reviewGeneration: 'Recording your decision on that generation',
+  promoteGenerationToContent: 'Queuing that for posting',
 };
 const verbFor = (tool: string, title: string) => TOOL_VERB[tool] || title || 'Working';
 
