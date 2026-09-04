@@ -1,0 +1,34 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "leadrail-crm",
+  "main": "cloudflare/worker.ts",
+  "compatibility_date": "2026-09-04",
+  "account_id": "bb51d7dda87fca4076a1d0443b7af667",
+
+  // Image is pre-built and pushed by GitHub Actions (real Docker, not this
+  // sandbox — see .github/workflows/deploy-containers.yml). NOT a Dockerfile
+  // path: that would force `wrangler deploy` to build locally, which needs
+  // Docker running on whatever machine runs the deploy.
+  "containers": [
+    {
+      "class_name": "LeadRailContainer",
+      "image": "registry.cloudflare.com/bb51d7dda87fca4076a1d0443b7af667/leadrail-crm:latest",
+      "instance_type": "standard-1",
+      "max_instances": 3
+    }
+  ],
+
+  "durable_objects": {
+    "bindings": [
+      { "class_name": "LeadRailContainer", "name": "LEADRAIL_CONTAINER" }
+    ]
+  },
+
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["LeadRailContainer"] }
+  ],
+
+  "routes": [
+    { "pattern": "app.leadrail.xyz", "custom_domain": true }
+  ]
+}

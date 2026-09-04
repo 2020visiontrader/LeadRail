@@ -40,6 +40,8 @@
     "happy-dom": "^20.12.2",
     "postcss": "^8.4.0",
     "typescript": "^5.9.3",
-    "vitest": "^0.34.0"
+    "vitest": "^0.34.0",
+    "wrangler": "^4.20.0",
+    "@cloudflare/containers": "^0.1.0"
   }
 }
