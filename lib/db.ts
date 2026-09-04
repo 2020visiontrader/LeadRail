@@ -497,6 +497,7 @@ export async function insertCampaignAsset(row: {
   account_id: string;
   kind?: string;
   url: string;
+  storage_path?: string | null;
   ai_analysis?: Record<string, any>;
   status?: string;
 }) {

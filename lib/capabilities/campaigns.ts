@@ -5,7 +5,7 @@ import {
   createCampaignRecord, launchCampaign, pauseCampaign, syncCampaign,
 } from '@/lib/campaigns/actions';
 import { getCampaignAbReport } from '@/lib/campaigns/analytics';
-import { getCampaignAssets } from '@/lib/crm';
+import { getCampaignAssets, resolveCampaignAssetUrls } from '@/lib/crm';
 import {
   obj, S, type Capability,
   present, rowsOf, firstField, plural, tally, samples, clip, digestLine,
@@ -160,7 +160,7 @@ export const CAMPAIGN_CAPABILITIES: Capability[] = [
     gate: 'read',
     inputSchema: obj({ campaignId: S.string }, ['campaignId']),
     zod: z.object({ campaignId: z.string() }),
-    run: (accountId, { campaignId }) => getCampaignAssets(campaignId, accountId),
+    run: async (accountId, { campaignId }) => resolveCampaignAssetUrls(await getCampaignAssets(campaignId, accountId)),
   },
   {
     name: 'getInsights',

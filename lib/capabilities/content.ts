@@ -11,7 +11,7 @@ import { z } from 'zod';
 import {
   listPillars, createPillar, deletePillar,
   listPlatformSpecs, getPlatformSpec, upsertPlatformSpec,
-  listCharacterRefs, getCharacterRef, createCharacterRef,
+  listCharacterRefs, getCharacterRef, createCharacterRef, resolveCharacterRefUrl,
   createContentItem, listContentItems, getContentItem, updateContentItem,
   setContentStatus, deleteContentItem, contentBoardSummary,
   CONTENT_STATUSES, FUNNEL_STAGES,
@@ -24,21 +24,8 @@ import { proposeLearning } from '@/lib/content/learning';
 import { runIntake, proposeCanon } from '@/lib/content/intake';
 import { generateImage as routeImage } from '@/lib/ai/image-router';
 import { generateVideo, getVideoStatus, higgsfieldUnavailableReason } from '@/lib/integrations/higgsfield';
+import { uploadGenerated } from '@/lib/storage';
 import { obj, S, type Capability, rowsOf, plural, samples, tally, digestLine } from './types';
-
-/** Persist generated image bytes and hand back a URL. Shared by the two image
- *  capabilities so a generated asset always has the same URL shape. */
-async function storeImage(base64: string, mimeType: string): Promise<string> {
-  const { writeFile, mkdir } = await import('node:fs/promises');
-  const { join } = await import('node:path');
-  const { randomUUID } = await import('node:crypto');
-  const ext = mimeType.includes('jpeg') ? 'jpg' : 'png';
-  const filename = `${randomUUID()}.${ext}`;
-  const dir = join(process.cwd(), 'public', 'generated');
-  await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, filename), Buffer.from(base64, 'base64'));
-  return `/generated/${filename}`;
-}
 
 export const CONTENT_CAPABILITIES: Capability[] = [
   // ------------------------------------------------------------- the board
@@ -277,7 +264,7 @@ export const CONTENT_CAPABILITIES: Capability[] = [
       if (a.characterRefId) {
         const ref = await getCharacterRef(accountId, a.characterRefId);
         if (!ref) throw new Error('No character reference with that id for this account.');
-        referenceUrls = [ref.image_url];
+        referenceUrls = [await resolveCharacterRefUrl(ref)];
         styleLock = ref.style_lock || undefined;
         // The invariant description leads, the scene follows — the same order
         // the reference system uses everywhere: who they are never varies,
@@ -285,8 +272,12 @@ export const CONTENT_CAPABILITIES: Capability[] = [
         prompt = `${ref.description}\n\nScene: ${a.prompt}`;
       }
       const img = await routeImage({ prompt, caption: a.caption, aspect: a.aspect, referenceUrls, styleLock });
-      const url = await storeImage(img.base64, img.mimeType);
-      return { url, mimeType: img.mimeType, conditioned: Boolean(referenceUrls) };
+      const { storagePath, url } = await uploadGenerated(accountId, Buffer.from(img.base64, 'base64'), img.mimeType);
+      // Both travel forward: `url` is a freshly signed link for immediate
+      // display, `storagePath` is the stable identifier — pass THIS to
+      // createCharacterRef so the character reference re-signs at use time
+      // instead of persisting a URL that expires (see GENERATED_URL_TTL).
+      return { url, storagePath, mimeType: img.mimeType, conditioned: Boolean(referenceUrls) };
     },
     digest: (_a, result) => {
       const r: any = result;
@@ -314,12 +305,13 @@ export const CONTENT_CAPABILITIES: Capability[] = [
     name: 'createCharacterRef',
     domain: 'content',
     title: 'Save a character reference',
-    description: "Save an anchor image as a reusable character reference so a recurring avatar or presenter stays identical across every future generation. Needs the image URL, plus the fixed description of who they are (face, build, wardrobe, art style) that travels with every use. Generate the anchor image first with generateBrandImage, then save it here — never re-generate the character from text later.",
+    description: "Save an anchor image as a reusable character reference so a recurring avatar or presenter stays identical across every future generation. Needs the image URL, plus the fixed description of who they are (face, build, wardrobe, art style) that travels with every use. Generate the anchor image first with generateBrandImage, then save it here — pass through BOTH the `url` and `storagePath` generateBrandImage returned (storagePath lets the reference re-sign a fresh link every time it's reused instead of relying on a link that expires) — never re-generate the character from text later.",
     gate: 'internal_write',
-    inputSchema: obj({ name: S.string, imageUrl: S.string, description: S.string, styleLock: S.string, brandId: S.string }, ['name', 'imageUrl', 'description']),
+    inputSchema: obj({ name: S.string, imageUrl: S.string, storagePath: S.string, description: S.string, styleLock: S.string, brandId: S.string }, ['name', 'imageUrl', 'description']),
     zod: z.object({
       name: z.string().min(1).max(120),
       imageUrl: z.string().min(1),
+      storagePath: z.string().min(1).optional(),
       description: z.string().min(10).max(2000),
       styleLock: z.string().max(500).optional(),
       brandId: z.string().optional(),

@@ -6,6 +6,7 @@
 // legitimate thing to plan.
 
 import { supabase } from '@/lib/db';
+import { GENERATED_BUCKET, GENERATED_URL_TTL, signUrl } from '@/lib/storage';
 
 export type ContentStatus =
   | 'IDEATION' | 'OUTLINE' | 'DRAFT' | 'APPROVED' | 'QUEUED' | 'PUBLISHED' | 'ARCHIVED';
@@ -209,18 +210,35 @@ export async function getCharacterRef(accountId: string, id: string) {
 }
 
 export async function createCharacterRef(accountId: string, input: {
-  name: string; imageUrl: string; description: string; styleLock?: string; brandId?: string | null;
+  name: string; imageUrl: string; storagePath?: string | null; description: string; styleLock?: string; brandId?: string | null;
 }) {
   const { data, error } = await supabase.from('character_refs').insert([{
     account_id: accountId,
     brand_id: input.brandId ?? null,
     name: input.name,
     image_url: input.imageUrl,
+    storage_path: input.storagePath ?? null,
     description: input.description,
     style_lock: input.styleLock ?? null,
   }]).select().single();
   if (error) throw error;
   return data;
+}
+
+/**
+ * Resolve the URL to actually use a character reference as conditioning
+ * input, at USE time — never persisted. Re-signs from `storage_path` when
+ * this app generated the anchor image (so an expired signed URL never breaks
+ * character consistency), falling back to `image_url` for a reference whose
+ * anchor is a genuinely external URL the user supplied (no storage_path
+ * exists to sign from).
+ */
+export async function resolveCharacterRefUrl(ref: { image_url: string; storage_path?: string | null }): Promise<string> {
+  if (ref.storage_path) {
+    const fresh = await signUrl(GENERATED_BUCKET, ref.storage_path, GENERATED_URL_TTL);
+    if (fresh) return fresh;
+  }
+  return ref.image_url;
 }
 
 // --------------------------------------------------------------- content items

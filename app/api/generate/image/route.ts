@@ -1,11 +1,9 @@
 import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
-import { writeFile, mkdir } from 'node:fs/promises';
-import { join } from 'node:path';
-import { randomUUID } from 'node:crypto';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 import { generateImage, imageConfigured } from '@/lib/ai/image-router';
 import { insertCampaignAsset, dbReady } from '@/lib/db';
+import { uploadGenerated } from '@/lib/storage';
 
 export const dynamic = 'force-dynamic';
 
@@ -20,12 +18,14 @@ async function POST__impl(request: NextRequest) {
 
   try {
     const img = await generateImage({ prompt: body.prompt, caption: body.caption, aspect: body.aspect });
-    const ext = img.mimeType.includes('jpeg') ? 'jpg' : 'png';
-    const filename = `${randomUUID()}.${ext}`;
-    const dir = join(process.cwd(), 'public', 'generated');
-    await mkdir(dir, { recursive: true });
-    await writeFile(join(dir, filename), Buffer.from(img.base64, 'base64'));
-    const url = `/generated/${filename}`;
+    // Routed through lib/storage.ts's private, tenant-prefixed bucket — the
+    // same helper the two capability call sites use — instead of the old
+    // `public/generated/` path (gitignored, unauthenticated, destroyed on
+    // every deploy).
+    // storagePath is the stable identifier — persist THIS (never the signed
+    // `url`, which expires after GENERATED_URL_TTL and would otherwise make
+    // every campaign asset 404 a day after it was generated).
+    const { url, storagePath } = await uploadGenerated(session.accountId, Buffer.from(img.base64, 'base64'), img.mimeType);
 
     let asset = null;
     // account_id is authoritative from the session, never the client body.
@@ -34,6 +34,7 @@ async function POST__impl(request: NextRequest) {
         campaign_id: body.campaignId,
         account_id: session.accountId,
         url,
+        storage_path: storagePath,
         ai_analysis: { caption: body.caption ?? null, prompt: body.prompt },
       });
     }
