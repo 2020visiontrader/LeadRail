@@ -99,7 +99,8 @@ describe('Regression Guard 1: Sensitive Baseline', () => {
   // 2. It was a mistake: restore the gate value.
   // Derived from CAPABILITIES where isSensitive(c) is true. Sensitivity means
   // gate is one of: 'spend', 'external_send', 'destructive', 'standing_rule'.
-  // Currently 19 sensitive capabilities (as of Packet 7.3).
+  // Currently 21 sensitive capabilities (19 as of Packet 7.3, +2 for the
+  // Google Drive domain's deleteDriveFile/shareDriveFile, 2026-09-04).
   const SENSITIVE_BASELINE = [
     // CRM automations engine (migration 012), exposed to the assistant for the
     // first time. Same risk class as its social twin and gated identically: a
@@ -123,6 +124,10 @@ describe('Regression Guard 1: Sensitive Baseline', () => {
     'deleteContentItem',
     'deleteContentPillar',
     'deleteDeal',
+    // Google Drive domain (2026-09-04): permanently deletes a Drive file via
+    // files.delete — NOT the same as moving to trash, and not recoverable
+    // from chat. Same irreversibility class as deleteDeal above.
+    'deleteDriveFile',
     // Gmail domain (2026-09-04): permanently deletes a Gmail draft — the
     // resource itself is removed and cannot be recovered from chat, the same
     // irreversibility class as deleteDeal above.
@@ -171,6 +176,12 @@ describe('Regression Guard 1: Sensitive Baseline', () => {
     'sendGmailEmail',
     'sendSocialMessage',
     'setAdStatus',
+    // Google Drive domain (2026-09-04): grants a real person (by email, or
+    // the entire public internet via an "anyone" link) access to the owner's
+    // Drive data. Same "reaches a real third party" risk class as
+    // sendGmailEmail/sendEmail — this one hands out access rather than
+    // sending a message, but the blast radius is the same shape.
+    'shareDriveFile',
     'sourceLeads',
   ];
 

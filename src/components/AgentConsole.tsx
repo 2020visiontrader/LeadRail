@@ -341,6 +341,15 @@ const TOOL_VERB: Record<string, string> = {
   replyToGmailMessage: 'Preparing a reply',
   getGmailThread: 'Opening that email thread',
   listGmailLabels: 'Checking your Gmail labels',
+  // --- added by the Google Drive write/organise domain (2026-09-04) ---
+  listDriveFiles: 'Looking through that Drive folder',
+  getDriveFileMetadata: 'Checking that file’s details',
+  createDriveFile: 'Creating that file in Drive',
+  createDriveFolder: 'Creating that folder in Drive',
+  updateDriveFile: 'Updating that Drive file',
+  moveDriveFile: 'Moving that file',
+  deleteDriveFile: 'Preparing to delete that file',
+  shareDriveFile: 'Preparing to share that file',
 };
 const verbFor = (tool: string, title: string) => TOOL_VERB[tool] || title || 'Working';
 

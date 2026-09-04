@@ -45,6 +45,7 @@ import { INBOX_CAPABILITIES } from './inbox';
 import { DIAGNOSTICS_CAPABILITIES } from './diagnostics';
 import { SKILL_LOOKUP_CAPABILITIES } from './skill-lookup';
 import { GMAIL_CAPABILITIES } from './gmail';
+import { GDRIVE_CAPABILITIES } from './gdrive';
 import { METRICS_BY_NAME } from './metrics-port';
 
 // Two-stage tool catalog (Packet 10.3, flipped 2026-09-03 — C6). The full,
@@ -111,6 +112,7 @@ const ALL: Capability[] = [
   ...DIAGNOSTICS_CAPABILITIES,
   ...SKILL_LOOKUP_CAPABILITIES,
   ...GMAIL_CAPABILITIES,
+  ...GDRIVE_CAPABILITIES,
 ].filter((c) => AGENT_STAGED_CATALOG || !STAGED_ONLY.includes(c.name));
 
 // CATALOG ORDER — the exact key order of the original TOOLS object literal in
@@ -250,6 +252,13 @@ const CATALOG_ORDER: string[] = [
   // same reason as every entry above.
   'listGmailDrafts', 'getGmailDraft', 'createGmailDraft', 'sendGmailDraft', 'deleteGmailDraft',
   'replyToGmailMessage', 'getGmailThread', 'listGmailLabels', 'markGmailMessageUnread',
+  // --- appended 2026-09-04: Google Drive write/organise domain. The two
+  // existing Drive tools (searchDrive, readDriveFile in knowledge.ts) could
+  // only find and read a file — nothing could list a folder, create or edit
+  // a file, organise anything, or share. Appended, never sorted, same reason
+  // as every entry above.
+  'listDriveFiles', 'getDriveFileMetadata', 'createDriveFile',
+  'createDriveFolder', 'updateDriveFile', 'moveDriveFile', 'deleteDriveFile', 'shareDriveFile',
 ];
 
 const byName = new Map(ALL.map((c) => [c.name, c]));
