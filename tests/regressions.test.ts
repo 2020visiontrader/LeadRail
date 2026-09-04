@@ -123,6 +123,10 @@ describe('Regression Guard 1: Sensitive Baseline', () => {
     'deleteContentItem',
     'deleteContentPillar',
     'deleteDeal',
+    // Gmail domain (2026-09-04): permanently deletes a Gmail draft — the
+    // resource itself is removed and cannot be recovered from chat, the same
+    // irreversibility class as deleteDeal above.
+    'deleteGmailDraft',
     'deleteSocialAutomation',
     'deleteSocialComment',
     'enableAutomation',
@@ -143,6 +147,10 @@ describe('Regression Guard 1: Sensitive Baseline', () => {
     // reasoning that keeps disableAutomation off this list.
     'promoteObservation',
     'publishSocialPost',
+    // Gmail domain (2026-09-04): replies to an existing Gmail message,
+    // staying in the same thread — reaches a real person's inbox the moment
+    // it runs, same risk class and same approval flow as sendGmailEmail.
+    'replyToGmailMessage',
     'replyToSocialComment',
     'replyToThread',
     // Packet 7.3: turning the account-level automation kill switch back ON
@@ -157,6 +165,9 @@ describe('Regression Guard 1: Sensitive Baseline', () => {
     // Gmail domain (2026-09-03): sends a real email from the connected Gmail
     // mailbox to a real person, gated exactly like sendEmail above — same
     // risk class, same approval flow.
+    // Gmail domain (2026-09-04): sends an existing Gmail draft as-is — same
+    // risk class as sendGmailEmail/sendEmail above, same approval flow.
+    'sendGmailDraft',
     'sendGmailEmail',
     'sendSocialMessage',
     'setAdStatus',

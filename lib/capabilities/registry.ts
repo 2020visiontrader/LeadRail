@@ -243,6 +243,13 @@ const CATALOG_ORDER: string[] = [
   // assistant denied it could reach a connected mailbox because no tool
   // existed to try. Appended, never sorted, same reason as every entry above.
   'listGmailMessages', 'getGmailMessage', 'sendGmailEmail', 'markGmailMessageRead', 'archiveGmailMessage',
+  // --- appended 2026-09-04: Gmail drafts/threads/labels. The owner asked the
+  // assistant how many draft emails were in Gmail; it had no way to answer —
+  // listMessages/getMessage/sendMessage/modifyMessage covered the inbox but
+  // nothing touched /drafts, /threads, or /labels. Appended, never sorted,
+  // same reason as every entry above.
+  'listGmailDrafts', 'getGmailDraft', 'createGmailDraft', 'sendGmailDraft', 'deleteGmailDraft',
+  'replyToGmailMessage', 'getGmailThread', 'listGmailLabels', 'markGmailMessageUnread',
 ];
 
 const byName = new Map(ALL.map((c) => [c.name, c]));

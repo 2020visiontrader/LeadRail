@@ -112,6 +112,39 @@ export function toolSpecs() {
   return Object.entries(TOOLS).map(([name, t]) => ({ name, description: t.description, inputSchema: t.inputSchema }));
 }
 
+/** Turn zod's per-issue messages into one readable sentence.
+ *
+ *  `parsed.error.message` (the ZodError's top-level message) is a JSON-
+ *  stringified array of its issues — that is what used to reach the model
+ *  and the user verbatim as `Invalid arguments: [{ "expected": ... }]`. Every
+ *  reader of this string, human or model, needs the offending field named
+ *  precisely so the model can correct itself, not a JSON blob.
+ *
+ *  Each zod v4 issue's own `.message` is already a readable clause (e.g.
+ *  "Invalid input: expected string, received undefined") — we lift the
+ *  expected/received pair out of it for `invalid_type` issues to name the
+ *  field and what was wrong in one clause, and fall back to the issue's own
+ *  message (with the redundant "Invalid input: " prefix trimmed) for every
+ *  other issue code. Multiple issues are joined and capped so this stays one
+ *  sentence, not a wall of text. */
+export function describeZodIssues(issues: z.ZodIssue[]): string {
+  const MAX_ISSUES = 3;
+  const describeOne = (issue: z.ZodIssue): string => {
+    const path = issue.path.length ? issue.path.map(String).join('.') : 'input';
+    const typeMatch = /expected (\w+), received (\w+)/.exec(issue.message);
+    if (issue.code === 'invalid_type' && typeMatch) {
+      const [, expected, received] = typeMatch;
+      return received === 'undefined'
+        ? `${path} is required (expected a ${expected})`
+        : `${path} should be a ${expected} (got ${received})`;
+    }
+    return `${path}: ${issue.message.replace(/^Invalid input:\s*/, '')}`;
+  };
+  const shown = issues.slice(0, MAX_ISSUES).map(describeOne);
+  const remaining = issues.length - shown.length;
+  return shown.join('; ') + (remaining > 0 ? ` (+${remaining} more issue${remaining === 1 ? '' : 's'})` : '');
+}
+
 export interface ToolRunResult { ok: boolean; result?: any; error?: string }
 
 /** Validate + execute a tool by name. Never throws — errors are returned so
@@ -163,7 +196,7 @@ export async function runTool(
   }
 
   const parsed = tool.zod.safeParse(args);
-  if (!parsed.success) return { ok: false, error: `Invalid arguments: ${parsed.error.message}` };
+  if (!parsed.success) return { ok: false, error: `Invalid arguments: ${describeZodIssues(parsed.error.issues)}` };
 
   // SPEND GATE (Packet 1.4). This is the one place any capability is executed —
   // the chat loop (both the streaming and non-streaming variants, including the

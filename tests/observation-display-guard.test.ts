@@ -32,6 +32,7 @@ import { describe, it, expect } from 'vitest';
 import { CAPABILITIES } from '@/lib/capabilities/registry';
 import type { Capability } from '@/lib/capabilities/types';
 import { renderObservation } from '@/lib/agent/observation-render';
+import { runTool } from '@/lib/agent/tools';
 
 const DISPLAY_BUDGET = 20_000; // generous — this test is about shape, not truncation.
 
@@ -178,5 +179,41 @@ describe('the guard catches a deliberately JSON-leaking capability', () => {
     };
     const out = displayFor(fixed, {}, { documents: [] });
     expect(findRawJsonMarker(out)).toBeUndefined();
+  });
+});
+
+// THE OTHER PLACE raw JSON reached a person: not a capability RESULT, but a
+// tool-argument VALIDATION FAILURE. lib/agent/loop.ts builds the observation
+// text for a failed runTool() as `ERROR: ${res.error}` (see displayObservation
+// callers around "ERROR:" in loop.ts) and feeds that through the exact same
+// renderObservation() pipeline this whole file exercises — so a zod error
+// that stringifies its issues into res.error leaks JSON through this same
+// renderer, by the same shape-based logic, regardless of which tool it came
+// from. This is the production line verbatim:
+//   ERROR: Invalid arguments: [{ "expected": "string", "code":
+//   "invalid_type", "path": [ "messageId" ], "message": "Invalid input" }]
+// NOTE on marker choice here: zod's own ZodError.message is PRETTY-printed
+// (`JSON.stringify(issues, null, 2)`-shaped — newline + indent after every
+// brace and colon), so RAW_JSON_MARKERS above — tuned for a COMPACT
+// `JSON.stringify(result)` dump — does not reliably fire on it (`{"` never
+// appears; it's `{\n    "`). Confirmed against this file's own revert-check:
+// with describeZodIssues() reverted out, findRawJsonMarker() on the raw zod
+// message came back undefined even though the text was unmistakably a JSON
+// dump. So this block also checks for the pretty-printed fingerprints
+// directly — the quoted key names zod's own issue objects always carry
+// (`"code":`, `"path":`, `"expected":`) survive re-indentation and cannot
+// appear in prose describeZodIssues() produces.
+const ZOD_DUMP_KEY_MARKERS = ['"code":', '"path":', '"expected":'];
+
+describe('a failed tool-argument validation renders no raw JSON either', () => {
+  it('getGmailMessage called with no messageId — the exact production shape', async () => {
+    const res = await runTool('getGmailMessage', 'acct-1', {});
+    expect(res.ok).toBe(false);
+    const obs = `ERROR: ${res.error}`; // mirrors loop.ts's observation text for a failed call
+    const out = renderObservation(obs, DISPLAY_BUDGET);
+    expect(findRawJsonMarker(out)).toBeUndefined();
+    for (const marker of ZOD_DUMP_KEY_MARKERS) expect(out).not.toContain(marker);
+    expect(out).toContain('messageId');
+    expect(out.toLowerCase()).toContain('required');
   });
 });
