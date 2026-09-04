@@ -1,6 +1,14 @@
 import { publicBase, signState, verifyState } from './meta-oauth';
 
-const TH_AUTH = 'https://www.facebook.com/v18.0/dialog/oauth';
+// Threads authorization goes through Threads' OWN authorize host, not Meta's
+// facebook.com dialog — the two are different products with different
+// consent screens and this one was wrong. Confirmed against multiple
+// independent, mutually-corroborating sources (a Postman collection published
+// by Meta, third-party developer guides, and an MCP server implementation) via
+// web search — direct WebFetch to developers.facebook.com is blocked by this
+// environment's egress proxy. See the PR description / audit report for the
+// search evidence.
+const TH_AUTH = 'https://threads.net/oauth/authorize';
 const TH_TOKEN = 'https://graph.threads.net/oauth/access_token';
 const TH_GRAPH = 'https://graph.threads.net/v1.0';
 

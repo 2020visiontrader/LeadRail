@@ -107,17 +107,61 @@ export async function getXProfile(token: string): Promise<{ id: string; username
   return { id: String(json.data?.id ?? ''), username: json.data?.username ?? '' };
 }
 
-/** Publish a text post. Requires a paid X API tier — see header note. */
-export async function publishXPost(token: string, text: string) {
+/** Publish a text post, or (with replyToTweetId) reply to an existing one.
+ *  Same endpoint either way — X models a reply as an ordinary POST /2/tweets
+ *  carrying `reply.in_reply_to_tweet_id`, not a separate reply call. Requires
+ *  a paid X API tier — see header note. */
+export async function publishXPost(token: string, text: string, replyToTweetId?: string) {
+  const body: Record<string, any> = { text };
+  if (replyToTweetId) body.reply = { in_reply_to_tweet_id: replyToTweetId };
   const res = await fetch(`${X_API}/tweets`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(body),
   });
   const json = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(`X publish failed: ${json?.detail || json?.title || res.statusText}`);
+  return json;
+}
+
+/** List replies to a tweet (the "conversation") via recent search filtered to
+ *  its conversation_id, newest first. Reading tweets — unlike posting them —
+ *  is only available on X API tiers above the pay-per-use default (Basic and
+ *  up as of this writing); a 403/429 here is surfaced with that context rather
+ *  than a bare HTTP error, since X's own error body does not name the tier. */
+export async function listXReplies(token: string, tweetId: string, limit = 25) {
+  const p = new URLSearchParams({
+    query: `conversation_id:${tweetId} is:reply`,
+    max_results: String(Math.min(Math.max(limit, 10), 100)),
+    'tweet.fields': 'author_id,created_at,in_reply_to_user_id,public_metrics,conversation_id',
+  });
+  const res = await fetch(`${X_API}/tweets/search/recent?${p.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const detail = json?.detail || json?.title || res.statusText;
+    if (res.status === 403 || res.status === 429) {
+      throw new Error(`X replies error (${res.status}): ${detail} — reading replies needs an X API tier above the free/pay-per-use default (Basic or higher).`);
+    }
+    throw new Error(`X replies error (${res.status}): ${detail}`);
+  }
+  return json.data || [];
+}
+
+/** Delete a tweet. X only lets an app delete tweets posted BY the authenticated
+ *  user — there is no API to delete or moderate someone else's reply, so this
+ *  is not a substitute for Meta-style comment moderation. Call sites must make
+ *  that limitation explicit rather than presenting this as "delete a comment". */
+export async function deleteXTweet(token: string, tweetId: string) {
+  const res = await fetch(`${X_API}/tweets/${tweetId}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`X delete failed (${res.status}): ${json?.detail || json?.title || res.statusText}`);
   return json;
 }
