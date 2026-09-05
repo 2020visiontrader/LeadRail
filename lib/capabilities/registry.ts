@@ -45,6 +45,8 @@ import { INBOX_CAPABILITIES } from './inbox';
 import { DIAGNOSTICS_CAPABILITIES } from './diagnostics';
 import { SKILL_LOOKUP_CAPABILITIES } from './skill-lookup';
 import { GMAIL_CAPABILITIES } from './gmail';
+import { GDRIVE_CAPABILITIES } from './gdrive';
+import { GENERATIONS_CAPABILITIES } from './generations';
 import { METRICS_BY_NAME } from './metrics-port';
 
 // Two-stage tool catalog (Packet 10.3, flipped 2026-09-03 — C6). The full,
@@ -111,6 +113,8 @@ const ALL: Capability[] = [
   ...DIAGNOSTICS_CAPABILITIES,
   ...SKILL_LOOKUP_CAPABILITIES,
   ...GMAIL_CAPABILITIES,
+  ...GDRIVE_CAPABILITIES,
+  ...GENERATIONS_CAPABILITIES,
 ].filter((c) => AGENT_STAGED_CATALOG || !STAGED_ONLY.includes(c.name));
 
 // CATALOG ORDER — the exact key order of the original TOOLS object literal in
@@ -243,6 +247,25 @@ const CATALOG_ORDER: string[] = [
   // assistant denied it could reach a connected mailbox because no tool
   // existed to try. Appended, never sorted, same reason as every entry above.
   'listGmailMessages', 'getGmailMessage', 'sendGmailEmail', 'markGmailMessageRead', 'archiveGmailMessage',
+  // --- appended 2026-09-04: Gmail drafts/threads/labels. The owner asked the
+  // assistant how many draft emails were in Gmail; it had no way to answer —
+  // listMessages/getMessage/sendMessage/modifyMessage covered the inbox but
+  // nothing touched /drafts, /threads, or /labels. Appended, never sorted,
+  // same reason as every entry above.
+  'listGmailDrafts', 'getGmailDraft', 'createGmailDraft', 'sendGmailDraft', 'deleteGmailDraft',
+  'replyToGmailMessage', 'getGmailThread', 'listGmailLabels', 'markGmailMessageUnread',
+  // --- appended 2026-09-04: Google Drive write/organise domain. The two
+  // existing Drive tools (searchDrive, readDriveFile in knowledge.ts) could
+  // only find and read a file — nothing could list a folder, create or edit
+  // a file, organise anything, or share. Appended, never sorted, same reason
+  // as every entry above.
+  'listDriveFiles', 'getDriveFileMetadata', 'createDriveFile',
+  'createDriveFolder', 'updateDriveFile', 'moveDriveFile', 'deleteDriveFile', 'shareDriveFile',
+  // --- appended 2026-09-04: generations ledger. Media generation (image,
+  // video) happened and left no trace — no listing, no review, no quota, no
+  // retention. The owner asked for a place to see generations and approve or
+  // reject them. Appended, never sorted, same reason as every entry above.
+  'listGenerations', 'reviewGeneration', 'promoteGenerationToContent',
 ];
 
 const byName = new Map(ALL.map((c) => [c.name, c]));

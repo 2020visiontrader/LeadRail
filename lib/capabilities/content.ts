@@ -11,12 +11,13 @@ import { z } from 'zod';
 import {
   listPillars, createPillar, deletePillar,
   listPlatformSpecs, getPlatformSpec, upsertPlatformSpec,
-  listCharacterRefs, getCharacterRef, createCharacterRef,
+  listCharacterRefs, getCharacterRef, createCharacterRef, resolveCharacterRefUrl,
   createContentItem, listContentItems, getContentItem, updateContentItem,
   setContentStatus, deleteContentItem, contentBoardSummary,
   CONTENT_STATUSES, FUNNEL_STAGES,
 } from '@/lib/content/store';
 import { generateContent } from '@/lib/content/engine';
+import { skillGuidanceForGeneration } from '@/lib/skills/for-generation';
 import { loadCanon, saveCanon, scoreLinearity } from '@/lib/content/canon';
 import { runResearchSweep, listFindings, RESEARCH_PASSES } from '@/lib/content/research';
 import { syncPerformance, performanceReport } from '@/lib/content/performance';
@@ -24,21 +25,8 @@ import { proposeLearning } from '@/lib/content/learning';
 import { runIntake, proposeCanon } from '@/lib/content/intake';
 import { generateImage as routeImage } from '@/lib/ai/image-router';
 import { generateVideo, getVideoStatus, higgsfieldUnavailableReason } from '@/lib/integrations/higgsfield';
+import { recordMediaGeneration, recordExternalVideoGeneration } from '@/lib/generations/store';
 import { obj, S, type Capability, rowsOf, plural, samples, tally, digestLine } from './types';
-
-/** Persist generated image bytes and hand back a URL. Shared by the two image
- *  capabilities so a generated asset always has the same URL shape. */
-async function storeImage(base64: string, mimeType: string): Promise<string> {
-  const { writeFile, mkdir } = await import('node:fs/promises');
-  const { join } = await import('node:path');
-  const { randomUUID } = await import('node:crypto');
-  const ext = mimeType.includes('jpeg') ? 'jpg' : 'png';
-  const filename = `${randomUUID()}.${ext}`;
-  const dir = join(process.cwd(), 'public', 'generated');
-  await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, filename), Buffer.from(base64, 'base64'));
-  return `/generated/${filename}`;
-}
 
 export const CONTENT_CAPABILITIES: Capability[] = [
   // ------------------------------------------------------------- the board
@@ -197,7 +185,10 @@ export const CONTENT_CAPABILITIES: Capability[] = [
       intent: z.enum(['organic', 'paid']).optional(),
     }),
     run: async (accountId, a) => {
-      const piece = await generateContent({ accountId, ...a });
+      const guidance = await skillGuidanceForGeneration(accountId, {
+        kind: 'content piece', platform: a.platform, topic: a.topic,
+      });
+      const piece = await generateContent({ accountId, ...a, guidance: guidance || undefined });
       if (a.save === false) return piece;
       const item = await createContentItem(accountId, {
         title: piece.title,
@@ -277,16 +268,41 @@ export const CONTENT_CAPABILITIES: Capability[] = [
       if (a.characterRefId) {
         const ref = await getCharacterRef(accountId, a.characterRefId);
         if (!ref) throw new Error('No character reference with that id for this account.');
-        referenceUrls = [ref.image_url];
+        referenceUrls = [await resolveCharacterRefUrl(ref)];
         styleLock = ref.style_lock || undefined;
         // The invariant description leads, the scene follows — the same order
         // the reference system uses everywhere: who they are never varies,
         // only what they are doing.
         prompt = `${ref.description}\n\nScene: ${a.prompt}`;
       }
+      // Skill guidance, if any, is appended AFTER the description+scene and
+      // BEFORE aspect/caption/reference-note (added inside routeImage) and
+      // styleLock (appended verbatim, last, by lib/ai/gemini.ts) — it never
+      // displaces ref.description leading or styleLock's final, untouched
+      // position. There is no separate "system" channel for an image prompt,
+      // so this is the one honest place: after what the image is OF, before
+      // the mechanical suffixes the router itself always adds.
+      const guidance = await skillGuidanceForGeneration(accountId, {
+        kind: 'brand image', topic: a.prompt,
+      });
+      if (guidance) {
+        prompt += `\n\nHOUSE SKILL GUIDANCE — apply this to how the image is composed; it is instruction, not text to render on the image itself:\n${guidance}`;
+      }
       const img = await routeImage({ prompt, caption: a.caption, aspect: a.aspect, referenceUrls, styleLock });
-      const url = await storeImage(img.base64, img.mimeType);
-      return { url, mimeType: img.mimeType, conditioned: Boolean(referenceUrls) };
+      // recordMediaGeneration is the ONE shared write path (checks quota,
+      // uploads to GENERATED_BUCKET, records the generations row) — see
+      // lib/generations/store.ts. `url` is a freshly signed link for
+      // immediate display, `storagePath` is the stable identifier — pass
+      // THIS to createCharacterRef so the character reference re-signs at
+      // use time instead of persisting a URL that expires (GENERATED_URL_TTL).
+      const { storagePath, url, generationId } = await recordMediaGeneration(accountId, {
+        kind: 'image',
+        sourceTool: 'generateBrandImage',
+        prompt,
+        bytes: Buffer.from(img.base64, 'base64'),
+        mimeType: img.mimeType,
+      });
+      return { url, storagePath, generationId, mimeType: img.mimeType, conditioned: Boolean(referenceUrls) };
     },
     digest: (_a, result) => {
       const r: any = result;
@@ -314,12 +330,13 @@ export const CONTENT_CAPABILITIES: Capability[] = [
     name: 'createCharacterRef',
     domain: 'content',
     title: 'Save a character reference',
-    description: "Save an anchor image as a reusable character reference so a recurring avatar or presenter stays identical across every future generation. Needs the image URL, plus the fixed description of who they are (face, build, wardrobe, art style) that travels with every use. Generate the anchor image first with generateBrandImage, then save it here — never re-generate the character from text later.",
+    description: "Save an anchor image as a reusable character reference so a recurring avatar or presenter stays identical across every future generation. Needs the image URL, plus the fixed description of who they are (face, build, wardrobe, art style) that travels with every use. Generate the anchor image first with generateBrandImage, then save it here — pass through BOTH the `url` and `storagePath` generateBrandImage returned (storagePath lets the reference re-sign a fresh link every time it's reused instead of relying on a link that expires) — never re-generate the character from text later.",
     gate: 'internal_write',
-    inputSchema: obj({ name: S.string, imageUrl: S.string, description: S.string, styleLock: S.string, brandId: S.string }, ['name', 'imageUrl', 'description']),
+    inputSchema: obj({ name: S.string, imageUrl: S.string, storagePath: S.string, description: S.string, styleLock: S.string, brandId: S.string }, ['name', 'imageUrl', 'description']),
     zod: z.object({
       name: z.string().min(1).max(120),
       imageUrl: z.string().min(1),
+      storagePath: z.string().min(1).optional(),
       description: z.string().min(10).max(2000),
       styleLock: z.string().max(500).optional(),
       brandId: z.string().optional(),
@@ -346,7 +363,23 @@ export const CONTENT_CAPABILITIES: Capability[] = [
       const blocked = await higgsfieldUnavailableReason(accountId);
       if (blocked) return { error: blocked };
       try {
-        return await generateVideo(accountId, { imageUrl: a.imageUrl, prompt: a.prompt, dialogue: a.dialogue });
+        const result = await generateVideo(accountId, { imageUrl: a.imageUrl, prompt: a.prompt, dialogue: a.dialogue });
+        // Record only once a URL actually exists — a still-processing render
+        // (result.url unset, only a jobId) has nothing to point a generation
+        // row at yet; getVideoStatus is the polling path and does not itself
+        // generate anything new to record. bytes=0: Higgsfield hosts this
+        // video, nothing was uploaded to our bucket, so it consumes none of
+        // the account's GENERATION_QUOTA_BYTES.
+        let generationId: string | undefined;
+        if (result?.url) {
+          const rec = await recordExternalVideoGeneration(accountId, {
+            sourceTool: 'generateBrandVideo',
+            prompt: a.prompt,
+            externalUrl: result.url,
+          }).catch(() => null);
+          if (rec) generationId = rec.generationId;
+        }
+        return { ...result, generationId };
       } catch (e: any) {
         return { error: e?.message || 'The video render failed.' };
       }

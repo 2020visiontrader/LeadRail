@@ -24,10 +24,50 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 // A. Capability registration + gate classification — the REAL registry.
 // ---------------------------------------------------------------------------
 describe('gmail capabilities: registration and gates', () => {
-  it('registers all five gmail capabilities, present in the catalog', async () => {
+  const ALL_GMAIL_CAPABILITY_NAMES = [
+    'listGmailMessages', 'getGmailMessage', 'sendGmailEmail', 'markGmailMessageRead', 'archiveGmailMessage',
+    'markGmailMessageUnread', 'listGmailDrafts', 'getGmailDraft', 'createGmailDraft', 'sendGmailDraft',
+    'deleteGmailDraft', 'replyToGmailMessage', 'getGmailThread', 'listGmailLabels',
+  ];
+
+  it('registers all fourteen gmail capabilities, present in the catalog', async () => {
     const { CAPABILITY_BY_NAME } = await import('@/lib/capabilities/registry');
-    for (const name of ['listGmailMessages', 'getGmailMessage', 'sendGmailEmail', 'markGmailMessageRead', 'archiveGmailMessage']) {
+    for (const name of ALL_GMAIL_CAPABILITY_NAMES) {
       expect(CAPABILITY_BY_NAME[name], `${name} should be registered`).toBeTruthy();
+    }
+  });
+
+  it('sendGmailDraft and replyToGmailMessage are gated external_send — both need approval before sending', async () => {
+    const { CAPABILITY_BY_NAME } = await import('@/lib/capabilities/registry');
+    const { isSensitive } = await import('@/lib/capabilities/types');
+    expect(CAPABILITY_BY_NAME.sendGmailDraft.gate).toBe('external_send');
+    expect(CAPABILITY_BY_NAME.replyToGmailMessage.gate).toBe('external_send');
+    expect(isSensitive(CAPABILITY_BY_NAME.sendGmailDraft)).toBe(true);
+    expect(isSensitive(CAPABILITY_BY_NAME.replyToGmailMessage)).toBe(true);
+  });
+
+  it('createGmailDraft and markGmailMessageUnread are internal_write — run immediately, no approval', async () => {
+    const { CAPABILITY_BY_NAME } = await import('@/lib/capabilities/registry');
+    const { isSensitive } = await import('@/lib/capabilities/types');
+    expect(CAPABILITY_BY_NAME.createGmailDraft.gate).toBe('internal_write');
+    expect(CAPABILITY_BY_NAME.markGmailMessageUnread.gate).toBe('internal_write');
+    expect(isSensitive(CAPABILITY_BY_NAME.createGmailDraft)).toBe(false);
+    expect(isSensitive(CAPABILITY_BY_NAME.markGmailMessageUnread)).toBe(false);
+  });
+
+  it('deleteGmailDraft is destructive — irreversible, needs approval', async () => {
+    const { CAPABILITY_BY_NAME } = await import('@/lib/capabilities/registry');
+    const { isSensitive } = await import('@/lib/capabilities/types');
+    expect(CAPABILITY_BY_NAME.deleteGmailDraft.gate).toBe('destructive');
+    expect(isSensitive(CAPABILITY_BY_NAME.deleteGmailDraft)).toBe(true);
+  });
+
+  it('listGmailDrafts, getGmailDraft, getGmailThread and listGmailLabels are read — no approval', async () => {
+    const { CAPABILITY_BY_NAME } = await import('@/lib/capabilities/registry');
+    const { isSensitive } = await import('@/lib/capabilities/types');
+    for (const name of ['listGmailDrafts', 'getGmailDraft', 'getGmailThread', 'listGmailLabels']) {
+      expect(CAPABILITY_BY_NAME[name].gate).toBe('read');
+      expect(isSensitive(CAPABILITY_BY_NAME[name])).toBe(false);
     }
   });
 
@@ -80,17 +120,42 @@ const mintAccessToken = vi.fn(async (accountId: string) => {
 const listMessages = vi.fn(async () => ({ messages: [{ id: 'm1', threadId: 't1' }, { id: 'm2', threadId: 't2' }] }));
 const getMessage = vi.fn(async () => ({
   id: 'm1',
+  threadId: 't1',
   snippet: 'Hey, following up on last week...',
   payload: { headers: [
     { name: 'Subject', value: 'Following up' },
     { name: 'From', value: 'lead@example.com' },
     { name: 'Date', value: 'Wed, 3 Sep 2026 10:00:00 -0700' },
+    { name: 'Message-ID', value: '<original-msg-id@mail.gmail.com>' },
+    { name: 'References', value: '<earlier-msg-id@mail.gmail.com>' },
   ] },
 }));
 const sendMessage = vi.fn(async () => ({ id: 'sent-msg-1', threadId: 't1' }));
 const markRead = vi.fn(async () => ({ id: 'm1' }));
 const markUnread = vi.fn(async () => ({ id: 'm1' }));
 const archiveMessage = vi.fn(async () => ({ id: 'm1' }));
+const listDrafts = vi.fn(async () => ({
+  drafts: [{ id: 'd1', message: { id: 'dm1', threadId: 't1' } }, { id: 'd2', message: { id: 'dm2', threadId: 't2' } }],
+  resultSizeEstimate: 2,
+}));
+const getDraft = vi.fn(async () => ({
+  id: 'd1',
+  message: { id: 'dm1', threadId: 't1', snippet: 'Draft snippet', payload: { headers: [
+    { name: 'Subject', value: 'Draft subject' },
+    { name: 'To', value: 'lead@example.com' },
+  ] } },
+}));
+const createDraft = vi.fn(async () => ({ id: 'new-draft-1', message: { id: 'new-msg-1', threadId: 't9' } }));
+const sendDraft = vi.fn(async () => ({ id: 'sent-from-draft-1', threadId: 't1' }));
+const deleteDraft = vi.fn(async () => ({ id: 'd1', deleted: true }));
+const getThread = vi.fn(async () => ({
+  id: 't1',
+  messages: [
+    { id: 'm1', payload: { headers: [{ name: 'Subject', value: 'Thread subject' }] } },
+    { id: 'm2', payload: { headers: [{ name: 'Subject', value: 'Re: Thread subject' }] } },
+  ],
+}));
+const listLabels = vi.fn(async () => ({ labels: [{ id: 'INBOX', name: 'INBOX', type: 'system' }, { id: 'l1', name: 'VIP', type: 'user' }] }));
 
 vi.mock('@/lib/email/gmail', () => ({
   mintAccessToken: (...a: any[]) => (mintAccessToken as any)(...a),
@@ -100,6 +165,13 @@ vi.mock('@/lib/email/gmail', () => ({
   markRead: (...a: any[]) => (markRead as any)(...a),
   markUnread: (...a: any[]) => (markUnread as any)(...a),
   archiveMessage: (...a: any[]) => (archiveMessage as any)(...a),
+  listDrafts: (...a: any[]) => (listDrafts as any)(...a),
+  getDraft: (...a: any[]) => (getDraft as any)(...a),
+  createDraft: (...a: any[]) => (createDraft as any)(...a),
+  sendDraft: (...a: any[]) => (sendDraft as any)(...a),
+  deleteDraft: (...a: any[]) => (deleteDraft as any)(...a),
+  getThread: (...a: any[]) => (getThread as any)(...a),
+  listLabels: (...a: any[]) => (listLabels as any)(...a),
 }));
 
 const getGmailAccount = vi.fn(async (accountId: string) => accounts[accountId] ?? null);
@@ -219,5 +291,246 @@ describe('digest: results render as prose, never raw JSON, for the model to reas
     const summary = caps.sendGmailEmail.summarize!({ to: 'lead@x.com', subject: 'Confidential offer', html: '<p>SECRET BODY TEXT</p>' });
     expect(summary).toContain('Confidential offer');
     expect(summary).not.toContain('SECRET BODY TEXT');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// F. Drafts: the owner's actual question ("how many drafts do I have").
+// ---------------------------------------------------------------------------
+describe('drafts: listGmailDrafts answers the owner\'s actual question — a usable count', () => {
+  it('surfaces a count in the digest, not just rows', async () => {
+    const caps = await gmailCaps();
+    const result = await caps.listGmailDrafts.run(ACCOUNT_A, {});
+    expect(result.drafts).toHaveLength(2);
+    expect(result.resultSizeEstimate).toBe(2);
+    const digest = caps.listGmailDrafts.digest!({}, result);
+    expect(digest).toMatch(/2 drafts/i);
+    expect(digest).not.toMatch(/[{}[\]]/);
+  });
+
+  it('mints a fresh token like every other capability', async () => {
+    const caps = await gmailCaps();
+    await caps.listGmailDrafts.run(ACCOUNT_A, {});
+    expect(mintAccessToken).toHaveBeenCalledWith(ACCOUNT_A);
+    expect(listDrafts).toHaveBeenCalledWith(`fresh-token-for-${ACCOUNT_A}`, { maxResults: undefined });
+  });
+
+  it('zero drafts renders "No drafts." not a fabricated number', async () => {
+    listDrafts.mockResolvedValueOnce({ drafts: [], resultSizeEstimate: 0 });
+    const caps = await gmailCaps();
+    const result = await caps.listGmailDrafts.run(ACCOUNT_A, {});
+    const digest = caps.listGmailDrafts.digest!({}, result);
+    expect(digest).toBe('No drafts.');
+  });
+
+  it('another account\'s drafts are unreachable — B has no row, never sees A\'s drafts', async () => {
+    const caps = await gmailCaps();
+    await expect(caps.listGmailDrafts.run(ACCOUNT_B, {})).rejects.toThrow(/no gmail account is connected/i);
+    expect(listDrafts).not.toHaveBeenCalled();
+  });
+
+  it('getGmailDraft reads one draft\'s subject/recipient/snippet in prose', async () => {
+    const caps = await gmailCaps();
+    const result = await caps.getGmailDraft.run(ACCOUNT_A, { draftId: 'd1' });
+    const digest = caps.getGmailDraft.digest!({}, result);
+    expect(digest).toContain('Subject: "Draft subject"');
+    expect(digest).toContain('To: lead@example.com');
+    expect(digest).not.toMatch(/[{}[\]]/);
+  });
+
+  it('createGmailDraft writes to the owner\'s own mailbox and sends nothing (no sendMessage call)', async () => {
+    const caps = await gmailCaps();
+    const result = await caps.createGmailDraft.run(ACCOUNT_A, { to: 'lead@x.com', subject: 'Draft me', html: '<p>hi</p>' });
+    expect(createDraft).toHaveBeenCalledWith(`fresh-token-for-${ACCOUNT_A}`, expect.objectContaining({
+      from: 'franckie@retentionrail.com', to: 'lead@x.com', subject: 'Draft me', html: '<p>hi</p>',
+    }));
+    expect(sendMessage).not.toHaveBeenCalled();
+    expect(sendDraft).not.toHaveBeenCalled();
+    const digest = caps.createGmailDraft.digest!({ subject: 'Draft me' }, result);
+    expect(digest).toContain('Nothing was sent.');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// G. sendGmailDraft and replyToGmailMessage are BOTH gated — never send
+//    directly.
+//
+// NOTE ON WHAT "GATED" MEANS HERE. runTool() (lib/agent/tools.ts) is the
+// EXECUTION chokepoint, not the approval decision — it has no
+// isSensitive()/def.sensitive check at all (confirmed by reading it: it goes
+// straight from zod validation to tool.run()). The actual approval gate
+// lives one layer up, in the two agent loops (runAgentImpl /
+// runAgentStreamImpl in lib/agent/loop.ts, `if (def.sensitive) { … raise an
+// approval, return needs_approval, never call runTool … }`) — CLAUDE.md
+// forbids touching loop.ts, and re-implementing that gate here would be
+// exactly the "re-implement the path" anti-pattern CLAUDE.md warns against
+// for a class of bug the control flow itself produces. So "sending is
+// gated" is asserted the way lib/capabilities/capability-contract.test.ts
+// already asserts it for every other sensitive capability in this
+// registry: isSensitive(cap) is the single fact the loop branches on, and
+// it is checked directly against the real registry (not the capability's
+// own local claim) for both new send-shaped capabilities. The functional
+// proof that gating actually prevents a direct send is the loop's own test
+// suite; this file's job is to prove these two names are wired into that
+// same registry-driven mechanism, not exempted from it.
+// ---------------------------------------------------------------------------
+describe('sendGmailDraft and replyToGmailMessage are both gated — same mechanism sendGmailEmail already uses', () => {
+  it('both are external_send and isSensitive() — the exact fact the agent loop branches on to raise an approval', async () => {
+    const { CAPABILITY_BY_NAME } = await import('@/lib/capabilities/registry');
+    const { isSensitive } = await import('@/lib/capabilities/types');
+    for (const name of ['sendGmailDraft', 'replyToGmailMessage']) {
+      expect(CAPABILITY_BY_NAME[name].gate).toBe('external_send');
+      expect(isSensitive(CAPABILITY_BY_NAME[name])).toBe(true);
+    }
+    // Same class as the capability already proven to be gated in production.
+    expect(CAPABILITY_BY_NAME.sendGmailDraft.gate).toBe(CAPABILITY_BY_NAME.sendGmailEmail.gate);
+    expect(CAPABILITY_BY_NAME.replyToGmailMessage.gate).toBe(CAPABILITY_BY_NAME.sendGmailEmail.gate);
+  });
+
+  it('both carry a summarize() the approval card can render before the send happens', async () => {
+    const caps = await gmailCaps();
+    expect(caps.sendGmailDraft.summarize!({ draftId: 'd1' })).toMatch(/d1/);
+    expect(caps.replyToGmailMessage.summarize!({ messageId: 'm1' })).toMatch(/m1/);
+  });
+
+  it('by contrast, listGmailDrafts (read) is not sensitive — no approval gate applies to it', async () => {
+    const { CAPABILITY_BY_NAME } = await import('@/lib/capabilities/registry');
+    const { isSensitive } = await import('@/lib/capabilities/types');
+    expect(isSensitive(CAPABILITY_BY_NAME.listGmailDrafts)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// H. deleteGmailDraft — destructive, irreversible.
+// ---------------------------------------------------------------------------
+describe('deleteGmailDraft: irreversible removal of the user\'s own content', () => {
+  it('calls deleteDraft with the given id and digests a confirmation, never raw JSON', async () => {
+    const caps = await gmailCaps();
+    const result = await caps.deleteGmailDraft.run(ACCOUNT_A, { draftId: 'd1' });
+    expect(deleteDraft).toHaveBeenCalledWith(`fresh-token-for-${ACCOUNT_A}`, 'd1');
+    const digest = caps.deleteGmailDraft.digest!({ draftId: 'd1' }, result);
+    expect(digest).toContain('Deleted Gmail draft d1');
+    expect(digest).not.toMatch(/[{}[\]]/);
+  });
+
+  it('is destructive and isSensitive() — the same fact the loop uses to gate it, never deleting without approval', async () => {
+    const { CAPABILITY_BY_NAME } = await import('@/lib/capabilities/registry');
+    const { isSensitive } = await import('@/lib/capabilities/types');
+    expect(CAPABILITY_BY_NAME.deleteGmailDraft.gate).toBe('destructive');
+    expect(isSensitive(CAPABILITY_BY_NAME.deleteGmailDraft)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// I. Reply threading — the named defect: "a reply that starts a new thread
+//    is a defect users notice immediately."
+// ---------------------------------------------------------------------------
+describe('replyToGmailMessage: threading headers actually thread it in Gmail', () => {
+  it('carries In-Reply-To and References computed from the ORIGINAL message, and passes threadId', async () => {
+    const caps = await gmailCaps();
+    await caps.replyToGmailMessage.run(ACCOUNT_A, { messageId: 'm1', html: '<p>reply</p>' });
+    expect(getMessage).toHaveBeenCalledWith(`fresh-token-for-${ACCOUNT_A}`, 'm1', 'full');
+    expect(sendMessage).toHaveBeenCalledWith(`fresh-token-for-${ACCOUNT_A}`, expect.objectContaining({
+      to: 'lead@example.com',
+      subject: 'Re: Following up',
+      inReplyTo: '<original-msg-id@mail.gmail.com>',
+      references: '<earlier-msg-id@mail.gmail.com> <original-msg-id@mail.gmail.com>',
+      threadId: 't1',
+    }));
+  });
+
+  it('does not double-prefix a subject that already starts with "Re:"', async () => {
+    getMessage.mockResolvedValueOnce({
+      id: 'm2', threadId: 't1', snippet: '',
+      payload: { headers: [
+        { name: 'Subject', value: 'Re: Following up' },
+        { name: 'From', value: 'lead@example.com' },
+        { name: 'Message-ID', value: '<msg-2@mail.gmail.com>' },
+      ] },
+    });
+    const caps = await gmailCaps();
+    await caps.replyToGmailMessage.run(ACCOUNT_A, { messageId: 'm2', html: '<p>reply</p>' });
+    expect(sendMessage).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ subject: 'Re: Following up' }));
+  });
+
+  it('this is a REAL send from the connected mailbox\'s own address, distinct from a fresh sendGmailEmail', async () => {
+    const caps = await gmailCaps();
+    await caps.replyToGmailMessage.run(ACCOUNT_A, { messageId: 'm1', html: '<p>reply</p>' });
+    expect(sendMessage).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ from: 'franckie@retentionrail.com' }));
+  });
+
+  it('digest names the thread it replied in, in prose', async () => {
+    const caps = await gmailCaps();
+    const result = await caps.replyToGmailMessage.run(ACCOUNT_A, { messageId: 'm1', html: '<p>reply</p>' });
+    const digest = caps.replyToGmailMessage.digest!({}, result);
+    expect(digest).toMatch(/same thread/i);
+    expect(digest).toContain('Thread id t1');
+    expect(digest).not.toMatch(/[{}[\]]/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// J. Threads and labels.
+// ---------------------------------------------------------------------------
+describe('getGmailThread and listGmailLabels', () => {
+  it('getGmailThread reads a whole conversation, digest names message count and subject', async () => {
+    const caps = await gmailCaps();
+    const result = await caps.getGmailThread.run(ACCOUNT_A, { threadId: 't1' });
+    expect(getThread).toHaveBeenCalledWith(`fresh-token-for-${ACCOUNT_A}`, 't1', 'full');
+    const digest = caps.getGmailThread.digest!({}, result);
+    expect(digest).toMatch(/2 messages in this thread/i);
+    expect(digest).toContain('Thread subject');
+    expect(digest).not.toMatch(/[{}[\]]/);
+  });
+
+  it('listGmailLabels digests a count and sample names in prose', async () => {
+    const caps = await gmailCaps();
+    const result = await caps.listGmailLabels.run(ACCOUNT_A, {});
+    const digest = caps.listGmailLabels.digest!({}, result);
+    expect(digest).toMatch(/2 labels/i);
+    expect(digest).toContain('INBOX');
+    expect(digest).not.toMatch(/[{}[\]]/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// K. markGmailMessageUnread — the lib function existed, exposed by nothing.
+// ---------------------------------------------------------------------------
+describe('markGmailMessageUnread', () => {
+  it('mints a fresh token and calls the existing markUnread lib function', async () => {
+    const caps = await gmailCaps();
+    await caps.markGmailMessageUnread.run(ACCOUNT_A, { messageId: 'm1' });
+    expect(mintAccessToken).toHaveBeenCalledWith(ACCOUNT_A);
+    expect(markUnread).toHaveBeenCalledWith(`fresh-token-for-${ACCOUNT_A}`, 'm1');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// L. Every new capability's digest, fed a representative result, contains no
+//    raw-JSON fingerprints (mirrors tests/observation-display-guard.test.ts's
+//    marker set directly against these specific capabilities).
+// ---------------------------------------------------------------------------
+describe('every new capability\'s digest output contains no raw-JSON fingerprints', () => {
+  const RAW_JSON_MARKERS = ['{"', '":[', '":{'];
+  function hasMarker(s: string) {
+    return RAW_JSON_MARKERS.some((m) => s.includes(m));
+  }
+
+  it('listGmailDrafts, getGmailDraft, createGmailDraft, sendGmailDraft, deleteGmailDraft, replyToGmailMessage, getGmailThread, listGmailLabels', async () => {
+    const caps = await gmailCaps();
+    const checks: Array<[string, any, any]> = [
+      ['listGmailDrafts', {}, await caps.listGmailDrafts.run(ACCOUNT_A, {})],
+      ['getGmailDraft', { draftId: 'd1' }, await caps.getGmailDraft.run(ACCOUNT_A, { draftId: 'd1' })],
+      ['createGmailDraft', { subject: 'Hi' }, await caps.createGmailDraft.run(ACCOUNT_A, { to: 'x@y.com', subject: 'Hi', html: '<p>hi</p>' })],
+      ['sendGmailDraft', { draftId: 'd1' }, await caps.sendGmailDraft.run(ACCOUNT_A, { draftId: 'd1' })],
+      ['deleteGmailDraft', { draftId: 'd1' }, await caps.deleteGmailDraft.run(ACCOUNT_A, { draftId: 'd1' })],
+      ['replyToGmailMessage', {}, await caps.replyToGmailMessage.run(ACCOUNT_A, { messageId: 'm1', html: '<p>hi</p>' })],
+      ['getGmailThread', {}, await caps.getGmailThread.run(ACCOUNT_A, { threadId: 't1' })],
+      ['listGmailLabels', {}, await caps.listGmailLabels.run(ACCOUNT_A, {})],
+    ];
+    for (const [name, args, result] of checks) {
+      const digest = caps[name].digest!(args, result);
+      expect(hasMarker(digest), `${name} digest leaked raw JSON: ${digest}`).toBe(false);
+    }
   });
 });

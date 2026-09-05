@@ -8,8 +8,15 @@ import { publicBase, signState, verifyState } from './meta-oauth';
 const GOOGLE_AUTH = 'https://accounts.google.com/o/oauth2/v2/auth';
 const GOOGLE_TOKEN = 'https://oauth2.googleapis.com/token';
 const GOOGLE_USERINFO = 'https://www.googleapis.com/oauth2/v2/userinfo';
+// Full `drive` scope, not `drive.readonly`. Per Google's own scope catalog
+// (https://developers.google.com/workspace/drive/api/guides/api-specific-auth
+// — confirmed 2026-09-04): `drive` is "See, edit, create, and delete all of
+// your Google Drive files" and `drive.readonly` is "View and download all
+// your Drive files" — `drive` is a strict superset, so requesting both is
+// redundant (and Google's own scope picker treats the narrower one as
+// subsumed). `drive.readonly` is deliberately NOT listed alongside it.
 const DRIVE_SCOPE = [
-  'https://www.googleapis.com/auth/drive.readonly',
+  'https://www.googleapis.com/auth/drive',
   'https://www.googleapis.com/auth/userinfo.email',
 ].join(' ');
 
@@ -37,7 +44,13 @@ export function buildGoogleAuthorizeUrl(state: string): string {
   return `${GOOGLE_AUTH}?${p.toString()}`;
 }
 
-export interface GoogleTokens { accessToken: string; refreshToken?: string; expiresIn: number }
+// `scope` is the space-separated set of scopes Google ACTUALLY granted for
+// this token (echoed back on both the code exchange and, usually, a refresh —
+// see refreshGoogleToken below). It can differ from what was requested if the
+// user only approved part of the consent screen, so callers persist THIS
+// value (never DRIVE_SCOPE) as the source of truth for what a stored
+// connection can do — see requireDriveWriteToken in lib/integrations/gdrive.ts.
+export interface GoogleTokens { accessToken: string; refreshToken?: string; expiresIn: number; scope?: string }
 
 export async function exchangeGoogleCode(code: string): Promise<GoogleTokens> {
   const form = new URLSearchParams({
@@ -56,10 +69,15 @@ export async function exchangeGoogleCode(code: string): Promise<GoogleTokens> {
   if (!res.ok || !json.access_token) {
     throw new Error(`Google code exchange failed: ${json?.error_description || json?.error || res.statusText}`);
   }
-  return { accessToken: json.access_token, refreshToken: json.refresh_token, expiresIn: Number(json.expires_in) || 3600 };
+  return {
+    accessToken: json.access_token,
+    refreshToken: json.refresh_token,
+    expiresIn: Number(json.expires_in) || 3600,
+    scope: typeof json.scope === 'string' ? json.scope : undefined,
+  };
 }
 
-export async function refreshGoogleToken(refreshToken: string): Promise<{ accessToken: string; expiresIn: number }> {
+export async function refreshGoogleToken(refreshToken: string): Promise<{ accessToken: string; expiresIn: number; scope?: string }> {
   const form = new URLSearchParams({
     client_id: process.env.GOOGLE_CLIENT_ID!,
     client_secret: process.env.GOOGLE_CLIENT_SECRET!,
@@ -75,7 +93,16 @@ export async function refreshGoogleToken(refreshToken: string): Promise<{ access
   if (!res.ok || !json.access_token) {
     throw new Error(`Google token refresh failed: ${json?.error_description || json?.error || res.statusText}`);
   }
-  return { accessToken: json.access_token, expiresIn: Number(json.expires_in) || 3600 };
+  // Google's refresh response usually omits `scope` when it is unchanged from
+  // the grant (per RFC 6749 §5.1: OPTIONAL "if identical to the scope
+  // requested by the client"). Callers must NOT treat a missing scope here as
+  // "downgraded to no scope" — see resolveDriveToken's meta merge, which keeps
+  // the previously-stored scope when the refresh response doesn't carry one.
+  return {
+    accessToken: json.access_token,
+    expiresIn: Number(json.expires_in) || 3600,
+    scope: typeof json.scope === 'string' ? json.scope : undefined,
+  };
 }
 
 export async function getGoogleEmail(accessToken: string): Promise<string> {

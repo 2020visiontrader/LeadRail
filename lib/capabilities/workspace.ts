@@ -21,6 +21,7 @@ import { createSequence, listSequences } from '@/lib/sequences';
 import { listVisibleSkills, listAccountSkillStates, setAccountSkillState } from '@/lib/skills/store';
 import { generateImage as routeImage, imageConfigured } from '@/lib/ai/image-router';
 import { insertCampaignAsset, dbReady } from '@/lib/db';
+import { recordMediaGeneration } from '@/lib/generations/store';
 import { obj, S, type Capability, rowsOf, plural, samples, tally, digestLine } from './types';
 
 const STEP_CHANNELS = ['email', 'wait', 'task', 'branch'] as const;
@@ -280,19 +281,25 @@ export const WORKSPACE_CAPABILITIES: Capability[] = [
     run: async (accountId, a) => {
       if (!imageConfigured()) throw new Error('Image generation is not connected for this workspace.');
       const img = await routeImage({ prompt: a.prompt, caption: a.caption, aspect: a.aspect });
-      // Written to the same public/generated path the HTTP route uses, so a
-      // generated image is reachable by the same URL shape wherever it came
-      // from. Never return the base64 — a single image would swamp the
-      // observation budget and every downstream stage's context with it.
-      const { writeFile, mkdir } = await import('node:fs/promises');
-      const { join } = await import('node:path');
-      const { randomUUID } = await import('node:crypto');
-      const ext = img.mimeType.includes('jpeg') ? 'jpg' : 'png';
-      const filename = `${randomUUID()}.${ext}`;
-      const dir = join(process.cwd(), 'public', 'generated');
-      await mkdir(dir, { recursive: true });
-      await writeFile(join(dir, filename), Buffer.from(img.base64, 'base64'));
-      const url = `/generated/${filename}`;
+      // Routed through lib/storage.ts's private, tenant-prefixed bucket — the
+      // same helper the other two generateImage call sites use — instead of
+      // the old `public/generated/` path, which was gitignored, served
+      // unauthenticated, and destroyed on every deploy. Never return the
+      // base64 — a single image would swamp the observation budget and every
+      // downstream stage's context with it.
+      // storagePath is the stable identifier — persist THIS (never the signed
+      // `url`, which expires after GENERATED_URL_TTL and would otherwise make
+      // every campaign asset 404 a day after it was generated).
+      // recordMediaGeneration is the ONE shared write path (checks quota,
+      // uploads, records the generations ledger row) — see
+      // lib/generations/store.ts.
+      const { url, storagePath, generationId } = await recordMediaGeneration(accountId, {
+        kind: 'image',
+        sourceTool: 'generateImage',
+        prompt: a.prompt,
+        bytes: Buffer.from(img.base64, 'base64'),
+        mimeType: img.mimeType,
+      });
 
       let asset = null;
       if (a.campaignId && dbReady()) {
@@ -300,10 +307,11 @@ export const WORKSPACE_CAPABILITIES: Capability[] = [
           campaign_id: a.campaignId,
           account_id: accountId,
           url,
+          storage_path: storagePath,
           ai_analysis: { caption: a.caption ?? null, prompt: a.prompt },
         });
       }
-      return { url, mimeType: img.mimeType, attachedToCampaign: Boolean(asset) };
+      return { url, mimeType: img.mimeType, generationId, attachedToCampaign: Boolean(asset) };
     },
     digest: (a, result) => {
       const r: any = result;

@@ -1,5 +1,5 @@
 import { supabase, assertBrandOwned } from '@/lib/db';
-import { getCampaignAssets } from '@/lib/crm';
+import { getCampaignAssets, resolveCampaignAssetUrl } from '@/lib/crm';
 import { getMetaCreds } from '@/lib/integrations/meta';
 import { assertWithinBudget } from '@/lib/budgets/store';
 import {
@@ -105,12 +105,16 @@ export async function launchCampaign(
 
   const message = opts.message || c.name;
   const link = opts.link || APP_BASE_URL;
+  // Re-sign from storage_path at USE time — asset.url may be a signed URL
+  // captured whenever this row was inserted/last read, which can be well
+  // past GENERATED_URL_TTL by the time a campaign is actually launched.
+  const assetUrl = await resolveCampaignAssetUrl(asset);
   let imageHash: string | undefined;
   let videoId: string | undefined;
   if (asset.kind === 'video') {
-    ({ videoId } = await uploadAdVideo(accountId, adAccountId, asset.url));
+    ({ videoId } = await uploadAdVideo(accountId, adAccountId, assetUrl));
   } else {
-    const bytes = new Uint8Array(await (await fetch(asset.url)).arrayBuffer());
+    const bytes = new Uint8Array(await (await fetch(assetUrl)).arrayBuffer());
     ({ hash: imageHash } = await uploadAdImage(accountId, adAccountId, bytes));
   }
 

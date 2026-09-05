@@ -3,6 +3,7 @@
 // (uses the service-role Supabase client from db.ts). Admin/account-scoped.
 import { supabase } from '@/lib/db';
 import { recordTimeline } from '@/lib/timeline';
+import { GENERATED_BUCKET, GENERATED_URL_TTL, signUrl } from '@/lib/storage';
 
 // ---------------------------------------------------------------------------
 // Audit log — best-effort, never fails the caller's operation.
@@ -515,6 +516,27 @@ export async function getCampaignAssets(campaignId: string, accountId: string) {
   const { data, error } = await supabase.from('campaign_assets').select('*').eq('campaign_id', campaignId).eq('account_id', accountId).order('created_at', { ascending: false });
   if (error) throw error;
   return data ?? [];
+}
+
+/**
+ * Resolve the URL to actually use a campaign asset, at READ time — never
+ * persisted. Re-signs from `storage_path` when this app generated the asset
+ * (so an expired signed URL never breaks a campaign creative), falling back
+ * to `url` for an asset attached via importAsset / POST
+ * /api/campaigns/[id]/assets with a genuinely external URL (no storage_path
+ * exists to sign from). Mirrors resolveCharacterRefUrl (lib/content/store.ts).
+ */
+export async function resolveCampaignAssetUrl(asset: { url: string; storage_path?: string | null }): Promise<string> {
+  if (asset.storage_path) {
+    const fresh = await signUrl(GENERATED_BUCKET, asset.storage_path, GENERATED_URL_TTL);
+    if (fresh) return fresh;
+  }
+  return asset.url;
+}
+
+/** Resolve every asset's URL in a list (see resolveCampaignAssetUrl). Returns new objects — never mutates the input rows. */
+export async function resolveCampaignAssetUrls<T extends { url: string; storage_path?: string | null }>(assets: T[]): Promise<T[]> {
+  return Promise.all(assets.map(async (a) => ({ ...a, url: await resolveCampaignAssetUrl(a) })));
 }
 export async function updateCampaignAsset(id: string, updates: Record<string, any>) {
   const { data, error } = await supabase.from('campaign_assets').update(updates).eq('id', id).select().single();

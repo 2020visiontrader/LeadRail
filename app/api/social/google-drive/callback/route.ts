@@ -39,6 +39,11 @@ async function GET__impl(req: NextRequest) {
       meta: {
         expiry_ms: Date.now() + tokens.expiresIn * 1000,
         email,
+        // Recorded so lib/integrations/gdrive.ts's requireDriveWriteToken can
+        // tell a write-capable connection from a read-only one WITHOUT ever
+        // trusting DRIVE_SCOPE (what we asked for) over what Google actually
+        // granted — see the GoogleTokens.scope comment in google-oauth.ts.
+        scope: tokens.scope,
       },
     });
     return NextResponse.redirect(`${origin}/settings?connected=google_drive&email=${encodeURIComponent(email)}`);

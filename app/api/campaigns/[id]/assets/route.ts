@@ -1,13 +1,13 @@
 import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
-import { getCampaignAssets } from '@/lib/crm';
+import { getCampaignAssets, resolveCampaignAssetUrls } from '@/lib/crm';
 import { insertCampaignAsset } from '@/lib/db';
 import { requireSession, errorResponse, badRequest } from '@/lib/http';
 export const dynamic = 'force-dynamic';
 async function GET__impl(request: NextRequest, { params }: { params: { id: string } }) {
   const { session, error } = await requireSession(request);
   if (error) return error;
-  try { return NextResponse.json(await getCampaignAssets(params.id, session.accountId)); }
+  try { return NextResponse.json(await resolveCampaignAssetUrls(await getCampaignAssets(params.id, session.accountId))); }
   catch (error) { return errorResponse(error); }
 }
 async function POST__impl(request: NextRequest, { params }: { params: { id: string } }) {

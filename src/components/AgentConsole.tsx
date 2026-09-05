@@ -331,6 +331,29 @@ const TOOL_VERB: Record<string, string> = {
   sendGmailEmail: 'Preparing to send that email',
   markGmailMessageRead: 'Marking that email',
   archiveGmailMessage: 'Archiving that email',
+  // --- added by the Gmail domain: drafts/threads/labels (2026-09-04) ---
+  markGmailMessageUnread: 'Marking that email unread',
+  listGmailDrafts: 'Checking your Gmail drafts',
+  getGmailDraft: 'Reading that draft',
+  createGmailDraft: 'Saving a new draft',
+  sendGmailDraft: 'Preparing to send that draft',
+  deleteGmailDraft: 'Deleting that draft',
+  replyToGmailMessage: 'Preparing a reply',
+  getGmailThread: 'Opening that email thread',
+  listGmailLabels: 'Checking your Gmail labels',
+  // --- added by the Google Drive write/organise domain (2026-09-04) ---
+  listDriveFiles: 'Looking through that Drive folder',
+  getDriveFileMetadata: 'Checking that file’s details',
+  createDriveFile: 'Creating that file in Drive',
+  createDriveFolder: 'Creating that folder in Drive',
+  updateDriveFile: 'Updating that Drive file',
+  moveDriveFile: 'Moving that file',
+  deleteDriveFile: 'Preparing to delete that file',
+  shareDriveFile: 'Preparing to share that file',
+  // --- added 2026-09-04: generations ledger.
+  listGenerations: 'Checking what has been generated',
+  reviewGeneration: 'Recording your decision on that generation',
+  promoteGenerationToContent: 'Queuing that for posting',
 };
 const verbFor = (tool: string, title: string) => TOOL_VERB[tool] || title || 'Working';
 
@@ -371,6 +394,81 @@ interface PersonaOption { id: string; name: string; avatar?: string | null }
 // to their provider. `id` is the ai_models row id (what gets sent back as
 // modelId), never ai_models.model_id.
 interface ModelOption { id: string; model_id: string; label: string | null; tier: string; provider: string }
+
+// ---------------------------------------------------------------------------
+// Composer's model + mode pickers.
+//
+// THE DEFECT: both controls carried only an aria-label ("Model"/"Mode") and a
+// title tooltip — correct for a screen reader, invisible to a sighted person.
+// Both defaulted to an option literally labelled "Auto", so at a glance they
+// were two identical controls ("why are there two auto buttons?"). Hovering
+// to discover which was which is not a design.
+//
+// THE FIX: each control gets its own small always-visible label — "Models"
+// (the owner's exact word) and "Mode" — sitting inside the same bordered pill
+// as its <select>, plus the aria-labels/titles kept as-is. Both controls are
+// also shrunk (h-7, text-[10px], tighter padding — tokens already used
+// elsewhere in this file, see AppShell.tsx's h-7 and FilterBar.tsx's
+// px-1.5/text-[11px]) so they read as secondary controls beside the mic
+// button, not as peers of Send.
+//
+// Extracted to a named export — same reason MessageActions is exported below
+// — for a DOM-render test (tests/model-mode-selectors-dom.test.ts) that
+// proves the two controls are told apart by VISIBLE TEXT in the rendered
+// markup, not only by attributes a screen reader would read.
+export function ModelModeSelectors({
+  models, selectedModelId, onModelChange, mode, onModeChange,
+}: {
+  models: ModelOption[];
+  selectedModelId: string;
+  onModelChange: (id: string) => void;
+  mode: 'auto' | 'plan';
+  onModeChange: (mode: 'auto' | 'plan') => void;
+}) {
+  return (
+    <>
+      <div className="flex h-7 items-center gap-1 rounded-md border border-[var(--border-strong)] bg-[var(--bg-canvas)] pl-1.5 pr-1 focus-within:border-[var(--brand)]">
+        <span className="select-none text-[10px] text-[var(--text-muted)]">Models</span>
+        <select
+          aria-label="Model"
+          value={selectedModelId}
+          onChange={(e) => onModelChange(e.target.value)}
+          title="Preferred model — falls back if unavailable"
+          className="h-full border-0 bg-transparent pr-0.5 text-[10px] text-[var(--text-primary)] focus:outline-none"
+        >
+          <option value="auto">Auto</option>
+          {Object.entries(
+            models.reduce<Record<string, ModelOption[]>>((acc, m) => {
+              (acc[m.provider] ||= []).push(m);
+              return acc;
+            }, {}),
+          ).map(([provider, group]) => (
+            <optgroup key={provider} label={provider}>
+              {group.map((m) => (
+                <option key={m.id} value={m.id}>{m.label || m.model_id}</option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      </div>
+      <div className="flex h-7 items-center gap-1 rounded-md border border-[var(--border-strong)] bg-[var(--bg-canvas)] pl-1.5 pr-1 focus-within:border-[var(--brand)]">
+        <span className="select-none text-[10px] text-[var(--text-muted)]">Mode</span>
+        <select
+          aria-label="Mode"
+          value={mode}
+          onChange={(e) => onModeChange(e.target.value as 'auto' | 'plan')}
+          title={mode === 'plan'
+            ? 'Plan mode is on — the next message will be planned, not carried out'
+            : 'Plan first: get the steps before anything runs'}
+          className="h-full border-0 bg-transparent pr-0.5 text-[10px] text-[var(--text-primary)] focus:outline-none"
+        >
+          <option value="auto">Auto</option>
+          <option value="plan">Plan</option>
+        </select>
+      </div>
+    </>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Message action bar — pure logic. Extracted for the same reason
@@ -1800,39 +1898,13 @@ export default function AgentConsole({
                   setInput(base ? `${base.trim()} ${text}` : text);
                 }}
               />
-              <select
-                aria-label="Model"
-                value={selectedModelId}
-                onChange={(e) => setSelectedModelId(e.target.value)}
-                title="Preferred model — falls back if unavailable"
-                className="h-8 rounded-md border border-[var(--border-strong)] bg-[var(--bg-canvas)] px-2 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]"
-              >
-                <option value="auto">Auto</option>
-                {Object.entries(
-                  models.reduce<Record<string, ModelOption[]>>((acc, m) => {
-                    (acc[m.provider] ||= []).push(m);
-                    return acc;
-                  }, {}),
-                ).map(([provider, group]) => (
-                  <optgroup key={provider} label={provider}>
-                    {group.map((m) => (
-                      <option key={m.id} value={m.id}>{m.label || m.model_id}</option>
-                    ))}
-                  </optgroup>
-                ))}
-              </select>
-              <select
-                aria-label="Mode"
-                value={mode}
-                onChange={(e) => setMode(e.target.value as 'auto' | 'plan')}
-                title={mode === 'plan'
-                  ? 'Plan mode is on — the next message will be planned, not carried out'
-                  : 'Plan first: get the steps before anything runs'}
-                className="h-8 rounded-md border border-[var(--border-strong)] bg-[var(--bg-canvas)] px-2 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--brand)]"
-              >
-                <option value="auto">Auto</option>
-                <option value="plan">Plan</option>
-              </select>
+              <ModelModeSelectors
+                models={models}
+                selectedModelId={selectedModelId}
+                onModelChange={setSelectedModelId}
+                mode={mode}
+                onModeChange={setMode}
+              />
               {busy && (
                 <Button variant="secondary" onClick={stopAll} title="Stop the running request">
                   Stop

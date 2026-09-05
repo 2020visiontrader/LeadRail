@@ -274,11 +274,19 @@ export async function generateContentPost(opts: {
   topic: string;
   hook?: string;
   cta?: string;
+  /** Skill-library guidance for THIS call, resolved by the caller (a
+   *  capability, which has accountId — this pure generation layer does not
+   *  and should not acquire one). See lib/skills/for-generation.ts. Optional
+   *  and additive: omitted, this function is byte-identical to before it
+   *  existed. */
+  guidance?: string;
 }): Promise<ContentPost> {
   const system = buildPersona({
     role: `a short-form content strategist for ${opts.venture.name}`,
     domain: `organic social for ${opts.platform}, niche: ${opts.venture.niche || 'general'}`,
-    methods: marketingGuidance({ framework: 'AIDA' }),
+    methods: opts.guidance
+      ? `${marketingGuidance({ framework: 'AIDA' })}\n\nHOUSE SKILL GUIDANCE — apply this guidance where it fits; it is instruction to follow, not content to quote or reproduce verbatim:\n${opts.guidance}`
+      : marketingGuidance({ framework: 'AIDA' }),
     constraints:
       'native to the platform; scroll-stopping hook; one CTA; ' +
       'NEVER name any scheduling/reposting tool or other platform; no "repost as our own" language',

@@ -393,29 +393,75 @@ material it passes to a sub-run, or the constant, its `budgetsFor` branch and
 those six assertions are deleted together — and likewise for the two helpers
 and their two describe blocks.
 
-## 6. Text deliverables still on local disk, not storage — 2026-08-31
+## 6. ~~Text deliverables still on local disk, not storage~~ — RESOLVED 2026-09-04
 
-`createFile` (`lib/capabilities/deliverables.ts`) now has TWO storage paths,
-by design, not by oversight: the three binary formats it gained this packet
-(xlsx/docx/pdf) go through `lib/storage.ts` (`DELIVERABLE_BUCKET`, a private
-Supabase bucket, signed URLs) because writing binary bytes to the old path
-with an implicit utf8 encoding corrupts them outright. The five original text
-formats (md/csv/json/txt/html) were left exactly as they were — writing to
-`join(process.cwd(), 'public', 'generated', 'files')` — because moving them
-was out of scope for this packet and the deploy target was (and still is)
-unconfirmed; `infra/cloudflare` exists in this repo, and whether that target's
-filesystem survives a redeploy is unknown.
+`createFile` (`lib/capabilities/deliverables.ts`) had TWO storage paths: the
+three binary formats (xlsx/docx/pdf) went through `lib/storage.ts`
+(`DELIVERABLE_BUCKET`), the five text formats (md/csv/json/txt/html) still
+wrote to `join(process.cwd(), 'public', 'generated', 'files')`, deferred
+because the deploy target was unconfirmed.
 
-That split is a real inconsistency: five of eight `createFile` formats live on
-a filesystem whose durability nobody has verified, while the other three are
-durable and private. It should not persist once the deploy target is known.
+The deploy target is Zo, and Zo's filesystem does not survive a redeploy —
+confirmed while auditing the four `public/generated/` write sites (2026-09-04,
+same packet as the `character_refs.storage_path` fix below). All eight
+`createFile` formats now build `bytes` first, then share one write through
+`DELIVERABLE_BUCKET` (`ensurePrivateBucket` / `putPrivate` / `signUrl`) — see
+the "BINARY SOURCE" / "TEXT SOURCE" split in `lib/capabilities/deliverables.ts`.
+The old comment claiming "the uuid segment is what makes the URL unguessable"
+was security-by-obscurity on a public path and has been replaced.
 
-**Done when:** either (a) the deploy target is confirmed to have a durable,
-persistent filesystem across redeploys, and that fact is written down here or
-in a comment at the write site — no further code change needed — or (b) the
-five text formats are moved onto `DELIVERABLE_BUCKET` the same way xlsx/docx/pdf
-are, and `tests/deliverable-formats.test.ts`'s text-format-pinning block is
-updated to assert a signed storage URL instead of a `/generated/files/` path.
+**Done when:** `tests/deliverable-formats.test.ts` asserts every one of the
+eight formats returns a signed `DELIVERABLE_BUCKET` URL and none write under
+`public/generated`. Done — see `tests/generated-storage-migration.test.ts`
+and the updated pinning in `tests/deliverable-formats.test.ts`.
+
+---
+
+## 21. `campaign_assets.url` and `content_items.media_url` still accept a
+persisted signed URL — 2026-09-04
+
+Closing the `public/generated/` defect (four write sites moved onto
+`lib/storage.ts`'s new `GENERATED_BUCKET`, plus `character_refs.storage_path`
+added in migration 086) established the invariant "a stored asset is
+identified by its path; a signed URL is minted at read time and never
+persisted." Two more columns violated it:
+
+- `campaign_assets.url` — **RESOLVED 2026-09-04.** Migration
+  `087_campaign_asset_storage_path.sql` added `campaign_assets.storage_path`
+  (nullable — `importAsset`/`POST /api/campaigns/[id]/assets` still attach a
+  genuinely external URL with no storage object behind it, same mixed case
+  `character_refs.image_url`/`storage_path` already solved). Both writers
+  (`lib/capabilities/workspace.ts`'s `generateImage` and the same-shaped
+  `app/api/generate/image/route.ts` handler — a second live instance of the
+  same defect the original plan for this item didn't name) now persist
+  `storagePath` alongside `url`. `resolveCampaignAssetUrl`/
+  `resolveCampaignAssetUrls` (`lib/crm.ts`) re-sign from `storage_path` at
+  READ time, mirroring `resolveCharacterRefUrl`, and every reader of
+  `campaign_assets.url` is routed through them: the `listAssets` capability
+  (`lib/capabilities/campaigns.ts`), `GET /api/campaigns/[id]/assets`, and —
+  the one that actually fetches the bytes — `launchCampaign`
+  (`lib/campaigns/actions.ts`), which used `asset.url` directly to upload the
+  creative to Meta and would otherwise have failed a launch on any asset
+  older than 24h. Applied to production (project `kqimpzbphdogvchqmtos`);
+  `information_schema.columns` confirms `storage_path text`, nullable, with
+  the column comment, and `pg_class.relrowsecurity` confirms RLS stayed on.
+  Row count was 0 both before and after. Covered by
+  `tests/campaign-asset-storage-path.test.ts` (revert-checked: reverting
+  either the write-site fix or the resolver's `if (asset.storage_path)`
+  branch reproduces the predicted test failure).
+- `content_items.media_url` (`migrations/050_content_engine.sql`) — **still
+  open, still latent, confirmed unreachable as of 2026-09-04.** Neither
+  `createContentItem`'s capability schema (`lib/capabilities/content.ts`) nor
+  `generateContentPiece`'s save path passes `mediaUrl`, and no HTTP route
+  writes `content_items` directly (`grep` for `createContentItem` /
+  `content_items` under `app/` returns nothing) — the column and the trap
+  both exist, but nothing generates a value for it today, so leave it open
+  rather than build a resolver for a column with no live writer.
+
+**Done when** (`content_items.media_url` only, `campaign_assets` above is
+closed): the column gets a matching `storage_path` sibling ahead of, or in
+the same change as, whichever future capability first wires content
+generation to `media_url` — not after.
 
 ---
 

@@ -99,7 +99,8 @@ describe('Regression Guard 1: Sensitive Baseline', () => {
   // 2. It was a mistake: restore the gate value.
   // Derived from CAPABILITIES where isSensitive(c) is true. Sensitivity means
   // gate is one of: 'spend', 'external_send', 'destructive', 'standing_rule'.
-  // Currently 19 sensitive capabilities (as of Packet 7.3).
+  // Currently 21 sensitive capabilities (19 as of Packet 7.3, +2 for the
+  // Google Drive domain's deleteDriveFile/shareDriveFile, 2026-09-04).
   const SENSITIVE_BASELINE = [
     // CRM automations engine (migration 012), exposed to the assistant for the
     // first time. Same risk class as its social twin and gated identically: a
@@ -123,6 +124,14 @@ describe('Regression Guard 1: Sensitive Baseline', () => {
     'deleteContentItem',
     'deleteContentPillar',
     'deleteDeal',
+    // Google Drive domain (2026-09-04): permanently deletes a Drive file via
+    // files.delete — NOT the same as moving to trash, and not recoverable
+    // from chat. Same irreversibility class as deleteDeal above.
+    'deleteDriveFile',
+    // Gmail domain (2026-09-04): permanently deletes a Gmail draft — the
+    // resource itself is removed and cannot be recovered from chat, the same
+    // irreversibility class as deleteDeal above.
+    'deleteGmailDraft',
     'deleteSocialAutomation',
     'deleteSocialComment',
     'enableAutomation',
@@ -143,6 +152,10 @@ describe('Regression Guard 1: Sensitive Baseline', () => {
     // reasoning that keeps disableAutomation off this list.
     'promoteObservation',
     'publishSocialPost',
+    // Gmail domain (2026-09-04): replies to an existing Gmail message,
+    // staying in the same thread — reaches a real person's inbox the moment
+    // it runs, same risk class and same approval flow as sendGmailEmail.
+    'replyToGmailMessage',
     'replyToSocialComment',
     'replyToThread',
     // Packet 7.3: turning the account-level automation kill switch back ON
@@ -157,9 +170,18 @@ describe('Regression Guard 1: Sensitive Baseline', () => {
     // Gmail domain (2026-09-03): sends a real email from the connected Gmail
     // mailbox to a real person, gated exactly like sendEmail above — same
     // risk class, same approval flow.
+    // Gmail domain (2026-09-04): sends an existing Gmail draft as-is — same
+    // risk class as sendGmailEmail/sendEmail above, same approval flow.
+    'sendGmailDraft',
     'sendGmailEmail',
     'sendSocialMessage',
     'setAdStatus',
+    // Google Drive domain (2026-09-04): grants a real person (by email, or
+    // the entire public internet via an "anyone" link) access to the owner's
+    // Drive data. Same "reaches a real third party" risk class as
+    // sendGmailEmail/sendEmail — this one hands out access rather than
+    // sending a message, but the blast radius is the same shape.
+    'shareDriveFile',
     'sourceLeads',
   ];
 

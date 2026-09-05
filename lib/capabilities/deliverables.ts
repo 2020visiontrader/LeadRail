@@ -13,7 +13,8 @@
 //
 // Scope, deliberately narrow: TEXT deliverables the assistant composed itself
 // (markdown, CSV, JSON, plain text). Not a filesystem tool. The agent cannot
-// read arbitrary paths, cannot write outside the generated directory, and
+// read arbitrary paths, cannot write outside its own account-prefixed bucket
+// path (lib/storage.ts's DELIVERABLE_BUCKET), and
 // cannot name the file anything that escapes it — this is multi-tenant SaaS,
 // and a general read_file/write_file pair of the kind a single-user desktop
 // agent ships would be a tenancy boundary with a rope ladder over it.
@@ -96,17 +97,10 @@ export const DELIVERABLE_CAPABILITIES: Capability[] = [
       const base = safeBaseName(a.filename.replace(/\.[a-z0-9]+$/i, ''), 'leadrail-export');
       const filename = `${base}.${spec.ext}`;
 
+      let bytes: Buffer;
       if (BINARY_FORMATS.has(a.format as FormatKey)) {
-        // BINARY PATH — xlsx/docx/pdf. Routed through Supabase Storage
-        // (lib/storage.ts), never the local `public/generated/files` path the
-        // text formats below use: that directory is gitignored local
-        // filesystem whose survival across a redeploy depends on the deploy
-        // target (unknown here — `infra/cloudflare` exists in this repo), and
-        // writing binary bytes there with an implicit utf8 encoding would
-        // corrupt them outright. The five text formats are left exactly as
-        // they were — see BACKLOG.md for the plan to move them onto storage
-        // too once the deploy target is confirmed.
-        let bytes: Buffer;
+        // BINARY SOURCE — xlsx/docx/pdf. `content` is source the server
+        // renders into real bytes, never bytes the model writes itself.
         try {
           if (a.format === 'xlsx') bytes = buildXlsx(a.content);
           else if (a.format === 'docx') bytes = await buildDocx(a.content);
@@ -117,64 +111,57 @@ export const DELIVERABLE_CAPABILITIES: Capability[] = [
           // here would only blur what's wrong with the source the model sent.
           throw err instanceof Error ? err : new Error(String(err?.message || err));
         }
-
-        if (!dbReady()) {
-          throw new Error(
-            `Cannot create a .${spec.ext} file: durable storage is not configured on this deployment (Supabase URL/service key missing). Text formats (md, csv, json, txt, html) still work.`,
-          );
+      } else {
+        // TEXT SOURCE — md/csv/json/txt/html. JSON is validated rather than
+        // trusted: handing someone a .json file that does not parse is worse
+        // than refusing, because they find out downstream in whatever tool
+        // they opened it with.
+        if (a.format === 'json') {
+          try { JSON.parse(a.content); }
+          catch { throw new Error('That content is not valid JSON, so it was not saved. Fix the JSON or use the txt format.'); }
         }
-
-        const { randomUUID } = await import('node:crypto');
-        const path = `${accountId}/${randomUUID()}-${filename}`;
-        await ensurePrivateBucket(DELIVERABLE_BUCKET);
-        const put = await putPrivate(DELIVERABLE_BUCKET, path, bytes, spec.mime);
-        if (put.error) {
-          const missingBucket = /bucket.*not.*found|does not exist/i.test(put.error);
-          throw new Error(
-            missingBucket
-              ? `The "${DELIVERABLE_BUCKET}" storage bucket does not exist and could not be created automatically. Create it as a PRIVATE bucket in Supabase → Storage, or give the service key permission to create buckets.`
-              : `Could not store that file: ${put.error}`,
-          );
-        }
-        const url = await signUrl(DELIVERABLE_BUCKET, path, DELIVERABLE_URL_TTL);
-        if (!url) throw new Error('The file was stored but a download link could not be signed. Try again.');
-
-        return {
-          url,
-          filename,
-          format: a.format,
-          mimeType: spec.mime,
-          bytes: bytes.length,
-          description: a.description ?? null,
-        };
+        bytes = Buffer.from(a.content, 'utf8');
       }
 
-      // TEXT PATH — md/csv/json/txt/html. Unchanged from before this packet.
-      // JSON is validated rather than trusted: handing someone a .json file
-      // that does not parse is worse than refusing, because they find out
-      // downstream in whatever tool they opened it with.
-      if (a.format === 'json') {
-        try { JSON.parse(a.content); }
-        catch { throw new Error('That content is not valid JSON, so it was not saved. Fix the JSON or use the txt format.'); }
+      if (!dbReady()) {
+        throw new Error(
+          `Cannot create a .${spec.ext} file: durable storage is not configured on this deployment (Supabase URL/service key missing).`,
+        );
       }
 
-      const { writeFile, mkdir } = await import('node:fs/promises');
-      const { join } = await import('node:path');
+      // Every format — text and binary alike — is routed through Supabase
+      // Storage (lib/storage.ts), a PRIVATE, tenant-prefixed bucket with
+      // short-lived signed URLs, never the old `public/generated/files` path.
+      // That path was gitignored local filesystem: whatever survived a
+      // deploy depended on the deploy target (now confirmed to be Zo, whose
+      // filesystem does NOT persist across deploys — see BACKLOG.md #6,
+      // closed by this change), and it was served unauthenticated, so
+      // possession of the URL was cross-tenant access regardless of deploy
+      // survival. The comment this replaced claimed "the uuid segment is
+      // what makes the URL unguessable" — that is security by obscurity on a
+      // path anyone on the internet could fetch; a private bucket with a
+      // signed, expiring URL is the actual access control.
       const { randomUUID } = await import('node:crypto');
-
-      // The uuid segment is what makes the URL unguessable. Two accounts can
-      // both produce "q3-report.csv" and neither can reach the other's.
-      const dir = join(process.cwd(), 'public', 'generated', 'files');
-      await mkdir(dir, { recursive: true });
-      const stored = `${randomUUID()}-${base}.${spec.ext}`;
-      await writeFile(join(dir, stored), a.content, 'utf8');
+      const path = `${accountId}/${randomUUID()}-${filename}`;
+      await ensurePrivateBucket(DELIVERABLE_BUCKET);
+      const put = await putPrivate(DELIVERABLE_BUCKET, path, bytes, spec.mime);
+      if (put.error) {
+        const missingBucket = /bucket.*not.*found|does not exist/i.test(put.error);
+        throw new Error(
+          missingBucket
+            ? `The "${DELIVERABLE_BUCKET}" storage bucket does not exist and could not be created automatically. Create it as a PRIVATE bucket in Supabase → Storage, or give the service key permission to create buckets.`
+            : `Could not store that file: ${put.error}`,
+        );
+      }
+      const url = await signUrl(DELIVERABLE_BUCKET, path, DELIVERABLE_URL_TTL);
+      if (!url) throw new Error('The file was stored but a download link could not be signed. Try again.');
 
       return {
-        url: `/generated/files/${stored}`,
+        url,
         filename,
         format: a.format,
         mimeType: spec.mime,
-        bytes: Buffer.byteLength(a.content, 'utf8'),
+        bytes: bytes.length,
         description: a.description ?? null,
       };
     },

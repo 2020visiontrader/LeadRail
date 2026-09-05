@@ -6,13 +6,10 @@
 // rejection for each binary format, and that the five pre-existing text
 // formats are byte-for-byte unchanged.
 
-import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as XLSX from 'xlsx';
 import mammoth from 'mammoth';
 import JSZip from 'jszip';
-import { existsSync, rmSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
-
 import { buildXlsx, buildDocx, buildPdf } from '@/lib/capabilities/binary-deliverables';
 
 // --- mock storage + db readiness so createFile's binary path is testable
@@ -47,13 +44,6 @@ beforeEach(() => {
   ensurePrivateBucketMock.mockClear();
 });
 
-// Text-format runs still write real files under public/generated/files
-// (unchanged behaviour) — clean up whatever this file creates.
-const GENERATED_DIR = join(process.cwd(), 'public', 'generated', 'files');
-const writtenPaths: string[] = [];
-afterAll(() => {
-  for (const p of writtenPaths) { try { rmSync(p); } catch {} }
-});
 
 // ---------------------------------------------------------------------------
 // xlsx — buildXlsx
@@ -242,39 +232,48 @@ describe('createFile: binary formats', () => {
 });
 
 // ---------------------------------------------------------------------------
-// createFile — the five pre-existing TEXT formats are unchanged
+// createFile — the five TEXT formats now go through DELIVERABLE_BUCKET too,
+// same as the three binary formats — never `public/generated/files`.
 // ---------------------------------------------------------------------------
-describe('createFile: text formats (pinned, unchanged behaviour)', () => {
-  it.each(['md', 'csv', 'txt', 'html'] as const)('%s: writes to public/generated/files as utf8, url is a local path', async (format) => {
+describe('createFile: text formats route through storage, not public/generated', () => {
+  it.each(['md', 'csv', 'txt', 'html'] as const)('%s: stores bytes via putPrivate and returns a signed storage URL', async (format) => {
     const content = `hello ${format} world`;
     const result: any = await createFile.run(ACCOUNT, { filename: `pin-${format}`, format, content });
-    expect(result.url).toMatch(new RegExp(`^/generated/files/.+-pin-${format}\\.${format}$`));
+    expect(putPrivateMock).toHaveBeenCalledTimes(1);
+    const [bucket, path, bytes] = putPrivateMock.mock.calls[0];
+    expect(bucket).toBe('chat-deliverables');
+    expect(path.startsWith(`${ACCOUNT}/`)).toBe(true);
+    // Bytes handed to storage are the literal utf8 content, byte-for-byte —
+    // this is what pins "content is unchanged", now that it's not read back
+    // off disk.
+    expect(Buffer.isBuffer(bytes)).toBe(true);
+    expect(bytes.toString('utf8')).toBe(content);
+    expect(result.url).toMatch(/^https:\/\/storage\.example\//);
     expect(result.filename).toBe(`pin-${format}.${format}`);
     expect(result.bytes).toBe(Buffer.byteLength(content, 'utf8'));
-    const diskPath = join(GENERATED_DIR, result.url.replace('/generated/files/', ''));
-    expect(existsSync(diskPath)).toBe(true);
-    writtenPaths.push(diskPath);
-    // Content on disk must be the literal utf8 text, byte-for-byte — this is
-    // what actually pins "unchanged": a passing existsSync alone would not
-    // catch a corrupted encoding.
-    const onDisk = readFileSync(diskPath, 'utf8');
-    expect(onDisk).toBe(content);
-    // storage functions must never be touched for text formats
-    expect(putPrivateMock).not.toHaveBeenCalled();
   });
 
-  it('json: valid JSON is accepted and written verbatim', async () => {
+  it('json: valid JSON is accepted and stored verbatim', async () => {
     const content = JSON.stringify({ a: 1, b: [1, 2, 3] });
     const result: any = await createFile.run(ACCOUNT, { filename: 'pin-json', format: 'json', content });
     expect(result.mimeType).toBe('application/json');
-    const diskPath = join(GENERATED_DIR, result.url.replace('/generated/files/', ''));
-    writtenPaths.push(diskPath);
-    expect(existsSync(diskPath)).toBe(true);
+    expect(result.url).toMatch(/^https:\/\/storage\.example\//);
+    const [, , bytes] = putPrivateMock.mock.calls[0];
+    expect(bytes.toString('utf8')).toBe(content);
   });
 
-  it('json: invalid JSON is rejected with the original message', async () => {
+  it('json: invalid JSON is rejected with the original message, before any storage call', async () => {
     await expect(
       createFile.run(ACCOUNT, { filename: 'bad', format: 'json', content: '{not json' }),
     ).rejects.toThrow(/not valid JSON/i);
+    expect(putPrivateMock).not.toHaveBeenCalled();
+  });
+
+  it('fails with a clear error when storage is unconfigured, and never falls back to a local path', async () => {
+    dbReadyValue = false;
+    await expect(
+      createFile.run(ACCOUNT, { filename: 'x', format: 'md', content: 'hello' }),
+    ).rejects.toThrow(/storage is not configured/i);
+    expect(putPrivateMock).not.toHaveBeenCalled();
   });
 });

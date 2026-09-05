@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { supabase, getVentures, getVenture } from '@/lib/db';
 import { generateContentPost } from '@/lib/ai/generation';
+import { skillGuidanceForGeneration } from '@/lib/skills/for-generation';
 import { obj, S, type Capability } from './types';
 
 export const CREATIVE_CAPABILITIES: Capability[] = [
@@ -14,7 +15,14 @@ export const CREATIVE_CAPABILITIES: Capability[] = [
     zod: z.object({ brandId: z.string().optional(), platform: z.string(), topic: z.string(), hook: z.string().optional(), cta: z.string().optional() }),
     run: async (accountId, a) => {
       const v: any = a.brandId ? await getVenture(a.brandId) : (await getVentures(accountId))[0];
-      return generateContentPost({ venture: { name: v?.name || 'our brand', niche: v?.niche }, platform: a.platform, topic: a.topic, hook: a.hook, cta: a.cta });
+      const guidance = await skillGuidanceForGeneration(accountId, {
+        kind: 'ad copy', platform: a.platform, topic: a.topic, niche: v?.niche,
+      });
+      return generateContentPost({
+        venture: { name: v?.name || 'our brand', niche: v?.niche },
+        platform: a.platform, topic: a.topic, hook: a.hook, cta: a.cta,
+        guidance: guidance || undefined,
+      });
     },
   },
 ];

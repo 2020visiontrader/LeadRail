@@ -254,3 +254,73 @@ export function markUnread(accessToken: string, messageId: string) {
 export function archiveMessage(accessToken: string, messageId: string) {
   return modifyMessage(accessToken, messageId, { removeLabelIds: ['INBOX'] });
 }
+
+// ---------------------------------------------------------------------------
+// Drafts, threads, labels.
+// ---------------------------------------------------------------------------
+
+export interface GmailDraftListResult {
+  drafts: Array<{ id: string; message: { id: string; threadId: string } }>;
+  resultSizeEstimate?: number;
+  nextPageToken?: string;
+}
+
+/** read: list drafts. Gmail's own count (resultSizeEstimate) is carried
+ *  through unchanged — callers must not derive a count Gmail didn't report. */
+export async function listDrafts(
+  accessToken: string,
+  opts?: { maxResults?: number; pageToken?: string },
+): Promise<GmailDraftListResult> {
+  const p = new URLSearchParams();
+  p.set('maxResults', String(opts?.maxResults ?? 25));
+  if (opts?.pageToken) p.set('pageToken', opts.pageToken);
+  const json = await gmailFetch(accessToken, `/drafts?${p.toString()}`);
+  return { drafts: json.drafts || [], resultSizeEstimate: json.resultSizeEstimate, nextPageToken: json.nextPageToken };
+}
+
+/** read: fetch one draft by id, including its underlying message. */
+export async function getDraft(accessToken: string, draftId: string, format: 'full' | 'metadata' | 'raw' = 'full') {
+  return gmailFetch(accessToken, `/drafts/${encodeURIComponent(draftId)}?format=${format}`);
+}
+
+/** internal_write: create a draft in the owner's own mailbox. Nothing is
+ *  sent — this only writes the draft resource. */
+export async function createDraft(
+  accessToken: string,
+  params: { from: string; to: string; subject: string; html: string; inReplyTo?: string; references?: string; threadId?: string },
+) {
+  const raw = buildRawMessage(params);
+  const message: Record<string, any> = { raw };
+  if (params.threadId) message.threadId = params.threadId;
+  return gmailFetch(accessToken, '/drafts', { method: 'POST', body: JSON.stringify({ message }) });
+}
+
+/** external_send: send an existing draft as-is. */
+export async function sendDraft(accessToken: string, draftId: string) {
+  return gmailFetch(accessToken, '/drafts/send', { method: 'POST', body: JSON.stringify({ id: draftId }) });
+}
+
+/** destructive: permanently delete a draft (not a send-cancel — the draft
+ *  resource itself is removed and cannot be recovered from chat). */
+export async function deleteDraft(accessToken: string, draftId: string) {
+  await gmailFetch(accessToken, `/drafts/${encodeURIComponent(draftId)}`, { method: 'DELETE' });
+  return { id: draftId, deleted: true };
+}
+
+/** read: fetch a whole thread (every message in the conversation), not just
+ *  one message. */
+export async function getThread(accessToken: string, threadId: string, format: 'full' | 'metadata' | 'raw' = 'full') {
+  return gmailFetch(accessToken, `/threads/${encodeURIComponent(threadId)}?format=${format}`);
+}
+
+export interface GmailLabel {
+  id: string;
+  name: string;
+  type?: string;
+}
+
+/** read: list labels (system + user-created) in the mailbox. */
+export async function listLabels(accessToken: string): Promise<{ labels: GmailLabel[] }> {
+  const json = await gmailFetch(accessToken, '/labels');
+  return { labels: json.labels || [] };
+}

@@ -36,15 +36,23 @@ import { listConversations,
   getComments, replyToComment, hideComment, deleteComment, sendMetaMessage,
 } from '@/lib/social/meta-engagement';
 import { getInsightsByLevel, updateStatus } from '@/lib/social/meta-ads';
-import { listOwnPosts, getOwnProfile, type SocialContentType } from '@/lib/social/meta-read';
+import {
+  listOwnPosts, getOwnProfile, getFacebookPostPermalink, getInstagramMediaPermalink,
+  type SocialContentType,
+} from '@/lib/social/meta-read';
 import { getIntegrations } from '@/lib/social/index';
 import { createPost as bufferCreatePost, listPosts as bufferListPosts } from '@/lib/social/buffer';
 import { requireSocialCredential } from '@/lib/social/credentials';
 import { publishLinkedinPost } from '@/lib/social/linkedin-oauth';
 import { publishTiktokDraft } from '@/lib/social/tiktok-oauth';
-import { publishXPost } from '@/lib/social/x-oauth';
+import { publishXPost, listXReplies } from '@/lib/social/x-oauth';
+import {
+  publishThreadsPost, listThreadsReplies, replyToThreadsPost, hideThreadsReply, getThreadsMediaPermalink,
+} from '@/lib/social/threads';
 import { generateContentPost } from '@/lib/ai/generation';
 import { LIVE_SOCIALS, SOCIAL_KEYS, type SocialKey } from '@/lib/social/providers';
+import { markGenerationPublished, listGenerations } from '@/lib/generations/store';
+import { updateContentItem } from '@/lib/content/store';
 import { obj, S, type Capability, rowsOf, plural, samples, tally, present, clip, digestLine } from './types';
 
 // ---------------------------------------------------------------------------
@@ -166,7 +174,17 @@ const PUBLISHERS: Partial<Record<SocialKey, Dispatch>> = {
     if (!a.message) throw new Error('X posts require text.');
     return publishXPost(token, a.message);
   },
-  // threads lands here as its publisher is written.
+  threads: async (accountId, a, externalId) => {
+    const conn = await getConnection(accountId, 'threads', externalId);
+    // The Threads callback stores the Threads user id as the connection's
+    // external_id (and mirrors it at meta.threads_user_id) — see
+    // app/api/social/threads/callback/route.ts.
+    const userId = conn?.external_id;
+    const { accessToken: token } = conn ? await resolveTokensForRow(conn) : { accessToken: null };
+    if (!token || !userId) throw new Error('No Threads account connected — connect Threads in Settings first');
+    if (!a.message && !a.imageUrl && !a.videoUrl) throw new Error('A Threads post needs text, an image, or a video.');
+    return publishThreadsPost(token, String(userId), { text: a.message, imageUrl: a.imageUrl, videoUrl: a.videoUrl });
+  },
 };
 
 const MESSENGERS: Partial<Record<SocialKey, Dispatch>> = {
@@ -212,24 +230,184 @@ function platformReceiptId(result: any): string | null {
   return null;
 }
 
+/**
+ * Follow-up Graph reads that turn a Meta-family publish receipt's internal id
+ * into the real, followable permalink. Kept as a dispatch map for the same
+ * reason PUBLISHERS/MESSENGERS above are — this is the only place a platform
+ * string appears for this concern. Facebook -> permalink_url, Instagram and
+ * Threads -> permalink; all three verified against Meta's own field names via
+ * web search (developers.facebook.com is blocked by this environment's
+ * egress proxy) and cross-checked against this codebase's own existing reads
+ * of the same fields (listFacebookPagePosts / listInstagramMedia in
+ * lib/social/meta-read.ts, listThreadsReplies in lib/social/threads.ts),
+ * which have been live against real accounts. See those functions' own
+ * comments for the sourcing detail.
+ *
+ * X and LinkedIn need no entry: their permalink is constructible straight
+ * from the publish receipt with zero extra API calls (see
+ * constructChannelUrl below). TikTok needs no entry either, but for the
+ * opposite reason — publishTiktokDraft never actually publishes anything (it
+ * pushes a draft to the creator's TikTok inbox), so there is no live post to
+ * link to, ever. That is a permanent absence, not a gap to close later.
+ */
+const PERMALINK_RESOLVERS: Partial<Record<SocialKey, (accountId: string, id: string, externalId?: string) => Promise<string | null>>> = {
+  facebook: (accountId, id, externalId) => getFacebookPostPermalink(accountId, id, externalId),
+  instagram: (accountId, id, externalId) => getInstagramMediaPermalink(accountId, id, externalId),
+  threads: async (accountId, id, externalId) => {
+    const conn = await getConnection(accountId, 'threads', externalId);
+    const { accessToken: token } = conn ? await resolveTokensForRow(conn) : { accessToken: null };
+    if (!token) return null;
+    return getThreadsMediaPermalink(token, id);
+  },
+};
+
+/**
+ * A real, followable permalink for what a publish just created.
+ *
+ * X (`x.com/i/web/status/{id}`, documented to resolve without a username) and
+ * LinkedIn (`linkedin.com/feed/update/{urn}`, the URN IS the update
+ * identifier) are constructible straight from the publish receipt — zero
+ * extra API calls. Facebook, Instagram and Threads publish responses carry
+ * only an internal id; their real permalink is a SEPARATE field that needs a
+ * follow-up Graph read (PERMALINK_RESOLVERS above) — the same read
+ * syncPerformance (lib/content/performance.ts) already does for its own
+ * purposes, just done here right after publish instead of on a later sync
+ * pass. TikTok has no resolver and never will (see PERMALINK_RESOLVERS).
+ *
+ * THIS MUST NEVER THROW. The post already went out — a slow or failing
+ * permalink lookup is bookkeeping after the fact, not grounds to fail a
+ * publish that already succeeded. Any error here — network, Graph 4xx/5xx, a
+ * revoked token — collapses to "no permalink": the generation stays
+ * unpublished and its bytes stay stored, which is the safe side, deliberately.
+ */
+async function constructChannelUrl(
+  platform: string,
+  result: any,
+  accountId: string,
+  externalId?: string,
+): Promise<string | null> {
+  const id = platformReceiptId(result);
+  if (!id) return null;
+  if (platform === 'x') return `https://x.com/i/web/status/${id}`;
+  if (platform === 'linkedin') return `https://www.linkedin.com/feed/update/${id}`;
+  const resolve = PERMALINK_RESOLVERS[platform as SocialKey];
+  if (!resolve) return null;
+  try {
+    return await resolve(accountId, id, externalId);
+  } catch {
+    return null;
+  }
+}
+
 /** True only for the `{success: true}` acknowledgement Meta returns on the
  *  edges that have no object to name (hiding a comment, setting a status). */
 function acknowledged(result: any): boolean {
   return !!result && typeof result === 'object' && !Array.isArray(result) && (result as any).success === true;
 }
 
-// Comment reading/replying is Meta-only today; the map keeps that fact in one
-// place rather than in an if/else inside each capability.
-const COMMENT_PLATFORMS: Partial<Record<SocialKey, 'facebook' | 'instagram'>> = {
+// listSocialMessages / listSocialPosts / getSocialProfile are structurally
+// Meta-only (Graph API Pages/IG concepts — DM threads, the Page/IG content
+// shelf, the Page/IG profile object) and stay that way regardless of what
+// engagement platforms exist. This narrow map is exactly that restriction —
+// it is NOT the comment/reply/hide/delete dispatch, which is per-platform
+// below.
+const META_ONLY_PLATFORMS: Partial<Record<SocialKey, 'facebook' | 'instagram'>> = {
   facebook: 'facebook',
   instagram: 'instagram',
 };
 
-function commentPlatform(platform: string): 'facebook' | 'instagram' {
-  const p = COMMENT_PLATFORMS[platform as SocialKey];
-  if (!p) throw new Error(`Comments aren't available for ${platform} yet.`);
+function metaOnlyPlatform(platform: string): 'facebook' | 'instagram' {
+  const p = META_ONLY_PLATFORMS[platform as SocialKey];
+  if (!p) throw new Error(`That isn't available for ${platform} yet.`);
   return p;
 }
+
+// ---------------------------------------------------------------------------
+// Comment engagement dispatch — one map per action, each platform's own
+// implementation, in the same "dispatch map is the only place a platform
+// string appears" spirit as PUBLISHERS/MESSENGERS above. A platform missing
+// from a map is an honest "not available" error, not a silent no-op — see the
+// file header. Meta behaviour (facebook/instagram) is unchanged: same
+// functions, same call shape, just reached through a map entry instead of an
+// inline branch.
+const REPLIES_UNSUPPORTED = (platform: string) => `Comments/replies aren't available for ${platform} yet.`;
+
+const COMMENT_LISTERS: Partial<Record<SocialKey, Dispatch>> = {
+  facebook: (accountId, a, externalId) => getComments(accountId, a.postId, 'facebook', a.limit ?? 25, externalId),
+  instagram: (accountId, a, externalId) => getComments(accountId, a.postId, 'instagram', a.limit ?? 25, externalId),
+  // Threads: threads_read_replies is a granted scope and the Reply Management
+  // edge (GET /{id}/replies) is real — build it.
+  threads: async (accountId, a, externalId) => {
+    const conn = await getConnection(accountId, 'threads', externalId);
+    const { accessToken: token } = conn ? await resolveTokensForRow(conn) : { accessToken: null };
+    if (!token) throw new Error('No Threads account connected — connect Threads in Settings first');
+    return listThreadsReplies(token, a.postId, a.limit ?? 25);
+  },
+  // X: reading replies needs recent-search, which sits above the pay-per-use
+  // default tier — listXReplies throws a message naming that when X 403s/429s.
+  x: async (accountId, a, externalId) => {
+    const conn = await getConnection(accountId, 'x', externalId);
+    const { accessToken: token } = conn ? await resolveTokensForRow(conn) : { accessToken: null };
+    if (!token) throw new Error('No X account connected — connect X in Settings first');
+    return listXReplies(token, a.postId, a.limit ?? 25);
+  },
+  // linkedin: deliberately absent. Reading comments on a share lives behind
+  // LinkedIn's Community Management API, a SEPARATE product from the "Sign In
+  // with LinkedIn" + "Share on LinkedIn" products this app's w_member_social
+  // scope comes from, requiring its own partner-programme application and
+  // approval. Shipping this against w_member_social alone would 403 on every
+  // call, which is exactly the anti-pattern this task exists to avoid.
+};
+
+const COMMENT_REPLIERS: Partial<Record<SocialKey, Dispatch>> = {
+  facebook: (accountId, a, externalId) => replyToComment(accountId, a.commentId, a.message, 'facebook', externalId),
+  instagram: (accountId, a, externalId) => replyToComment(accountId, a.commentId, a.message, 'instagram', externalId),
+  threads: async (accountId, a, externalId) => {
+    const conn = await getConnection(accountId, 'threads', externalId);
+    const userId = conn?.external_id;
+    const { accessToken: token } = conn ? await resolveTokensForRow(conn) : { accessToken: null };
+    if (!token || !userId) throw new Error('No Threads account connected — connect Threads in Settings first');
+    return replyToThreadsPost(token, String(userId), a.commentId, a.message);
+  },
+  // X models a reply as a normal tweet with in_reply_to_tweet_id — same
+  // paid-tier requirement as publishSocialPost's X path.
+  x: async (accountId, a, externalId) => {
+    const conn = await getConnection(accountId, 'x', externalId);
+    const { accessToken: token } = conn ? await resolveTokensForRow(conn) : { accessToken: null };
+    if (!token) throw new Error('No X account connected — connect X in Settings first');
+    return publishXPost(token, a.message, a.commentId);
+  },
+  // linkedin: same partner-programme gate as COMMENT_LISTERS above.
+};
+
+const COMMENT_HIDERS: Partial<Record<SocialKey, Dispatch>> = {
+  facebook: (accountId, a, externalId) => hideComment(accountId, a.commentId, a.hide ?? true, 'facebook', externalId),
+  instagram: (accountId, a, externalId) => hideComment(accountId, a.commentId, a.hide ?? true, 'instagram', externalId),
+  threads: async (accountId, a, externalId) => {
+    const conn = await getConnection(accountId, 'threads', externalId);
+    const { accessToken: token } = conn ? await resolveTokensForRow(conn) : { accessToken: null };
+    if (!token) throw new Error('No Threads account connected — connect Threads in Settings first');
+    return hideThreadsReply(token, a.commentId, a.hide ?? true);
+  },
+  // X: no scope requested (or generally available) grants hiding a reply —
+  // there is no map entry, so hideSocialComment throws a clear "X does not
+  // support hiding comments" rather than silently doing nothing.
+  // linkedin: same partner-programme gate as above; also no hide concept in
+  // the Community Management API's Comments surface even if it were reachable.
+};
+
+const COMMENT_DELETERS: Partial<Record<SocialKey, Dispatch>> = {
+  facebook: (accountId, a, externalId) => deleteComment(accountId, a.commentId, 'facebook', externalId),
+  instagram: (accountId, a, externalId) => deleteComment(accountId, a.commentId, 'instagram', externalId),
+  // Threads: the public Graph API documents no delete endpoint for a post or
+  // reply — not a scope gap, the operation does not exist. No entry, honest error.
+  // X: DELETE /2/tweets/:id only deletes a tweet POSTED BY the authenticated
+  // user — there is no API to delete someone else's reply, which is what
+  // "delete a comment" means for moderation. Mapping this to deleteXTweet
+  // would silently only work when commentId happens to be this account's own
+  // tweet, which is not what the capability promises. No entry, honest error.
+  // linkedin: same partner-programme gate as above.
+};
 
 // ---------------------------------------------------------------------------
 // Buffer guard
@@ -322,7 +500,7 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
       limit: z.number().int().min(1).max(100).optional(),
       accountExternalId: z.string().optional(),
     }),
-    run: (accountId, a) => listConversations(accountId, commentPlatform(a.platform), a.limit ?? 25, a.accountExternalId),
+    run: (accountId, a) => listConversations(accountId, metaOnlyPlatform(a.platform), a.limit ?? 25, a.accountExternalId),
     // The message text is the substance here and is what truncation eats first,
     // so quote a few verbatim alongside who they are from.
     digest: (_a, result) => {
@@ -354,7 +532,11 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     // accountExternalId pins WHICH connected page/profile the comments are read
     // with. Without it, an account with several connected pages reads through
     // whichever one resolves first — see the note on getComments.
-    run: (accountId, a) => getComments(accountId, a.postId, commentPlatform(a.platform), a.limit ?? 25, a.accountExternalId),
+    run: (accountId, a) => {
+      const lister = COMMENT_LISTERS[a.platform as SocialKey];
+      if (!lister) throw new Error(REPLIES_UNSUPPORTED(a.platform));
+      return lister(accountId, a, a.accountExternalId);
+    },
     // Comment text is the substance of this result and is exactly what gets
     // clipped by truncation, so quote a few verbatim. `hidden` is only reported
     // when at least one row actually carries the field — Meta omits it on some
@@ -402,7 +584,7 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
       limit: z.number().int().min(1).max(50).optional(),
     }),
     run: async (accountId, a) => {
-      const platform = commentPlatform(a.platform); // facebook | instagram — same Meta-only surface
+      const platform = metaOnlyPlatform(a.platform); // facebook | instagram — same Meta-only surface
       const ids = await resolveExternalIdsForRead(accountId, a.platform, a.accountExternalId);
       const contentType: SocialContentType = a.contentType ?? 'posts';
       // One account: the plain list, exactly as a single-account estate expects.
@@ -449,7 +631,7 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     inputSchema: obj({ platform: S.string, accountExternalId: S.string }, ['platform']),
     zod: z.object({ platform: livePlatform, accountExternalId: z.string().optional() }),
     run: async (accountId, a) => {
-      const platform = commentPlatform(a.platform);
+      const platform = metaOnlyPlatform(a.platform);
       const ids = await resolveExternalIdsForRead(accountId, a.platform, a.accountExternalId);
       if (ids.length === 1) return getOwnProfile(accountId, platform, ids[0]);
       // "Analyse my profiles" is a normal request and it means all of them.
@@ -510,11 +692,11 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     name: 'publishSocialPost',
     domain: 'social',
     title: 'Publish a social post',
-    description: 'Publish a post to one of the connected social accounts, right now, visible to that account\'s real audience. Call listSocialAccounts first and pass the id of the account to post to. Instagram posts must include an image or video. Use draftSocialPost to write the copy first.',
+    description: 'Publish a post to one of the connected social accounts, right now, visible to that account\'s real audience. Call listSocialAccounts first and pass the id of the account to post to. Instagram posts must include an image or video. Use draftSocialPost to write the copy first. Pass contentItemId when this post carries an approved generated image/video (from promoteGenerationToContent) — on every platform except TikTok (which never actually publishes; see its note below), a real permalink is obtained, either straight from the publish receipt (X, LinkedIn) or via a follow-up read (Facebook, Instagram, Threads), and that generation is marked published so its stored copy can eventually be freed once the channel is the system of record.',
     gate: 'external_send',
     inputSchema: obj({
       platform: S.string, accountExternalId: S.string, message: S.string,
-      imageUrl: S.string, videoUrl: S.string, link: S.string,
+      imageUrl: S.string, videoUrl: S.string, link: S.string, contentItemId: S.string,
     }, ['platform']),
     zod: z.object({
       platform: livePlatform,
@@ -523,6 +705,7 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
       imageUrl: z.string().url().optional(),
       videoUrl: z.string().url().optional(),
       link: z.string().url().optional(),
+      contentItemId: z.string().optional(),
     })
       .refine((a) => !!(a.message || a.imageUrl || a.videoUrl), {
         message: 'A post needs a message, an image, or a video.',
@@ -536,7 +719,39 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
       const pub = PUBLISHERS[a.platform as SocialKey];
       if (!pub) throw new Error(`Publishing to ${a.platform} isn't available yet.`);
       const externalId = await resolveExternalId(accountId, a.platform, a.accountExternalId);
-      return pub(accountId, a, externalId);
+      const result = await pub(accountId, a, externalId);
+      // Best-effort, never fails the publish itself: link this publish back to
+      // the content item and any generation queued for it.
+      if (a.contentItemId) {
+        // external_post_id is what syncPerformance (lib/content/performance.ts)
+        // matches on to pull live metrics later — it wants the platform's own
+        // RAW id (the same id keyed in listInstagramMedia/listFacebookPagePosts),
+        // not a permalink URL. TikTok is excluded: publishTiktokDraft never
+        // actually publishes (see PERMALINK_RESOLVERS's comment), so its
+        // publish_id names a draft sitting in someone's inbox, not a live post —
+        // recording it here would make syncPerformance look for a post that
+        // does not exist.
+        const rawId = a.platform !== 'tiktok' ? platformReceiptId(result) : null;
+        if (rawId) {
+          await updateContentItem(accountId, a.contentItemId, { external_post_id: rawId }).catch(() => {});
+        }
+        // Only when constructChannelUrl actually produced a real permalink —
+        // see its comment for which platforms that covers and why a failed
+        // lookup here can never fail the publish. Once we have a permalink,
+        // the channel is the system of record and the stored copy can
+        // eventually be freed (purgeExpiredGenerations, after
+        // GENERATION_PUBLISH_GRACE_DAYS).
+        const channelUrl = await constructChannelUrl(a.platform, result, accountId, externalId);
+        if (channelUrl) {
+          const linked = await listGenerations(accountId, {
+            contentItemId: a.contentItemId, reviewState: 'APPROVED',
+          }).catch(() => [] as any[]);
+          for (const g of linked) {
+            if (!g.published_at) await markGenerationPublished(accountId, g.id, channelUrl).catch(() => {});
+          }
+        }
+      }
+      return result;
     },
     summarize: (a) => `Publish this post to ${a.platform}${a.accountExternalId ? ` (${a.accountExternalId})` : ''}. It goes live immediately to that account's real audience.`,
     // THE TIKTOK CASE IS WHY THIS READS THE RESULT AND NOT THE ARGUMENTS.
@@ -576,8 +791,11 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
       platform: livePlatform,
       accountExternalId: z.string().optional(),
     }),
-    run: (accountId, a) =>
-      replyToComment(accountId, a.commentId, a.message, commentPlatform(a.platform), a.accountExternalId),
+    run: (accountId, a) => {
+      const replier = COMMENT_REPLIERS[a.platform as SocialKey];
+      if (!replier) throw new Error(REPLIES_UNSUPPORTED(a.platform));
+      return replier(accountId, a, a.accountExternalId);
+    },
     summarize: (a) => `Post a public reply to comment ${a.commentId} on ${a.platform}: "${String(a.message).slice(0, 120)}". Everyone who sees the post sees this reply.`,
     // replyToComment posts to the `${commentId}/comments` edge and returns
     // Meta's `{id}` for the reply it created; graphPost throws on any non-2xx.
@@ -605,8 +823,17 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
       platform: livePlatform.optional(),
       accountExternalId: z.string().optional(),
     }),
-    run: (accountId, a) =>
-      hideComment(accountId, a.commentId, a.hide ?? true, a.platform ? commentPlatform(a.platform) : undefined, a.accountExternalId),
+    // No platform given: keep the original Meta-only fallback (hideComment
+    // resolves via getMetaCreds with no provider hint) byte-identical. A
+    // platform given for a non-Meta account routes through its own hider —
+    // and X has no entry there at all, because X grants no scope that hides a
+    // reply, so hideSocialComment on X throws instead of no-op-ing.
+    run: (accountId, a) => {
+      if (!a.platform) return hideComment(accountId, a.commentId, a.hide ?? true, undefined, a.accountExternalId);
+      const hider = COMMENT_HIDERS[a.platform as SocialKey];
+      if (!hider) throw new Error(`${a.platform} does not support hiding comments.`);
+      return hider(accountId, a, a.accountExternalId);
+    },
     summarize: (a) => (a.hide === false
       ? `Unhide comment ${a.commentId} so the public can see it again.`
       : `Hide comment ${a.commentId} from everyone else viewing the post.`),
@@ -639,8 +866,16 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
       platform: livePlatform.optional(),
       accountExternalId: z.string().optional(),
     }),
-    run: (accountId, a) =>
-      deleteComment(accountId, a.commentId, a.platform ? commentPlatform(a.platform) : undefined, a.accountExternalId),
+    // Same no-platform Meta fallback as hideSocialComment above. Threads has
+    // no delete endpoint at all in the public API and X can only delete its
+    // own tweets (not moderate someone else's reply) — neither has a map
+    // entry, so both throw a clear, honest error instead of pretending.
+    run: (accountId, a) => {
+      if (!a.platform) return deleteComment(accountId, a.commentId, undefined, a.accountExternalId);
+      const deleter = COMMENT_DELETERS[a.platform as SocialKey];
+      if (!deleter) throw new Error(`${a.platform} does not support deleting comments.`);
+      return deleter(accountId, a, a.accountExternalId);
+    },
     summarize: (a) => `Permanently delete comment ${a.commentId}. This cannot be undone.`,
   },
   {
