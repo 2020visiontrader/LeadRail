@@ -11,6 +11,7 @@ import EmptyState from '@/components/EmptyState';
 import LoadingSpinner from '@/components/LoadingSpinner';
 import ContentCalendar from '@/components/ContentCalendar';
 import ImportExport from '@/components/ImportExport';
+import GenerationsBoard from '@/components/GenerationsBoard';
 import { useToast } from '@/components/ToastProvider';
 import { apiGet, apiSend } from '@/lib/api';
 import { ContentPost } from '@/lib/types';
@@ -32,6 +33,7 @@ export default function ContentPage() {
   const [form, setForm] = useState({ platform: 'instagram', post_body: '', scheduled_for: '' });
   const [topic, setTopic] = useState('');
   const [generating, setGenerating] = useState(false);
+  const [tab, setTab] = useState<'board' | 'generations'>('board');
 
   useEffect(() => {
     apiGet<{ ventures: Venture[] }>('/api/ventures')
@@ -114,12 +116,37 @@ export default function ContentPage() {
         </div>
       </div>
 
-      {!venture ? (
-        <EmptyState icon="🏢" title="Select a brand" hint="Choose a brand above to manage its content." />
-      ) : loading ? <LoadingSpinner /> : posts.length === 0 ? (
-        <EmptyState icon="📱" title="No content scheduled" hint="Schedule your first post." action={<Button onClick={() => setOpen(true)}>New Post</Button>} />
+      <div role="tablist" aria-label="Content sections" className="flex gap-1 border-b border-[var(--border-default)]">
+        {([
+          { key: 'board', label: 'Board' },
+          { key: 'generations', label: 'Generations' },
+        ] as const).map((t) => (
+          <button
+            key={t.key}
+            role="tab"
+            aria-selected={tab === t.key}
+            onClick={() => setTab(t.key)}
+            className={`px-3 py-2 text-sm font-medium transition ${
+              tab === t.key
+                ? 'border-b-2 border-[var(--ink)] text-[var(--text-primary)]'
+                : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'
+            }`}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === 'board' ? (
+        !venture ? (
+          <EmptyState icon="🏢" title="Select a brand" hint="Choose a brand above to manage its content." />
+        ) : loading ? <LoadingSpinner /> : posts.length === 0 ? (
+          <EmptyState icon="📱" title="No content scheduled" hint="Schedule your first post." action={<Button onClick={() => setOpen(true)}>New Post</Button>} />
+        ) : (
+          <ContentCalendar posts={posts} onSelect={setSelected} />
+        )
       ) : (
-        <ContentCalendar posts={posts} onSelect={setSelected} />
+        <GenerationsBoard brandId={venture?.id} />
       )}
 
       <Modal isOpen={open} title="Schedule Post" onClose={() => setOpen(false)} onSubmit={create} submitLabel="Schedule" loading={saving}>
