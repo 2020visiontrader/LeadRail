@@ -69,6 +69,21 @@ export async function listThreadsReplies(token: string, threadId: string, limit 
   return json.data || [];
 }
 
+/**
+ * A just-published Threads post/reply's own permalink. Same shape as the
+ * Meta (Facebook/Instagram) follow-up reads in lib/social/meta-read.ts: the
+ * publish response (threads_publish edge) carries only the media's internal
+ * id, and `permalink` is a separate field only a follow-up GET returns.
+ * Verified via web search of third-party Threads API docs/clients — same
+ * corroboration approach documented at the top of this file — and it matches
+ * the `permalink` field this file already requests in listThreadsReplies
+ * above, which has been live against real Threads accounts.
+ */
+export async function getThreadsMediaPermalink(token: string, mediaId: string): Promise<string | null> {
+  const json = await threadsGet(String(mediaId), { fields: 'permalink' }, token);
+  return json?.permalink ?? null;
+}
+
 /** Hide/unhide a reply. POST /{reply-id}/manage_reply {hide: boolean} — Meta's
  *  Reply Management edge. Threads has no delete endpoint in the public API, so
  *  there is deliberately no deleteThreadsReply here — see the honest error

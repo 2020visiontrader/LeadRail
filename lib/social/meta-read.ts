@@ -115,6 +115,48 @@ export async function listInstagramMedia(
   }));
 }
 
+/**
+ * A just-published Facebook Page post's own permalink. The publish response
+ * (Page/{feed,photos} edge) carries only the post's internal id — the real,
+ * followable URL is a SEPARATE field only this follow-up read returns. Field
+ * name verified against Meta's Graph API Post reference (permalink_url) —
+ * corroborated via web search of third-party docs/clients, since
+ * developers.facebook.com itself is blocked by this environment's egress
+ * proxy — and matches the same field this file already reads in
+ * listFacebookPagePosts above.
+ *
+ * Throws on a Graph error, same as every other read in this file — callers
+ * that must not let a failed permalink lookup fail a publish (see
+ * constructChannelUrl, lib/capabilities/social.ts) catch it there.
+ */
+export async function getFacebookPostPermalink(
+  accountId: string,
+  postId: string,
+  externalId?: string,
+): Promise<string | null> {
+  const { token } = await getMetaCreds(accountId, { provider: 'facebook', externalId });
+  const json = await graphGet(postId, { fields: 'permalink_url' }, token);
+  return json?.permalink_url ?? null;
+}
+
+/**
+ * A just-published Instagram media's own permalink. Same shape as
+ * getFacebookPostPermalink above: the publish response (media_publish edge)
+ * carries only the media's internal id, and `permalink` is a separate field
+ * only a follow-up read returns. Verified the same way — third-party
+ * corroboration plus this file's own existing IG_MEDIA_FIELDS, which already
+ * reads `permalink` for listInstagramMedia above.
+ */
+export async function getInstagramMediaPermalink(
+  accountId: string,
+  mediaId: string,
+  externalId?: string,
+): Promise<string | null> {
+  const { token } = await getMetaCreds(accountId, { provider: 'instagram', externalId });
+  const json = await graphGet(mediaId, { fields: 'permalink' }, token);
+  return json?.permalink ?? null;
+}
+
 /** The connected Facebook Page itself — who it is and how big its audience is. */
 export async function getFacebookPageProfile(
   accountId: string,

@@ -36,17 +36,23 @@ import { listConversations,
   getComments, replyToComment, hideComment, deleteComment, sendMetaMessage,
 } from '@/lib/social/meta-engagement';
 import { getInsightsByLevel, updateStatus } from '@/lib/social/meta-ads';
-import { listOwnPosts, getOwnProfile, type SocialContentType } from '@/lib/social/meta-read';
+import {
+  listOwnPosts, getOwnProfile, getFacebookPostPermalink, getInstagramMediaPermalink,
+  type SocialContentType,
+} from '@/lib/social/meta-read';
 import { getIntegrations } from '@/lib/social/index';
 import { createPost as bufferCreatePost, listPosts as bufferListPosts } from '@/lib/social/buffer';
 import { requireSocialCredential } from '@/lib/social/credentials';
 import { publishLinkedinPost } from '@/lib/social/linkedin-oauth';
 import { publishTiktokDraft } from '@/lib/social/tiktok-oauth';
 import { publishXPost, listXReplies } from '@/lib/social/x-oauth';
-import { publishThreadsPost, listThreadsReplies, replyToThreadsPost, hideThreadsReply } from '@/lib/social/threads';
+import {
+  publishThreadsPost, listThreadsReplies, replyToThreadsPost, hideThreadsReply, getThreadsMediaPermalink,
+} from '@/lib/social/threads';
 import { generateContentPost } from '@/lib/ai/generation';
 import { LIVE_SOCIALS, SOCIAL_KEYS, type SocialKey } from '@/lib/social/providers';
 import { markGenerationPublished, listGenerations } from '@/lib/generations/store';
+import { updateContentItem } from '@/lib/content/store';
 import { obj, S, type Capability, rowsOf, plural, samples, tally, present, clip, digestLine } from './types';
 
 // ---------------------------------------------------------------------------
@@ -225,26 +231,72 @@ function platformReceiptId(result: any): string | null {
 }
 
 /**
- * A real, followable permalink built straight from the platform's own publish
- * receipt — NEVER a guess. Deliberately narrow: only X (`x.com/i/web/status/
- * {id}`, documented to resolve without a username) and LinkedIn
- * (`linkedin.com/feed/update/{urn}`, the URN IS the update identifier) are
- * constructible this way. Facebook and Instagram's publish responses carry
- * only an internal id — their real permalink_url is a SEPARATE field only a
- * follow-up Graph read returns (see listOwnPosts / syncPerformance,
- * lib/content/performance.ts, which does exactly that read, later). Threads
- * is the same shape. TikTok never actually publishes here at all — see the
- * digest above. Generations tied to those platforms are simply never marked
- * published by this path; they keep consuming quota until a human approves/
- * rejects them by hand. That gap is a real, currently-unclosed one — see this
- * packet's report.
+ * Follow-up Graph reads that turn a Meta-family publish receipt's internal id
+ * into the real, followable permalink. Kept as a dispatch map for the same
+ * reason PUBLISHERS/MESSENGERS above are — this is the only place a platform
+ * string appears for this concern. Facebook -> permalink_url, Instagram and
+ * Threads -> permalink; all three verified against Meta's own field names via
+ * web search (developers.facebook.com is blocked by this environment's
+ * egress proxy) and cross-checked against this codebase's own existing reads
+ * of the same fields (listFacebookPagePosts / listInstagramMedia in
+ * lib/social/meta-read.ts, listThreadsReplies in lib/social/threads.ts),
+ * which have been live against real accounts. See those functions' own
+ * comments for the sourcing detail.
+ *
+ * X and LinkedIn need no entry: their permalink is constructible straight
+ * from the publish receipt with zero extra API calls (see
+ * constructChannelUrl below). TikTok needs no entry either, but for the
+ * opposite reason — publishTiktokDraft never actually publishes anything (it
+ * pushes a draft to the creator's TikTok inbox), so there is no live post to
+ * link to, ever. That is a permanent absence, not a gap to close later.
  */
-function constructChannelUrl(platform: string, result: any): string | null {
+const PERMALINK_RESOLVERS: Partial<Record<SocialKey, (accountId: string, id: string, externalId?: string) => Promise<string | null>>> = {
+  facebook: (accountId, id, externalId) => getFacebookPostPermalink(accountId, id, externalId),
+  instagram: (accountId, id, externalId) => getInstagramMediaPermalink(accountId, id, externalId),
+  threads: async (accountId, id, externalId) => {
+    const conn = await getConnection(accountId, 'threads', externalId);
+    const { accessToken: token } = conn ? await resolveTokensForRow(conn) : { accessToken: null };
+    if (!token) return null;
+    return getThreadsMediaPermalink(token, id);
+  },
+};
+
+/**
+ * A real, followable permalink for what a publish just created.
+ *
+ * X (`x.com/i/web/status/{id}`, documented to resolve without a username) and
+ * LinkedIn (`linkedin.com/feed/update/{urn}`, the URN IS the update
+ * identifier) are constructible straight from the publish receipt — zero
+ * extra API calls. Facebook, Instagram and Threads publish responses carry
+ * only an internal id; their real permalink is a SEPARATE field that needs a
+ * follow-up Graph read (PERMALINK_RESOLVERS above) — the same read
+ * syncPerformance (lib/content/performance.ts) already does for its own
+ * purposes, just done here right after publish instead of on a later sync
+ * pass. TikTok has no resolver and never will (see PERMALINK_RESOLVERS).
+ *
+ * THIS MUST NEVER THROW. The post already went out — a slow or failing
+ * permalink lookup is bookkeeping after the fact, not grounds to fail a
+ * publish that already succeeded. Any error here — network, Graph 4xx/5xx, a
+ * revoked token — collapses to "no permalink": the generation stays
+ * unpublished and its bytes stay stored, which is the safe side, deliberately.
+ */
+async function constructChannelUrl(
+  platform: string,
+  result: any,
+  accountId: string,
+  externalId?: string,
+): Promise<string | null> {
   const id = platformReceiptId(result);
   if (!id) return null;
   if (platform === 'x') return `https://x.com/i/web/status/${id}`;
   if (platform === 'linkedin') return `https://www.linkedin.com/feed/update/${id}`;
-  return null;
+  const resolve = PERMALINK_RESOLVERS[platform as SocialKey];
+  if (!resolve) return null;
+  try {
+    return await resolve(accountId, id, externalId);
+  } catch {
+    return null;
+  }
 }
 
 /** True only for the `{success: true}` acknowledgement Meta returns on the
@@ -640,7 +692,7 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
     name: 'publishSocialPost',
     domain: 'social',
     title: 'Publish a social post',
-    description: 'Publish a post to one of the connected social accounts, right now, visible to that account\'s real audience. Call listSocialAccounts first and pass the id of the account to post to. Instagram posts must include an image or video. Use draftSocialPost to write the copy first. Pass contentItemId when this post carries an approved generated image/video (from promoteGenerationToContent) — on platforms where the platform hands back a real permalink (currently X and LinkedIn), that generation is marked published so its stored copy can eventually be freed once the channel is the system of record.',
+    description: 'Publish a post to one of the connected social accounts, right now, visible to that account\'s real audience. Call listSocialAccounts first and pass the id of the account to post to. Instagram posts must include an image or video. Use draftSocialPost to write the copy first. Pass contentItemId when this post carries an approved generated image/video (from promoteGenerationToContent) — on every platform except TikTok (which never actually publishes; see its note below), a real permalink is obtained, either straight from the publish receipt (X, LinkedIn) or via a follow-up read (Facebook, Instagram, Threads), and that generation is marked published so its stored copy can eventually be freed once the channel is the system of record.',
     gate: 'external_send',
     inputSchema: obj({
       platform: S.string, accountExternalId: S.string, message: S.string,
@@ -669,13 +721,27 @@ export const SOCIAL_CAPABILITIES: Capability[] = [
       const externalId = await resolveExternalId(accountId, a.platform, a.accountExternalId);
       const result = await pub(accountId, a, externalId);
       // Best-effort, never fails the publish itself: link this publish back to
-      // any generation queued for this content item so its stored bytes can
-      // eventually be freed (purgeExpiredGenerations, after
-      // GENERATION_PUBLISH_GRACE_DAYS) now that the channel — not us — is the
-      // system of record. Only when constructChannelUrl actually produced a
-      // real permalink; see its comment for which platforms that covers.
+      // the content item and any generation queued for it.
       if (a.contentItemId) {
-        const channelUrl = constructChannelUrl(a.platform, result);
+        // external_post_id is what syncPerformance (lib/content/performance.ts)
+        // matches on to pull live metrics later — it wants the platform's own
+        // RAW id (the same id keyed in listInstagramMedia/listFacebookPagePosts),
+        // not a permalink URL. TikTok is excluded: publishTiktokDraft never
+        // actually publishes (see PERMALINK_RESOLVERS's comment), so its
+        // publish_id names a draft sitting in someone's inbox, not a live post —
+        // recording it here would make syncPerformance look for a post that
+        // does not exist.
+        const rawId = a.platform !== 'tiktok' ? platformReceiptId(result) : null;
+        if (rawId) {
+          await updateContentItem(accountId, a.contentItemId, { external_post_id: rawId }).catch(() => {});
+        }
+        // Only when constructChannelUrl actually produced a real permalink —
+        // see its comment for which platforms that covers and why a failed
+        // lookup here can never fail the publish. Once we have a permalink,
+        // the channel is the system of record and the stored copy can
+        // eventually be freed (purgeExpiredGenerations, after
+        // GENERATION_PUBLISH_GRACE_DAYS).
+        const channelUrl = await constructChannelUrl(a.platform, result, accountId, externalId);
         if (channelUrl) {
           const linked = await listGenerations(accountId, {
             contentItemId: a.contentItemId, reviewState: 'APPROVED',
