@@ -419,5 +419,32 @@ export function getCombinedCatalog(): CatalogSkill[] {
   return [...SKILLS.map(builtInToCatalog), ...HARVESTED_SKILLS.map(harvestedToCatalog)];
 }
 
+/**
+ * source/license lookup by catalog id, for the DB seed paths
+ * (scripts/sync-skills.ts, app/api/skills/sync/route.ts).
+ *
+ * Those seeds build every other column (slug/name/category/description/
+ * instructions/inspired_by) from ROUTABLE_SKILLS, unchanged from before. This
+ * exists ONLY to supply the two columns ROUTABLE_SKILLS structurally cannot
+ * carry — `Skill` has no source/license field, only `CatalogSkill` does.
+ *
+ * Deliberately NOT a switch to seeding from getCombinedCatalog() wholesale:
+ * CatalogSkill.inspiredBy for a harvested skill is the precise
+ * `repo@commit — path` string (HarvestedSkill.inspiredBy), while the
+ * Skill/ROUTABLE_SKILLS projection folds license into a coarser
+ * `repo (license)` string instead (see HARVESTED_AS_SKILLS above). Both
+ * describe the same provenance, but they are different strings for all 668
+ * harvested rows — switching the seed's source array would silently rewrite
+ * inspired_by for every one of them, which is out of scope for a fix that
+ * touches only source/license.
+ */
+const CATALOG_SOURCE_LICENSE_BY_ID = new Map(
+  getCombinedCatalog().map((c) => [c.id, { source: c.source, license: c.license ?? null }]),
+);
+
+export function getCatalogSourceLicense(id: string): { source: string; license: string | null } {
+  return CATALOG_SOURCE_LICENSE_BY_ID.get(id) ?? { source: 'built-in', license: null };
+}
+
 export { HARVESTED_SKILLS };
 export type { HarvestedSkill };

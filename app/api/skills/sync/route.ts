@@ -2,7 +2,7 @@ import { withApi } from '@/lib/http';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireSession, errorResponse } from '@/lib/http';
 import { supabase, dbReady } from '@/lib/db';
-import { ROUTABLE_SKILLS } from '@/lib/skills/registry';
+import { ROUTABLE_SKILLS, getCatalogSourceLicense } from '@/lib/skills/registry';
 
 export const dynamic = 'force-dynamic';
 export const runtime = 'nodejs';
@@ -41,20 +41,33 @@ async function POST__impl(request: NextRequest) {
   }
 
   try {
-    const rows = ROUTABLE_SKILLS.map((s) => ({
-      account_id: null,
-      slug: s.id,
-      name: s.name,
-      category: s.category,
-      // `when` is the one-line relevance trigger Hermes reads to shortlist.
-      // It maps to `description` because that is the column the routing query
-      // and the catalog UI both read.
-      description: s.when,
-      // `systemModule` is the prompt fragment injected once a skill is chosen.
-      instructions: s.systemModule,
-      source: 'builtin',
-      inspired_by: s.inspiredBy,
-    })).filter((r) => r.slug && r.name && r.instructions);
+    const rows = ROUTABLE_SKILLS.map((s) => {
+      // Real source/license from the catalog (getCombinedCatalog via
+      // getCatalogSourceLicense) — a built-in's real source is 'built-in'
+      // (matching builtInToCatalog, not the historical hardcoded 'builtin'),
+      // and a harvested skill's real source/license are what harvest-skills.ts
+      // recorded (e.g. 'adclaw' / 'Apache-2.0'). Built-ins have no license —
+      // persisted as NULL, never guessed. Every other column here is still
+      // built from ROUTABLE_SKILLS, unchanged — see getCatalogSourceLicense's
+      // doc comment for why inspired_by in particular is not sourced from the
+      // catalog too.
+      const { source, license } = getCatalogSourceLicense(s.id);
+      return {
+        account_id: null,
+        slug: s.id,
+        name: s.name,
+        category: s.category,
+        // `when` is the one-line relevance trigger Hermes reads to shortlist.
+        // It maps to `description` because that is the column the routing query
+        // and the catalog UI both read.
+        description: s.when,
+        // `systemModule` is the prompt fragment injected once a skill is chosen.
+        instructions: s.systemModule,
+        source,
+        license,
+        inspired_by: s.inspiredBy,
+      };
+    }).filter((r) => r.slug && r.name && r.instructions);
 
     // NO upsert/onConflict here. The catalog's uniqueness is enforced by a
     // PARTIAL index — idx_skills_global_slug ON skills(slug) WHERE account_id
@@ -103,7 +116,8 @@ async function POST__impl(request: NextRequest) {
         .from('skills')
         .update({
           name: r.name, category: r.category, description: r.description,
-          instructions: r.instructions, source: r.source, inspired_by: r.inspired_by,
+          instructions: r.instructions, source: r.source, license: r.license,
+          inspired_by: r.inspired_by,
         })
         .eq('slug', r.slug)
         .is('account_id', null);
