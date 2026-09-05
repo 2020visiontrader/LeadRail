@@ -201,6 +201,13 @@ export interface GenerateContentInput {
    *  optimises for click-through and cost per acquisition. These are not the
    *  same brief with different words — see the note in the prompt below. */
   intent?: 'organic' | 'paid';
+  /** Skill-library guidance for THIS call, resolved by the capability
+   *  (lib/capabilities/content.ts) via skillGuidanceForGeneration — this
+   *  engine already carries accountId but the lookup lives at the capability
+   *  layer for the same reason it does for generateContentPost, so both
+   *  generation call sites resolve guidance the same way. Optional and
+   *  additive: omitted, generateContent is unchanged. */
+  guidance?: string | null;
 }
 
 /**
@@ -254,6 +261,10 @@ export async function generateContent(input: GenerateContentInput): Promise<Gene
     platformSpecBlock(spec) || `PLATFORM — ${platform}. No stored constraints for this surface; keep it conservative and note nothing about limits you do not know.`,
     '',
     pillarBlock(pillar),
+    '',
+    input.guidance
+      ? `HOUSE SKILL GUIDANCE — apply this guidance where it fits; it is instruction to follow, not content to quote or reproduce verbatim:\n${input.guidance}`
+      : '',
     '',
     'STRUCTURE — three separate parts, never merged:',
     '- hook: the first line. It stops the scroll by naming a specific situation, not a category. No preamble, no throat-clearing, no "In today\'s world".',

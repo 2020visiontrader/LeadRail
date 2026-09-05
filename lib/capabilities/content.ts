@@ -17,6 +17,7 @@ import {
   CONTENT_STATUSES, FUNNEL_STAGES,
 } from '@/lib/content/store';
 import { generateContent } from '@/lib/content/engine';
+import { skillGuidanceForGeneration } from '@/lib/skills/for-generation';
 import { loadCanon, saveCanon, scoreLinearity } from '@/lib/content/canon';
 import { runResearchSweep, listFindings, RESEARCH_PASSES } from '@/lib/content/research';
 import { syncPerformance, performanceReport } from '@/lib/content/performance';
@@ -184,7 +185,10 @@ export const CONTENT_CAPABILITIES: Capability[] = [
       intent: z.enum(['organic', 'paid']).optional(),
     }),
     run: async (accountId, a) => {
-      const piece = await generateContent({ accountId, ...a });
+      const guidance = await skillGuidanceForGeneration(accountId, {
+        kind: 'content piece', platform: a.platform, topic: a.topic,
+      });
+      const piece = await generateContent({ accountId, ...a, guidance: guidance || undefined });
       if (a.save === false) return piece;
       const item = await createContentItem(accountId, {
         title: piece.title,
@@ -270,6 +274,19 @@ export const CONTENT_CAPABILITIES: Capability[] = [
         // the reference system uses everywhere: who they are never varies,
         // only what they are doing.
         prompt = `${ref.description}\n\nScene: ${a.prompt}`;
+      }
+      // Skill guidance, if any, is appended AFTER the description+scene and
+      // BEFORE aspect/caption/reference-note (added inside routeImage) and
+      // styleLock (appended verbatim, last, by lib/ai/gemini.ts) — it never
+      // displaces ref.description leading or styleLock's final, untouched
+      // position. There is no separate "system" channel for an image prompt,
+      // so this is the one honest place: after what the image is OF, before
+      // the mechanical suffixes the router itself always adds.
+      const guidance = await skillGuidanceForGeneration(accountId, {
+        kind: 'brand image', topic: a.prompt,
+      });
+      if (guidance) {
+        prompt += `\n\nHOUSE SKILL GUIDANCE — apply this to how the image is composed; it is instruction, not text to render on the image itself:\n${guidance}`;
       }
       const img = await routeImage({ prompt, caption: a.caption, aspect: a.aspect, referenceUrls, styleLock });
       // recordMediaGeneration is the ONE shared write path (checks quota,
